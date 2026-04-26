@@ -1,0 +1,26 @@
+{
+  "name": "mikael-trading-os",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Multi-asset AI trading agent: crypto (Blofin/Binance), stocks + options (Alpaca). Powered by Claude.",
+  "type": "module",
+  "scripts": {
+    "agent": "tsx src/run.ts",
+    "agent:once": "tsx src/run.ts --once",
+    "propose": "tsx src/run.ts --propose",
+    "account": "tsx src/scripts/account.ts",
+    "kill": "tsx src/scripts/kill.ts",
+    "ui": "DASHBOARD_PORT=3939 tsx src/run.ts --once",
+    "demo": "tsx src/scripts/demo.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "dotenv": "^17.3.1",
+    "tsx": "^4.21.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "typescript": "^5.4.0"
+  }
+}

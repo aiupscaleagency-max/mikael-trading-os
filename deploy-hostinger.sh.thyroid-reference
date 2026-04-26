@@ -1,0 +1,261 @@
+#!/bin/bash
+# =============================================================
+# ThyroidAI + Paperclip Deploy Script för Hostinger VPS
+# Server: 72.60.36.92
+# Domäner:
+#   - thyroid.aiupscale.agency  → ThyroidAI (port 3000)
+#   - paperclip.aiupscale.agency → Paperclip (port 3100)
+#   - app.aiupscale.agency       → n8n (redan uppsatt)
+#
+# Kör från din Mac: bash deploy-hostinger.sh
+# =============================================================
+
+set -e
+
+SERVER="root@72.60.36.92"
+
+echo "================================================"
+echo "  ThyroidAI + Paperclip — Hostinger Deploy"
+echo "================================================"
+echo ""
+
+# ============================================================
+# STEG 1: Uppdatera ThyroidAI med nya LLM-switching-koden
+# ============================================================
+echo "[1/4] Uppdaterar ThyroidAI på servern..."
+ssh $SERVER 'bash -s' << 'THYROID_DEPLOY'
+set -e
+
+# Hitta ThyroidAI-mappen
+THYROID_DIR=""
+for dir in /var/www/thyroidai /home/thyroidai /var/www/thyroid.aiupscale.agency /root/thyroidai; do
+  if [ -d "$dir/.git" ]; then
+    THYROID_DIR="$dir"
+    break
+  fi
+done
+
+if [ -z "$THYROID_DIR" ]; then
+  echo "VARNING: ThyroidAI-mapp hittades inte automatiskt."
+  echo "Söker efter Next.js-projekt med ThyroidAI..."
+  THYROID_DIR=$(find / -name "package.json" -path "*/thyroid*" -exec dirname {} \; 2>/dev/null | head -1)
+
+  if [ -z "$THYROID_DIR" ]; then
+    echo "Klonar ThyroidAI till /var/www/thyroidai..."
+    mkdir -p /var/www
+    git clone https://github.com/aiupscaleagency-max/ThyroidAI.git /var/www/thyroidai
+    THYROID_DIR="/var/www/thyroidai"
+  fi
+fi
+
+echo "ThyroidAI funnen: $THYROID_DIR"
+cd "$THYROID_DIR"
+
+# Pull senaste koden från master (med LLM-switching)
+git fetch origin master
+git reset --hard origin/master
+echo "✓ Git uppdaterad till senaste master (med LLM-switching)"
+
+# Installera och bygg
+npm install 2>/dev/null || npm ci
+npm run build
+echo "✓ ThyroidAI byggd"
+
+# Starta om med PM2
+if command -v pm2 &> /dev/null; then
+  pm2 restart thyroidai 2>/dev/null || pm2 start "npx tsx server.ts" --name thyroidai --cwd "$THYROID_DIR"
+  echo "✓ ThyroidAI omstartad via PM2"
+else
+  echo "PM2 inte installerat — installerar..."
+  npm install -g pm2 tsx
+  pm2 start "npx tsx server.ts" --name thyroidai --cwd "$THYROID_DIR"
+  pm2 save
+  pm2 startup 2>/dev/null || true
+  echo "✓ ThyroidAI startad via PM2"
+fi
+
+echo "✓ ThyroidAI klar på port 3000"
+THYROID_DEPLOY
+
+echo ""
+
+# ============================================================
+# STEG 2: Installera Paperclip
+# ============================================================
+echo "[2/4] Installerar Paperclip..."
+ssh $SERVER 'bash -s' << 'PAPERCLIP_DEPLOY'
+set -e
+
+PAPERCLIP_DIR="/var/www/paperclip"
+
+# Kolla om redan installerad
+if [ -d "$PAPERCLIP_DIR" ]; then
+  echo "Paperclip redan installerad, uppdaterar..."
+  cd $PAPERCLIP_DIR
+  git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || true
+else
+  echo "Klonar Paperclip..."
+  mkdir -p /var/www
+  git clone https://github.com/paperclipai/paperclip.git $PAPERCLIP_DIR
+  cd $PAPERCLIP_DIR
+fi
+
+# Installera Node.js 20 om saknas
+if ! command -v node &> /dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then
+  echo "Installerar Node.js 20..."
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt-get install -y nodejs
+fi
+
+# Installera pnpm om saknas
+if ! command -v pnpm &> /dev/null; then
+  npm install -g pnpm
+fi
+
+# Installera dependencies
+pnpm install 2>/dev/null || npm install
+
+# Bygg för produktion
+pnpm build 2>/dev/null || npm run build 2>/dev/null || true
+
+# Starta med PM2 på port 3100
+if command -v pm2 &> /dev/null; then
+  pm2 delete paperclip 2>/dev/null || true
+  PORT=3100 pm2 start "pnpm start" --name paperclip --cwd "$PAPERCLIP_DIR" 2>/dev/null || \
+  PORT=3100 pm2 start "npm start" --name paperclip --cwd "$PAPERCLIP_DIR"
+  pm2 save
+  echo "✓ Paperclip startad på port 3100"
+else
+  npm install -g pm2
+  PORT=3100 pm2 start "pnpm start" --name paperclip --cwd "$PAPERCLIP_DIR" 2>/dev/null || \
+  PORT=3100 pm2 start "npm start" --name paperclip --cwd "$PAPERCLIP_DIR"
+  pm2 save
+  pm2 startup 2>/dev/null || true
+  echo "✓ Paperclip startad på port 3100"
+fi
+PAPERCLIP_DEPLOY
+
+echo ""
+
+# ============================================================
+# STEG 3: Nginx reverse proxy — båda subdomänerna
+# ============================================================
+echo "[3/4] Konfigurerar Nginx reverse proxy..."
+ssh $SERVER 'bash -s' << 'NGINX_SETUP'
+set -e
+
+# Installera Nginx om saknas
+if ! command -v nginx &> /dev/null; then
+  apt-get update
+  apt-get install -y nginx
+  systemctl enable nginx
+fi
+
+# --- thyroid.aiupscale.agency → port 3000 ---
+cat > /etc/nginx/sites-available/thyroid.aiupscale.agency << 'NGINX_THYROID'
+server {
+    listen 80;
+    server_name thyroid.aiupscale.agency;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+    }
+}
+NGINX_THYROID
+
+# --- paperclip.aiupscale.agency → port 3100 ---
+cat > /etc/nginx/sites-available/paperclip.aiupscale.agency << 'NGINX_PAPERCLIP'
+server {
+    listen 80;
+    server_name paperclip.aiupscale.agency;
+
+    location / {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+    }
+}
+NGINX_PAPERCLIP
+
+# Aktivera sites
+ln -sf /etc/nginx/sites-available/thyroid.aiupscale.agency /etc/nginx/sites-enabled/
+ln -sf /etc/nginx/sites-available/paperclip.aiupscale.agency /etc/nginx/sites-enabled/
+
+# Testa konfigurationen
+nginx -t
+
+# Reload
+systemctl reload nginx
+echo "✓ Nginx konfigurerad för båda domänerna"
+
+# --- SSL med Let's Encrypt ---
+if ! command -v certbot &> /dev/null; then
+  apt-get install -y certbot python3-certbot-nginx
+fi
+
+echo "Hämtar SSL-certifikat..."
+certbot --nginx -d thyroid.aiupscale.agency --non-interactive --agree-tos --email admin@aiupscale.agency 2>/dev/null || echo "⚠ SSL för thyroid misslyckades — kolla DNS"
+certbot --nginx -d paperclip.aiupscale.agency --non-interactive --agree-tos --email admin@aiupscale.agency 2>/dev/null || echo "⚠ SSL för paperclip misslyckades — kolla DNS"
+
+echo "✓ SSL konfigurerat"
+NGINX_SETUP
+
+echo ""
+
+# ============================================================
+# STEG 4: Verifiera allt
+# ============================================================
+echo "[4/4] Verifierar deploy..."
+ssh $SERVER 'bash -s' << 'VERIFY'
+echo ""
+echo "========================================"
+echo "  DEPLOY STATUS"
+echo "========================================"
+echo ""
+
+# PM2 status
+pm2 list
+
+echo ""
+echo "--- Port-check ---"
+ss -tlnp | grep -E ':3000|:3100|:80|:443' || netstat -tlnp | grep -E ':3000|:3100|:80|:443' 2>/dev/null
+
+echo ""
+echo "--- Test endpoints ---"
+curl -s -o /dev/null -w "ThyroidAI (localhost:3000): %{http_code}\n" http://127.0.0.1:3000/ 2>/dev/null || echo "ThyroidAI: ej nåbar"
+curl -s -o /dev/null -w "Paperclip (localhost:3100): %{http_code}\n" http://127.0.0.1:3100/ 2>/dev/null || echo "Paperclip: ej nåbar"
+
+echo ""
+echo "========================================"
+echo "  KLART!"
+echo "========================================"
+echo ""
+echo "  ThyroidAI:  https://thyroid.aiupscale.agency"
+echo "  Paperclip:  https://paperclip.aiupscale.agency"
+echo "  n8n:        https://app.aiupscale.agency"
+echo ""
+echo "  VIKTIGT: Se till att DNS för paperclip.aiupscale.agency"
+echo "  pekar på 72.60.36.92 (A-record i Hostinger DNS)"
+echo ""
+VERIFY
+
+echo ""
+echo "================================================"
+echo "  Deploy-skript klart!"
+echo "================================================"

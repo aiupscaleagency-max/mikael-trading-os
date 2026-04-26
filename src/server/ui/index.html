@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mikael Trading OS</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+:root{--bg:#0a0e17;--card:#111827;--card2:#0f1520;--border:#1e293b;--text:#e2e8f0;--dim:#64748b;--green:#10b981;--red:#ef4444;--blue:#3b82f6;--yellow:#f59e0b;--purple:#8b5cf6;--cyan:#06b6d4}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:'SF Mono',Monaco,'Cascadia Code','Courier New',monospace;font-size:13px;line-height:1.5;overflow-x:hidden}
+
+/* Header */
+.header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--card);height:48px}
+.header h1{font-size:14px;font-weight:700;letter-spacing:1.5px;color:var(--cyan)}
+.header-controls{display:flex;gap:8px;align-items:center}
+.mode-badge{padding:3px 10px;border-radius:3px;font-size:10px;font-weight:700;text-transform:uppercase}
+.mode-badge.paper{background:#1e3a2f;color:var(--green)}
+.mode-badge.live{background:#3a1e1e;color:var(--red)}
+.btn{padding:5px 14px;border:1px solid var(--border);background:transparent;color:var(--dim);font-family:inherit;font-size:11px;cursor:pointer;border-radius:4px;transition:all .15s}
+.btn:hover{color:var(--text);border-color:var(--dim)}
+.btn-kill{border-color:var(--red);color:var(--red)}
+.btn-kill:hover,.btn-kill.active{background:var(--red);color:#fff}
+select{background:var(--card2);color:var(--text);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-family:inherit;font-size:11px;cursor:pointer}
+select:focus{outline:1px solid var(--blue)}
+
+/* Layout */
+.main{display:grid;grid-template-columns:1fr 320px;grid-template-rows:auto 1fr;height:calc(100vh - 48px)}
+@media(max-width:1100px){.main{grid-template-columns:1fr;grid-template-rows:auto auto 1fr}}
+
+/* Top bar (symbol, interval, indicators) */
+.chart-toolbar{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--card);flex-wrap:wrap}
+.symbol-tabs{display:flex;gap:2px}
+.symbol-tab{padding:5px 14px;border:1px solid var(--border);background:transparent;color:var(--dim);font-family:inherit;font-size:12px;cursor:pointer;border-radius:4px;transition:all .15s}
+.symbol-tab:hover{color:var(--text)}
+.symbol-tab.active{background:var(--blue);border-color:var(--blue);color:#fff}
+.tf-tabs{display:flex;gap:2px;margin-left:12px}
+.tf-tab{padding:4px 10px;border:none;background:transparent;color:var(--dim);font-family:inherit;font-size:11px;cursor:pointer;border-radius:3px}
+.tf-tab:hover{color:var(--text)}
+.tf-tab.active{background:var(--border);color:var(--text)}
+.indicator-toggles{display:flex;gap:6px;margin-left:auto}
+.ind-toggle{padding:3px 8px;border:1px solid var(--border);background:transparent;color:var(--dim);font-family:inherit;font-size:10px;cursor:pointer;border-radius:3px}
+.ind-toggle.active{border-color:var(--yellow);color:var(--yellow)}
+.price-display{margin-left:12px;font-size:18px;font-weight:700}
+.price-change{font-size:12px;margin-left:8px}
+.price-change.up{color:var(--green)}
+.price-change.down{color:var(--red)}
+
+/* Chart */
+.chart-area{position:relative;background:var(--bg);min-height:400px}
+#chart-container{width:100%;height:100%}
+
+/* Right panel */
+.right-panel{border-left:1px solid var(--border);background:var(--card);display:flex;flex-direction:column;overflow:hidden}
+.panel-tabs{display:flex;border-bottom:1px solid var(--border)}
+.panel-tab{flex:1;padding:8px;text-align:center;font-size:11px;color:var(--dim);cursor:pointer;border:none;background:transparent;font-family:inherit;border-bottom:2px solid transparent}
+.panel-tab:hover{color:var(--text)}
+.panel-tab.active{color:var(--cyan);border-bottom-color:var(--cyan)}
+.panel-content{flex:1;overflow-y:auto;padding:12px}
+
+/* Cards inside panels */
+.info-card{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px}
+.info-card h3{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:6px}
+.stat-row{display:flex;justify-content:space-between;padding:3px 0;font-size:12px}
+.stat-label{color:var(--dim)}
+.stat-value{font-weight:600}
+.stat-value.up{color:var(--green)}
+.stat-value.down{color:var(--red)}
+
+/* Positions */
+.position-card{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:6px}
+.position-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.position-symbol{font-weight:700;font-size:13px}
+.position-badge{padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700}
+.position-badge.long{background:#1e3a2f;color:var(--green)}
+.position-badge.short{background:#3a1e1e;color:var(--red)}
+.position-detail{font-size:11px;color:var(--dim)}
+
+/* Decisions */
+.decision-card{border-left:3px solid var(--border);padding:8px 10px;margin-bottom:6px;background:var(--card2);border-radius:0 6px 6px 0;font-size:11px}
+.decision-card.buy{border-left-color:var(--green)}
+.decision-card.sell{border-left-color:var(--red)}
+.decision-card.hold{border-left-color:var(--dim)}
+.decision-time{color:var(--dim);font-size:10px}
+.decision-text{margin-top:4px;max-height:80px;overflow:hidden;color:var(--text);white-space:pre-wrap}
+.badge{display:inline-block;padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700;text-transform:uppercase}
+.badge.buy{background:#1e3a2f;color:var(--green)}
+.badge.sell{background:#3a1e1e;color:var(--red)}
+.badge.hold{background:#1e293b;color:var(--dim)}
+
+/* Team */
+.team-card{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px}
+.team-card h3{font-size:10px;color:var(--purple);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.team-card .content{font-size:11px;color:var(--dim);line-height:1.6}
+
+/* Ticker strip */
+.ticker-strip{display:flex;gap:16px;padding:6px 16px;border-top:1px solid var(--border);background:var(--card);overflow-x:auto;flex-shrink:0}
+.ticker-item{display:flex;align-items:center;gap:6px;font-size:11px;white-space:nowrap}
+.ticker-name{color:var(--dim)}
+.ticker-price{font-weight:600}
+.dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+.dot.green{background:var(--green)}
+.dot.red{background:var(--red)}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <h1>MIKAEL TRADING OS</h1>
+  <div class="header-controls">
+    <select id="broker-select" onchange="switchBroker(this.value)"></select>
+    <span id="mode-badge" class="mode-badge paper">PAPER</span>
+    <button class="btn btn-kill" id="kill-btn" onclick="toggleKill()">KILL</button>
+    <span id="daily-pnl" style="font-size:12px;font-weight:700">PnL: --</span>
+  </div>
+</div>
+
+<!-- CHART TOOLBAR -->
+<div class="main">
+<div class="chart-toolbar">
+  <div class="symbol-tabs" id="symbol-tabs"></div>
+  <div class="tf-tabs" id="tf-tabs">
+    <button class="tf-tab" data-tf="1m">1m</button>
+    <button class="tf-tab" data-tf="5m">5m</button>
+    <button class="tf-tab" data-tf="15m">15m</button>
+    <button class="tf-tab active" data-tf="1h">1H</button>
+    <button class="tf-tab" data-tf="4h">4H</button>
+    <button class="tf-tab" data-tf="1d">1D</button>
+  </div>
+  <div class="indicator-toggles">
+    <button class="ind-toggle active" data-ind="sma20" onclick="toggleIndicator('sma20',this)">SMA20</button>
+    <button class="ind-toggle" data-ind="sma50" onclick="toggleIndicator('sma50',this)">SMA50</button>
+    <button class="ind-toggle" data-ind="ema20" onclick="toggleIndicator('ema20',this)">EMA20</button>
+    <button class="ind-toggle" data-ind="volume" onclick="toggleIndicator('volume',this)">VOL</button>
+  </div>
+  <span id="current-price" class="price-display">--</span>
+  <span id="current-change" class="price-change">--</span>
+</div>
+
+<!-- CHART -->
+<div class="chart-area">
+  <div id="chart-container"></div>
+</div>
+
+<!-- RIGHT PANEL -->
+<div class="right-panel">
+  <div class="panel-tabs">
+    <button class="panel-tab active" onclick="showPanel('portfolio',this)">Portfolio</button>
+    <button class="panel-tab" onclick="showPanel('trades',this)">Trades</button>
+    <button class="panel-tab" onclick="showPanel('team',this)">Team</button>
+    <button class="panel-tab" onclick="showPanel('log',this)">Log</button>
+  </div>
+
+  <!-- Portfolio panel -->
+  <div class="panel-content" id="panel-portfolio">
+    <div class="info-card">
+      <h3>Account</h3>
+      <div class="stat-row"><span class="stat-label">Total Value</span><span id="total-val" class="stat-value">--</span></div>
+      <div class="stat-row"><span class="stat-label">Daglig PnL</span><span id="pnl-val" class="stat-value">--</span></div>
+      <div class="stat-row"><span class="stat-label">Positioner</span><span id="pos-count" class="stat-value">--</span></div>
+      <div class="stat-row"><span class="stat-label">Exponering</span><span id="exposure-val" class="stat-value">--</span></div>
+    </div>
+    <h3 style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:12px 0 6px">Positioner</h3>
+    <div id="positions-list"></div>
+  </div>
+
+  <!-- Trades panel -->
+  <div class="panel-content" id="panel-trades" style="display:none">
+    <div id="trades-list"></div>
+  </div>
+
+  <!-- Team panel (9 agents) -->
+  <div class="panel-content" id="panel-team" style="display:none">
+    <div class="team-card" id="team-macro">
+      <h3>1. Makro-Analytiker</h3>
+      <div class="content">Inväntar analys...</div>
+    </div>
+    <div class="team-card" id="team-technical">
+      <h3>2. Teknisk Analytiker</h3>
+      <div class="content">Inväntar analys...</div>
+    </div>
+    <div class="team-card" id="team-sentiment">
+      <h3>3. Sentiment-Analytiker</h3>
+      <div class="content">Inväntar analys...</div>
+    </div>
+    <div class="team-card" id="team-risk" style="border-left:3px solid var(--red)">
+      <h3>4. Risk-Analytiker</h3>
+      <div class="content">Inväntar analys...</div>
+    </div>
+    <div class="team-card" id="team-quant" style="border-left:3px solid var(--blue)">
+      <h3>5. Kvant-Analytiker</h3>
+      <div class="content">Inväntar analys...</div>
+    </div>
+    <div class="team-card" id="team-options" style="border-left:3px solid var(--yellow)">
+      <h3>6. Options-Strateg</h3>
+      <div class="content">Inväntar analys...</div>
+    </div>
+    <div class="team-card" id="team-portfolio" style="border-left:3px solid var(--green)">
+      <h3>7. Portfölj-Strateg</h3>
+      <div class="content">Inväntar analys...</div>
+    </div>
+    <div class="team-card" id="team-execution" style="border-left:3px solid var(--cyan)">
+      <h3>8. Exekverings-Optimerare</h3>
+      <div class="content">Inväntar analys...</div>
+    </div>
+    <div class="team-card" id="team-advisor" style="border-left:3px solid var(--purple);background:linear-gradient(135deg,var(--card2),#1a1035)">
+      <h3>9. Claude Advisor</h3>
+      <div class="content">Inväntar analys...</div>
+    </div>
+  </div>
+
+  <!-- Log panel -->
+  <div class="panel-content" id="panel-log" style="display:none">
+    <div id="decisions-list"></div>
+  </div>
+</div>
+</div>
+
+<!-- TICKER STRIP -->
+<div class="ticker-strip" id="ticker-strip"></div>
+
+<script>
+const API = window.location.origin;
+let chart, candleSeries, volumeSeries;
+let sma20Line, sma50Line, ema20Line;
+let activeSymbol = 'BTCUSDT';
+let activeInterval = '1h';
+let killActive = false;
+let indicators = { sma20: true, sma50: false, ema20: false, volume: false };
+
+const SYMBOLS = ['BTCUSDT','ETHUSDT','SOLUSDT','TSLA','NVDA','AAPL'];
+const COLORS = {
+  up: '#10b981', down: '#ef4444',
+  sma20: '#f59e0b', sma50: '#8b5cf6', ema20: '#06b6d4',
+  volume: 'rgba(59,130,246,0.3)', volumeDown: 'rgba(239,68,68,0.2)'
+};
+
+// ── Chart setup ──
+function initChart() {
+  const container = document.getElementById('chart-container');
+  chart = LightweightCharts.createChart(container, {
+    layout: { background: { color: '#0a0e17' }, textColor: '#64748b', fontFamily: "'SF Mono',Monaco,monospace", fontSize: 11 },
+    grid: { vertLines: { color: '#1e293b22' }, horzLines: { color: '#1e293b22' } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal, vertLine: { color: '#3b82f644', width: 1 }, horzLine: { color: '#3b82f644', width: 1 } },
+    rightPriceScale: { borderColor: '#1e293b', scaleMargins: { top: 0.1, bottom: 0.2 } },
+    timeScale: { borderColor: '#1e293b', timeVisible: true, secondsVisible: false },
+    handleScroll: true, handleScale: true,
+  });
+
+  candleSeries = chart.addCandlestickSeries({
+    upColor: COLORS.up, downColor: COLORS.down,
+    borderUpColor: COLORS.up, borderDownColor: COLORS.down,
+    wickUpColor: COLORS.up, wickDownColor: COLORS.down,
+  });
+
+  volumeSeries = chart.addHistogramSeries({
+    priceFormat: { type: 'volume' },
+    priceScaleId: 'volume',
+  });
+  chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+  volumeSeries.applyOptions({ visible: indicators.volume });
+
+  sma20Line = chart.addLineSeries({ color: COLORS.sma20, lineWidth: 1, title: 'SMA20', visible: indicators.sma20 });
+  sma50Line = chart.addLineSeries({ color: COLORS.sma50, lineWidth: 1, title: 'SMA50', visible: indicators.sma50 });
+  ema20Line = chart.addLineSeries({ color: COLORS.ema20, lineWidth: 1, title: 'EMA20', visible: indicators.ema20 });
+
+  new ResizeObserver(entries => {
+    const { width, height } = entries[0].contentRect;
+    chart.applyOptions({ width, height });
+  }).observe(container);
+}
+
+// ── Beräkna SMA/EMA inline ──
+function calcSMA(data, period) {
+  const result = [];
+  for (let i = period - 1; i < data.length; i++) {
+    let sum = 0;
+    for (let j = 0; j < period; j++) sum += data[i - j].close;
+    result.push({ time: data[i].time, value: sum / period });
+  }
+  return result;
+}
+
+function calcEMA(data, period) {
+  const result = [];
+  const k = 2 / (period + 1);
+  let ema = 0;
+  for (let i = 0; i < data.length; i++) {
+    if (i < period) {
+      ema += data[i].close / period;
+      if (i === period - 1) result.push({ time: data[i].time, value: ema });
+    } else {
+      ema = data[i].close * k + ema * (1 - k);
+      result.push({ time: data[i].time, value: ema });
+    }
+  }
+  return result;
+}
+
+// ── Ladda chart data ──
+async function loadChart() {
+  const resp = await fetchJson(`/api/klines?symbol=${activeSymbol}&interval=${activeInterval}&limit=300`);
+  if (!resp || !resp.klines || resp.klines.length === 0) return;
+
+  const candles = resp.klines.map(k => ({
+    time: Math.floor(k.openTime / 1000),
+    open: k.open, high: k.high, low: k.low, close: k.close
+  }));
+
+  const volumes = resp.klines.map(k => ({
+    time: Math.floor(k.openTime / 1000),
+    value: k.volume,
+    color: k.close >= k.open ? COLORS.volume : COLORS.volumeDown
+  }));
+
+  candleSeries.setData(candles);
+  volumeSeries.setData(volumes);
+
+  sma20Line.setData(calcSMA(candles, 20));
+  sma50Line.setData(calcSMA(candles, 50));
+  ema20Line.setData(calcEMA(candles, 20));
+
+  // Pris-display
+  const last = candles[candles.length - 1];
+  const first = candles[0];
+  if (last && first) {
+    const isStock = !activeSymbol.includes('USDT');
+    const decimals = isStock ? 2 : (last.close > 100 ? 2 : 4);
+    document.getElementById('current-price').textContent = `$${last.close.toFixed(decimals)}`;
+    const changePct = ((last.close - first.close) / first.close * 100);
+    const changeEl = document.getElementById('current-change');
+    changeEl.textContent = `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`;
+    changeEl.className = 'price-change ' + (changePct >= 0 ? 'up' : 'down');
+  }
+
+  chart.timeScale().fitContent();
+}
+
+// ── Symbol tabs ──
+function buildSymbolTabs() {
+  const cont = document.getElementById('symbol-tabs');
+  cont.innerHTML = SYMBOLS.map(s =>
+    `<button class="symbol-tab ${s === activeSymbol ? 'active' : ''}" onclick="selectSymbol('${s}')">${s.replace('USDT','')}</button>`
+  ).join('');
+}
+
+function selectSymbol(sym) {
+  activeSymbol = sym;
+  buildSymbolTabs();
+  loadChart();
+}
+
+// ── Timeframe tabs ──
+document.getElementById('tf-tabs').addEventListener('click', e => {
+  const btn = e.target.closest('.tf-tab');
+  if (!btn) return;
+  document.querySelectorAll('.tf-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  activeInterval = btn.dataset.tf;
+  loadChart();
+});
+
+// ── Indicator toggles ──
+function toggleIndicator(name, btn) {
+  indicators[name] = !indicators[name];
+  btn.classList.toggle('active');
+  const map = { sma20: sma20Line, sma50: sma50Line, ema20: ema20Line, volume: volumeSeries };
+  if (map[name]) map[name].applyOptions({ visible: indicators[name] });
+}
+
+// ── Panels ──
+function showPanel(name, btn) {
+  document.querySelectorAll('.panel-content').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('panel-' + name).style.display = 'block';
+  btn.classList.add('active');
+}
+
+// ── Data loading ──
+async function fetchJson(path) {
+  try { return await (await fetch(API + path)).json(); } catch { return null; }
+}
+
+function fmt(n, d=2) { return n != null ? Number(n).toFixed(d) : '--'; }
+function pnlClass(n) { return n > 0 ? 'up' : n < 0 ? 'down' : ''; }
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function refreshData() {
+  // Status
+  const status = await fetchJson('/api/status');
+  if (status) {
+    let totalValue = 0, totalPositions = 0, totalExposure = 0;
+    let posHtml = '', tickerHtml = '';
+
+    for (const [name, data] of Object.entries(status)) {
+      const d = data;
+      if (d.account) totalValue += d.account.totalValueUsdt || 0;
+      if (d.positions) {
+        for (const p of d.positions) {
+          totalPositions++;
+          const val = p.quantity * p.currentPrice;
+          totalExposure += val;
+          const pnl = p.unrealizedPnlUsdt || 0;
+          posHtml += `<div class="position-card">
+            <div class="position-header">
+              <span class="position-symbol">${p.symbol}</span>
+              <span class="position-badge long">${name}</span>
+            </div>
+            <div class="stat-row"><span class="position-detail">Qty</span><span>${fmt(p.quantity,4)}</span></div>
+            <div class="stat-row"><span class="position-detail">Entry</span><span>$${fmt(p.avgEntryPrice)}</span></div>
+            <div class="stat-row"><span class="position-detail">Current</span><span>$${fmt(p.currentPrice)}</span></div>
+            <div class="stat-row"><span class="position-detail">PnL</span><span class="stat-value ${pnlClass(pnl)}">$${fmt(pnl)}</span></div>
+          </div>`;
+
+          tickerHtml += `<div class="ticker-item">
+            <span class="dot ${pnl >= 0 ? 'green' : 'red'}"></span>
+            <span class="ticker-name">${p.symbol}</span>
+            <span class="ticker-price">$${fmt(p.currentPrice)}</span>
+            <span class="${pnlClass(pnl)}">${fmt(pnl)}</span>
+          </div>`;
+        }
+      }
+    }
+
+    document.getElementById('total-val').textContent = `$${fmt(totalValue,0)}`;
+    document.getElementById('pos-count').textContent = totalPositions;
+    document.getElementById('exposure-val').textContent = `$${fmt(totalExposure,0)}`;
+    document.getElementById('positions-list').innerHTML = posHtml || '<div style="color:var(--dim);font-size:11px">Inga positioner</div>';
+    document.getElementById('ticker-strip').innerHTML = tickerHtml || '<div class="ticker-item"><span class="ticker-name">Inga öppna positioner</span></div>';
+  }
+
+  // State
+  const state = await fetchJson('/api/state');
+  if (state) {
+    killActive = state.killSwitchActive;
+    const killBtn = document.getElementById('kill-btn');
+    killBtn.classList.toggle('active', killActive);
+    killBtn.textContent = killActive ? 'KILL ON' : 'KILL';
+    const pnl = state.dailyRealizedPnlUsdt || 0;
+    document.getElementById('pnl-val').textContent = `$${fmt(pnl)}`;
+    document.getElementById('pnl-val').className = `stat-value ${pnlClass(pnl)}`;
+    document.getElementById('daily-pnl').textContent = `PnL: $${fmt(pnl)}`;
+    document.getElementById('daily-pnl').style.color = pnl >= 0 ? '#10b981' : '#ef4444';
+  }
+
+  // Decisions
+  const decisions = await fetchJson('/api/decisions?limit=30');
+  if (decisions && decisions.length > 0) {
+    // Trades panel (non-hold)
+    const trades = decisions.filter(d => d.action !== 'hold').reverse();
+    document.getElementById('trades-list').innerHTML = trades.length === 0
+      ? '<div style="color:var(--dim)">Inga trades ännu</div>'
+      : trades.map(t => `<div class="decision-card ${t.action}">
+          <div class="decision-time"><span class="badge ${t.action}">${t.action}</span> ${t.symbol || '?'} — ${new Date(t.timestamp).toLocaleString('sv-SE')}</div>
+          <div class="decision-text">${escHtml((t.reasoning || '').slice(0, 200))}</div>
+        </div>`).join('');
+
+    // Log panel (all)
+    document.getElementById('decisions-list').innerHTML = decisions.slice().reverse().map(d => `
+      <div class="decision-card ${d.action}">
+        <div class="decision-time"><span class="badge ${d.action}">${d.action}</span> ${d.symbol || ''} ${new Date(d.timestamp).toLocaleTimeString('sv-SE')}</div>
+        <div class="decision-text">${escHtml((d.reasoning || '').slice(0, 300))}</div>
+      </div>`).join('');
+  }
+}
+
+// ── Broker selector ──
+async function loadBrokers() {
+  const data = await fetchJson('/api/brokers');
+  if (!data) return;
+  const sel = document.getElementById('broker-select');
+  sel.innerHTML = data.brokers.map(b =>
+    `<option value="${b.name}" ${b.active ? 'selected' : ''}>${b.name.toUpperCase()} (${b.mode})</option>`
+  ).join('');
+  const active = data.brokers.find(b => b.active);
+  if (active) {
+    const badge = document.getElementById('mode-badge');
+    badge.textContent = active.mode.toUpperCase();
+    badge.className = 'mode-badge ' + (active.mode === 'paper' ? 'paper' : 'live');
+  }
+}
+
+async function switchBroker(name) {
+  await fetch(API + '/api/active-broker', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ broker: name }),
+  });
+  loadBrokers(); loadChart(); refreshData();
+}
+
+async function toggleKill() {
+  if (!killActive && !confirm('Aktivera kill-switch? All handel stoppas.')) return;
+  await fetch(API + '/api/kill-switch', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ active: !killActive }),
+  });
+  refreshData();
+}
+
+// ── SSE ──
+function connectSSE() {
+  const es = new EventSource(API + '/api/events');
+  es.addEventListener('turn-complete', () => { refreshData(); loadChart(); });
+  es.addEventListener('trade', () => refreshData());
+  es.addEventListener('broker-changed', () => { loadBrokers(); loadChart(); refreshData(); });
+  es.addEventListener('kill-switch', () => refreshData());
+  es.addEventListener('team-reports', (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.macro) {
+        const m = data.macro;
+        document.querySelector('#team-macro .content').innerHTML =
+          `<strong>Regim: ${m.regime?.toUpperCase()}</strong> (${m.confidence})<br>` +
+          `${(m.keyFactors || []).join('<br>')}<br>` +
+          `Olja: ${m.oilSummary || '–'}<br>VIX: ${m.vixLevel || '–'}<br>` +
+          `Rekommendation: ${m.recommendation || '–'}`;
+      }
+      if (data.technical) {
+        const t = data.technical;
+        document.querySelector('#team-technical .content').innerHTML =
+          `<strong>Top pick: ${t.topPick || 'Ingen'}</strong><br>` +
+          (t.analyses || []).map(a =>
+            `${a.symbol}: ${a.bias} (score ${a.score}) — ${(a.keySignals||[]).slice(0,3).join(', ')}`
+          ).join('<br>');
+      }
+      if (data.sentiment) {
+        const s = data.sentiment;
+        document.querySelector('#team-sentiment .content').innerHTML =
+          `<strong>${s.overallSentiment}</strong>${s.contrarySignal ? ' CONTRARY' : ''}<br>` +
+          `${(s.topNarratives || []).join('<br>')}<br>` +
+          `Politiker: ${s.politicianActivity || '–'}`;
+      }
+      if (data.risk) {
+        const r = data.risk;
+        document.querySelector('#team-risk .content').innerHTML =
+          `<strong>Risk: ${(r.riskLevel||'?').toUpperCase()}</strong> | Heat: ${r.portfolioHeatPct||0}%<br>` +
+          `Korrelation: ${r.correlationRisk||'?'} — ${r.correlationDetails||''}<br>` +
+          `Max drawdown: ${r.maxDrawdownScenario?.description||'–'}<br>` +
+          `${(r.warnings||[]).map(w=>'<span style="color:var(--red)">'+w+'</span>').join('<br>')}<br>` +
+          `Rek: ${r.recommendation||'–'}`;
+      }
+      if (data.quant) {
+        const q = data.quant;
+        document.querySelector('#team-quant .content').innerHTML =
+          `<strong>Vol: ${q.volatilityRegime}</strong> | Sharpe: ${q.sharpeEstimate} | WR: ${((q.winRateFromHistory||0)*100).toFixed(0)}%<br>` +
+          (q.symbolScores||[]).map(s =>
+            `${s.symbol}: trend=${s.trendScore} mr=${s.meanReversionScore} ${s.regime}`
+          ).join('<br>') +
+          `<br>Rek: ${q.recommendation||'–'}`;
+      }
+      if (data.options) {
+        const o = data.options;
+        if (!o.applicable) {
+          document.querySelector('#team-options .content').innerHTML = '<span style="color:var(--dim)">Ej tillämpbar (broker utan options)</span>';
+        } else {
+          document.querySelector('#team-options .content').innerHTML =
+            `<strong>IV-miljö: ${o.overallIvEnvironment}</strong><br>` +
+            (o.ivAssessments||[]).map(iv =>
+              `${iv.symbol}: IV=${iv.ivRank} — ${iv.optimalStrategy} ${iv.strategyDetails||''}`
+            ).join('<br>') +
+            `<br>Rek: ${o.recommendation||'–'}`;
+        }
+      }
+      if (data.portfolio) {
+        const p = data.portfolio;
+        document.querySelector('#team-portfolio .content').innerHTML =
+          `<strong>Diversifiering: ${p.diversificationScore}/100</strong> | Rebalans: ${p.rebalancingNeeded?'JA':'Nej'}<br>` +
+          `Cash: ${p.cashAllocationPct||0}%<br>` +
+          (p.sectorConcentration||[]).map(s => `${s.sector}: ${s.weightPct}%`).join(' | ') +
+          `<br>Rek: ${p.recommendation||'–'}`;
+      }
+      if (data.execution) {
+        const ex = data.execution;
+        document.querySelector('#team-execution .content').innerHTML =
+          `<strong>Urgency: ${(ex.urgency||'?').toUpperCase()}</strong><br>` +
+          (ex.tradeOptimizations||[]).map(t =>
+            `${t.symbol}: ${t.orderType} ${t.timing} ${t.executionStyle} (${t.dcaSplits} splits)`
+          ).join('<br>') +
+          `<br>${ex.generalAdvice||'–'}`;
+      }
+      if (data.advisor) {
+        const a = data.advisor;
+        document.querySelector('#team-advisor .content').innerHTML =
+          `<strong>Outlook: ${(a.strategicOutlook||'?').toUpperCase()}</strong> | Cykel: ${a.marketCyclePhase}<br>` +
+          `<span style="color:var(--cyan)">Insikter:</span> ${(a.keyInsights||[]).join(' | ')}<br>` +
+          (a.blindSpots?.length ? `<span style="color:var(--yellow)">Blinda fläckar:</span> ${a.blindSpots.join(' | ')}<br>` : '') +
+          (a.behavioralWarnings?.length ? `<span style="color:var(--red)">Bias-varning:</span> ${a.behavioralWarnings.join(' | ')}<br>` : '') +
+          `<span style="color:var(--purple)">Contrarian:</span> ${a.contrarian||'–'}<br>` +
+          `Portföljråd: ${a.portfolioAdvice||'–'}`;
+      }
+      if (data.timing) {
+        const t = data.timing;
+        const badge = document.createElement('div');
+        badge.style.cssText = 'text-align:center;padding:4px;font-size:10px;color:var(--dim);border-top:1px solid var(--border);margin-top:8px';
+        badge.textContent = `Specialists: ${(t.specialists/1000).toFixed(1)}s | Exec: ${(t.execution/1000).toFixed(1)}s | Head: ${(t.headTrader/1000).toFixed(1)}s | Total: ${(t.total/1000).toFixed(1)}s`;
+        const panel = document.getElementById('panel-team');
+        const existing = panel.querySelector('.timing-badge');
+        if (existing) existing.remove();
+        badge.className = 'timing-badge';
+        panel.appendChild(badge);
+      }
+    } catch {}
+  });
+  es.onerror = () => setTimeout(connectSSE, 5000);
+}
+
+// ── Init ──
+initChart();
+buildSymbolTabs();
+loadBrokers();
+loadChart();
+refreshData();
+setInterval(() => { refreshData(); loadChart(); }, 30000);
+connectSSE();
+</script>
+</body>
+</html>
