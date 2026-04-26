@@ -1,0 +1,22 @@
+services:
+  trading-os:
+    build: .
+    container_name: trading-os
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.trading-os.rule=Host(`trading.aiupscale.agency`)
+      - traefik.http.routers.trading-os.tls=true
+      - traefik.http.routers.trading-os.entrypoints=web,websecure
+      - traefik.http.routers.trading-os.tls.certresolver=mytlschallenge
+      - traefik.http.services.trading-os.loadbalancer.server.port=3939
+    networks:
+      - n8n_default
+
+networks:
+  n8n_default:
+    external: true
