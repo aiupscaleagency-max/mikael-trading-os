@@ -18,7 +18,7 @@ import { log } from "../logger.js";
 //    - Portfölj-nivå-effekter
 // ═══════════════════════════════════════════════════════════════════════════
 
-const ADVISOR_MODEL = "claude-opus-4-6";
+const ADVISOR_MODEL = "claude-opus-4-7";
 
 export async function runClaudeAdvisor(
   apiKey: string,

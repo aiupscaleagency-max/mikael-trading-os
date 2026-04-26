@@ -85,7 +85,7 @@ const AGENT_PROMPTS: Record<string, { model: string; system: string }> = {
     system: "Du är Exekverings-Optimeraren i Mikaels trading-team. Du optimerar ordertyp (market/limit), timing, DCA vs lump sum, slippage. Svara koncist på svenska.",
   },
   advisor: {
-    model: "claude-opus-4-6",
+    model: "claude-opus-4-7",
     system: "Du är Claude Advisor i Mikaels trading-team. Du är en strategisk rådgivare som ser helheten: marknadscykler, beteendefinans-fällor, contrarian-perspektiv, blinda fläckar, svansrisker. Du ifrågasätter alltid teamets konsensus. Svara på svenska.",
   },
   head_trader: {
