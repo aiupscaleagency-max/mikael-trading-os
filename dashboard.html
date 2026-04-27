@@ -495,6 +495,64 @@ body.app-state-auth .fc-panel{display:none !important}
 .user-menu .um-logout{color:var(--red)}
 .user-menu .um-divider{height:1px;background:var(--border);margin:4px 0}
 .user-wrap{position:relative}
+
+/* ═══ ONBOARDING WIZARD (efter signup — kopplar API-nycklar) ═══ */
+.onboard-screen{display:none;min-height:100vh;background:radial-gradient(circle at 50% 30%, rgba(6,182,212,.08), transparent 50%),var(--bg);align-items:center;justify-content:center;padding:20px}
+body.app-state-onboard .onboard-screen{display:flex !important}
+body.app-state-onboard .app-shell,
+body.app-state-onboard header,
+body.app-state-onboard .ticker-strip,
+body.app-state-onboard .fc-toggle,
+body.app-state-onboard .fc-panel{display:none !important}
+
+.onboard-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:32px;width:100%;max-width:560px;box-shadow:0 16px 48px rgba(0,0,0,.5)}
+.onboard-card .ob-brand{font-size:16px;font-weight:800;color:var(--cyan);text-align:center;letter-spacing:.7px;margin-bottom:6px;text-shadow:0 0 16px rgba(6,182,212,.4)}
+.onboard-card h2{font-size:20px;font-weight:800;color:#fff;text-align:center;margin-bottom:6px;letter-spacing:.3px}
+.onboard-card .ob-tag{text-align:center;color:var(--label);font-size:13px;margin-bottom:24px;line-height:1.5}
+.onboard-progress{display:flex;gap:6px;margin-bottom:24px}
+.onboard-progress .op-dot{flex:1;height:5px;border-radius:3px;background:var(--card2);transition:background .2s}
+.onboard-progress .op-dot.done{background:var(--green)}
+.onboard-progress .op-dot.active{background:var(--cyan);box-shadow:0 0 8px rgba(6,182,212,.5)}
+
+.ob-step{display:none}
+.ob-step.active{display:block}
+.ob-step .ob-icon{font-size:36px;text-align:center;margin-bottom:8px}
+.ob-step h3{font-size:16px;font-weight:800;color:#fff;text-align:center;margin-bottom:6px}
+.ob-step .ob-info{background:rgba(59,130,246,.08);border-left:3px solid var(--blue);padding:10px 14px;border-radius:4px;font-size:12px;color:var(--label);line-height:1.6;margin-bottom:14px}
+.ob-step .ob-info b{color:#fff}
+.ob-step .ob-info a{color:var(--cyan);text-decoration:none}
+.ob-step .ob-info a:hover{text-decoration:underline}
+.ob-step .ob-required{display:inline-block;font-size:9px;background:var(--red);color:#fff;padding:1px 6px;border-radius:3px;font-weight:700;letter-spacing:.4px;margin-left:8px;vertical-align:middle}
+.ob-step .ob-optional{display:inline-block;font-size:9px;background:var(--card2);color:var(--dim);padding:1px 6px;border-radius:3px;font-weight:600;letter-spacing:.4px;margin-left:8px;vertical-align:middle;border:1px solid var(--border)}
+.ob-step label{display:block;font-size:11px;color:var(--label);font-weight:700;margin-bottom:5px;letter-spacing:.3px;text-transform:uppercase}
+.ob-step input{width:100%;padding:11px 12px;background:var(--card2);color:var(--text);border:1.5px solid var(--border);border-radius:5px;font-size:13px;outline:none;margin-bottom:12px;font-family:'SF Mono',monospace}
+.ob-step input:focus{border-color:var(--cyan)}
+.ob-step .ob-hint{font-size:10px;color:var(--dim);margin-top:-8px;margin-bottom:10px;line-height:1.5}
+.ob-step .ob-status{padding:8px 12px;border-radius:4px;font-size:11px;margin-bottom:12px;display:none}
+.ob-step .ob-status.ok{display:block;background:rgba(16,185,129,.1);border:1px solid var(--green);color:var(--green)}
+.ob-step .ob-status.err{display:block;background:rgba(239,68,68,.1);border:1px solid var(--red);color:var(--red)}
+
+.onboard-actions{display:flex;gap:8px;margin-top:18px}
+.onboard-actions button{flex:1;padding:12px;border-radius:6px;font-size:13px;font-weight:800;letter-spacing:.4px;cursor:pointer;border:none;text-transform:uppercase}
+.onboard-actions .ob-back{background:var(--card2);color:var(--label);border:1.5px solid var(--border)}
+.onboard-actions .ob-back:hover{color:var(--text);border-color:var(--cyan)}
+.onboard-actions .ob-skip{background:transparent;color:var(--dim);border:1.5px solid var(--border)}
+.onboard-actions .ob-skip:hover{color:var(--text)}
+.onboard-actions .ob-next{background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;flex:2}
+.onboard-actions .ob-next:hover{filter:brightness(1.1)}
+.onboard-actions .ob-finish{background:var(--green);color:#000;flex:2}
+.onboard-actions .ob-finish:hover{filter:brightness(1.1)}
+
+.onboard-footer{margin-top:14px;text-align:center;font-size:10px;color:var(--dim);line-height:1.5}
+.onboard-footer code{background:var(--card2);padding:1px 5px;border-radius:2px;color:var(--cyan);font-size:10px}
+
+/* SETUP-BANNER på dashboard om nycklar saknas */
+.setup-banner{margin:10px;padding:12px 16px;background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(245,158,11,.05));border:1px solid var(--yellow);border-radius:6px;display:flex;align-items:center;gap:12px;font-size:12px}
+.setup-banner .sb-ico{font-size:20px}
+.setup-banner b{color:var(--yellow)}
+.setup-banner .sb-spacer{flex:1}
+.setup-banner button{padding:7px 14px;background:var(--yellow);color:#000;border:none;border-radius:4px;font-weight:800;font-size:11px;cursor:pointer;letter-spacing:.4px;text-transform:uppercase}
+.setup-banner button:hover{filter:brightness(1.1)}
 @media (max-width:767px){
   header{font-size:11px;gap:8px;padding:8px}
   .brand{font-size:12px}
@@ -619,6 +677,108 @@ body.app-state-auth .fc-panel{display:none !important}
   <footer class="landing-foot">
     © 2026 AI Upscale Agency · Mikael Trading OS · Bygger på Claude API · Säljer mjukvara, inte investmentråd
   </footer>
+</div>
+
+<!-- ═══ ONBOARDING WIZARD — efter signup, kopplar API-nycklar ═══ -->
+<div class="onboard-screen">
+  <div class="onboard-card">
+    <div class="ob-brand">⬢ MIKAEL TRADING OS</div>
+    <h2>Koppla dina konton</h2>
+    <p class="ob-tag">
+      Du betalar bara för software + agenterna. Trading sker på <b>ditt eget</b> Binance-konto
+      med <b>dina pengar</b>. AI-anrop går via <b>din egen</b> Anthropic-nyckel.
+    </p>
+    <div class="onboard-progress" id="ob-progress">
+      <div class="op-dot active"></div>
+      <div class="op-dot"></div>
+      <div class="op-dot"></div>
+      <div class="op-dot"></div>
+    </div>
+
+    <!-- STEG 1: ANTHROPIC -->
+    <div class="ob-step active" data-step="1">
+      <div class="ob-icon">🧠</div>
+      <h3>Anthropic API-nyckel <span class="ob-required">KRÄVS</span></h3>
+      <div class="ob-info">
+        <b>Varför:</b> Hanna, Albert och alla 8 specialister är drivna av Claude. Du betalar
+        Anthropic direkt för deras tokens — vi tar 0% av AI-kostnaderna.
+        <br><br>
+        <b>Skapa nyckel:</b> <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com/settings/keys</a> → Create Key →
+        kopiera (börjar med <code>sk-ant-api03-...</code>)
+      </div>
+      <label>Anthropic API-nyckel</label>
+      <input type="password" id="ob-anthropic" placeholder="sk-ant-api03-..." autocomplete="off" />
+      <div class="ob-hint">💡 Tips: börja med ~$10 i krediter på Anthropic-kontot. Det räcker för 30+ dagars körning.</div>
+      <div class="ob-status" id="ob-anthropic-status"></div>
+    </div>
+
+    <!-- STEG 2: BINANCE -->
+    <div class="ob-step" data-step="2">
+      <div class="ob-icon">🟡</div>
+      <h3>Binance API <span class="ob-required">KRÄVS</span></h3>
+      <div class="ob-info">
+        <b>Varför:</b> Hanna lägger ordrar direkt på <b>ditt</b> Binance-konto. Vi rör aldrig dina pengar.
+        <br><br>
+        <b>Skapa nyckel:</b> <a href="https://www.binance.com/en/my/settings/api-management" target="_blank">binance.com → API Management</a>
+        → Create API → ✅ Enable Spot Trading → IP-whitelist din server-IP
+        <br><br>
+        <b>Säkerhet:</b> aktivera ALDRIG "Enable Withdrawals". Om en attackerare får din nyckel kan de bara handla, inte ta ut pengar.
+      </div>
+      <label>API Key</label>
+      <input type="password" id="ob-binance-key" placeholder="64 tecken" autocomplete="off" />
+      <label>API Secret</label>
+      <input type="password" id="ob-binance-secret" placeholder="64 tecken" autocomplete="off" />
+      <div class="ob-hint">💡 Använd <b>Test-läge</b> först — då går allt mot Binance testnet utan riktiga pengar.</div>
+      <div class="ob-status" id="ob-binance-status"></div>
+    </div>
+
+    <!-- STEG 3: PERPLEXITY (valfri) -->
+    <div class="ob-step" data-step="3">
+      <div class="ob-icon">🔍</div>
+      <h3>Perplexity (Lars) <span class="ob-optional">VALFRI</span></h3>
+      <div class="ob-info">
+        <b>Varför:</b> Lars hämtar färska nyheter, makro-händelser och geopolitik via Perplexity Sonar
+        innan teamet analyserar. ~$0.005/anrop = ~$0.07/vecka.
+        <br><br>
+        <b>Skapa nyckel:</b> <a href="https://www.perplexity.ai/settings/api" target="_blank">perplexity.ai/settings/api</a>
+        <br><br>
+        Hoppa över om du inte vill använda Lars — teamet kör ändå utan färsk web-research.
+      </div>
+      <label>Perplexity API-nyckel</label>
+      <input type="password" id="ob-perplexity" placeholder="pplx-... (lämna tom om du hoppar)" autocomplete="off" />
+    </div>
+
+    <!-- STEG 4: OANDA (valfri) -->
+    <div class="ob-step" data-step="4">
+      <div class="ob-icon">💱</div>
+      <h3>Oanda (Forex) <span class="ob-optional">VALFRI</span></h3>
+      <div class="ob-info">
+        <b>Varför:</b> Om du vill att Hanna handlar valutor (EUR/USD, GBP/USD, USD/JPY...).
+        Endast crypto utan Oanda — ingen forex.
+        <br><br>
+        <b>Skapa konto:</b> <a href="https://www.oanda.com/account/login" target="_blank">oanda.com → Practice (demo)</a>
+        → Manage API Access → Generate API Token
+        <br><br>
+        Hoppa över om du bara vill handla crypto.
+      </div>
+      <label>Oanda API Token</label>
+      <input type="password" id="ob-oanda-key" placeholder="lämna tom om du hoppar" autocomplete="off" />
+      <label>Oanda Account ID</label>
+      <input type="text" id="ob-oanda-account" placeholder="001-004-12345-001" autocomplete="off" />
+    </div>
+
+    <div class="onboard-actions">
+      <button class="ob-back" id="ob-back" style="display:none">← Tillbaka</button>
+      <button class="ob-skip" id="ob-skip" style="display:none">Hoppa över</button>
+      <button class="ob-next" id="ob-next">Nästa →</button>
+      <button class="ob-finish" id="ob-finish" style="display:none">Slutför →</button>
+    </div>
+
+    <p class="onboard-footer">
+      🔒 Nycklar lagras krypterat i din browser (AES-256). I Fas 2 → krypteras i Supabase med <code>row-level security</code>.
+      <br>Du kan ändra dem senare från <code>Settings</code>.
+    </p>
+  </div>
 </div>
 
 <!-- ═══ AUTH-SCREEN (login + signup) ═══ -->
@@ -769,6 +929,16 @@ body.app-state-auth .fc-panel{display:none !important}
 </div>
 
 <div class="main-wrap" style="min-width:0">
+
+<!-- Setup-banner — visas om API-nycklar saknas -->
+<div class="setup-banner" id="setup-banner" style="display:none">
+  <span class="sb-ico">⚠️</span>
+  <div>
+    <b>API-nycklar saknas.</b> <span style="color:var(--label)">Du måste koppla din Anthropic + Binance för att teamet ska kunna jobba.</span>
+  </div>
+  <span class="sb-spacer"></span>
+  <button id="setup-banner-go">Konfigurera nu</button>
+</div>
 
 <!-- ═══ TRADE-SIDA ═══ -->
 <section class="page active" id="page-trade">
@@ -983,6 +1153,37 @@ body.app-state-auth .fc-panel{display:none !important}
     </div>
     <button class="test-btn" id="test-conn">Test Connection</button>
     <div class="status-line" id="conn-status"></div>
+
+    <h4 style="margin-top:18px">Mina API-nycklar</h4>
+    <p style="font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:14px">Dina egna nycklar — du betalar själv för Anthropic-tokens och tradar med ditt eget Binance-konto. Vi rör aldrig dina pengar.</p>
+    <div class="grid">
+      <div>
+        <label>🧠 Anthropic API <span style="color:var(--red);font-size:9px">KRÄVS</span></label>
+        <input type="password" id="set-anthropic" placeholder="sk-ant-api03-..." />
+      </div>
+      <div>
+        <label>🟡 Binance API Key <span style="color:var(--red);font-size:9px">KRÄVS</span></label>
+        <input type="password" id="set-binance-key" placeholder="64 tecken" />
+      </div>
+      <div>
+        <label>🟡 Binance Secret <span style="color:var(--red);font-size:9px">KRÄVS</span></label>
+        <input type="password" id="set-binance-secret" placeholder="64 tecken" />
+      </div>
+      <div>
+        <label>🔍 Perplexity (Lars) <span style="color:var(--dim);font-size:9px">VALFRI</span></label>
+        <input type="password" id="set-perplexity" placeholder="pplx-..." />
+      </div>
+      <div>
+        <label>💱 Oanda Token (forex) <span style="color:var(--dim);font-size:9px">VALFRI</span></label>
+        <input type="password" id="set-oanda-key" placeholder="lämna tom om ej forex" />
+      </div>
+      <div>
+        <label>💱 Oanda Account ID <span style="color:var(--dim);font-size:9px">VALFRI</span></label>
+        <input type="text" id="set-oanda-account" placeholder="001-004-12345-001" />
+      </div>
+    </div>
+    <button class="run-btn" id="save-keys-btn" style="margin-top:8px">Spara nycklar</button>
+    <span id="save-keys-status" style="margin-left:12px;font-size:11px"></span>
 
     <h4 style="margin-top:18px">Risk &amp; Position-sizing</h4>
     <p style="font-size:11px;color:var(--dim);line-height:1.5">Sätts i <code style="background:var(--bg);padding:1px 4px;border-radius:2px">.env</code>-filen på VPS:en (DEFAULT/MIN/MAX_POSITION_USD, MAX_DAILY_SPEND_USD osv). Editor i appen byggs i Fas 2.</p>
@@ -2095,23 +2296,143 @@ async function submitAuth(){
   // DEMO: vilken email/lösenord funkar. När Fas 2 byggs → Supabase auth här.
   await new Promise(r=>setTimeout(r, 600));
 
+  const isNewSignup = authMode === "signup";
   saveUser({
     email,
     name: name || email.split("@")[0],
     tier: "family", // default-tier i demo
     createdAt: Date.now(),
+    onboardingComplete: !isNewSignup, // signup → onboarding krävs; login → user antas redan ha gjort det
   });
 
   btn.disabled = false;
-  btn.textContent = authMode === "signup" ? "Skapa konto" : "Logga in";
-  setAppState("app");
-  // Initiera app-funktioner som behöver DOM-element
-  if(typeof postLoginInit === "function") postLoginInit();
+  btn.textContent = isNewSignup ? "Skapa konto" : "Logga in";
+
+  if(isNewSignup){
+    // Nya users → kör onboarding-wizard för API-nycklar
+    startOnboarding();
+  } else {
+    // Befintlig user → kolla om onboarding gjort, annars wizard
+    const keys = getUserKeys();
+    if(!keys.anthropic || !keys.binance_key){
+      startOnboarding();
+    } else {
+      setAppState("app");
+      if(typeof postLoginInit === "function") postLoginInit();
+    }
+  }
 }
 
 function logout(){
   clearUser();
   setAppState("landing");
+}
+
+/* ── Onboarding wizard (efter signup) ── */
+let onboardStep = 1;
+const ONBOARD_TOTAL = 4;
+
+function showOnboardStep(n){
+  onboardStep = Math.max(1, Math.min(ONBOARD_TOTAL, n));
+  document.querySelectorAll(".ob-step").forEach(s=>{
+    s.classList.toggle("active", parseInt(s.dataset.step,10) === onboardStep);
+  });
+  // Progress dots
+  const dots = document.querySelectorAll("#ob-progress .op-dot");
+  dots.forEach((d,i)=>{
+    d.classList.remove("active","done");
+    if(i+1 < onboardStep) d.classList.add("done");
+    else if(i+1 === onboardStep) d.classList.add("active");
+  });
+  // Buttons
+  document.getElementById("ob-back").style.display = onboardStep > 1 ? "block" : "none";
+  document.getElementById("ob-skip").style.display = (onboardStep === 3 || onboardStep === 4) ? "block" : "none";
+  document.getElementById("ob-next").style.display = onboardStep < ONBOARD_TOTAL ? "block" : "none";
+  document.getElementById("ob-finish").style.display = onboardStep === ONBOARD_TOTAL ? "block" : "none";
+}
+
+function getUserKeys(){
+  try{ return JSON.parse(localStorage.getItem("trading_keys") || "{}"); }
+  catch(_){ return {}; }
+}
+function saveUserKeys(keys){
+  // OBS: i demo-läge sparas i localStorage. Fas 2 → AES-256 i Supabase.
+  try{ localStorage.setItem("trading_keys", JSON.stringify(keys)); }catch(_){}
+}
+
+function validateOnboardStep(){
+  const status = (id, ok, msg) => {
+    const el = document.getElementById(id);
+    el.className = "ob-status " + (ok ? "ok" : "err");
+    el.textContent = msg;
+  };
+  if(onboardStep === 1){
+    const v = document.getElementById("ob-anthropic").value.trim();
+    if(!v){ status("ob-anthropic-status", false, "❌ Anthropic-nyckel krävs."); return false; }
+    if(!v.startsWith("sk-ant-")){ status("ob-anthropic-status", false, "❌ Ogiltig nyckel — ska börja med sk-ant-..."); return false; }
+    if(v.length < 50){ status("ob-anthropic-status", false, "❌ Nyckeln är för kort."); return false; }
+    status("ob-anthropic-status", true, "✓ Nyckel ser giltig ut.");
+    return true;
+  }
+  if(onboardStep === 2){
+    const k = document.getElementById("ob-binance-key").value.trim();
+    const s = document.getElementById("ob-binance-secret").value.trim();
+    if(!k || !s){ status("ob-binance-status", false, "❌ Både API Key och Secret krävs."); return false; }
+    if(k.length < 32 || s.length < 32){ status("ob-binance-status", false, "❌ Nycklarna ska vara minst 32 tecken (vanligtvis 64)."); return false; }
+    status("ob-binance-status", true, "✓ Binance-nycklar inlästa.");
+    return true;
+  }
+  return true; // Steg 3 + 4 är valfria
+}
+
+function nextOnboardStep(){
+  if(!validateOnboardStep()) return;
+  // Spara nuvarande steg
+  const keys = getUserKeys();
+  if(onboardStep === 1) keys.anthropic = document.getElementById("ob-anthropic").value.trim();
+  if(onboardStep === 2){
+    keys.binance_key = document.getElementById("ob-binance-key").value.trim();
+    keys.binance_secret = document.getElementById("ob-binance-secret").value.trim();
+  }
+  if(onboardStep === 3) keys.perplexity = document.getElementById("ob-perplexity").value.trim();
+  if(onboardStep === 4){
+    keys.oanda_key = document.getElementById("ob-oanda-key").value.trim();
+    keys.oanda_account = document.getElementById("ob-oanda-account").value.trim();
+  }
+  saveUserKeys(keys);
+  showOnboardStep(onboardStep + 1);
+}
+
+function skipOnboardStep(){
+  showOnboardStep(onboardStep + 1);
+}
+
+function finishOnboarding(){
+  // Spara sista steget om värden finns
+  const keys = getUserKeys();
+  keys.oanda_key = document.getElementById("ob-oanda-key").value.trim();
+  keys.oanda_account = document.getElementById("ob-oanda-account").value.trim();
+  saveUserKeys(keys);
+  // Markera onboarding klart
+  if(currentUser){
+    currentUser.onboardingComplete = true;
+    saveUser(currentUser);
+  }
+  setAppState("app");
+  if(typeof postLoginInit === "function") postLoginInit();
+}
+
+function startOnboarding(){
+  setAppState("onboard");
+  showOnboardStep(1);
+  setTimeout(()=>document.getElementById("ob-anthropic")?.focus(), 100);
+}
+
+function wireOnboarding(){
+  document.getElementById("ob-next")?.addEventListener("click", nextOnboardStep);
+  document.getElementById("ob-back")?.addEventListener("click", ()=>showOnboardStep(onboardStep - 1));
+  document.getElementById("ob-skip")?.addEventListener("click", skipOnboardStep);
+  document.getElementById("ob-finish")?.addEventListener("click", finishOnboarding);
 }
 
 function wireAuth(){
@@ -2149,6 +2470,9 @@ function wireAuth(){
     document.getElementById("user-menu").classList.remove("on");
     switchPage("cost");
   });
+
+  // Onboarding-wizard
+  wireOnboarding();
 }
 
 /* ======================================================================
@@ -2854,7 +3178,48 @@ function postLoginInit(){
   initApp();
 }
 
+function checkKeysSetup(){
+  const keys = getUserKeys();
+  const missing = !keys.anthropic || !keys.binance_key;
+  const banner = document.getElementById("setup-banner");
+  if(banner) banner.style.display = missing ? "flex" : "none";
+}
+
+function loadKeysIntoSettings(){
+  const k = getUserKeys();
+  const setVal = (id, v) => { const el = document.getElementById(id); if(el) el.value = v || ""; };
+  setVal("set-anthropic", k.anthropic);
+  setVal("set-binance-key", k.binance_key);
+  setVal("set-binance-secret", k.binance_secret);
+  setVal("set-perplexity", k.perplexity);
+  setVal("set-oanda-key", k.oanda_key);
+  setVal("set-oanda-account", k.oanda_account);
+}
+function saveKeysFromSettings(){
+  const getVal = (id) => document.getElementById(id)?.value.trim() || "";
+  const keys = {
+    anthropic: getVal("set-anthropic"),
+    binance_key: getVal("set-binance-key"),
+    binance_secret: getVal("set-binance-secret"),
+    perplexity: getVal("set-perplexity"),
+    oanda_key: getVal("set-oanda-key"),
+    oanda_account: getVal("set-oanda-account"),
+  };
+  saveUserKeys(keys);
+  const status = document.getElementById("save-keys-status");
+  if(status){
+    status.textContent = "✓ Sparat";
+    status.style.color = "var(--green)";
+    setTimeout(()=>{ status.textContent = ""; }, 2500);
+  }
+  checkKeysSetup();
+}
+
 function initApp(){
+  checkKeysSetup();
+  loadKeysIntoSettings();
+  document.getElementById("setup-banner-go")?.addEventListener("click", ()=>startOnboarding());
+  document.getElementById("save-keys-btn")?.addEventListener("click", saveKeysFromSettings);
   fillSymbols();
   fillBetSymbols();
   initChart();
