@@ -3,6 +3,7 @@ import type { BrokerAdapter } from "./brokers/adapter.js";
 import { BinanceBroker } from "./brokers/binance.js";
 import { AlpacaBroker } from "./brokers/alpaca.js";
 import { BlofinBroker } from "./brokers/blofin.js";
+import { OandaBroker } from "./brokers/oanda.js";
 import { RiskManager } from "./risk/riskManager.js";
 import { runAgentTurn } from "./agent/claudeAgent.js";
 import {
@@ -62,6 +63,14 @@ function createBrokers(): Record<string, BrokerAdapter> {
       apiSecret: config.binance.apiSecret,
       baseUrl: config.binance.baseUrl,
       mode: config.mode,
+    });
+  }
+
+  if (config.oanda.enabled) {
+    brokers.oanda = new OandaBroker({
+      apiKey: config.oanda.apiKey,
+      accountId: config.oanda.accountId,
+      baseUrl: config.oanda.baseUrl,
     });
   }
 

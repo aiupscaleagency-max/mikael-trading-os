@@ -186,7 +186,16 @@ Du SYNTETISERAR alla 9 rapporter och fattar det slutgiltiga beslutet. Du har ver
 Mode: ${config.mode.toUpperCase()} | Execution: ${config.executionMode}
 Kill-switch: ${state.killSwitchActive ? "AKTIV" : "OK"}
 Dagens PnL: ${state.dailyRealizedPnlUsdt.toFixed(2)} USDT
-Risk: max ${config.risk.maxPositionUsd} USD/position, max ${config.risk.maxTotalExposureUsd} USD total
+Position-sizing (USD per trade):
+  • DEFAULT: ${config.risk.defaultPositionUsd} (din standardstorlek)
+  • MIN: ${config.risk.minPositionUsd} | MAX: ${config.risk.maxPositionUsd}
+  • Total exponering: max ${config.risk.maxTotalExposureUsd} USD
+  • Anpassa storlek mellan MIN och MAX baserat på conviction:
+    - Hög conviction (≥3 specialister överens, Advisor stödjer) → upp mot MAX
+    - Medium conviction → DEFAULT
+    - Låg conviction → ner mot MIN
+  • Karin's suggestedSizeMultiplier multiplicerar din valda storlek (vol-justerat).
+  • Risk Manager blockerar orders utanför MIN/MAX — håll dig inom ramen.
 
 ═══ HISTORIK ═══
 ${performance}
@@ -225,9 +234,20 @@ Avsluta alltid med en "Rule of 3"-sammanfattning:
 }
 
 function formatAllReports(reports: AllReports): string {
-  const { macro, technical, sentiment, risk, quant, options, execution, portfolio, advisor } = reports;
+  const { research, macro, technical, sentiment, risk, quant, options, execution, portfolio, advisor } = reports;
 
-  let out = `═══ RAPPORTER FRÅN 9 SPECIALISTER ═══\n\n`;
+  let out = `═══ RAPPORTER FRÅN TEAMET ═══\n\n`;
+
+  // 0. Research (Lars / Perplexity) — färsk webbkontext
+  if (research?.available) {
+    out += `── [0] LARS (RESEARCH-ANALYTIKER) ──\n`;
+    out += `${research.marketSummary}\n`;
+    if (research.cryptoNews.length) out += `Crypto-nyheter: ${research.cryptoNews.slice(0,3).join(" | ")}\n`;
+    if (research.macroEvents.length) out += `Makro-händelser: ${research.macroEvents.slice(0,3).join(" | ")}\n`;
+    if (research.geopolitical.length) out += `Geopolitik: ${research.geopolitical.slice(0,2).join(" | ")}\n`;
+    if (research.riskAlerts.length) out += `⚠ Risk-alerts: ${research.riskAlerts.join(" | ")}\n`;
+    out += `\n`;
+  }
 
   // 1. Makro
   out += `── [1/9] MAKRO-ANALYTIKER ──\n`;

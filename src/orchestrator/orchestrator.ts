@@ -16,6 +16,7 @@ import {
   runPortfolioStrategist,
 } from "./advancedSpecialists.js";
 import { runClaudeAdvisor } from "./advisor.js";
+import { runResearcher, type ResearchReport, formatResearchForPrompt } from "./researcher.js";
 import { runHeadTrader, type HeadTraderResult } from "./headTrader.js";
 import { loadRecentDecisions } from "../memory/store.js";
 import type {
@@ -43,6 +44,7 @@ import { log } from "../logger.js";
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface AllReports {
+  research: ResearchReport;     // Lars (Perplexity) — körs först
   macro: MacroReport;
   technical: TechnicalReport;
   sentiment: SentimentReport;
@@ -80,7 +82,12 @@ export async function runOrchestratedTurn(params: {
   const totalStart = Date.now();
 
   // ── Fas 1: Alla specialister + Advisor parallellt ──
-  log.info("╔══ ORCHESTRATOR: Fas 1 — 9-agent specialist-analys (parallellt) ══╗");
+  // ── Fas 0: Lars (Perplexity Research) ──
+  // Hämtar färska nyheter/makro/geopolitik som specialisterna kan använda.
+  log.info("╔══ ORCHESTRATOR: Fas 0 — Lars (Research) hämtar färsk webbkontext ══╗");
+  const research = await runResearcher(config.perplexity.apiKey);
+
+  log.info("╔══ ORCHESTRATOR: Fas 1 — specialist-analys (parallellt) ══╗");
   const specialistStart = Date.now();
 
   const allSymbols = [...config.crypto.symbols, ...config.stocks.symbols];
@@ -121,9 +128,17 @@ export async function runOrchestratedTurn(params: {
         return { role: "quant_analyst", volatilityRegime: "medium", sharpeEstimate: 0, winRateFromHistory: 0, symbolScores: [], recommendation: "Ej tillgänglig.", confidence: "low", rawText: "" };
       }),
 
-      runOptionsStrategist(apiKey, broker, config.stocks.symbols).catch((err): OptionsReport => {
-        log.error(`Options-strateg kraschade: ${err instanceof Error ? err.message : String(err)}`);
-        return { role: "options_strategist", ivAssessments: [], rollOpportunities: [], overallIvEnvironment: "normal", recommendation: "Ej tillgänglig.", applicable: false, rawText: "" };
+      // Olof (Options-Strateg) är borttagen — irrelevant för crypto-spot.
+      // Hans volatilitets-insikter är absorberade i Karin (Kvant) och Rasmus (Risk).
+      // Returnerar stub-rapport så typerna stämmer utan Anthropic-anrop.
+      Promise.resolve<OptionsReport>({
+        role: "options_strategist",
+        ivAssessments: [],
+        rollOpportunities: [],
+        overallIvEnvironment: "normal",
+        recommendation: "Options-strateg ej aktiv (crypto-spot mode).",
+        applicable: false,
+        rawText: "",
       }),
 
       runPortfolioStrategist(apiKey, broker).catch((err): PortfolioReport => {
@@ -177,6 +192,7 @@ export async function runOrchestratedTurn(params: {
   );
 
   const allReports: AllReports = {
+    research,
     macro, technical, sentiment,
     risk: riskReport, quant, options,
     execution, portfolio, advisor,

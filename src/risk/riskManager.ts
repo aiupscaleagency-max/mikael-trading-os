@@ -84,7 +84,7 @@ export class RiskManager {
         return { allowed: false, reason: "Kan inte beräkna order-storlek i USD." };
       }
 
-      // Per-position-tak: skala ner om för stor
+      // Per-position-ramar: golv (MIN), tak (MAX). Hanna får anpassa inom ramen.
       let adjustedOrder: OrderRequest | undefined;
       if (orderUsd > risk.maxPositionUsd) {
         const scaled: OrderRequest = {
@@ -94,6 +94,11 @@ export class RiskManager {
         };
         adjustedOrder = scaled;
         orderUsd = risk.maxPositionUsd;
+      } else if (risk.minPositionUsd && orderUsd < risk.minPositionUsd) {
+        return {
+          allowed: false,
+          reason: `Order $${orderUsd.toFixed(2)} under MIN_POSITION_USD ($${risk.minPositionUsd}). Höj eller skip.`,
+        };
       }
 
       // Total exponering

@@ -170,7 +170,9 @@ export async function runQuantAnalyst(
   const response = await client.messages.create({
     model: SPECIALIST_MODEL,
     max_tokens: 2000,
-    system: `Du är en kvantitativ analytiker i ett trading-team. Din ENDA uppgift är att analysera volatilitet, statistik och historisk prestation.
+    system: `Du är en kvantitativ analytiker i ett trading-team. Du analyserar volatilitet, statistik, historisk prestation och OPTIMAL POSITIONSSTORLEK baserat på vol.
+
+(NOT: tidigare Options-Strateg är borttagen — du har övertagit hennes vol-baserade sizing-insikter. Du är nu teamets ENDA röst för volatilitets-bedömning.)
 
 Du får indikator-data per symbol + historiska beslut. Analysera och svara i EXAKT detta JSON-format:
 {
@@ -183,7 +185,8 @@ Du får indikator-data per symbol + historiska beslut. Analysera och svara i EXA
       "trendScore": -5 till +5,
       "meanReversionScore": -5 till +5,
       "volatility": 0.0,
-      "regime": "trending" | "ranging" | "breakout" | "breakdown"
+      "regime": "trending" | "ranging" | "breakout" | "breakdown",
+      "suggestedSizeMultiplier": 0.0
     }
   ],
   "recommendation": "1-2 meningar: kvantitativa insikter för teamet",
@@ -194,6 +197,7 @@ trendScore: +5 = stark trend (ride the wave), -5 = ingen trendkraft.
 meanReversionScore: +5 = stark mean-reversion-setup (köp dippen), -5 = undvik mean-reversion.
 volatility: annualiserad volatilitet i procent.
 winRate: historisk vinstandel 0.0 - 1.0.
+suggestedSizeMultiplier: 0.5–1.5. 1.0 = standardposition. <1 vid hög vol/extrem regim, >1 vid låg vol och stark trend. Hjälp Hanna kalibrera trade-storleken.
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är kvantdata:\n${dataContext}` }],
   });

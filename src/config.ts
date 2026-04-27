@@ -47,6 +47,14 @@ const schema = z.object({
   BINANCE_LIVE_API_KEY: z.string().default(""),
   BINANCE_LIVE_API_SECRET: z.string().default(""),
 
+  // ── Perplexity (Lars — Research-Analytiker) ──
+  PERPLEXITY_API_KEY: z.string().default(""),
+
+  // ── Oanda (Forex-broker) ──
+  OANDA_API_KEY: z.string().default(""),
+  OANDA_ACCOUNT_ID: z.string().default(""),
+  OANDA_BASE_URL: z.string().default("https://api-fxpractice.oanda.com"),
+
   // ── Vilka motorer ska vara aktiva? ──
   ENGINES: z
     .string()
@@ -59,15 +67,21 @@ const schema = z.object({
     ),
 
   // ── Risk-ramar ──
+  // DEFAULT_POSITION_USD = vad Hanna (Head Trader) använder som standard per trade.
+  // MIN/MAX = golv & tak. Hanna får anpassa storlek upp/ner baserat på conviction
+  // (Karin's vol-multiplier styr också). Risk Manager blockerar utanför ramen.
+  DEFAULT_POSITION_USD: z.coerce.number().positive().default(50),
+  MIN_POSITION_USD: z.coerce.number().positive().default(20),
   MAX_POSITION_USD: z.coerce.number().positive().default(100),
   MAX_TOTAL_EXPOSURE_USD: z.coerce.number().positive().default(500),
   MAX_DAILY_LOSS_USD: z.coerce.number().positive().default(50),
   MAX_OPEN_POSITIONS: z.coerce.number().int().positive().default(5),
 
   // ── Symbol-listor per motor ──
-  CRYPTO_SYMBOLS: csvList.default("BTCUSDT,ETHUSDT,SOLUSDT"),
+  CRYPTO_SYMBOLS: csvList.default("BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,DOGEUSDT,DOTUSDT,LINKUSDT,MATICUSDT,UNIUSDT,LTCUSDT,ATOMUSDT,NEARUSDT"),
   STOCK_SYMBOLS: csvList.default("TSLA,NVDA,AAPL,MSFT"),
   WHEEL_UNDERLYINGS: csvList.default("TSLA,NVDA"),
+  FOREX_SYMBOLS: csvList.default("EUR_USD,GBP_USD,USD_JPY,USD_CHF,AUD_USD,USD_CAD,EUR_GBP"),
 
   // ── Crypto Momentum specifikt ──
   CRYPTO_LEVERAGE: z.coerce.number().int().min(1).max(20).default(5),
@@ -115,8 +129,10 @@ const hasAlpaca = !!(env.ALPACA_KEY_ID && env.ALPACA_SECRET_KEY);
 const hasBlofin = !!(env.BLOFIN_API_KEY && env.BLOFIN_API_SECRET && env.BLOFIN_PASSPHRASE);
 const hasBinance = !!(env.BINANCE_API_KEY && env.BINANCE_API_SECRET) ||
   !!(env.BINANCE_LIVE_API_KEY && env.BINANCE_LIVE_API_SECRET);
+const hasOanda = !!(env.OANDA_API_KEY && env.OANDA_ACCOUNT_ID);
+const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 
-if (!hasAlpaca && !hasBlofin && !hasBinance) {
+if (!hasAlpaca && !hasBlofin && !hasBinance && !hasOanda) {
   console.error(
     "❌ Ingen broker konfigurerad. Fyll i minst Alpaca ELLER Blofin ELLER Binance-nycklar i .env.",
   );
@@ -154,7 +170,22 @@ export const config = {
       env.MODE === "live" ? "https://api.binance.com" : "https://testnet.binance.vision",
   },
 
+  oanda: {
+    enabled: hasOanda,
+    apiKey: env.OANDA_API_KEY,
+    accountId: env.OANDA_ACCOUNT_ID,
+    baseUrl: env.OANDA_BASE_URL,
+    symbols: env.FOREX_SYMBOLS,
+  },
+
+  perplexity: {
+    enabled: hasPerplexity,
+    apiKey: env.PERPLEXITY_API_KEY,
+  },
+
   risk: {
+    defaultPositionUsd: env.DEFAULT_POSITION_USD,
+    minPositionUsd: env.MIN_POSITION_USD,
     maxPositionUsd: env.MAX_POSITION_USD,
     maxTotalExposureUsd: env.MAX_TOTAL_EXPOSURE_USD,
     maxDailyLossUsd: env.MAX_DAILY_LOSS_USD,

@@ -109,6 +109,7 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
 
 /* Avatar: cirkel + initial, agentens karaktärsfärg */
 .agent .avatar{grid-row:1/4;grid-column:1;width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:#fff;letter-spacing:.5px;font-family:'SF Mono',monospace;position:relative;flex-shrink:0}
+.agent.research .avatar{background:linear-gradient(135deg,#14b8a6,#0d9488)}
 .agent.macro .avatar{background:linear-gradient(135deg,#f59e0b,#d97706)}
 .agent.technical .avatar{background:linear-gradient(135deg,#3b82f6,#1d4ed8)}
 .agent.sentiment .avatar{background:linear-gradient(135deg,#fb923c,#ea580c)}
@@ -847,12 +848,12 @@ function updatePnL(){
    ====================================================================== */
 // Agent-team — varje agent som "person" med avatar + roll
 const AGENT_DEFS = [
+  {key:"research",   person:"Lars",   role:"Research-Analytiker",   title:"Research-Analytiker",   initial:"LR", model:"perplexity"},
   {key:"macro",      person:"Markus", role:"Makro-Analytiker",      title:"Makro-Analytiker",      initial:"MA", model:"haiku 4.5"},
   {key:"technical",  person:"Tomas",  role:"Teknisk Analytiker",    title:"Teknisk Analytiker",    initial:"TA", model:"haiku 4.5"},
   {key:"sentiment",  person:"Sara",   role:"Sentiment-Analytiker",  title:"Sentiment-Analytiker",  initial:"SA", model:"haiku 4.5"},
   {key:"risk",       person:"Rasmus", role:"Risk-Analytiker",       title:"Risk-Analytiker",       initial:"RA", model:"haiku 4.5"},
   {key:"quant",      person:"Karin",  role:"Kvant-Analytiker",      title:"Kvant-Analytiker",      initial:"KA", model:"haiku 4.5"},
-  {key:"options",    person:"Olof",   role:"Options-Strateg",       title:"Options-Strateg",       initial:"OS", model:"haiku 4.5"},
   {key:"portfolio",  person:"Petra",  role:"Portfölj-Strateg",      title:"Portfölj-Strateg",      initial:"PS", model:"haiku 4.5"},
   {key:"execution",  person:"Emma",   role:"Exekverings-Optimerare",title:"Exekverings-Optimerare",initial:"EO", model:"haiku 4.5"},
   {key:"advisor",    person:"Albert", role:"Strategisk Advisor",    title:"Claude Advisor",        initial:"AD", model:"opus 4.7",  premium:true},
@@ -869,6 +870,14 @@ function genSimAgents(){
   const score = ()=> (Math.random()*10-5).toFixed(1);
 
   return {
+    research:{
+      summary:"BTC bröt 67k motstånd efter ETF-inflöden. Fed-möte tor. Mellanöstern lugnt senaste 12h.",
+      cryptoNews:["BlackRock IBIT +$280M inflöde igår","SOL-ekosystem aktivitet +18% WoW","BTC dominans 56.4%"],
+      macroEvents:["Fed-möte torsdag (FOMC)","ECB håller på 4.5%","CPI under förväntningar (3.1%)"],
+      geopolitical:["Ukraina-Ryssland status quo","Mellanöstern lugnt","Taiwan-spänningar minskat"],
+      riskAlerts:[],
+      sources:["bloomberg.com","coindesk.com","reuters.com"]
+    },
     macro:{
       regime: pick(regimes), confidence: 0.6+Math.random()*0.35,
       vix: (15+Math.random()*15).toFixed(1),
@@ -903,11 +912,6 @@ function genSimAgents(){
       sharpe: (0.8+Math.random()*1.2).toFixed(2),
       winRate: Math.round(48+Math.random()*15),
       symbols: symbols.map(s=>({sym:s, trend:score(), meanRev:score(), regime:pick(["trending","ranging","volatile"])}))
-    },
-    options:{
-      ivEnv: pick(["normal","elevated","crushed"]),
-      symbols: ["TSLA","NVDA"].map(s=>({sym:s, ivRank:Math.round(20+Math.random()*60), strategy:pick(["sell put","sell call","wheel","spread"]), strike:(BASE_PRICES[s]*0.95).toFixed(0)})),
-      rolls:["TSLA put roll +7d", "NVDA cc behåll"]
     },
     portfolio:{
       diversification: Math.round(40+Math.random()*45),
@@ -944,12 +948,12 @@ function genSimAgents(){
 function agentSignal(key, d){
   d = d || {};
   switch(key){
+    case "research":   return {text:(d.alerts??d.cryptoNews?.length??0)+" nyheter", cls:d.riskAlerts?.length?"red":"cyan"};
     case "macro":      return {text:d.regime||"–", cls:d.regime==="RISK_ON"?"green":d.regime==="RISK_OFF"?"red":"yellow"};
     case "technical":  return {text:(d.bias||"–")+" "+(d.topPick||""), cls:d.bias==="bullish"?"green":d.bias==="bearish"?"red":"yellow"};
     case "sentiment":  return {text:(d.sentiment||"–").replace("_"," "), cls:["extreme_greed","greed"].includes(d.sentiment)?"green":["extreme_fear","fear"].includes(d.sentiment)?"red":"yellow"};
     case "risk":       return {text:(d.level||"–")+" · "+(d.heat||0)+"%", cls:["critical","high"].includes(d.level)?"red":d.level==="medium"?"yellow":"green"};
     case "quant":      return {text:"Sharpe "+(d.sharpe||"–"), cls:d.sharpe>1.2?"green":d.sharpe<0.8?"red":""};
-    case "options":    return {text:"IV "+(d.ivEnv||"–"), cls:d.ivEnv==="elevated"?"yellow":d.ivEnv==="crushed"?"red":""};
     case "portfolio":  return {text:(d.diversification||0)+"/100", cls:d.diversification>70?"green":d.diversification<40?"red":"yellow"};
     case "execution":  return {text:d.urgency||"–", cls:d.urgency==="high"?"red":d.urgency==="medium"?"yellow":"green"};
     case "advisor":    return {text:d.cycle||"–", cls:""};
@@ -1050,6 +1054,16 @@ function renderAgents(){
 function agentDetailHTML(key){
   const d = STATE.agents[key] || {};
   switch(key){
+    case "research":
+      return `<h4>Sammanfattning</h4>
+        <div style="line-height:1.5">${d.summary||"Lars hämtar färsk research var 12:e timme via Perplexity."}</div>
+        <h4>Crypto-nyheter</h4>
+        ${(d.cryptoNews||[]).map(n=>`<div class="action-list"><div class="ax">▸ ${n}</div></div>`).join("")||"<div style='color:var(--dim)'>–</div>"}
+        <h4>Makro-händelser</h4>
+        ${(d.macroEvents||[]).map(n=>`<div class="action-list"><div class="ax">▸ ${n}</div></div>`).join("")||"<div style='color:var(--dim)'>–</div>"}
+        <h4>Geopolitik</h4>
+        ${(d.geopolitical||[]).map(n=>`<div class="action-list"><div class="ax">▸ ${n}</div></div>`).join("")||"<div style='color:var(--dim)'>–</div>"}
+        ${(d.riskAlerts||[]).length?`<h4>⚠ Risk-alerts</h4>${d.riskAlerts.map(a=>`<div class="warn red">⚠ ${a}</div>`).join("")}`:""}`;
     case "macro":
       return `<h4>Makroregim</h4>
         <div class="kv"><span class="k">Regim</span><span class="pill ${d.regime==="RISK_ON"?"green":d.regime==="RISK_OFF"?"red":"yellow"}">${d.regime||"–"}</span></div>
@@ -1094,12 +1108,6 @@ function agentDetailHTML(key){
         <div class="kv"><span class="k">Win-rate</span><span>${d.winRate||0}%</span></div>
         <h4>Per symbol</h4>
         ${(d.symbols||[]).map(s=>`<div class="kv"><span class="k">${s.sym}</span><span>trend ${s.trend} · MR ${s.meanRev} · ${s.regime}</span></div>`).join("")}`;
-    case "options":
-      return `<div class="kv"><span class="k">IV-miljö</span><span class="pill yellow">${d.ivEnv||"–"}</span></div>
-        <h4>Strategier per symbol</h4>
-        ${(d.symbols||[]).map(s=>`<div class="kv"><span class="k">${s.sym}</span><span>IV ${s.ivRank} · ${s.strategy} · strike ${s.strike}</span></div>`).join("")}
-        <h4>Roll-möjligheter</h4>
-        ${(d.rolls||[]).map(r=>`<div class="action-list"><div class="ax">${r}</div></div>`).join("")}`;
     case "portfolio":
       return `<div class="kv"><span class="k">Diversifiering</span><span>${d.diversification||0}/100</span></div>
         <div class="bar green"><span style="width:${d.diversification||0}%"></span></div>
@@ -1141,16 +1149,16 @@ function agentDetailHTML(key){
 function agentQuickPrompts(key){
   const common = ["Sammanfatta din analys i 3 punkter","Vad är största risken just nu?"];
   const map = {
+    research:["Vad hände i crypto senaste 12h?","Geopolitiska risker just nu?","Token-specifika nyheter på BTC?"],
     macro:["Hur påverkar Fed-policy crypto idag?","Är vi i RISK_ON eller RISK_OFF?"],
     technical:["Vilken är bästa entry för BTC nu?","Vilka motstånd är viktigast?"],
     sentiment:["Är vi i FOMO-zon?","Vilka politiker köpte senast?"],
     risk:["Får jag öppna 1 ny position på $100?","Vilken är max safe leverage?"],
     quant:["Vilken edge har trend vs mean-rev nu?","Är volatiliteten köpvärd?"],
-    options:["Sälj covered call på TSLA — bra idé?","Vilken wheel-strategi just nu?"],
     portfolio:["Är jag för exponerad mot crypto?","Vad ska jag rebalansera?"],
     execution:["Köp BTC med TWAP eller market?","Bästa tid att executea idag?"],
     advisor:["Vad missar teamet just nu?","Är det FOMO-rally eller real bullmarket?"],
-    head:["Lägg en BUY-order på BTC $100","Stäng alla positioner","Justera stop loss på SOL"]
+    head:["Lägg en BUY-order på BTC $50","Stäng alla positioner","Justera stop loss på SOL","Vad är conviction nu?"]
   };
   return [...(map[key]||[]), ...common];
 }
@@ -1171,7 +1179,7 @@ function openAgent(agentKey){
   const lastStr = STATE.lastRun ? fmtTimeUTC(STATE.lastRun) : "–";
   document.getElementById("modal-meta").innerHTML = `${def.model.toUpperCase()}<br>Senaste ${lastStr} · Nästa ${fmtTimeUTC(next)}`;
   // Avatar gradient + initial
-  const avGradients = {macro:"linear-gradient(135deg,#f59e0b,#d97706)",technical:"linear-gradient(135deg,#3b82f6,#1d4ed8)",sentiment:"linear-gradient(135deg,#fb923c,#ea580c)",risk:"linear-gradient(135deg,#ef4444,#b91c1c)",quant:"linear-gradient(135deg,#60a5fa,#2563eb)",options:"linear-gradient(135deg,#eab308,#a16207)",portfolio:"linear-gradient(135deg,#10b981,#047857)",execution:"linear-gradient(135deg,#06b6d4,#0e7490)",advisor:"linear-gradient(135deg,#8b5cf6,#6d28d9)",head:"linear-gradient(135deg,#fff,#cbd5e1)"};
+  const avGradients = {research:"linear-gradient(135deg,#14b8a6,#0d9488)",macro:"linear-gradient(135deg,#f59e0b,#d97706)",technical:"linear-gradient(135deg,#3b82f6,#1d4ed8)",sentiment:"linear-gradient(135deg,#fb923c,#ea580c)",risk:"linear-gradient(135deg,#ef4444,#b91c1c)",quant:"linear-gradient(135deg,#60a5fa,#2563eb)",portfolio:"linear-gradient(135deg,#10b981,#047857)",execution:"linear-gradient(135deg,#06b6d4,#0e7490)",advisor:"linear-gradient(135deg,#8b5cf6,#6d28d9)",head:"linear-gradient(135deg,#fff,#cbd5e1)"};
   const av = document.getElementById("modal-avatar");
   av.style.background = avGradients[agentKey] || "var(--card)";
   av.style.color = agentKey==="head" ? "#0a0e17" : "#fff";
