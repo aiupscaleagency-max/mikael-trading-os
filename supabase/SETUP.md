@@ -23,19 +23,7 @@ Efter att projektet skapats:
    - **anon public key**: börjar med `eyJ...`
    - **service_role secret**: börjar med `eyJ...` ⚠️ HEMLIG (bara backend, aldrig frontend)
 
-## 3. Sätt encryption-key för API-nyckel-kryptering
-
-API-nycklar (Anthropic, Binance) ska KRYPTERAS i db, inte plaintext. Kör i Supabase SQL Editor:
-
-```sql
--- Generera en 32-tecken random key (gör en gång, spara säkert!)
--- Du kan generera lokalt: openssl rand -hex 16
-ALTER DATABASE postgres SET app.settings.encryption_key = 'DIN_32_TECKEN_RANDOM_STRING';
-```
-
-Efter detta kan funktionerna `public.encrypt_key()` och `public.decrypt_key()` användas.
-
-## 4. Kör schema-migration
+## 3. Kör schema-migration
 
 I Supabase Dashboard → **SQL Editor** → **New Query**:
 

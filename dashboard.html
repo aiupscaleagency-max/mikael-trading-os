@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Mikael Trading OS — Inference Dashboard</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
 :root{
   --bg:#0a0e17; --card:#111827; --card2:#0f1520; --border:#1e293b;
@@ -1297,6 +1298,16 @@ const CFG = {
   mode: localStorage.getItem("trading_mode") || "demo"
 };
 
+// ── Supabase-konfig (multi-tenant Auth + per-user data) ──
+const SUPABASE_URL = "https://orkuexkzufpklttvsclp.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ya3VleGt6dWZwa2x0dHZzY2xwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcyOTk4NDQsImV4cCI6MjA5Mjg3NTg0NH0.5NQ1pXfxFB8l5USjWhZ2udYXWx7__2KiQSupVgqGy6A";
+const sb = (typeof window !== "undefined" && window.supabase && SUPABASE_URL)
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: true, autoRefreshToken: true, storageKey: "trading-auth" }
+    })
+  : null;
+const useSupabase = !!sb;
+
 const SYMBOLS = {
   crypto: ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT","DOTUSDT","MATICUSDT","LINKUSDT","UNIUSDT","LTCUSDT","ATOMUSDT","NEARUSDT"],
   cross: ["BTC/ETH","ETH/BTC","SOL/BTC","SOL/ETH","BNB/BTC","XRP/BTC"],
@@ -2293,37 +2304,119 @@ async function submitAuth(){
   btn.disabled = true;
   btn.textContent = authMode === "signup" ? "Skapar..." : "Loggar in...";
 
-  // DEMO: vilken email/lösenord funkar. När Fas 2 byggs → Supabase auth här.
-  await new Promise(r=>setTimeout(r, 600));
-
   const isNewSignup = authMode === "signup";
-  saveUser({
-    email,
-    name: name || email.split("@")[0],
-    tier: "family", // default-tier i demo
-    createdAt: Date.now(),
-    onboardingComplete: !isNewSignup, // signup → onboarding krävs; login → user antas redan ha gjort det
-  });
+
+  try {
+    if(useSupabase){
+      // ── SUPABASE AUTH ──
+      if(isNewSignup){
+        const { data, error } = await sb.auth.signUp({
+          email,
+          password,
+          options: { data: { name } }
+        });
+        if(error) throw error;
+        // Trigger på auth-server skapar profile + user_settings + subscription automatiskt
+        if(!data.session){
+          // Email confirmation krävs (om enabled i Supabase)
+          showError("Kolla din mail för att bekräfta kontot, sen logga in.");
+          btn.disabled = false; btn.textContent = "Skapa konto";
+          return;
+        }
+        saveUser({
+          id: data.user.id, email, name,
+          tier: "family", createdAt: Date.now(), onboardingComplete: false,
+        });
+      } else {
+        const { data, error } = await sb.auth.signInWithPassword({ email, password });
+        if(error) throw error;
+        // Hämta profil-info
+        const { data: profile } = await sb.from("profiles").select("*").eq("id", data.user.id).single();
+        saveUser({
+          id: data.user.id,
+          email: data.user.email,
+          name: profile?.name || data.user.email.split("@")[0],
+          tier: profile?.tier || "family",
+          onboardingComplete: profile?.onboarding_complete || false,
+          createdAt: profile?.created_at ? new Date(profile.created_at).getTime() : Date.now(),
+        });
+      }
+    } else {
+      // ── DEMO-LÄGE (utan Supabase) ──
+      await new Promise(r=>setTimeout(r, 600));
+      saveUser({
+        email, name: name || email.split("@")[0],
+        tier: "family", createdAt: Date.now(),
+        onboardingComplete: !isNewSignup,
+      });
+    }
+  } catch (err) {
+    showError(err.message || "Något gick fel — försök igen.");
+    btn.disabled = false;
+    btn.textContent = isNewSignup ? "Skapa konto" : "Logga in";
+    return;
+  }
 
   btn.disabled = false;
   btn.textContent = isNewSignup ? "Skapa konto" : "Logga in";
 
-  if(isNewSignup){
-    // Nya users → kör onboarding-wizard för API-nycklar
-    startOnboarding();
-  } else {
-    // Befintlig user → kolla om onboarding gjort, annars wizard
-    const keys = getUserKeys();
+  if(isNewSignup || !currentUser?.onboardingComplete){
+    // Nya users + users som inte slutfört onboarding → wizard
+    const keys = await loadKeysFromBackend();
     if(!keys.anthropic || !keys.binance_key){
       startOnboarding();
-    } else {
-      setAppState("app");
-      if(typeof postLoginInit === "function") postLoginInit();
+      return;
     }
   }
+  setAppState("app");
+  if(typeof postLoginInit === "function") postLoginInit();
 }
 
-function logout(){
+async function loadKeysFromBackend(){
+  if(useSupabase && currentUser?.id){
+    try {
+      const { data, error } = await sb.from("api_keys").select("*").eq("user_id", currentUser.id).single();
+      if(!error && data){
+        const keys = {
+          anthropic: data.anthropic || "",
+          binance_key: data.binance_key || "",
+          binance_secret: data.binance_secret || "",
+          perplexity: data.perplexity || "",
+          oanda_key: data.oanda_token || "",
+          oanda_account: data.oanda_account || "",
+        };
+        saveUserKeys(keys); // cacha lokalt
+        return keys;
+      }
+    } catch(_){}
+  }
+  return getUserKeys(); // fallback localStorage
+}
+
+async function saveKeysToBackend(keys){
+  if(useSupabase && currentUser?.id){
+    try {
+      await sb.from("api_keys").upsert({
+        user_id: currentUser.id,
+        anthropic: keys.anthropic || null,
+        binance_key: keys.binance_key || null,
+        binance_secret: keys.binance_secret || null,
+        perplexity: keys.perplexity || null,
+        oanda_token: keys.oanda_key || null,
+        oanda_account: keys.oanda_account || null,
+        updated_at: new Date().toISOString(),
+      });
+    } catch(err){
+      console.warn("Failed to save keys to Supabase:", err);
+    }
+  }
+  saveUserKeys(keys); // alltid cacha lokalt också
+}
+
+async function logout(){
+  if(useSupabase){
+    try{ await sb.auth.signOut(); }catch(_){}
+  }
   clearUser();
   setAppState("landing");
 }
@@ -2385,7 +2478,7 @@ function validateOnboardStep(){
   return true; // Steg 3 + 4 är valfria
 }
 
-function nextOnboardStep(){
+async function nextOnboardStep(){
   if(!validateOnboardStep()) return;
   // Spara nuvarande steg
   const keys = getUserKeys();
@@ -2399,7 +2492,7 @@ function nextOnboardStep(){
     keys.oanda_key = document.getElementById("ob-oanda-key").value.trim();
     keys.oanda_account = document.getElementById("ob-oanda-account").value.trim();
   }
-  saveUserKeys(keys);
+  await saveKeysToBackend(keys);
   showOnboardStep(onboardStep + 1);
 }
 
@@ -2407,16 +2500,19 @@ function skipOnboardStep(){
   showOnboardStep(onboardStep + 1);
 }
 
-function finishOnboarding(){
+async function finishOnboarding(){
   // Spara sista steget om värden finns
   const keys = getUserKeys();
   keys.oanda_key = document.getElementById("ob-oanda-key").value.trim();
   keys.oanda_account = document.getElementById("ob-oanda-account").value.trim();
-  saveUserKeys(keys);
+  await saveKeysToBackend(keys);
   // Markera onboarding klart
   if(currentUser){
     currentUser.onboardingComplete = true;
     saveUser(currentUser);
+    if(useSupabase && currentUser.id){
+      try{ await sb.from("profiles").update({ onboarding_complete: true }).eq("id", currentUser.id); }catch(_){}
+    }
   }
   setAppState("app");
   if(typeof postLoginInit === "function") postLoginInit();
@@ -3157,11 +3253,38 @@ async function testConnection(){
 /* ======================================================================
    BOOT
    ====================================================================== */
-function boot(){
+async function boot(){
   // Wire auth-flödet först (oavsett app-state)
   wireAuth();
 
-  // Kolla om användaren är inloggad
+  // Auto-restore Supabase session om finns (sparas i localStorage av sb-client)
+  if(useSupabase){
+    try{
+      const { data: { session } } = await sb.auth.getSession();
+      if(session?.user){
+        // Hämta profil + sätt currentUser
+        const { data: profile } = await sb.from("profiles").select("*").eq("id", session.user.id).single();
+        saveUser({
+          id: session.user.id,
+          email: session.user.email,
+          name: profile?.name || session.user.email.split("@")[0],
+          tier: profile?.tier || "family",
+          onboardingComplete: profile?.onboarding_complete || false,
+          createdAt: profile?.created_at ? new Date(profile.created_at).getTime() : Date.now(),
+        });
+        // Hämta nycklar
+        await loadKeysFromBackend();
+        setAppState("app");
+        updateUserChip();
+        initApp();
+        return;
+      }
+    }catch(err){
+      console.warn("Supabase session restore failed:", err);
+    }
+  }
+
+  // Fallback: localStorage-user (demo-läge)
   const user = loadUser();
   if(user){
     setAppState("app");
@@ -3195,7 +3318,7 @@ function loadKeysIntoSettings(){
   setVal("set-oanda-key", k.oanda_key);
   setVal("set-oanda-account", k.oanda_account);
 }
-function saveKeysFromSettings(){
+async function saveKeysFromSettings(){
   const getVal = (id) => document.getElementById(id)?.value.trim() || "";
   const keys = {
     anthropic: getVal("set-anthropic"),
@@ -3205,12 +3328,20 @@ function saveKeysFromSettings(){
     oanda_key: getVal("set-oanda-key"),
     oanda_account: getVal("set-oanda-account"),
   };
-  saveUserKeys(keys);
   const status = document.getElementById("save-keys-status");
-  if(status){
-    status.textContent = "✓ Sparat";
-    status.style.color = "var(--green)";
-    setTimeout(()=>{ status.textContent = ""; }, 2500);
+  if(status){ status.textContent = "Sparar..."; status.style.color = "var(--label)"; }
+  try {
+    await saveKeysToBackend(keys);
+    if(status){
+      status.textContent = useSupabase ? "✓ Sparat i Supabase (krypterat)" : "✓ Sparat lokalt";
+      status.style.color = "var(--green)";
+      setTimeout(()=>{ status.textContent = ""; }, 2500);
+    }
+  } catch(e){
+    if(status){
+      status.textContent = "❌ " + e.message;
+      status.style.color = "var(--red)";
+    }
   }
   checkKeysSetup();
 }

@@ -7,7 +7,7 @@
 
 -- ── EXTENSIONS ──
 create extension if not exists "uuid-ossp";
-create extension if not exists "pgcrypto";  -- för symmetric encryption av API-nycklar
+-- pgcrypto skippas (kräver superuser för session-key — använder Postgres' encryption-at-rest + RLS istället)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 --  USERS — kompletterar auth.users (Supabase managed) med våra fält
@@ -41,52 +41,28 @@ create trigger on_auth_user_created
   for each row execute function public.handle_new_user();
 
 -- ═══════════════════════════════════════════════════════════════════════════
---  API_KEYS — krypterade per-user-nycklar (Anthropic, Binance, Perplexity, Oanda)
+--  API_KEYS — per-user API-nycklar (Anthropic, Binance, Perplexity, Oanda)
+--
+--  Säkerhet:
+--   1. Postgres krypterar disk-data automatiskt (encryption-at-rest)
+--   2. Row-Level Security: bara auth.uid()=user_id kan läsa
+--   3. HTTPS skyddar in-transit
+--   4. Service-role-key (backend) kan läsa allt — kör endast server-side
+--
+--  Senare upgrade: Supabase Vault för applikations-nivå-kryptering
+--  (kräver Vault-extension setup i Supabase Dashboard)
 -- ═══════════════════════════════════════════════════════════════════════════
 create table public.api_keys (
   user_id uuid primary key references public.profiles(id) on delete cascade,
-  -- Krypterade fält (pgcrypto + master key från env). Aldrig plaintext i db.
-  anthropic_encrypted bytea,
-  binance_key_encrypted bytea,
-  binance_secret_encrypted bytea,
-  perplexity_encrypted bytea,
-  oanda_token_encrypted bytea,
-  oanda_account text,  -- ej känsligt, bara id-string
+  anthropic text,
+  binance_key text,
+  binance_secret text,
+  perplexity text,
+  oanda_token text,
+  oanda_account text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-
--- Helper-funktioner: encrypt/decrypt med master key (sätts via Supabase secret)
--- OBS: master_key måste sättas via Supabase Dashboard → Project Settings → Vault
-create or replace function public.encrypt_key(plaintext text)
-returns bytea
-language plpgsql
-security definer
-as $$
-declare
-  master_key text;
-begin
-  master_key := current_setting('app.settings.encryption_key', true);
-  if master_key is null or master_key = '' then
-    raise exception 'app.settings.encryption_key ej satt — kör: ALTER DATABASE postgres SET app.settings.encryption_key = ''<32-char-string>''';
-  end if;
-  return pgp_sym_encrypt(plaintext, master_key);
-end;
-$$;
-
-create or replace function public.decrypt_key(ciphertext bytea)
-returns text
-language plpgsql
-security definer
-as $$
-declare
-  master_key text;
-begin
-  if ciphertext is null then return null; end if;
-  master_key := current_setting('app.settings.encryption_key', true);
-  return pgp_sym_decrypt(ciphertext, master_key);
-end;
-$$;
 
 -- ═══════════════════════════════════════════════════════════════════════════
 --  USER_SETTINGS — per-user trading-config (mode, risk, symbols osv)
