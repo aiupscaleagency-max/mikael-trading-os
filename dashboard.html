@@ -69,6 +69,12 @@ header{position:sticky;top:0;z-index:100;background:var(--card);border-bottom:1p
 .kill:hover{background:rgba(239,68,68,.2)}
 .pnl{margin-left:auto;font-weight:700}
 .pnl.up{color:var(--green)} .pnl.down{color:var(--red)}
+.paper-balance{padding:6px 12px;background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(6,182,212,.05));border:1.5px solid rgba(16,185,129,.4);border-radius:5px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:.3px;display:flex;align-items:center;gap:6px}
+.paper-balance:hover{filter:brightness(1.15)}
+.paper-balance b{color:#fff;font-weight:800}
+.paper-balance #pb-pnl{font-size:10px;font-weight:600;color:var(--green)}
+.paper-balance #pb-pnl.down{color:var(--red)}
+
 .cost-mini{padding:6px 12px;background:var(--card2);border:1.5px solid var(--border);border-radius:5px;color:var(--label);font-size:12px;font-weight:700;cursor:pointer;transition:border-color .15s;letter-spacing:.3px}
 .cost-mini:hover{border-color:var(--yellow)}
 .cost-mini b{color:var(--yellow);font-weight:700}
@@ -208,6 +214,19 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .team-chat-row .send-btn:hover{background:#0891b2}
 .team-chat-row .send-btn:disabled{opacity:.5;cursor:not-allowed}
 .team-chat-info{margin-top:8px;font-size:10px;color:var(--dim);line-height:1.5}
+
+/* Test-konto hero-card */
+.paper-card{background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(6,182,212,.04));border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:16px 20px}
+.paper-card .pc-row{display:flex;align-items:flex-end;gap:24px;flex-wrap:wrap}
+.paper-card .pc-col{display:flex;flex-direction:column;gap:4px;min-width:90px}
+.paper-card .pc-lbl{font-size:9px;letter-spacing:.4px;text-transform:uppercase;color:var(--label);font-weight:700}
+.paper-card .pc-equity{font-size:28px;font-weight:800;color:#fff;font-family:'SF Mono',monospace;letter-spacing:-.02em}
+.paper-card .pc-pnl{font-size:18px;font-weight:800;font-family:'SF Mono',monospace;color:var(--text)}
+.paper-card .pc-pnl.up{color:var(--green)} .paper-card .pc-pnl.down{color:var(--red)}
+.paper-card .pc-cash{font-size:18px;font-weight:700;font-family:'SF Mono',monospace;color:var(--text)}
+.paper-card .pc-trades,.paper-card .pc-winrate{font-size:18px;font-weight:700;font-family:'SF Mono',monospace;color:var(--text)}
+.paper-card .pc-reset{margin-left:auto;padding:6px 12px;background:transparent;border:1px solid var(--border);color:var(--label);border-radius:4px;font-size:10px;font-weight:700;letter-spacing:.4px;cursor:pointer;text-transform:uppercase;align-self:center}
+.paper-card .pc-reset:hover{color:var(--red);border-color:var(--red)}
 
 /* Trades-sida tabeller */
 .tt-tbl{display:grid;gap:6px;font-size:12px;margin-top:8px}
@@ -975,6 +994,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   <button class="kill" id="kill-btn">⏻ KILL SWITCH</button>
   <span class="pnl up" id="pnl">+$0.00 (0.00%)</span>
   <button class="run-btn" id="run-btn">▶ Kör analys</button>
+  <button class="paper-balance" id="paper-balance" title="Test-konto saldo (klicka för Trades-sidan)">📊 <b id="pb-equity">$10,000</b> <span id="pb-pnl">+$0.00</span></button>
   <button class="cost-mini" id="cost-mini" title="Klicka för detaljerad kostnadsvy">💰 <b id="cost-today">$0.00</b> idag</button>
   <div class="user-wrap">
     <button class="user-chip" id="user-chip" title="Konto-meny">
@@ -1261,6 +1281,37 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <div style="display:grid;grid-template-columns:1fr;gap:10px;margin:0 10px">
+    <!-- Test-konto hero-card -->
+    <div class="paper-card" id="paper-card">
+      <div class="pc-row">
+        <div class="pc-col">
+          <div class="pc-lbl">📊 TEST-KONTO SALDO</div>
+          <div class="pc-equity" id="pc-equity">$10,000.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">REALISERAT PnL</div>
+          <div class="pc-pnl" id="pc-realized">+$0.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">UNREALIZED (öppna)</div>
+          <div class="pc-pnl" id="pc-unrealized">+$0.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">CASH FRI</div>
+          <div class="pc-cash" id="pc-cash">$10,000.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">TRADES (W/L)</div>
+          <div class="pc-trades" id="pc-trades">0/0</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">WIN-RATE</div>
+          <div class="pc-winrate" id="pc-winrate">–</div>
+        </div>
+        <button class="pc-reset" id="pc-reset" title="Återställ test-konto till $10 000">↻ Reset</button>
+      </div>
+    </div>
+
     <div class="card">
       <h3>🟢 Aktiva positioner <span id="pos-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span></h3>
       <div id="trade-positions-table"></div>
@@ -1788,6 +1839,8 @@ function tick(){
   if(document.getElementById("page-trades")?.classList.contains("active")){
     renderTradesPage();
   }
+  // Paper-balance i header uppdateras alltid
+  renderPaperBadge();
 }
 
 function updateTickerStrip(){
@@ -2972,8 +3025,75 @@ function simulateTeamResponse(instr){
   return { text: `Albert: ${pick(["Bra fråga","Värt att överväga","Intressant"])}. ${pick(["Cykel-fas accumulation","Marknaden ser ok ut","Sentiment skvalpar"])}.\nHanna: ${pick(["Inget aktion just nu","Kan kolla närmare om du vill","Ge mig konkret order så kör jag"])}.${testNote}` };
 }
 
-// Simulera exekvering av en trade — lägg till position i STATE
+// Test-konto (paper money) — startsaldo $10 000, persisteras i localStorage
+const PAPER_START_BALANCE = 10000;
+
+function loadPaperAccount(){
+  if(STATE.paperAccount) return STATE.paperAccount;
+  try {
+    const saved = localStorage.getItem("trading_paper_account");
+    if(saved){
+      STATE.paperAccount = JSON.parse(saved);
+      return STATE.paperAccount;
+    }
+  } catch(_){}
+  STATE.paperAccount = {
+    startBalance: PAPER_START_BALANCE,
+    cash: PAPER_START_BALANCE,        // tillgängligt för nya trades
+    realizedPnl: 0,                   // total realiserad vinst/förlust
+    totalTrades: 0,
+    winningTrades: 0,
+    losingTrades: 0,
+    createdAt: Date.now(),
+  };
+  savePaperAccount();
+  return STATE.paperAccount;
+}
+
+function savePaperAccount(){
+  try { localStorage.setItem("trading_paper_account", JSON.stringify(STATE.paperAccount)); }
+  catch(_){}
+}
+
+function resetPaperAccount(){
+  STATE.paperAccount = {
+    startBalance: PAPER_START_BALANCE,
+    cash: PAPER_START_BALANCE,
+    realizedPnl: 0,
+    totalTrades: 0,
+    winningTrades: 0,
+    losingTrades: 0,
+    createdAt: Date.now(),
+  };
+  STATE.tradePositions = [];
+  STATE.tradeHistory = [];
+  STATE.tradeDecisions = [];
+  savePaperAccount();
+  renderTradesPage();
+  renderPaperBadge();
+}
+
+// Beräkna unrealized PnL från öppna positioner
+function calcUnrealizedPnl(){
+  const positions = STATE.tradePositions || [];
+  return positions.reduce((s,p)=>{
+    const cur = STATE.livePrices[p.sym] ?? p.entry;
+    return s + (cur - p.entry) * p.qty * (p.side === "BUY" ? 1 : -1);
+  }, 0);
+}
+
+function calcTotalEquity(){
+  const acc = loadPaperAccount();
+  return acc.cash + (STATE.tradePositions||[]).reduce((s,p)=>s+p.amount, 0) + calcUnrealizedPnl();
+}
+
+// Simulera exekvering av en trade — drar från test-konto
 function simulateExecuteTrade(sym, side, amount){
+  const acc = loadPaperAccount();
+  if(amount > acc.cash){
+    log_warn(`Inte nog cash i paper-account: $${acc.cash.toFixed(2)} < $${amount}`);
+    return null;
+  }
   const entry = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
   const qty = amount / entry;
   const trade = {
@@ -2993,8 +3113,47 @@ function simulateExecuteTrade(sym, side, amount){
     reasoning: "Vald av Hanna efter team-analys via chat",
     source: "chat"
   });
+  // Drag från cash
+  acc.cash -= amount;
+  acc.totalTrades++;
+  savePaperAccount();
   renderTradesPage();
+  renderPaperBadge();
   return trade;
+}
+
+function log_warn(msg){ console.warn("[PaperAcct]", msg); }
+
+// Render paper-balance i header + på Trades-sidan
+function renderPaperBadge(){
+  const acc = loadPaperAccount();
+  const unrealized = calcUnrealizedPnl();
+  const equity = calcTotalEquity();
+  const totalPnl = acc.realizedPnl + unrealized;
+  const pnlPct = (totalPnl / acc.startBalance) * 100;
+  const fmt = n => "$" + n.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
+  // Header-mini
+  const hdrEq = document.getElementById("pb-equity");
+  const hdrPnl = document.getElementById("pb-pnl");
+  if(hdrEq) hdrEq.textContent = fmt(equity);
+  if(hdrPnl){
+    hdrPnl.textContent = `${totalPnl>=0?'+':''}${fmt(totalPnl).replace('$','$')}`;
+    hdrPnl.className = totalPnl >= 0 ? "" : "down";
+  }
+  // Hero-card
+  const setVal = (id, val, cls) => {
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.textContent = val;
+    if(cls !== undefined){ el.className = cls; }
+  };
+  setVal("pc-equity", fmt(equity));
+  setVal("pc-realized", `${acc.realizedPnl>=0?'+':''}${fmt(acc.realizedPnl)}`, `pc-pnl ${acc.realizedPnl>=0?'up':'down'}`);
+  setVal("pc-unrealized", `${unrealized>=0?'+':''}${fmt(unrealized)}`, `pc-pnl ${unrealized>=0?'up':'down'}`);
+  setVal("pc-cash", fmt(acc.cash));
+  setVal("pc-trades", `${acc.winningTrades}/${acc.losingTrades}`);
+  const totalClosed = acc.winningTrades + acc.losingTrades;
+  setVal("pc-winrate", totalClosed > 0 ? `${Math.round(acc.winningTrades/totalClosed*100)}%` : "–");
 }
 
 // Render Trades-sidan (kallas vid trade-events + från tick för live PnL)
@@ -3108,6 +3267,10 @@ function closePosition(id){
   const p = positions[idx];
   const cur = STATE.livePrices[p.sym] ?? p.entry;
   const pnl = (cur - p.entry) * p.qty * (p.side === "BUY" ? 1 : -1);
+  const acc = loadPaperAccount();
+  acc.cash += p.amount + pnl;
+  acc.realizedPnl += pnl;
+  if(pnl > 0) acc.winningTrades++; else if(pnl < 0) acc.losingTrades++;
   if(!STATE.tradeHistory) STATE.tradeHistory = [];
   STATE.tradeHistory.unshift({...p, exit:cur, pnl, status:"closed", closedAt:Date.now()});
   STATE.tradeDecisions.unshift({
@@ -3117,22 +3280,28 @@ function closePosition(id){
     source: "user"
   });
   positions.splice(idx, 1);
+  savePaperAccount();
   renderTradesPage();
+  renderPaperBadge();
 }
 
-// Stäng alla positioner — beräkna PnL och flytta till history
+// Stäng alla positioner — beräkna PnL, flytta till history, returnera cash + PnL
 function closeAllPositions(){
   if(!STATE.tradePositions) STATE.tradePositions = [];
+  const acc = loadPaperAccount();
   const closed = [];
   for(const p of STATE.tradePositions){
     const cur = STATE.livePrices[p.sym] ?? p.entry;
-    const pnl = (cur - p.entry) * p.qty;
+    const pnl = (cur - p.entry) * p.qty * (p.side === "BUY" ? 1 : -1);
     closed.push({...p, exit:cur, pnl, status:"closed", closedAt:Date.now()});
+    // Returnera trade-amount + PnL till cash
+    acc.cash += p.amount + pnl;
+    acc.realizedPnl += pnl;
+    if(pnl > 0) acc.winningTrades++; else if(pnl < 0) acc.losingTrades++;
   }
   if(!STATE.tradeHistory) STATE.tradeHistory = [];
   STATE.tradeHistory.unshift(...closed);
   STATE.tradePositions = [];
-  // Logg-decision
   if(closed.length){
     STATE.tradeDecisions.unshift({
       timestamp: Date.now(),
@@ -3142,7 +3311,9 @@ function closeAllPositions(){
       source: "chat"
     });
   }
+  savePaperAccount();
   renderTradesPage();
+  renderPaperBadge();
   return closed;
 }
 
@@ -3831,7 +4002,16 @@ function initApp(){
   wireSidebar();
   wireTeamChat();
   renderLiveStrips();
+  loadPaperAccount();
   renderTradesPage();
+  renderPaperBadge();
+  // Wire paper-balance interaktion
+  document.getElementById("paper-balance")?.addEventListener("click", ()=>switchPage("trades"));
+  document.getElementById("pc-reset")?.addEventListener("click", ()=>{
+    if(confirm("Återställ test-konto till $10 000? All trade-historik förloras.")){
+      resetPaperAccount();
+    }
+  });
   loadInitialPage();
   if(!window._tickStarted){
     setInterval(tick, 2000);
