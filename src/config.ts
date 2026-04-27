@@ -50,6 +50,13 @@ const schema = z.object({
   // ── Perplexity (Lars — Research-Analytiker) ──
   PERPLEXITY_API_KEY: z.string().default(""),
 
+  // ── Supabase (multi-tenant, server-side service-role) ──
+  SUPABASE_URL: z.string().default(""),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().default(""),
+  // Admin-mode: när satt, backend kör som denna user (läser deras nycklar
+  // från Supabase istället för .env). Lämna tom för fallback till .env.
+  SUPABASE_USER_ID: z.string().default(""),
+
   // ── Oanda (Forex-broker) ──
   OANDA_API_KEY: z.string().default(""),
   OANDA_ACCOUNT_ID: z.string().default(""),
@@ -185,6 +192,13 @@ export const config = {
   perplexity: {
     enabled: hasPerplexity,
     apiKey: env.PERPLEXITY_API_KEY,
+  },
+
+  supabase: {
+    url: env.SUPABASE_URL,
+    serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
+    userId: env.SUPABASE_USER_ID,
+    enabled: !!(env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY),
   },
 
   risk: {
