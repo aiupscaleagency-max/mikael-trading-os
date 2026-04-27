@@ -108,16 +108,22 @@ export function createDefaultSchedule(config: Config): {
   morningBriefing: Omit<ScheduledTask, "execute">;
   dailyPnl: Omit<ScheduledTask, "execute">;
 } {
+  // KRITISKT: lastRun = NU vid boot (inte 0).
+  // Annars skulle elapsed = (now - 0) / 1000 = enormous → alla tasks
+  // triggas omedelbart vid scheduler-start, vilket kostar credits utan
+  // att vara schemalagt. Med Date.now() väntar vi tills första riktiga
+  // intervallet har passerat.
+  const bootTime = Date.now();
   return {
     agentLoop: {
       name: "Agent analys-loop",
       intervalSeconds: config.loopIntervalSeconds,
-      lastRun: 0,
+      lastRun: bootTime,
     },
     positionScan: {
       name: "Position-scan (trailing stop)",
       intervalSeconds: config.scanIntervalSeconds,
-      lastRun: 0,
+      lastRun: bootTime,
     },
     morningBriefing: {
       name: "Morning Briefing (Rule of 3)",
