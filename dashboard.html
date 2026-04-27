@@ -395,6 +395,106 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
   main{grid-template-columns:1fr}
   #chart{height:360px}
 }
+
+/* ═══ LANDING / AUTH SCREENS — visning per app-state ═══ */
+.landing,.auth-screen{display:none !important}
+body.app-state-landing .landing{display:flex !important}
+body.app-state-auth .auth-screen{display:flex !important}
+/* Dölj app-UI på landing/auth */
+body.app-state-landing .app-shell,
+body.app-state-landing header,
+body.app-state-landing .ticker-strip,
+body.app-state-landing .fc-toggle,
+body.app-state-landing .fc-panel,
+body.app-state-auth .app-shell,
+body.app-state-auth header,
+body.app-state-auth .ticker-strip,
+body.app-state-auth .fc-toggle,
+body.app-state-auth .fc-panel{display:none !important}
+
+.landing{min-height:100vh;background:radial-gradient(circle at 20% 0%, rgba(6,182,212,.08), transparent 50%),radial-gradient(circle at 80% 80%, rgba(59,130,246,.06), transparent 50%),var(--bg);display:flex;flex-direction:column}
+.landing-nav{display:flex;align-items:center;padding:18px 32px;gap:18px}
+.landing-nav .brand{font-size:18px}
+.landing-nav .ln-spacer{flex:1}
+.landing-nav button{padding:9px 20px;border-radius:6px;font-weight:700;font-size:13px;letter-spacing:.4px;border:none;cursor:pointer}
+.landing-nav .btn-login{background:transparent;color:var(--text);border:1.5px solid var(--border)}
+.landing-nav .btn-login:hover{border-color:var(--cyan);color:var(--cyan)}
+.landing-nav .btn-signup{background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;box-shadow:0 0 0 1.5px rgba(6,182,212,.5)}
+.landing-nav .btn-signup:hover{filter:brightness(1.1)}
+
+.landing-hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 24px;text-align:center}
+.landing-hero h1{font-size:48px;font-weight:800;color:#fff;letter-spacing:-.5px;line-height:1.1;margin-bottom:14px;max-width:800px}
+.landing-hero h1 .grad{background:linear-gradient(135deg,var(--cyan),var(--blue));-webkit-background-clip:text;background-clip:text;color:transparent}
+.landing-hero .sub{font-size:18px;color:var(--label);max-width:640px;margin-bottom:32px;line-height:1.6}
+.landing-hero .cta-row{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
+.landing-hero .cta-primary{padding:14px 28px;background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;border-radius:7px;font-weight:800;font-size:14px;letter-spacing:.5px;border:none;cursor:pointer;box-shadow:0 4px 16px rgba(6,182,212,.25)}
+.landing-hero .cta-primary:hover{filter:brightness(1.1);transform:translateY(-1px)}
+.landing-hero .cta-secondary{padding:14px 28px;background:transparent;color:var(--text);border-radius:7px;font-weight:700;font-size:14px;border:1.5px solid var(--border);cursor:pointer}
+.landing-hero .cta-secondary:hover{border-color:var(--cyan);color:var(--cyan)}
+
+.landing-features{padding:60px 24px;background:var(--card2);border-top:1px solid var(--border)}
+.landing-features h2{font-size:24px;font-weight:800;color:#fff;text-align:center;margin-bottom:8px;letter-spacing:.3px}
+.landing-features .lf-sub{text-align:center;color:var(--label);margin-bottom:32px;font-size:14px}
+.landing-features .lf-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;max-width:1100px;margin:0 auto}
+.landing-features .lf-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;transition:border-color .15s}
+.landing-features .lf-card:hover{border-color:var(--cyan)}
+.landing-features .lf-card .lf-ico{font-size:28px;margin-bottom:10px}
+.landing-features .lf-card h3{font-size:14px;font-weight:800;color:#fff;letter-spacing:.3px;margin-bottom:6px;text-transform:none}
+.landing-features .lf-card p{font-size:12px;color:var(--label);line-height:1.6}
+
+.landing-pricing{padding:60px 24px;text-align:center}
+.landing-pricing h2{font-size:24px;font-weight:800;color:#fff;margin-bottom:8px}
+.landing-pricing .lp-sub{color:var(--label);margin-bottom:32px;font-size:14px}
+.landing-pricing .lp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;max-width:980px;margin:0 auto}
+.landing-pricing .lp-tier{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px 20px;text-align:left;transition:border-color .15s}
+.landing-pricing .lp-tier:hover{border-color:var(--cyan)}
+.landing-pricing .lp-tier.featured{border-color:var(--cyan);box-shadow:0 0 0 1px var(--cyan)}
+.landing-pricing .lp-tier .lp-name{font-size:11px;font-weight:800;letter-spacing:.7px;color:var(--cyan);text-transform:uppercase;margin-bottom:4px}
+.landing-pricing .lp-tier .lp-price{font-size:30px;font-weight:800;color:#fff;margin-bottom:4px}
+.landing-pricing .lp-tier .lp-price .lp-mo{font-size:13px;color:var(--dim);font-weight:500}
+.landing-pricing .lp-tier ul{list-style:none;padding:0;margin:14px 0;font-size:12px;color:var(--label);line-height:1.8}
+.landing-pricing .lp-tier ul li::before{content:"✓ ";color:var(--green);font-weight:700}
+.landing-pricing .lp-tier button{width:100%;padding:10px;border-radius:5px;font-weight:700;letter-spacing:.3px;border:1.5px solid var(--border);background:transparent;color:var(--text);cursor:pointer;font-size:12px}
+.landing-pricing .lp-tier button:hover{border-color:var(--cyan);color:var(--cyan)}
+.landing-pricing .lp-tier.featured button{background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;border:none}
+
+.landing-foot{padding:30px;text-align:center;color:var(--dim);font-size:11px;border-top:1px solid var(--border)}
+
+/* AUTH SCREEN */
+.auth-screen{min-height:100vh;background:radial-gradient(circle at 50% 30%, rgba(6,182,212,.1), transparent 50%),var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px}
+.auth-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:36px;width:100%;max-width:420px;box-shadow:0 16px 48px rgba(0,0,0,.4)}
+.auth-card .auth-brand{font-size:18px;font-weight:800;color:var(--cyan);text-align:center;letter-spacing:.7px;margin-bottom:6px;text-shadow:0 0 16px rgba(6,182,212,.4)}
+.auth-card .auth-brand::before{content:"⬢ ";color:var(--purple)}
+.auth-card .auth-tag{text-align:center;color:var(--label);font-size:12px;margin-bottom:24px}
+.auth-tabs{display:flex;background:var(--card2);border-radius:6px;padding:3px;margin-bottom:18px}
+.auth-tabs button{flex:1;padding:8px;font-size:12px;font-weight:700;letter-spacing:.4px;color:var(--dim);background:transparent;border:none;border-radius:4px;cursor:pointer;text-transform:uppercase}
+.auth-tabs button.active{background:var(--card);color:var(--cyan);box-shadow:0 1px 0 rgba(0,0,0,.3)}
+.auth-form label{display:block;font-size:11px;color:var(--label);font-weight:600;margin-bottom:5px;letter-spacing:.3px;text-transform:uppercase}
+.auth-form input{width:100%;padding:11px 12px;background:var(--card2);color:var(--text);border:1.5px solid var(--border);border-radius:5px;font-size:13px;outline:none;margin-bottom:14px;transition:border-color .15s}
+.auth-form input:focus{border-color:var(--cyan)}
+.auth-form .auth-submit{width:100%;padding:12px;background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;border:none;border-radius:6px;font-size:13px;font-weight:800;letter-spacing:.5px;cursor:pointer;text-transform:uppercase;margin-top:6px}
+.auth-form .auth-submit:hover{filter:brightness(1.1)}
+.auth-form .auth-submit:disabled{opacity:.5;cursor:not-allowed}
+.auth-form .auth-error{color:var(--red);font-size:11px;padding:8px 10px;background:rgba(239,68,68,.1);border:1px solid var(--red);border-radius:4px;margin-bottom:12px;display:none}
+.auth-form .auth-error.on{display:block}
+.auth-form .auth-help{font-size:11px;color:var(--dim);margin-top:14px;text-align:center;line-height:1.5}
+.auth-form .auth-help a{color:var(--cyan);text-decoration:none;cursor:pointer}
+.auth-form .auth-help a:hover{text-decoration:underline}
+.auth-back{display:block;text-align:center;margin-top:14px;color:var(--dim);font-size:11px;cursor:pointer;text-decoration:none}
+.auth-back:hover{color:var(--cyan)}
+
+/* USER MENU i header (när inloggad) */
+.user-chip{display:flex;align-items:center;gap:8px;padding:5px 12px;background:var(--card2);border:1px solid var(--border);border-radius:5px;color:var(--label);font-size:11px;font-weight:700;cursor:pointer}
+.user-chip:hover{border-color:var(--cyan)}
+.user-chip .uc-avatar{width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:10px}
+.user-chip .uc-name{color:#fff;font-weight:700}
+.user-menu{position:absolute;top:100%;right:0;margin-top:6px;background:var(--card);border:1px solid var(--border);border-radius:6px;padding:6px;min-width:180px;display:none;z-index:120;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.user-menu.on{display:block}
+.user-menu button{display:block;width:100%;padding:8px 10px;text-align:left;background:transparent;color:var(--text);border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600}
+.user-menu button:hover{background:var(--card2)}
+.user-menu .um-logout{color:var(--red)}
+.user-menu .um-divider{height:1px;background:var(--border);margin:4px 0}
+.user-wrap{position:relative}
 @media (max-width:767px){
   header{font-size:11px;gap:8px;padding:8px}
   .brand{font-size:12px}
@@ -403,7 +503,154 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 }
 </style>
 </head>
-<body>
+<body class="app-state-landing">
+
+<!-- ═══ LANDING-SIDA ═══ -->
+<div class="landing">
+  <nav class="landing-nav">
+    <span class="brand">MIKAEL TRADING OS</span>
+    <span class="ln-spacer"></span>
+    <button class="btn-login" id="land-login">Logga in</button>
+    <button class="btn-signup" id="land-signup">Skapa konto</button>
+  </nav>
+
+  <section class="landing-hero">
+    <h1>AI-driven trading,<br><span class="grad">10 personer i ditt team</span></h1>
+    <p class="sub">
+      Multi-asset trading-system byggt på Claude. Lars researchar nyheterna,
+      8 specialister analyserar, Albert ger strategiskt djup, Hanna lägger ordrarna.
+      Crypto, forex och råvaror — autonomt eller på din kommando.
+    </p>
+    <div class="cta-row">
+      <button class="cta-primary" id="hero-signup">Kom igång gratis →</button>
+      <button class="cta-secondary" id="hero-login">Jag har redan konto</button>
+    </div>
+  </section>
+
+  <section class="landing-features">
+    <h2>Varför Mikael Trading OS</h2>
+    <p class="lf-sub">Inte en bot. Ett team som tänker tillsammans.</p>
+    <div class="lf-grid">
+      <div class="lf-card">
+        <div class="lf-ico">🧠</div>
+        <h3>10 specialiserade agenter</h3>
+        <p>Markus (makro), Tomas (teknisk), Sara (sentiment), Rasmus (risk), Karin (kvant), Petra (portfölj), Emma (exekvering), Albert (advisor) och Hanna (head trader). Plus Lars som research-analytiker.</p>
+      </div>
+      <div class="lf-card">
+        <div class="lf-ico">⚡</div>
+        <h3>Autonom + manuell</h3>
+        <p>Schemalagda sessions var 12:e timme. Eller chatta med teamet i realtid: "Köp BTC för $50" — Hanna lägger ordern.</p>
+      </div>
+      <div class="lf-card">
+        <div class="lf-ico">🛡️</div>
+        <h3>Hård risk-kontroll</h3>
+        <p>Rasmus har vetorätt över Hanna. Kill-switch, max position size, dagslimit, IP-whitelist. Cap på AI-spend så det inte rusar.</p>
+      </div>
+      <div class="lf-card">
+        <div class="lf-ico">📊</div>
+        <h3>Crypto + Forex</h3>
+        <p>Binance för crypto-spot, Oanda för forex (EUR/USD, GBP/USD). 15+ kryptopar och 9 valutapar out-of-the-box.</p>
+      </div>
+      <div class="lf-card">
+        <div class="lf-ico">💬</div>
+        <h3>Direkt kommunikation</h3>
+        <p>Klicka på vilken agent som helst, ställ frågor, utmana deras logik. Hanna förklarar varje beslut. Du har alltid kontrollen.</p>
+      </div>
+      <div class="lf-card">
+        <div class="lf-ico">🔬</div>
+        <h3>Test → Propose → Live</h3>
+        <p>Tre lägen: testa på testnet, låt teamet föreslå för manuell godkänning, eller kör autonomt med riktiga pengar. Du väljer.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="landing-pricing" id="pricing">
+    <h2>Pris</h2>
+    <p class="lp-sub">Du betalar för software-användningen — du behåller 100% av dina trades.</p>
+    <div class="lp-grid">
+      <div class="lp-tier">
+        <div class="lp-name">Family &amp; Friends</div>
+        <div class="lp-price">Gratis<span class="lp-mo"> · invite-only</span></div>
+        <ul>
+          <li>Alla agenter</li>
+          <li>1 broker (Binance)</li>
+          <li>5 symboler</li>
+          <li>Test + Propose</li>
+        </ul>
+        <button class="land-cta-signup">Be om inbjudan</button>
+      </div>
+      <div class="lp-tier">
+        <div class="lp-name">Starter</div>
+        <div class="lp-price">$29<span class="lp-mo"> /månad</span></div>
+        <ul>
+          <li>50 AI-decisions/mån</li>
+          <li>1 broker</li>
+          <li>5 symboler</li>
+          <li>Test + Propose</li>
+        </ul>
+        <button class="land-cta-signup">Starta</button>
+      </div>
+      <div class="lp-tier featured">
+        <div class="lp-name">Pro · populärast</div>
+        <div class="lp-price">$99<span class="lp-mo"> /månad</span></div>
+        <ul>
+          <li>200 AI-decisions/mån</li>
+          <li>Alla brokers</li>
+          <li>Obegränsade symboler</li>
+          <li>Live trading</li>
+          <li>Lars (Perplexity)</li>
+        </ul>
+        <button class="land-cta-signup">Starta Pro</button>
+      </div>
+      <div class="lp-tier">
+        <div class="lp-name">Enterprise</div>
+        <div class="lp-price">$299<span class="lp-mo"> /månad</span></div>
+        <ul>
+          <li>Obegränsade decisions</li>
+          <li>Custom prompts</li>
+          <li>Dedicated support</li>
+          <li>SLA</li>
+        </ul>
+        <button class="land-cta-signup">Kontakta oss</button>
+      </div>
+    </div>
+  </section>
+
+  <footer class="landing-foot">
+    © 2026 AI Upscale Agency · Mikael Trading OS · Bygger på Claude API · Säljer mjukvara, inte investmentråd
+  </footer>
+</div>
+
+<!-- ═══ AUTH-SCREEN (login + signup) ═══ -->
+<div class="auth-screen">
+  <div class="auth-card">
+    <div class="auth-brand">MIKAEL TRADING OS</div>
+    <p class="auth-tag">10 AI-agenter, ditt trading-team</p>
+    <div class="auth-tabs" id="auth-tabs">
+      <button class="active" data-tab="login">Logga in</button>
+      <button data-tab="signup">Skapa konto</button>
+    </div>
+    <form class="auth-form" id="auth-form" onsubmit="return false">
+      <div class="auth-error" id="auth-error"></div>
+      <div id="auth-name-row" style="display:none">
+        <label>Namn</label>
+        <input type="text" id="auth-name" placeholder="Ditt namn" autocomplete="name" />
+      </div>
+      <label>E-post</label>
+      <input type="email" id="auth-email" placeholder="du@exempel.se" autocomplete="email" required />
+      <label>Lösenord</label>
+      <input type="password" id="auth-password" placeholder="Minst 8 tecken" autocomplete="current-password" required />
+      <button type="submit" class="auth-submit" id="auth-submit">Logga in</button>
+      <p class="auth-help" id="auth-help">
+        Inget konto? <a id="auth-switch-signup">Skapa konto</a>
+      </p>
+      <p class="auth-help" style="margin-top:6px;font-size:10px;color:var(--dim)">
+        🔒 Demo-läge: vilken email + lösenord (8+ tecken) funkar. Riktig auth via Supabase i Fas 2.
+      </p>
+    </form>
+    <a class="auth-back" id="auth-back">← Tillbaka till startsidan</a>
+  </div>
+</div>
 
 <header>
   <span class="brand">MIKAEL TRADING OS</span>
@@ -428,6 +675,19 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
   <span class="pnl up" id="pnl">+$0.00 (0.00%)</span>
   <button class="run-btn" id="run-btn">▶ Kör analys</button>
   <button class="cost-mini" id="cost-mini" title="Klicka för detaljerad kostnadsvy">💰 <b id="cost-today">$0.00</b> idag</button>
+  <div class="user-wrap">
+    <button class="user-chip" id="user-chip" title="Konto-meny">
+      <span class="uc-avatar" id="uc-avatar">M</span>
+      <span class="uc-name" id="uc-name">User</span>
+      <span style="color:var(--dim);font-size:9px">▾</span>
+    </button>
+    <div class="user-menu" id="user-menu">
+      <button id="um-account">👤 Mitt konto</button>
+      <button id="um-billing">💳 Billing</button>
+      <div class="um-divider"></div>
+      <button class="um-logout" id="um-logout">⏻ Logga ut</button>
+    </div>
+  </div>
 </header>
 
 <div class="app-shell">
@@ -1754,6 +2014,144 @@ function simulateAgentAnswer(key, q, history){
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
 /* ======================================================================
+   AUTH — landing / login / signup / app state-maskin
+   ====================================================================== */
+let authMode = "login"; // "login" | "signup"
+let currentUser = null;
+
+function setAppState(state){
+  // state: "landing" | "auth" | "app"
+  document.body.classList.remove("app-state-landing","app-state-auth","app-state-app");
+  document.body.classList.add("app-state-"+state);
+}
+
+function loadUser(){
+  try{
+    const raw = localStorage.getItem("trading_user");
+    if(raw){ currentUser = JSON.parse(raw); return currentUser; }
+  }catch(_){}
+  return null;
+}
+
+function saveUser(user){
+  currentUser = user;
+  try{ localStorage.setItem("trading_user", JSON.stringify(user)); }catch(_){}
+  updateUserChip();
+}
+
+function clearUser(){
+  currentUser = null;
+  try{ localStorage.removeItem("trading_user"); }catch(_){}
+}
+
+function updateUserChip(){
+  if(!currentUser) return;
+  const initial = (currentUser.name || currentUser.email || "U")[0].toUpperCase();
+  const display = currentUser.name || currentUser.email.split("@")[0];
+  const av = document.getElementById("uc-avatar");
+  const nm = document.getElementById("uc-name");
+  if(av) av.textContent = initial;
+  if(nm) nm.textContent = display;
+}
+
+function showAuth(mode){
+  authMode = mode || "login";
+  setAppState("auth");
+  // Toggla tabs
+  document.querySelectorAll("#auth-tabs button").forEach(b=>{
+    b.classList.toggle("active", b.dataset.tab === authMode);
+  });
+  document.getElementById("auth-name-row").style.display = authMode === "signup" ? "block" : "none";
+  document.getElementById("auth-submit").textContent = authMode === "signup" ? "Skapa konto" : "Logga in";
+  document.getElementById("auth-help").innerHTML = authMode === "signup"
+    ? `Har du redan konto? <a id="auth-switch-login">Logga in</a>`
+    : `Inget konto? <a id="auth-switch-signup">Skapa konto</a>`;
+  document.getElementById("auth-error").classList.remove("on");
+  // Re-wire switch-länkar (innerHTML byter)
+  document.getElementById("auth-switch-signup")?.addEventListener("click", ()=>showAuth("signup"));
+  document.getElementById("auth-switch-login")?.addEventListener("click", ()=>showAuth("login"));
+  setTimeout(()=>document.getElementById("auth-email").focus(), 50);
+}
+
+function showError(msg){
+  const el = document.getElementById("auth-error");
+  el.textContent = msg;
+  el.classList.add("on");
+}
+
+async function submitAuth(){
+  const email = document.getElementById("auth-email").value.trim();
+  const password = document.getElementById("auth-password").value;
+  const name = document.getElementById("auth-name").value.trim();
+
+  if(!email || !email.includes("@")) return showError("Ogiltig e-postadress.");
+  if(!password || password.length < 8) return showError("Lösenord måste vara minst 8 tecken.");
+  if(authMode === "signup" && !name) return showError("Ange ditt namn.");
+
+  const btn = document.getElementById("auth-submit");
+  btn.disabled = true;
+  btn.textContent = authMode === "signup" ? "Skapar..." : "Loggar in...";
+
+  // DEMO: vilken email/lösenord funkar. När Fas 2 byggs → Supabase auth här.
+  await new Promise(r=>setTimeout(r, 600));
+
+  saveUser({
+    email,
+    name: name || email.split("@")[0],
+    tier: "family", // default-tier i demo
+    createdAt: Date.now(),
+  });
+
+  btn.disabled = false;
+  btn.textContent = authMode === "signup" ? "Skapa konto" : "Logga in";
+  setAppState("app");
+  // Initiera app-funktioner som behöver DOM-element
+  if(typeof postLoginInit === "function") postLoginInit();
+}
+
+function logout(){
+  clearUser();
+  setAppState("landing");
+}
+
+function wireAuth(){
+  // Landing → auth
+  document.getElementById("land-login")?.addEventListener("click", ()=>showAuth("login"));
+  document.getElementById("land-signup")?.addEventListener("click", ()=>showAuth("signup"));
+  document.getElementById("hero-login")?.addEventListener("click", ()=>showAuth("login"));
+  document.getElementById("hero-signup")?.addEventListener("click", ()=>showAuth("signup"));
+  document.querySelectorAll(".land-cta-signup").forEach(b=>b.addEventListener("click", ()=>showAuth("signup")));
+
+  // Auth tabs
+  document.querySelectorAll("#auth-tabs button").forEach(b=>{
+    b.addEventListener("click", ()=>showAuth(b.dataset.tab));
+  });
+  document.getElementById("auth-form")?.addEventListener("submit", submitAuth);
+  document.getElementById("auth-submit")?.addEventListener("click", submitAuth);
+  document.getElementById("auth-back")?.addEventListener("click", ()=>setAppState("landing"));
+  document.getElementById("auth-switch-signup")?.addEventListener("click", ()=>showAuth("signup"));
+  document.getElementById("auth-switch-login")?.addEventListener("click", ()=>showAuth("login"));
+
+  // User-chip menu
+  document.getElementById("user-chip")?.addEventListener("click", e=>{
+    e.stopPropagation();
+    document.getElementById("user-menu").classList.toggle("on");
+  });
+  document.addEventListener("click", e=>{
+    if(!e.target.closest(".user-wrap")) document.getElementById("user-menu")?.classList.remove("on");
+  });
+  document.getElementById("um-logout")?.addEventListener("click", logout);
+  document.getElementById("um-account")?.addEventListener("click", ()=>{
+    document.getElementById("user-menu").classList.remove("on");
+    switchPage("settings");
+  });
+  document.getElementById("um-billing")?.addEventListener("click", ()=>{
+    document.getElementById("user-menu").classList.remove("on");
+    switchPage("cost");
+  });
+}
+
+/* ======================================================================
    TEAM CHAT — direktinstruktioner till hela teamet
    ====================================================================== */
 const teamChatLog = []; // {role:"user"|"team"|"system", text, timestamp, instruction?}
@@ -2436,6 +2834,27 @@ async function testConnection(){
    BOOT
    ====================================================================== */
 function boot(){
+  // Wire auth-flödet först (oavsett app-state)
+  wireAuth();
+
+  // Kolla om användaren är inloggad
+  const user = loadUser();
+  if(user){
+    setAppState("app");
+    updateUserChip();
+    initApp();
+  } else {
+    setAppState("landing");
+  }
+}
+
+// Initieras EFTER inloggning (DOM-element i app-shell finns då)
+function postLoginInit(){
+  updateUserChip();
+  initApp();
+}
+
+function initApp(){
   fillSymbols();
   fillBetSymbols();
   initChart();
@@ -2451,10 +2870,13 @@ function boot(){
   wireTeamChat();
   renderLiveStrips();
   loadInitialPage();
-  setInterval(tick, 2000);
-  setInterval(refreshLiveStrips, 2000);
-  refreshCost();
-  setInterval(refreshCost, 30000); // Refresh kostnadsräknare var 30s
+  if(!window._tickStarted){
+    setInterval(tick, 2000);
+    setInterval(refreshLiveStrips, 2000);
+    refreshCost();
+    setInterval(refreshCost, 30000); // Refresh kostnadsräknare var 30s
+    window._tickStarted = true;
+  }
   if(CFG.mode === "live"){ loadFromBackend(); startSSE(); loadCurrentMode(); }
 }
 
