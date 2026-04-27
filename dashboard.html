@@ -209,6 +209,24 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .team-chat-row .send-btn:disabled{opacity:.5;cursor:not-allowed}
 .team-chat-info{margin-top:8px;font-size:10px;color:var(--dim);line-height:1.5}
 
+/* Trades-sida tabeller */
+.tt-tbl{display:grid;gap:6px;font-size:12px;margin-top:8px}
+.tt-row{display:grid;grid-template-columns:auto 1fr auto auto auto;gap:12px;padding:10px 12px;background:var(--card2);border:1px solid var(--border);border-radius:5px;align-items:center;font-variant-numeric:tabular-nums}
+.tt-row.long{border-left:3px solid var(--green)}
+.tt-row.short{border-left:3px solid var(--red)}
+.tt-row.closed{opacity:.7}
+.tt-row .tt-side{font-size:10px;font-weight:800;letter-spacing:.4px;padding:2px 6px;border-radius:3px;background:var(--card)}
+.tt-row .tt-side.buy{color:var(--green);border:1px solid var(--green)}
+.tt-row .tt-side.sell{color:var(--red);border:1px solid var(--red)}
+.tt-row .tt-sym{font-weight:800;color:#fff;font-size:13px}
+.tt-row .tt-meta{color:var(--label);font-size:11px}
+.tt-row .tt-pnl{font-weight:800;text-align:right;min-width:90px}
+.tt-row .tt-pnl.up{color:var(--green)} .tt-row .tt-pnl.down{color:var(--red)}
+.tt-row .tt-time{font-size:10px;color:var(--dim);font-family:'SF Mono',monospace}
+.tt-row .tt-act{font-size:10px;padding:4px 8px;background:transparent;border:1px solid var(--border);border-radius:3px;color:var(--label);cursor:pointer;font-weight:700;letter-spacing:.3px}
+.tt-row .tt-act:hover{color:var(--red);border-color:var(--red)}
+.tt-empty{padding:20px;text-align:center;color:var(--dim);font-size:11px;font-style:italic}
+
 /* Settings-sida (egen, inte längre <details>) */
 .settings-page{padding:0 10px 10px}
 .settings-page .card{padding:18px}
@@ -1233,14 +1251,30 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 </section>
 
-<!-- ═══ TRADES-SIDA ═══ -->
+<!-- ═══ TRADES-SIDA — live positioner + decisions + history ═══ -->
 <section class="page" id="page-trades">
-  <div class="page-header"><span class="ph-ico">📈</span>Trades<span class="ph-sub">— positioner, historik, P&amp;L</span></div>
-  <div class="card" style="margin:0 10px">
-    <h3>Aktiva positioner</h3>
-    <div id="positions-list-full" style="font-size:12px;color:var(--dim);padding:8px">Ingen position öppen i demo-läge. När backend är aktiv visas riktiga positioner här.</div>
-    <h3 style="margin-top:14px">Senaste beslut (Hannas BUY/SELL/HOLD)</h3>
-    <div id="decisions-list" style="font-size:12px;color:var(--dim);padding:8px">Inga beslut ännu — kör analys eller vänta på schemalagd session.</div>
+  <div class="page-header">
+    <span class="ph-ico">📈</span>Trades
+    <span class="ph-sub">— aktiva positioner, beslut, historik, P&amp;L</span>
+    <span class="ph-spacer"></span>
+    <span id="trades-summary" style="font-size:11px;color:var(--label);font-weight:600">–</span>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr;gap:10px;margin:0 10px">
+    <div class="card">
+      <h3>🟢 Aktiva positioner <span id="pos-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span></h3>
+      <div id="trade-positions-table"></div>
+    </div>
+
+    <div class="card">
+      <h3>🤖 Hannas beslut (senaste)</h3>
+      <div id="trade-decisions-table"></div>
+    </div>
+
+    <div class="card">
+      <h3>📊 Stängda trades</h3>
+      <div id="trade-history-table"></div>
+    </div>
   </div>
 </section>
 
@@ -1750,6 +1784,10 @@ function tick(){
   evalPositions();
   updateTickerStrip();
   updatePnL();
+  // Live PnL refresh på Trades-sidan om vi är där
+  if(document.getElementById("page-trades")?.classList.contains("active")){
+    renderTradesPage();
+  }
 }
 
 function updateTickerStrip(){
@@ -2841,12 +2879,14 @@ async function sendTeamChat(){
         instruction
       });
     } else {
-      // Demo-läge: simulera svar
+      // Demo-läge: simulera svar (kan returnera string ELLER {text, executedTrades, ...})
       await new Promise(r=>setTimeout(r, 1500 + Math.random()*1000));
       teamChatLog.pop();
+      const result = simulateTeamResponse(instruction);
+      const responseText = typeof result === "string" ? result : result.text;
       teamChatLog.push({
         role:"team",
-        text: simulateTeamResponse(instruction),
+        text: responseText,
         timestamp:Date.now(),
         instruction
       });
@@ -2861,47 +2901,249 @@ async function sendTeamChat(){
   }
 }
 
+// Returnerar { text, executedTrade?: {...} }
 function simulateTeamResponse(instr){
   const i = (instr||"").toLowerCase();
   const pick = a => a[Math.floor(Math.random()*a.length)];
   const isTest = CFG.mode !== "live";
-  const testNote = isTest ? `\n\n_(TEST-läge — inget riktigt händer på Binance. Säg till om du vill jag ändå utför symbolisk testorder.)_` : "";
+  const testNote = isTest ? `\n\n_(TEST-läge — simulerad order, ingen riktig pengar.)_` : "";
+
+  // Plocka ut antal trades om specificerat ("4 trades")
+  const tradeCountMatch = i.match(/(\d+)\s*(st|stycken)?\s*trades?/);
+  const tradeCount = tradeCountMatch ? parseInt(tradeCountMatch[1],10) : 1;
+  // Plocka ut belopp (default 50)
+  const amtMatch = i.match(/\$?\s?(\d{2,5})/);
+  const amount = amtMatch ? parseInt(amtMatch[1],10) : 50;
 
   // Konkreta ordrar i text (köp/sälj med belopp/symbol)
   const buyMatch = i.match(/(köp|buy)\s+([a-z]{3,5})/i);
   if(buyMatch){
     const sym = buyMatch[2].toUpperCase()+(buyMatch[2].endsWith("usdt")?"":"USDT");
-    const amt = (i.match(/\$?(\d{2,4})/) || [])[1] || 50;
-    return `Hanna: OK, köper **${sym}** för $${amt}.\nRasmus: Inom MAX_POSITION_USD, godkänner.\nKarin: Vol-regim medium, sizing-multiplier 1.0.\nAlbert: Cykel-fas ${pick(["accumulation","early-markup"])} — passar in.${testNote}`;
+    const trade = simulateExecuteTrade(sym, "BUY", amount);
+    return {
+      text: `Hanna: OK, köper **${sym}** för $${amount}.\nRasmus: Inom risk-ramen, godkänner.\nKarin: Vol-regim medium.\nAlbert: Cykel-fas ${pick(["accumulation","early-markup"])} — passar in.\n\n✓ Order placerad — se Trades-sidan.${testNote}`,
+      executedTrades: [trade]
+    };
   }
   if(/(sälj|sell|stäng|close)/.test(i)){
-    return `Hanna: Stänger enligt instruktion. ${pick(["Realiserad vinst loggad","Tar hem för att frigöra cash","Reducerar exponering"])}.\nRasmus: Heat sänks. Bra disciplin.${testNote}`;
+    const closed = closeAllPositions();
+    return {
+      text: `Hanna: Stänger ${closed.length} ${closed.length===1?'position':'positioner'}. ${pick(["Realiserad vinst loggad","Tar hem för att frigöra cash","Reducerar exponering"])}.\nRasmus: Heat sänks. Bra disciplin.${testNote}`,
+      closedCount: closed.length
+    };
   }
   if(/stop[- ]?loss|sl /.test(i)){
-    return `Hanna: Trailing stop justerad. Påverkar alla öppna positioner.\nRasmus: Bra — tightare stop minskar drawdown om det vänder.`;
+    return { text:`Hanna: Trailing stop justerad. Påverkar alla öppna positioner.\nRasmus: Bra — tightare stop minskar drawdown om det vänder.` };
   }
 
   // Frågor / utmaningar (prefix-matchning för böjda former)
   if(/(välj|bestäm|plock|kör för mig|lägg)/.test(i)){
-    const sym = pick(["BTCUSDT","ETHUSDT","SOLUSDT"]);
-    return `Hanna: Jag väljer **${sym}** för $50, BUY.\nGrund: Tomas score +${(2+Math.random()*2).toFixed(1)}, Karin OK på vol, Rasmus inom risk.\nAlbert flaggar inga blind spots.${testNote}`;
+    // Generera N trades om begärt
+    const symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT"];
+    const trades = [];
+    const usedSyms = new Set();
+    for(let n = 0; n < Math.min(tradeCount, 5); n++){
+      let sym;
+      do { sym = pick(symbols); } while(usedSyms.has(sym) && usedSyms.size < symbols.length);
+      usedSyms.add(sym);
+      trades.push(simulateExecuteTrade(sym, "BUY", amount));
+    }
+    const tradeList = trades.map((t,idx)=>`  ${idx+1}. ${t.side} **${t.sym}** $${t.amount} @ ${formatPrice(t.entry, t.sym)}`).join("\n");
+    return {
+      text: `Hanna: ${tradeCount === 1 ? 'Jag väljer' : `Jag väljer ${tradeCount} trades`}:\n${tradeList}\n\nGrund: Tomas top-picks med score +${(2+Math.random()*2).toFixed(1)}, Karin OK på vol, Rasmus inom risk.\nAlbert flaggar inga blind spots.\n\n✓ ${trades.length} ${trades.length===1?'order':'ordrar'} placerade — se Trades-sidan för uppföljning.${testNote}`,
+      executedTrades: trades
+    };
   }
   if(/(varför|säker|men |istället|fel|verkligen)/.test(i)){
-    return `Hanna: Schysst utmaning. ${pick([
+    return { text: `Hanna: Schysst utmaning. ${pick([
       "Min logik byggde på Tomas signal — om du ser nåt jag missar, säg så ändrar jag.",
       "Du har en poäng. Alternativet vore att avvakta. Jag ompröver om du vill.",
       "Ärligt: jag är inte 100% säker. Vad är ditt skäl mot?"
-    ])}`;
+    ])}` };
   }
   if(/(tyck|tänk|status|läge|hur är|vad ser)/.test(i)){
-    return pick([
+    return { text: pick([
       `Albert: Marknaden i ${pick(["accumulation","konsolidering","early-markup"])}-fas. ${pick(["Måttlig optimism","Sval entusiasm","Underliggande styrka"])}.\nHanna: Inget akut beslut — vill du jag tar nåt specifikt?`,
       `Karin: Sharpe ${(0.8+Math.random()*0.7).toFixed(2)}, vol medium.\nTomas: Top-pick BTC (score +${(2+Math.random()*2).toFixed(1)}).\nHanna: Avvaktar.`,
       `Lars: ${pick(["BlackRock IBIT-inflöden","Fed-tal ikväll","ETH-uppgradering live"])}.\nMarkus: Regim ${pick(["RISK_ON","NEUTRAL"])}, försiktig optimism.\nHanna: Lutar mot ${pick(["BTC core position","SOL momentum-trade","vänta på dipp"])}.`
-    ]);
+    ])};
   }
   // Fallback — direkt fråga teamet
-  return `Albert: ${pick(["Bra fråga","Värt att överväga","Intressant"])}. ${pick(["Cykel-fas accumulation","Marknaden ser ok ut","Sentiment skvalpar"])}.\nHanna: ${pick(["Inget aktion just nu","Kan kolla närmare om du vill","Ge mig konkret order så kör jag"])}.${testNote}`;
+  return { text: `Albert: ${pick(["Bra fråga","Värt att överväga","Intressant"])}. ${pick(["Cykel-fas accumulation","Marknaden ser ok ut","Sentiment skvalpar"])}.\nHanna: ${pick(["Inget aktion just nu","Kan kolla närmare om du vill","Ge mig konkret order så kör jag"])}.${testNote}` };
+}
+
+// Simulera exekvering av en trade — lägg till position i STATE
+function simulateExecuteTrade(sym, side, amount){
+  const entry = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
+  const qty = amount / entry;
+  const trade = {
+    id: "trade-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
+    sym, side, amount, entry, qty,
+    openedAt: Date.now(),
+    status: "open",
+    stopLossPct: 2,
+    source: "Hanna (chat)"
+  };
+  if(!STATE.tradePositions) STATE.tradePositions = [];
+  if(!STATE.tradeDecisions) STATE.tradeDecisions = [];
+  STATE.tradePositions.push(trade);
+  STATE.tradeDecisions.unshift({
+    timestamp: Date.now(),
+    action: side, sym, amount,
+    reasoning: "Vald av Hanna efter team-analys via chat",
+    source: "chat"
+  });
+  renderTradesPage();
+  return trade;
+}
+
+// Render Trades-sidan (kallas vid trade-events + från tick för live PnL)
+function renderTradesPage(){
+  const positions = STATE.tradePositions || [];
+  const decisions = STATE.tradeDecisions || [];
+  const history = STATE.tradeHistory || [];
+
+  // Aktiva positioner — live PnL
+  const posTbl = document.getElementById("trade-positions-table");
+  if(posTbl){
+    if(!positions.length){
+      posTbl.innerHTML = `<div class="tt-empty">Inga öppna positioner. Skriv "Köp BTC för $50" i chatten — eller klicka "Kör analys" så jobbar Hanna automatiskt.</div>`;
+    } else {
+      posTbl.innerHTML = `<div class="tt-tbl">${positions.map(p=>{
+        const cur = STATE.livePrices[p.sym] ?? p.entry;
+        const pnl = (cur - p.entry) * p.qty * (p.side === "BUY" ? 1 : -1);
+        const pnlPct = ((cur - p.entry) / p.entry) * 100 * (p.side === "BUY" ? 1 : -1);
+        const t = new Date(p.openedAt).toLocaleTimeString();
+        return `<div class="tt-row ${p.side==='BUY'?'long':'short'}" data-id="${p.id}">
+          <span class="tt-side ${p.side==='BUY'?'buy':'sell'}">${p.side}</span>
+          <div>
+            <div class="tt-sym">${p.sym}</div>
+            <div class="tt-meta">${p.qty.toFixed(6)} @ ${formatPrice(p.entry, p.sym)} · $${p.amount}</div>
+          </div>
+          <div class="tt-meta">→ ${formatPrice(cur, p.sym)}</div>
+          <div class="tt-pnl ${pnl>=0?'up':'down'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}<br><span style="font-size:10px;font-weight:500">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%</span></div>
+          <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+            <span class="tt-time">${t}</span>
+            <button class="tt-act" data-close="${p.id}">Stäng</button>
+          </div>
+        </div>`;
+      }).join("")}</div>`;
+
+      // Wire stäng-knappar
+      posTbl.querySelectorAll("[data-close]").forEach(b=>{
+        b.addEventListener("click", ()=>closePosition(b.dataset.close));
+      });
+    }
+  }
+
+  // Decisions-log
+  const decTbl = document.getElementById("trade-decisions-table");
+  if(decTbl){
+    if(!decisions.length){
+      decTbl.innerHTML = `<div class="tt-empty">Inga beslut än.</div>`;
+    } else {
+      decTbl.innerHTML = `<div class="tt-tbl">${decisions.slice(0,15).map(d=>{
+        const t = new Date(d.timestamp).toLocaleTimeString();
+        const isBuy = d.action === "BUY";
+        const isSell = d.action === "SELL" || d.action === "SELL_ALL";
+        const sideClass = isBuy ? "buy" : isSell ? "sell" : "";
+        const detail = d.action === "SELL_ALL"
+          ? `Stängde ${d.count} positioner${d.totalPnl != null ? ` · PnL ${d.totalPnl>=0?'+':''}$${d.totalPnl.toFixed(2)}` : ''}`
+          : `${d.sym || '-'} · $${d.amount || '-'}`;
+        return `<div class="tt-row">
+          <span class="tt-side ${sideClass}">${d.action}</span>
+          <div>
+            <div class="tt-meta">${detail}</div>
+            <div class="tt-meta" style="font-size:10px;color:var(--dim);margin-top:2px">${d.reasoning || ''} · via ${d.source || 'team'}</div>
+          </div>
+          <div></div>
+          <div></div>
+          <span class="tt-time">${t}</span>
+        </div>`;
+      }).join("")}</div>`;
+    }
+  }
+
+  // History
+  const histTbl = document.getElementById("trade-history-table");
+  if(histTbl){
+    if(!history.length){
+      histTbl.innerHTML = `<div class="tt-empty">Inga stängda trades än.</div>`;
+    } else {
+      histTbl.innerHTML = `<div class="tt-tbl">${history.slice(0,30).map(h=>{
+        const t = new Date(h.closedAt).toLocaleTimeString();
+        return `<div class="tt-row closed ${h.side==='BUY'?'long':'short'}">
+          <span class="tt-side ${h.side==='BUY'?'buy':'sell'}">${h.side}</span>
+          <div>
+            <div class="tt-sym">${h.sym}</div>
+            <div class="tt-meta">${formatPrice(h.entry, h.sym)} → ${formatPrice(h.exit, h.sym)} · $${h.amount}</div>
+          </div>
+          <div></div>
+          <div class="tt-pnl ${h.pnl>=0?'up':'down'}">${h.pnl>=0?'+':''}$${h.pnl.toFixed(2)}</div>
+          <span class="tt-time">${t}</span>
+        </div>`;
+      }).join("")}</div>`;
+    }
+  }
+
+  // Top-summary
+  const sumEl = document.getElementById("trades-summary");
+  const posCountEl = document.getElementById("pos-count");
+  if(sumEl && posCountEl){
+    const totalPnl = positions.reduce((s,p)=>{
+      const cur = STATE.livePrices[p.sym] ?? p.entry;
+      return s + (cur - p.entry) * p.qty * (p.side === "BUY" ? 1 : -1);
+    }, 0);
+    posCountEl.textContent = positions.length;
+    sumEl.innerHTML = positions.length
+      ? `<span style="color:${totalPnl>=0?'var(--green)':'var(--red)'};font-weight:800">${totalPnl>=0?'+':''}$${totalPnl.toFixed(2)} unrealized</span>`
+      : "Inga öppna positioner";
+  }
+}
+
+function closePosition(id){
+  const positions = STATE.tradePositions || [];
+  const idx = positions.findIndex(p => p.id === id);
+  if(idx === -1) return;
+  const p = positions[idx];
+  const cur = STATE.livePrices[p.sym] ?? p.entry;
+  const pnl = (cur - p.entry) * p.qty * (p.side === "BUY" ? 1 : -1);
+  if(!STATE.tradeHistory) STATE.tradeHistory = [];
+  STATE.tradeHistory.unshift({...p, exit:cur, pnl, status:"closed", closedAt:Date.now()});
+  STATE.tradeDecisions.unshift({
+    timestamp: Date.now(),
+    action: "SELL", sym:p.sym, amount:p.amount,
+    reasoning: `Manuell stängning · PnL ${pnl>=0?'+':''}$${pnl.toFixed(2)}`,
+    source: "user"
+  });
+  positions.splice(idx, 1);
+  renderTradesPage();
+}
+
+// Stäng alla positioner — beräkna PnL och flytta till history
+function closeAllPositions(){
+  if(!STATE.tradePositions) STATE.tradePositions = [];
+  const closed = [];
+  for(const p of STATE.tradePositions){
+    const cur = STATE.livePrices[p.sym] ?? p.entry;
+    const pnl = (cur - p.entry) * p.qty;
+    closed.push({...p, exit:cur, pnl, status:"closed", closedAt:Date.now()});
+  }
+  if(!STATE.tradeHistory) STATE.tradeHistory = [];
+  STATE.tradeHistory.unshift(...closed);
+  STATE.tradePositions = [];
+  // Logg-decision
+  if(closed.length){
+    STATE.tradeDecisions.unshift({
+      timestamp: Date.now(),
+      action: "SELL_ALL", count: closed.length,
+      totalPnl: closed.reduce((s,c)=>s+c.pnl, 0),
+      reasoning: "Manuell stäng-alla via chat",
+      source: "chat"
+    });
+  }
+  renderTradesPage();
+  return closed;
 }
 
 async function sendFromFloating(){
@@ -2931,7 +3173,9 @@ async function sendFromFloating(){
     } else {
       await new Promise(r=>setTimeout(r, 1200 + Math.random()*800));
       teamChatLog.pop();
-      teamChatLog.push({role:"team", text: simulateTeamResponse(instruction), timestamp:Date.now(), instruction});
+      const result = simulateTeamResponse(instruction);
+      const responseText = typeof result === "string" ? result : result.text;
+      teamChatLog.push({role:"team", text: responseText, timestamp:Date.now(), instruction});
     }
   }catch(e){
     teamChatLog.pop();
@@ -3016,6 +3260,7 @@ function switchPage(name){
   window.scrollTo({top:0, behavior:"instant"});
   // Re-rendera Team om vi går in på Team-sidan (för att visa dubbletter av agent-grid)
   if(name === "team") renderAgents();
+  if(name === "trades") renderTradesPage();
 }
 
 function wireSidebar(){
@@ -3586,6 +3831,7 @@ function initApp(){
   wireSidebar();
   wireTeamChat();
   renderLiveStrips();
+  renderTradesPage();
   loadInitialPage();
   if(!window._tickStarted){
     setInterval(tick, 2000);
