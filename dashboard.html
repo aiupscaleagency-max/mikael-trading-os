@@ -91,57 +91,50 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
 .win-rate{text-align:center;font-size:12px;margin-top:6px;padding:6px;background:var(--card2);border-radius:4px}
 .win-rate b{color:var(--green)}
 
-/* AGENT GRID */
-.agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px}
-.agent{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:10px;border-left:3px solid var(--dim);position:relative;min-height:130px;display:flex;flex-direction:column}
-.agent.macro{border-left-color:var(--yellow)}
-.agent.technical{border-left-color:var(--blue)}
-.agent.sentiment{border-left-color:var(--orange)}
-.agent.risk{border-left-color:var(--red)}
-.agent.quant{border-left-color:#60a5fa}
-.agent.options{border-left-color:var(--yellow)}
-.agent.portfolio{border-left-color:var(--green)}
-.agent.execution{border-left-color:var(--cyan)}
-.agent.advisor{border-left-color:var(--purple);background:linear-gradient(135deg,#1a1530,#0f1520)}
-.agent.head{border-left-color:#fff;background:linear-gradient(135deg,#1a1a30,#0a0e17);border-left-width:4px}
-.agent .head{display:flex;align-items:center;gap:6px;margin-bottom:6px}
-.agent .head .name{font-weight:700;font-size:11px;letter-spacing:.5px;text-transform:uppercase}
-.agent.macro .name{color:var(--yellow)}
-.agent.technical .name{color:var(--blue)}
-.agent.sentiment .name{color:var(--orange)}
-.agent.risk .name{color:var(--red)}
-.agent.quant .name{color:#60a5fa}
-.agent.options .name{color:var(--yellow)}
-.agent.portfolio .name{color:var(--green)}
-.agent.execution .name{color:var(--cyan)}
-.agent.advisor .name{color:var(--purple)}
-.agent.head .name{color:#fff}
-.agent .model{font-size:9px;color:var(--dim);background:var(--bg);padding:1px 5px;border-radius:2px;margin-left:auto}
-.agent .model.opus{color:var(--purple);border:1px solid var(--purple)}
-.agent .ask{position:absolute;top:8px;right:8px;font-size:9px;padding:2px 6px;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--dim)}
-.agent .ask:hover{color:var(--cyan);border-color:var(--cyan)}
-.agent .body{font-size:11px;flex:1;color:var(--text)}
-.agent .body .kv{display:flex;justify-content:space-between;margin:2px 0}
-.agent .body .kv .k{color:var(--dim)}
-.agent .body .pill{display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;background:var(--bg);margin:2px 2px 2px 0}
-.agent .body .pill.green{color:var(--green);border:1px solid var(--green)}
-.agent .body .pill.red{color:var(--red);border:1px solid var(--red)}
-.agent .body .pill.yellow{color:var(--yellow);border:1px solid var(--yellow)}
-.agent .body .pill.blue{color:var(--blue);border:1px solid var(--blue)}
+/* AGENT TILES — kompakt rad, Binance-stil */
+.agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:4px}
+.agent{background:var(--card2);border:1px solid var(--border);border-radius:4px;padding:7px 9px;cursor:pointer;transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:3px;min-height:54px;position:relative}
+.agent:hover{border-color:var(--cyan);background:#131a26}
+.agent .head{display:flex;align-items:center;gap:5px}
+.agent .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;background:var(--dim)}
+.agent.macro .dot{background:var(--yellow)}
+.agent.technical .dot{background:var(--blue)}
+.agent.sentiment .dot{background:var(--orange)}
+.agent.risk .dot{background:var(--red)}
+.agent.quant .dot{background:#60a5fa}
+.agent.options .dot{background:var(--yellow)}
+.agent.portfolio .dot{background:var(--green)}
+.agent.execution .dot{background:var(--cyan)}
+.agent.advisor .dot{background:var(--purple)}
+.agent.head .dot{background:#fff}
+.agent .name{font-size:10px;font-weight:600;letter-spacing:.3px;color:var(--text);text-transform:uppercase;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent .star{color:var(--purple);font-size:9px;flex-shrink:0}
+.agent .signal{font-size:11px;color:var(--text);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent .signal.green{color:var(--green)} .agent .signal.red{color:var(--red)} .agent .signal.yellow{color:var(--yellow)}
+/* Detail (i modalen) */
+.detail{font-size:11px;color:var(--text);line-height:1.5}
+.detail .kv{display:flex;justify-content:space-between;margin:3px 0;padding:2px 0;border-bottom:1px dashed transparent}
+.detail .kv .k{color:var(--dim)}
+.detail .pill{display:inline-block;padding:1px 7px;border-radius:8px;font-size:10px;background:var(--bg);margin:2px 2px 2px 0;border:1px solid var(--border)}
+.detail .pill.green{color:var(--green);border-color:var(--green)}
+.detail .pill.red{color:var(--red);border-color:var(--red)}
+.detail .pill.yellow{color:var(--yellow);border-color:var(--yellow)}
+.detail .pill.blue{color:var(--blue);border-color:var(--blue)}
+.detail h4{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin:8px 0 4px;font-weight:600}
 .bar{height:6px;background:var(--bg);border-radius:3px;overflow:hidden;margin:4px 0}
 .bar > span{display:block;height:100%;background:var(--cyan);border-radius:3px;transition:width .3s}
 .bar.red > span{background:var(--red)}
 .bar.green > span{background:var(--green)}
 .bar.yellow > span{background:var(--yellow)}
-.warn{color:var(--yellow);font-size:10px;margin-top:4px}
-.warn.red{color:var(--red)}
+.warn{color:var(--yellow);font-size:11px;margin-top:4px;padding:4px 8px;background:rgba(245,158,11,.08);border-left:2px solid var(--yellow);border-radius:2px}
+.warn.red{color:var(--red);background:rgba(239,68,68,.08);border-left-color:var(--red)}
 .action-list{margin-top:6px}
-.action-list .ax{padding:3px 6px;background:var(--bg);border-radius:3px;margin:2px 0;font-size:10px}
-.action-list .ax.buy{border-left:2px solid var(--green)}
-.action-list .ax.sell{border-left:2px solid var(--red)}
-.rule3{margin-top:6px;font-size:10px;background:var(--bg);padding:6px;border-radius:3px}
-.rule3 .step{display:flex;gap:4px;margin:2px 0}
-.rule3 .step b{color:var(--cyan);min-width:18px}
+.action-list .ax{padding:5px 8px;background:var(--bg);border-radius:3px;margin:3px 0;font-size:11px;border-left:2px solid var(--border)}
+.action-list .ax.buy{border-left-color:var(--green)}
+.action-list .ax.sell{border-left-color:var(--red)}
+.rule3{margin-top:8px;font-size:11px;background:var(--bg);padding:8px;border-radius:3px}
+.rule3 .step{display:flex;gap:6px;margin:3px 0}
+.rule3 .step b{color:var(--cyan);min-width:22px}
 
 .timing{display:flex;gap:14px;flex-wrap:wrap;font-size:10px;color:var(--dim);padding:6px 10px;background:var(--card2);border-radius:4px;margin-top:8px}
 .timing b{color:var(--cyan)}
@@ -160,15 +153,31 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
 /* MODAL */
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
 .modal-bg.on{display:flex}
-.modal{background:var(--card);border:1px solid var(--border);border-radius:8px;width:100%;max-width:520px;padding:18px;max-height:80vh;display:flex;flex-direction:column}
-.modal h2{font-size:13px;letter-spacing:.5px;margin-bottom:10px;color:var(--cyan)}
-.modal .chat{flex:1;min-height:200px;max-height:360px;overflow-y:auto;background:var(--card2);border-radius:4px;padding:10px;margin-bottom:10px;font-size:11px;line-height:1.5}
-.chat .q{color:var(--cyan);margin:6px 0 2px}
-.chat .a{color:var(--text);margin-bottom:8px;white-space:pre-wrap}
-.modal .input-row{display:flex;gap:6px}
-.modal input{flex:1}
-.modal .send{padding:6px 14px;background:var(--cyan);color:#000;border-radius:4px;font-weight:700}
-.modal .close{position:absolute;top:8px;right:12px;color:var(--dim);font-size:18px;background:none;border:none;cursor:pointer}
+.modal{background:var(--card);border:1px solid var(--border);border-radius:6px;width:100%;max-width:640px;padding:0;max-height:88vh;display:flex;flex-direction:column;position:relative;overflow:hidden}
+.modal-header{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;background:var(--card2)}
+.modal-header .agent-mark{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.modal-header h2{font-size:12px;font-weight:700;letter-spacing:.4px;color:var(--text);text-transform:uppercase}
+.modal-header .meta{margin-left:auto;font-size:10px;color:var(--dim)}
+.modal-tabs{display:flex;border-bottom:1px solid var(--border);background:var(--card2)}
+.modal-tabs button{flex:1;padding:8px;font-size:11px;color:var(--dim);border-bottom:2px solid transparent;letter-spacing:.4px;text-transform:uppercase;font-weight:600}
+.modal-tabs button.on{color:var(--cyan);border-bottom-color:var(--cyan)}
+.modal-body{flex:1;overflow-y:auto;padding:14px;min-height:240px;max-height:480px}
+.modal-tab{display:none}
+.modal-tab.on{display:block}
+.modal .chat{background:var(--card2);border-radius:4px;padding:10px;font-size:12px;line-height:1.5;min-height:180px}
+.chat .q{color:var(--cyan);margin:8px 0 3px;font-weight:600}
+.chat .a{color:var(--text);margin-bottom:10px;white-space:pre-wrap;padding-left:10px;border-left:2px solid var(--border)}
+.modal-footer{padding:10px 14px;border-top:1px solid var(--border);background:var(--card2);display:flex;gap:6px}
+.modal-footer input{flex:1}
+.modal-footer .send{padding:7px 16px;background:var(--cyan);color:#000;border-radius:4px;font-weight:700;letter-spacing:.3px}
+.modal-footer .send:hover{background:#0891b2}
+.modal-footer .send.order{background:var(--green);color:#fff}
+.modal-footer .send.order:hover{background:#059669}
+.modal .close{position:absolute;top:10px;right:12px;color:var(--dim);font-size:20px;background:none;border:none;cursor:pointer;z-index:10}
+.modal .close:hover{color:var(--text)}
+.quick-prompts{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.quick-prompts button{font-size:10px;padding:3px 8px;background:var(--card);border:1px solid var(--border);border-radius:3px;color:var(--dim)}
+.quick-prompts button:hover{color:var(--cyan);border-color:var(--cyan)}
 
 /* SETTINGS */
 .settings{background:var(--card);border:1px solid var(--border);border-radius:6px;margin:10px;padding:12px}
@@ -334,14 +343,30 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
   <div class="status-line" id="conn-status"></div>
 </details>
 
-<!-- AGENT CHAT MODAL -->
+<!-- AGENT MODAL — Analys + Chat -->
 <div class="modal-bg" id="modal-bg">
   <div class="modal">
     <button class="close" id="modal-close">×</button>
-    <h2 id="modal-title">Fråga agent</h2>
-    <div class="chat" id="chat-log"></div>
-    <div class="input-row">
-      <input type="text" id="chat-input" placeholder="Skriv din fråga…" />
+    <div class="modal-header">
+      <span class="agent-mark" id="modal-mark"></span>
+      <h2 id="modal-title">—</h2>
+      <span class="meta" id="modal-meta"></span>
+    </div>
+    <div class="modal-tabs">
+      <button class="on" data-tab="analysis" id="tab-analysis">Analys</button>
+      <button data-tab="chat" id="tab-chat">Fråga &amp; Order</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-tab on" id="tab-analysis-pane">
+        <div class="detail" id="analysis-detail">—</div>
+      </div>
+      <div class="modal-tab" id="tab-chat-pane">
+        <div class="chat" id="chat-log"></div>
+        <div class="quick-prompts" id="quick-prompts"></div>
+      </div>
+    </div>
+    <div class="modal-footer" id="modal-footer" style="display:none">
+      <input type="text" id="chat-input" placeholder="Skriv fråga eller order…" />
       <button class="send" id="chat-send">Skicka</button>
     </div>
   </div>
@@ -882,117 +907,207 @@ function genSimAgents(){
   };
 }
 
+// Kompakt signal per agent — visas i tile
+function agentSignal(key, d){
+  d = d || {};
+  switch(key){
+    case "macro":      return {text:d.regime||"–", cls:d.regime==="RISK_ON"?"green":d.regime==="RISK_OFF"?"red":"yellow"};
+    case "technical":  return {text:(d.bias||"–")+" "+(d.topPick||""), cls:d.bias==="bullish"?"green":d.bias==="bearish"?"red":"yellow"};
+    case "sentiment":  return {text:(d.sentiment||"–").replace("_"," "), cls:["extreme_greed","greed"].includes(d.sentiment)?"green":["extreme_fear","fear"].includes(d.sentiment)?"red":"yellow"};
+    case "risk":       return {text:(d.level||"–")+" · "+(d.heat||0)+"%", cls:["critical","high"].includes(d.level)?"red":d.level==="medium"?"yellow":"green"};
+    case "quant":      return {text:"Sharpe "+(d.sharpe||"–"), cls:d.sharpe>1.2?"green":d.sharpe<0.8?"red":""};
+    case "options":    return {text:"IV "+(d.ivEnv||"–"), cls:d.ivEnv==="elevated"?"yellow":d.ivEnv==="crushed"?"red":""};
+    case "portfolio":  return {text:(d.diversification||0)+"/100", cls:d.diversification>70?"green":d.diversification<40?"red":"yellow"};
+    case "execution":  return {text:d.urgency||"–", cls:d.urgency==="high"?"red":d.urgency==="medium"?"yellow":"green"};
+    case "advisor":    return {text:d.cycle||"–", cls:""};
+    case "head":       return {text:(d.decision||"HOLD")+" · "+((d.actions||[]).length)+"x", cls:d.decision==="BUY"?"green":d.decision==="SELL"?"red":"yellow"};
+  }
+  return {text:"–", cls:""};
+}
+
 function renderAgents(){
   const a = STATE.agents;
   const grid = document.getElementById("agent-grid");
   grid.innerHTML = AGENT_DEFS.map(def=>{
-    const d = a[def.key] || {};
-    let body="";
-    switch(def.key){
-      case "macro":
-        body = `<div class="kv"><span class="k">Regim</span><span class="pill ${d.regime==="RISK_ON"?"green":d.regime==="RISK_OFF"?"red":"yellow"}">${d.regime||"--"}</span></div>
-                <div class="kv"><span class="k">Confidence</span><span>${d.confidence?Math.round(d.confidence*100)+"%":"--"}</span></div>
-                <div class="kv"><span class="k">VIX/Olja/$</span><span>${d.vix||"-"} / ${d.oil||"-"} / ${d.dollar||"-"}</span></div>
-                <div class="kv"><span class="k">F&amp;G</span><span>${d.fng||"--"}/100</span></div>
-                <div style="margin-top:4px;font-size:10px;color:var(--dim)">${(d.keyFactors||[]).slice(0,2).join(" · ")||"–"}</div>
-                <div style="margin-top:4px;font-size:10px;color:var(--yellow)">→ ${d.recommendation||"–"}</div>`;
-        break;
-      case "technical":
-        body = `<div class="kv"><span class="k">Top pick</span><span class="pill blue">${d.topPick||"-"}</span></div>
-                ${(d.symbols||[]).slice(0,3).map(s=>`<div class="kv"><span class="k">${s.sym}</span><span class="pill ${s.bias==="bullish"?"green":s.bias==="bearish"?"red":"yellow"}">${s.bias} ${s.score}</span></div>`).join("")}
-                <div style="margin-top:4px;font-size:10px;color:var(--dim)">${(d.keySignals||[]).slice(0,2).join(" · ")||"–"}</div>`;
-        break;
-      case "sentiment":
-        body = `<div class="kv"><span class="k">Sentiment</span><span class="pill ${d.sentiment==="extreme_greed"||d.sentiment==="greed"?"green":d.sentiment==="extreme_fear"||d.sentiment==="fear"?"red":"yellow"}">${d.sentiment||"-"}</span></div>
-                <div style="margin-top:4px;font-size:10px;color:var(--dim)">${(d.narratives||[]).slice(0,2).join(" · ")||"–"}</div>
-                <div style="margin-top:4px;font-size:10px">${(d.politicians||[]).slice(0,2).map(p=>`<span class="pill ${p.dir==="BUY"?"green":"red"}">${p.name} ${p.sym}</span>`).join(" ")}</div>
-                ${d.contrary?`<div class="warn">⚠ Contrary signal aktiv</div>`:""}`;
-        break;
-      case "risk":
-        const heatColor = d.heat>70?"red":d.heat>40?"yellow":"green";
-        body = `<div class="kv"><span class="k">Risk-nivå</span><span class="pill ${d.level==="critical"||d.level==="high"?"red":d.level==="medium"?"yellow":"green"}">${d.level||"-"}</span></div>
-                <div class="kv"><span class="k">Heat</span><span>${d.heat||0}%</span></div>
-                <div class="bar ${heatColor}"><span style="width:${d.heat||0}%"></span></div>
-                <div class="kv"><span class="k">Korrelation</span><span>${d.correlation?d.correlation.toFixed(2):"-"}</span></div>
-                <div class="kv"><span class="k">Max DD</span><span style="color:var(--red)">${d.maxDrawdown||"-"}%</span></div>
-                ${(d.warnings||[]).slice(0,1).map(w=>`<div class="warn red">⚠ ${w}</div>`).join("")}
-                <div style="font-size:10px;color:var(--dim);margin-top:4px">→ ${d.sizing||"-"}</div>`;
-        break;
-      case "quant":
-        body = `<div class="kv"><span class="k">Vol-regim</span><span class="pill blue">${d.volRegime||"-"}</span></div>
-                <div class="kv"><span class="k">Sharpe</span><span>${d.sharpe||"-"}</span></div>
-                <div class="kv"><span class="k">Win-rate</span><span>${d.winRate||0}%</span></div>
-                ${(d.symbols||[]).slice(0,2).map(s=>`<div class="kv"><span class="k">${s.sym}</span><span style="font-size:10px">trend ${s.trend} · MR ${s.meanRev} · ${s.regime}</span></div>`).join("")}`;
-        break;
-      case "options":
-        body = `<div class="kv"><span class="k">IV-miljö</span><span class="pill yellow">${d.ivEnv||"-"}</span></div>
-                ${(d.symbols||[]).slice(0,2).map(s=>`<div class="kv"><span class="k">${s.sym}</span><span style="font-size:10px">IV ${s.ivRank} · ${s.strategy} · K${s.strike}</span></div>`).join("")}
-                <div style="margin-top:4px;font-size:10px;color:var(--dim)">${(d.rolls||[]).slice(0,2).join(" · ")||"–"}</div>`;
-        break;
-      case "portfolio":
-        body = `<div class="kv"><span class="k">Diversifiering</span><span>${d.diversification||0}/100</span></div>
-                <div class="bar green"><span style="width:${d.diversification||0}%"></span></div>
-                <div class="kv"><span class="k">Cash</span><span>${d.cashPct||0}%</span></div>
-                <div style="font-size:10px;color:var(--dim);margin-top:4px">${Object.entries(d.sectorConc||{}).map(([k,v])=>`${k} ${v}%`).join(" · ")}</div>
-                ${(d.rebalance||[]).slice(0,2).map(r=>`<div class="action-list"><div class="ax">${r}</div></div>`).join("")}`;
-        break;
-      case "execution":
-        body = `<div class="kv"><span class="k">Urgency</span><span class="pill ${d.urgency==="high"?"red":d.urgency==="medium"?"yellow":"green"}">${d.urgency||"-"}</span></div>
-                ${(d.symbols||[]).slice(0,2).map(s=>`<div class="kv"><span class="k">${s.sym}</span><span style="font-size:10px">${s.type} · ${s.timing} · DCA ${s.split}x · slip ${s.slippage}</span></div>`).join("")}`;
-        break;
-      case "advisor":
-        body = `<div style="font-size:10px;line-height:1.4;margin-bottom:4px">${d.outlook||"-"}</div>
-                <div class="kv"><span class="k">Cykel</span><span class="pill blue">${d.cycle||"-"}</span></div>
-                ${(d.insights||[]).slice(0,1).map(i=>`<div style="font-size:10px;color:var(--text);margin:2px 0">▸ ${i}</div>`).join("")}
-                ${(d.blindSpots||[]).slice(0,1).map(b=>`<div class="warn">⚠ Blind spot: ${b}</div>`).join("")}
-                ${(d.behavioral||[]).slice(0,1).map(b=>`<div class="warn red">! ${b}</div>`).join("")}
-                ${d.contrarian?`<div style="font-size:10px;color:var(--cyan);margin-top:4px;padding:3px 6px;background:rgba(6,182,212,.1);border-radius:3px">⟲ ${d.contrarian}</div>`:""}`;
-        break;
-      case "head":
-        const dec = d.decision || "HOLD";
-        const decColor = dec==="BUY"?"green":dec==="SELL"?"red":"yellow";
-        body = `<div style="text-align:center;margin-bottom:6px"><span class="pill ${decColor}" style="font-size:14px;padding:4px 16px;font-weight:700">${dec}</span></div>
-                ${(d.actions||[]).slice(0,3).map(a=>`<div class="action-list"><div class="ax ${a.type}">${a.text}</div></div>`).join("")}
-                <div class="rule3">
-                  ${(d.rule3||[]).map((r,i)=>`<div class="step"><b>[${i+1}]</b><span>${r}</span></div>`).join("")}
-                </div>`;
-        break;
-      default: body = "-";
-    }
-
-    return `<div class="agent ${def.key}">
-      <button class="ask" data-agent="${def.key}">Fråga ▸</button>
+    const sig = agentSignal(def.key, a[def.key]);
+    const short = ({macro:"Makro",technical:"Teknisk",sentiment:"Sentiment",risk:"Risk",quant:"Kvant",options:"Options",portfolio:"Portfölj",execution:"Exekver",advisor:"Advisor",head:"Head"})[def.key];
+    return `<div class="agent ${def.key}" data-agent="${def.key}" title="${def.name} — klicka för analys + chat">
       <div class="head">
-        <span class="name">${def.name}</span>
-        <span class="model ${def.premium?'opus':''}">${def.model}</span>
+        <span class="dot"></span>
+        <span class="name">${short}</span>
+        ${def.premium?'<span class="star">★</span>':''}
       </div>
-      <div class="body">${body}</div>
+      <div class="signal ${sig.cls}">${sig.text}</div>
     </div>`;
   }).join("");
 
-  grid.querySelectorAll(".ask").forEach(b=>{
-    b.addEventListener("click",()=>openChat(b.dataset.agent));
+  grid.querySelectorAll(".agent").forEach(el=>{
+    el.addEventListener("click",()=>openAgent(el.dataset.agent));
   });
 }
 
+// Full analys-rendering (för modal)
+function agentDetailHTML(key){
+  const d = STATE.agents[key] || {};
+  switch(key){
+    case "macro":
+      return `<h4>Makroregim</h4>
+        <div class="kv"><span class="k">Regim</span><span class="pill ${d.regime==="RISK_ON"?"green":d.regime==="RISK_OFF"?"red":"yellow"}">${d.regime||"–"}</span></div>
+        <div class="kv"><span class="k">Confidence</span><span>${d.confidence?Math.round(d.confidence*100)+"%":"–"}</span></div>
+        <div class="kv"><span class="k">VIX</span><span>${d.vix||"–"}</span></div>
+        <div class="kv"><span class="k">Olja (USOIL)</span><span>$${d.oil||"–"}</span></div>
+        <div class="kv"><span class="k">Dollar (DXY)</span><span>${d.dollar||"–"}</span></div>
+        <div class="kv"><span class="k">Crypto Fear &amp; Greed</span><span>${d.fng||"–"}/100</span></div>
+        <h4>Nyckelfaktorer</h4>
+        ${(d.keyFactors||[]).map(f=>`<div class="action-list"><div class="ax">${f}</div></div>`).join("")||"<div style='color:var(--dim)'>–</div>"}
+        <h4>Rekommendation</h4>
+        <div style="color:var(--yellow)">→ ${d.recommendation||"–"}</div>`;
+    case "technical":
+      return `<h4>Övergripande</h4>
+        <div class="kv"><span class="k">Top pick</span><span class="pill blue">${d.topPick||"–"}</span></div>
+        <div class="kv"><span class="k">Bias</span><span class="pill ${d.bias==="bullish"?"green":d.bias==="bearish"?"red":"yellow"}">${d.bias||"–"}</span></div>
+        <h4>Per symbol</h4>
+        ${(d.symbols||[]).map(s=>`<div class="kv"><span class="k">${s.sym}</span><span><span class="pill ${s.bias==="bullish"?"green":s.bias==="bearish"?"red":"yellow"}">${s.bias} ${s.score}</span> · entry ${s.entry} · target ${s.target}</span></div>`).join("")}
+        <h4>Signaler</h4>
+        ${(d.keySignals||[]).map(x=>`<div class="action-list"><div class="ax">${x}</div></div>`).join("")||"<div style='color:var(--dim)'>–</div>"}`;
+    case "sentiment":
+      return `<div class="kv"><span class="k">Sentiment</span><span class="pill ${["extreme_greed","greed"].includes(d.sentiment)?"green":["extreme_fear","fear"].includes(d.sentiment)?"red":"yellow"}">${d.sentiment||"–"}</span></div>
+        ${d.contrary?'<div class="warn">⚠ Contrary signal aktiv — överväg motsatt position</div>':""}
+        <h4>Narrativ</h4>
+        ${(d.narratives||[]).map(n=>`<div class="action-list"><div class="ax">${n}</div></div>`).join("")}
+        <h4>Politiker-aktivitet</h4>
+        ${(d.politicians||[]).map(p=>`<div class="kv"><span class="k">${p.name}</span><span class="pill ${p.dir==="BUY"?"green":"red"}">${p.dir} ${p.sym}</span></div>`).join("")||"<div style='color:var(--dim)'>–</div>"}`;
+    case "risk":
+      const heatColor = d.heat>70?"red":d.heat>40?"yellow":"green";
+      return `<div class="kv"><span class="k">Risk-nivå</span><span class="pill ${["critical","high"].includes(d.level)?"red":d.level==="medium"?"yellow":"green"}">${d.level||"–"}</span></div>
+        <div class="kv"><span class="k">Portfolio heat</span><span>${d.heat||0}%</span></div>
+        <div class="bar ${heatColor}"><span style="width:${d.heat||0}%"></span></div>
+        <div class="kv"><span class="k">Korrelation</span><span>${d.correlation?d.correlation.toFixed(2):"–"}</span></div>
+        <div class="kv"><span class="k">Max drawdown</span><span style="color:var(--red)">${d.maxDrawdown||"–"}%</span></div>
+        <h4>Varningar</h4>
+        ${(d.warnings||[]).map(w=>`<div class="warn red">⚠ ${w}</div>`).join("")||"<div style='color:var(--dim)'>Inga akuta</div>"}
+        <h4>Position sizing</h4>
+        <div>→ ${d.sizing||"–"}</div>`;
+    case "quant":
+      return `<div class="kv"><span class="k">Vol-regim</span><span class="pill blue">${d.volRegime||"–"}</span></div>
+        <div class="kv"><span class="k">Sharpe</span><span>${d.sharpe||"–"}</span></div>
+        <div class="kv"><span class="k">Win-rate</span><span>${d.winRate||0}%</span></div>
+        <h4>Per symbol</h4>
+        ${(d.symbols||[]).map(s=>`<div class="kv"><span class="k">${s.sym}</span><span>trend ${s.trend} · MR ${s.meanRev} · ${s.regime}</span></div>`).join("")}`;
+    case "options":
+      return `<div class="kv"><span class="k">IV-miljö</span><span class="pill yellow">${d.ivEnv||"–"}</span></div>
+        <h4>Strategier per symbol</h4>
+        ${(d.symbols||[]).map(s=>`<div class="kv"><span class="k">${s.sym}</span><span>IV ${s.ivRank} · ${s.strategy} · strike ${s.strike}</span></div>`).join("")}
+        <h4>Roll-möjligheter</h4>
+        ${(d.rolls||[]).map(r=>`<div class="action-list"><div class="ax">${r}</div></div>`).join("")}`;
+    case "portfolio":
+      return `<div class="kv"><span class="k">Diversifiering</span><span>${d.diversification||0}/100</span></div>
+        <div class="bar green"><span style="width:${d.diversification||0}%"></span></div>
+        <div class="kv"><span class="k">Cash</span><span>${d.cashPct||0}%</span></div>
+        <h4>Sektor-koncentration</h4>
+        ${Object.entries(d.sectorConc||{}).map(([k,v])=>`<div class="kv"><span class="k">${k}</span><span>${v}%</span></div>`).join("")}
+        <h4>Rebalansering</h4>
+        ${(d.rebalance||[]).map(r=>`<div class="action-list"><div class="ax">${r}</div></div>`).join("")||"<div style='color:var(--dim)'>Inget</div>"}`;
+    case "execution":
+      return `<div class="kv"><span class="k">Urgency</span><span class="pill ${d.urgency==="high"?"red":d.urgency==="medium"?"yellow":"green"}">${d.urgency||"–"}</span></div>
+        <h4>Per symbol</h4>
+        ${(d.symbols||[]).map(s=>`<div class="kv"><span class="k">${s.sym}</span><span>${s.type} · ${s.timing} · DCA ${s.split}x · slip ${s.slippage}</span></div>`).join("")}`;
+    case "advisor":
+      return `<h4>Strategisk outlook</h4>
+        <div style="line-height:1.5">${d.outlook||"–"}</div>
+        <div class="kv" style="margin-top:8px"><span class="k">Marknadscykel</span><span class="pill blue">${d.cycle||"–"}</span></div>
+        <h4>Insights</h4>
+        ${(d.insights||[]).map(i=>`<div class="action-list"><div class="ax">▸ ${i}</div></div>`).join("")}
+        <h4>Blind spots</h4>
+        ${(d.blindSpots||[]).map(b=>`<div class="warn">⚠ ${b}</div>`).join("")||"<div style='color:var(--dim)'>–</div>"}
+        <h4>Behavioral varningar</h4>
+        ${(d.behavioral||[]).map(b=>`<div class="warn red">! ${b}</div>`).join("")||"<div style='color:var(--dim)'>–</div>"}
+        ${d.contrarian?`<h4>Contrarian</h4><div style="color:var(--cyan);padding:8px;background:rgba(6,182,212,.08);border-radius:3px;border-left:2px solid var(--cyan)">⟲ ${d.contrarian}</div>`:""}
+        <h4>Portfölj-råd</h4>
+        <div>→ ${d.portfolioAdvice||"–"}</div>`;
+    case "head":
+      const dec = d.decision || "HOLD";
+      const decColor = dec==="BUY"?"green":dec==="SELL"?"red":"yellow";
+      return `<div style="text-align:center;margin-bottom:10px"><span class="pill ${decColor}" style="font-size:18px;padding:6px 24px;font-weight:700;letter-spacing:1px">${dec}</span></div>
+        <h4>Actions</h4>
+        ${(d.actions||[]).map(a=>`<div class="action-list"><div class="ax ${a.type}">${a.text}</div></div>`).join("")||"<div style='color:var(--dim)'>Inga</div>"}
+        <h4>Rule of 3</h4>
+        <div class="rule3">${(d.rule3||[]).map((r,i)=>`<div class="step"><b>[${i+1}]</b><span>${r}</span></div>`).join("")}</div>`;
+  }
+  return "–";
+}
+
+// Quick prompts per agent — Mike kan trycka för att skicka order/fråga snabbt
+function agentQuickPrompts(key){
+  const common = ["Sammanfatta din analys i 3 punkter","Vad är största risken just nu?"];
+  const map = {
+    macro:["Hur påverkar Fed-policy crypto idag?","Är vi i RISK_ON eller RISK_OFF?"],
+    technical:["Vilken är bästa entry för BTC nu?","Vilka motstånd är viktigast?"],
+    sentiment:["Är vi i FOMO-zon?","Vilka politiker köpte senast?"],
+    risk:["Får jag öppna 1 ny position på $100?","Vilken är max safe leverage?"],
+    quant:["Vilken edge har trend vs mean-rev nu?","Är volatiliteten köpvärd?"],
+    options:["Sälj covered call på TSLA — bra idé?","Vilken wheel-strategi just nu?"],
+    portfolio:["Är jag för exponerad mot crypto?","Vad ska jag rebalansera?"],
+    execution:["Köp BTC med TWAP eller market?","Bästa tid att executea idag?"],
+    advisor:["Vad missar teamet just nu?","Är det FOMO-rally eller real bullmarket?"],
+    head:["Lägg en BUY-order på BTC $100","Stäng alla positioner","Justera stop loss på SOL"]
+  };
+  return [...(map[key]||[]), ...common];
+}
+
 /* ======================================================================
-   CHAT MODAL
+   AGENT MODAL — analys + chat
    ====================================================================== */
 const chatLogs = {};
-function openChat(agentKey){
+let activeAgent = null;
+let activeTab = "analysis";
+
+function openAgent(agentKey){
+  activeAgent = agentKey;
   const def = AGENT_DEFS.find(a=>a.key===agentKey);
-  document.getElementById("modal-title").textContent = "Fråga: "+def.name;
-  document.getElementById("modal-bg").classList.add("on");
-  document.getElementById("chat-input").focus();
-  document.getElementById("chat-input").dataset.agent = agentKey;
+  document.getElementById("modal-title").textContent = def.name;
+  document.getElementById("modal-meta").textContent = def.model.toUpperCase();
+  // Färgmarkering
+  const dotColors = {macro:"#f59e0b",technical:"#3b82f6",sentiment:"#fb923c",risk:"#ef4444",quant:"#60a5fa",options:"#f59e0b",portfolio:"#10b981",execution:"#06b6d4",advisor:"#8b5cf6",head:"#fff"};
+  document.getElementById("modal-mark").style.background = dotColors[agentKey] || "#64748b";
+
+  document.getElementById("analysis-detail").innerHTML = agentDetailHTML(agentKey);
+  // Quick prompts
+  const qp = agentQuickPrompts(agentKey);
+  document.getElementById("quick-prompts").innerHTML = qp.map(p=>`<button data-q="${p.replace(/"/g,'&quot;')}">${p}</button>`).join("");
+  document.getElementById("quick-prompts").querySelectorAll("button").forEach(b=>{
+    b.addEventListener("click",()=>{
+      document.getElementById("chat-input").value = b.dataset.q;
+      document.getElementById("chat-input").focus();
+    });
+  });
+  switchTab("analysis");
   renderChat(agentKey);
+  document.getElementById("modal-bg").classList.add("on");
+  document.getElementById("chat-input").dataset.agent = agentKey;
 }
-function closeChat(){ document.getElementById("modal-bg").classList.remove("on"); }
+
+function switchTab(tab){
+  activeTab = tab;
+  document.querySelectorAll(".modal-tabs button").forEach(b=>b.classList.toggle("on", b.dataset.tab===tab));
+  document.getElementById("tab-analysis-pane").classList.toggle("on", tab==="analysis");
+  document.getElementById("tab-chat-pane").classList.toggle("on", tab==="chat");
+  document.getElementById("modal-footer").style.display = tab==="chat" ? "flex" : "none";
+  if(tab==="chat") setTimeout(()=>document.getElementById("chat-input").focus(), 50);
+}
+
+function closeChat(){ document.getElementById("modal-bg").classList.remove("on"); activeAgent = null; }
+
 function renderChat(key){
   const log = chatLogs[key] || [];
+  const isHead = key==="head";
+  const sendBtn = document.getElementById("chat-send");
+  sendBtn.classList.toggle("order", isHead);
+  sendBtn.textContent = isHead ? "Skicka order" : "Skicka";
+  document.getElementById("chat-input").placeholder = isHead ? "Order eller fråga (t.ex. 'Köp BTC $100')..." : "Skriv din fråga…";
   document.getElementById("chat-log").innerHTML = log.length
     ? log.map(m=>`<div class="q">▸ ${m.q}</div><div class="a">${m.a}</div>`).join("")
-    : `<div style="color:var(--dim);font-size:11px">Inga frågor än. Skriv något och tryck Skicka.</div>`;
+    : `<div style="color:var(--dim);font-size:11px;padding:8px">Inga frågor än. Använd quick prompts nedan eller skriv egen.</div>`;
   document.getElementById("chat-log").scrollTop = 999999;
 }
 async function sendChat(){
@@ -1180,6 +1295,10 @@ function wire(){
   document.getElementById("modal-bg").addEventListener("click", e=>{ if(e.target.id==="modal-bg") closeChat(); });
   document.getElementById("chat-send").addEventListener("click", sendChat);
   document.getElementById("chat-input").addEventListener("keydown", e=>{ if(e.key==="Enter") sendChat(); });
+  document.querySelectorAll(".modal-tabs button").forEach(b=>{
+    b.addEventListener("click", ()=>switchTab(b.dataset.tab));
+  });
+  document.addEventListener("keydown", e=>{ if(e.key==="Escape" && document.getElementById("modal-bg").classList.contains("on")) closeChat(); });
 
   // Settings
   document.getElementById("cfg-url").value = CFG.url;
