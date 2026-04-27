@@ -2991,7 +2991,6 @@ function simulateTeamResponse(instr){
 
   // Frågor / utmaningar (prefix-matchning för böjda former)
   if(/(välj|bestäm|plock|kör för mig|lägg)/.test(i)){
-    // Generera N trades om begärt
     const symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT"];
     const trades = [];
     const usedSyms = new Set();
@@ -2999,11 +2998,20 @@ function simulateTeamResponse(instr){
       let sym;
       do { sym = pick(symbols); } while(usedSyms.has(sym) && usedSyms.size < symbols.length);
       usedSyms.add(sym);
-      trades.push(simulateExecuteTrade(sym, "BUY", amount));
+      // Välj LONG eller SHORT baserat på "team-bias" (random i demo, bullish-tilt)
+      const isLong = Math.random() > 0.3; // 70% LONG, 30% SHORT
+      const side = isLong ? "BUY" : "SELL";
+      trades.push(simulateExecuteTrade(sym, side, amount));
     }
-    const tradeList = trades.map((t,idx)=>`  ${idx+1}. ${t.side} **${t.sym}** $${t.amount} @ ${formatPrice(t.entry, t.sym)}`).join("\n");
+    const tradeList = trades.map((t,idx)=>{
+      const dir = t.side === "BUY" ? "📈 **LONG** (CALL/UP)" : "📉 **SHORT** (PUT/DOWN)";
+      const expected = t.side === "BUY" ? "stiger" : "faller";
+      return `  ${idx+1}. ${dir} **${t.sym}** $${t.amount} @ ${formatPrice(t.entry, t.sym)}\n     → vi tjänar om priset ${expected}`;
+    }).join("\n");
+    const longCount = trades.filter(t=>t.side==="BUY").length;
+    const shortCount = trades.length - longCount;
     return {
-      text: `Hanna: ${tradeCount === 1 ? 'Jag väljer' : `Jag väljer ${tradeCount} trades`}:\n${tradeList}\n\nGrund: Tomas top-picks med score +${(2+Math.random()*2).toFixed(1)}, Karin OK på vol, Rasmus inom risk.\nAlbert flaggar inga blind spots.\n\n✓ ${trades.length} ${trades.length===1?'order':'ordrar'} placerade — se Trades-sidan för uppföljning.${testNote}`,
+      text: `Hanna: ${tradeCount === 1 ? 'Jag väljer' : `Jag väljer ${tradeCount} trades`} (${longCount} LONG, ${shortCount} SHORT):\n${tradeList}\n\nGrund: Tomas top-picks med score +${(2+Math.random()*2).toFixed(1)}, Karin OK på vol, Rasmus inom risk.\nAlbert flaggar inga blind spots.\n\n✓ ${trades.length} ${trades.length===1?'order':'ordrar'} placerade — se Trades-sidan för live PnL.${testNote}`,
       executedTrades: trades
     };
   }
@@ -3173,8 +3181,9 @@ function renderTradesPage(){
         const pnl = (cur - p.entry) * p.qty * (p.side === "BUY" ? 1 : -1);
         const pnlPct = ((cur - p.entry) / p.entry) * 100 * (p.side === "BUY" ? 1 : -1);
         const t = new Date(p.openedAt).toLocaleTimeString();
+        const sideLabel = p.side === "BUY" ? "📈 LONG" : "📉 SHORT";
         return `<div class="tt-row ${p.side==='BUY'?'long':'short'}" data-id="${p.id}">
-          <span class="tt-side ${p.side==='BUY'?'buy':'sell'}">${p.side}</span>
+          <span class="tt-side ${p.side==='BUY'?'buy':'sell'}">${sideLabel}</span>
           <div>
             <div class="tt-sym">${p.sym}</div>
             <div class="tt-meta">${p.qty.toFixed(6)} @ ${formatPrice(p.entry, p.sym)} · $${p.amount}</div>
@@ -3231,8 +3240,9 @@ function renderTradesPage(){
     } else {
       histTbl.innerHTML = `<div class="tt-tbl">${history.slice(0,30).map(h=>{
         const t = new Date(h.closedAt).toLocaleTimeString();
+        const sideLabel = h.side === "BUY" ? "📈 LONG" : "📉 SHORT";
         return `<div class="tt-row closed ${h.side==='BUY'?'long':'short'}">
-          <span class="tt-side ${h.side==='BUY'?'buy':'sell'}">${h.side}</span>
+          <span class="tt-side ${h.side==='BUY'?'buy':'sell'}">${sideLabel}</span>
           <div>
             <div class="tt-sym">${h.sym}</div>
             <div class="tt-meta">${formatPrice(h.entry, h.sym)} → ${formatPrice(h.exit, h.sym)} · $${h.amount}</div>
