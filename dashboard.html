@@ -120,10 +120,39 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-widt
 .live-section h3 .live-pulse{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 1.5s infinite}
 .live-section h3 .count{margin-left:auto;color:var(--dim);font-size:10px;font-weight:400;text-transform:none;letter-spacing:0}
 
-/* Section anchors — för sidebar-navigation */
-section.section{scroll-margin-top:70px}
-.section-divider{margin:14px 0 8px;padding:10px 12px;background:var(--card);border-radius:6px;border-left:3px solid var(--cyan);font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text)}
-.section-divider .sub{font-weight:400;color:var(--dim);margin-left:8px;text-transform:none;letter-spacing:0;font-size:10px}
+/* SPA-pages — bara EN aktiv åt gången */
+section.page{display:none}
+section.page.active{display:block;animation:pageFadeIn .15s ease}
+@keyframes pageFadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
+/* LIVE STRIP ROWS — rullande tickers per kategori */
+.live-strip-row{display:flex;align-items:stretch;background:var(--card2);border:1px solid var(--border);border-radius:5px;overflow:hidden;height:42px}
+.live-strip-row .lsr-label{display:flex;align-items:center;gap:6px;padding:0 12px;font-size:10px;font-weight:700;letter-spacing:.5px;color:var(--cyan);background:var(--card);border-right:1px solid var(--border);min-width:170px;flex-shrink:0}
+.live-strip-row .lsr-pulse{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 1.5s infinite;flex-shrink:0}
+.live-strip-row .lsr-track{flex:1;overflow:hidden;position:relative;display:flex;align-items:center}
+.live-strip-row .lsr-inner{display:inline-flex;gap:0;animation:lsrScroll var(--scroll-dur,40s) linear infinite;will-change:transform;white-space:nowrap}
+.live-strip-row:hover .lsr-inner{animation-play-state:paused}
+@keyframes lsrScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.lsr-item{display:inline-flex;align-items:center;gap:6px;padding:0 14px;font-size:11px;border-right:1px solid var(--border);cursor:pointer;height:42px;min-width:fit-content}
+.lsr-item:hover{background:rgba(6,182,212,.08)}
+.lsr-item .sym{font-weight:700;color:var(--text)}
+.lsr-item .price{color:var(--text);font-variant-numeric:tabular-nums}
+.lsr-item .ch{font-size:10px;font-weight:600;font-variant-numeric:tabular-nums}
+.lsr-item .ch.up{color:var(--green)} .lsr-item .ch.down{color:var(--red)}
+.page-header{margin:10px 10px 12px;padding:10px 14px;background:var(--card);border-radius:6px;border-left:3px solid var(--cyan);font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text);display:flex;align-items:center;gap:10px}
+.page-header .ph-ico{font-size:18px}
+.page-header .ph-sub{font-weight:400;color:var(--dim);margin-left:8px;text-transform:none;letter-spacing:0;font-size:11px}
+.page-header .ph-spacer{flex:1}
+.page-header .ph-action{font-size:10px;padding:4px 10px;background:var(--card2);border:1px solid var(--border);border-radius:3px;color:var(--dim);font-weight:600;cursor:pointer}
+.page-header .ph-action:hover{color:var(--cyan);border-color:var(--cyan)}
+
+/* Settings-sida (egen, inte längre <details>) */
+.settings-page{padding:0 10px 10px}
+.settings-page .card{padding:18px}
+.settings-page .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:14px}
+.settings-page label{display:block;font-size:11px;color:var(--dim);margin-bottom:5px;letter-spacing:.3px}
+.settings-page input,.settings-page select{width:100%}
+.settings-page h4{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px;font-weight:600}
 
 /* CARDS */
 .card{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:12px}
@@ -337,23 +366,23 @@ section.section{scroll-margin-top:70px}
 
 <div class="app-shell">
 <aside class="sidebar">
-  <button class="active" data-target="sec-trading" title="Trading-vy">
+  <button class="active" data-page="trade" title="Trade — chart + bet + team">
     <span class="ico">📊</span><span>Trade</span>
   </button>
-  <button data-target="sec-team" title="AI-Team">
+  <button data-page="team" title="AI-Team — alla agenter">
     <span class="ico">🤖</span><span>Team</span>
   </button>
-  <button data-target="sec-live" title="Live aktivitet — alla par">
+  <button data-page="live" title="Live aktivitet — rullande par">
     <span class="ico">⚡</span><span>Live</span>
     <span class="live-dot"></span>
   </button>
-  <button data-target="sec-positions" title="Positioner & historik">
+  <button data-page="trades" title="Trades — positioner + beslut">
     <span class="ico">📈</span><span>Trades</span>
   </button>
-  <button data-target="sec-cost" title="Kostnader">
+  <button data-page="cost" title="Cost — spend tracking">
     <span class="ico">💰</span><span>Cost</span>
   </button>
-  <button data-target="sec-settings" title="Inställningar">
+  <button data-page="settings" title="Settings — backend, mode, risk">
     <span class="ico">⚙️</span><span>Settings</span>
   </button>
   <div class="spacer"></div>
@@ -411,8 +440,10 @@ section.section{scroll-margin-top:70px}
 </div>
 
 <div class="main-wrap" style="min-width:0">
-<section class="section" id="sec-trading">
-<div class="section-divider">📊 Trading <span class="sub">— chart, snabb-trade, AI-team</span></div>
+
+<!-- ═══ TRADE-SIDA ═══ -->
+<section class="page active" id="page-trade">
+<div class="page-header"><span class="ph-ico">📊</span>Trade<span class="ph-sub">— chart, snabb-trade, AI-team</span></div>
 <main>
   <!-- LEFT: CHART + AGENTS -->
   <div class="left">
@@ -509,47 +540,93 @@ section.section{scroll-margin-top:70px}
 </main>
 </section>
 
-<!-- LIVE AKTIVITET — cross-pairs, forex, crypto i realtid -->
-<section class="section live-section" id="sec-live">
-  <div class="section-divider">⚡ Live aktivitet <span class="sub">— valutapar mot varandra, realtid</span></div>
-  <div class="card" style="padding:14px">
-    <h3>Crypto vs USDT <span class="live-pulse"></span><span class="count" id="live-crypto-count">15 par</span></h3>
-    <div class="live-grid" id="live-crypto"></div>
+<!-- ═══ LIVE-SIDA — 4 rullande rader (en per kategori) ═══ -->
+<section class="page live-section" id="page-live">
+  <div class="page-header"><span class="ph-ico">⚡</span>Live aktivitet<span class="ph-sub">— 4 rullande rader, realtid</span></div>
+  <div style="margin:0 10px;display:flex;flex-direction:column;gap:6px">
+    <div class="live-strip-row" data-speed="40">
+      <div class="lsr-label"><span class="lsr-pulse"></span>CRYPTO VS USDT</div>
+      <div class="lsr-track" id="lsr-crypto"></div>
+    </div>
+    <div class="live-strip-row" data-speed="55">
+      <div class="lsr-label"><span class="lsr-pulse" style="background:var(--blue);box-shadow:0 0 6px var(--blue)"></span>KORSPAR</div>
+      <div class="lsr-track" id="lsr-cross"></div>
+    </div>
+    <div class="live-strip-row" data-speed="50">
+      <div class="lsr-label"><span class="lsr-pulse" style="background:var(--yellow);box-shadow:0 0 6px var(--yellow)"></span>FOREX</div>
+      <div class="lsr-track" id="lsr-forex"></div>
+    </div>
+    <div class="live-strip-row" data-speed="45">
+      <div class="lsr-label"><span class="lsr-pulse" style="background:var(--orange);box-shadow:0 0 6px var(--orange)"></span>RÅVAROR &amp; INDEX</div>
+      <div class="lsr-track" id="lsr-other"></div>
+    </div>
+  </div>
+  <p style="margin:14px 12px;font-size:11px;color:var(--dim);line-height:1.5">
+    💡 Klicka på ett par för att ladda det i charten på Trade-sidan. Hovra för att pausa rullningen.
+  </p>
+</section>
 
-    <h3 style="margin-top:14px">Korspar (Crypto-mot-Crypto) <span class="live-pulse"></span><span class="count" id="live-cross-count">6 par</span></h3>
-    <div class="live-grid" id="live-cross"></div>
-
-    <h3 style="margin-top:14px">Forex (Valutor mot varandra) <span class="live-pulse"></span><span class="count" id="live-forex-count">9 par</span></h3>
-    <div class="live-grid" id="live-forex"></div>
-
-    <h3 style="margin-top:14px">Råvaror &amp; Index <span class="live-pulse"></span><span class="count" id="live-other-count">8 par</span></h3>
-    <div class="live-grid" id="live-other"></div>
+<!-- ═══ TEAM-SIDA — egen vy med team-banner + alla agenter ═══ -->
+<section class="page" id="page-team">
+  <div class="page-header"><span class="ph-ico">🤖</span>AI-Team<span class="ph-sub">— 10 personer, schemalagd autonomi</span></div>
+  <div class="card" style="margin:0 10px;padding:14px">
+    <div class="team-banner" id="team-banner-page"></div>
+    <div class="agent-grid" id="agent-grid-page" style="margin-top:10px"></div>
+    <div class="timing" id="timing-page" style="margin-top:12px">
+      Specialists: <b id="t-spec-page">–</b> | Exec: <b id="t-exec-page">–</b> | Head: <b id="t-head-page">–</b> | Total: <b id="t-tot-page">–</b>
+    </div>
   </div>
 </section>
 
-<!-- POSITIONS & HISTORY -->
-<section class="section" id="sec-positions">
-  <div class="section-divider">📈 Trades <span class="sub">— positioner, historik, P&amp;L</span></div>
-  <div class="card">
+<!-- ═══ TRADES-SIDA ═══ -->
+<section class="page" id="page-trades">
+  <div class="page-header"><span class="ph-ico">📈</span>Trades<span class="ph-sub">— positioner, historik, P&amp;L</span></div>
+  <div class="card" style="margin:0 10px">
     <h3>Aktiva positioner</h3>
-    <div id="positions-list-full" style="font-size:11px;color:var(--dim);padding:8px">Ingen position öppen i demo-läge. När backend är aktiv visas riktiga positioner här.</div>
+    <div id="positions-list-full" style="font-size:12px;color:var(--dim);padding:8px">Ingen position öppen i demo-läge. När backend är aktiv visas riktiga positioner här.</div>
     <h3 style="margin-top:14px">Senaste beslut (Hannas BUY/SELL/HOLD)</h3>
-    <div id="decisions-list" style="font-size:11px;color:var(--dim);padding:8px">Inga beslut ännu — kör analys eller vänta på schemalagd session.</div>
+    <div id="decisions-list" style="font-size:12px;color:var(--dim);padding:8px">Inga beslut ännu — kör analys eller vänta på schemalagd session.</div>
   </div>
 </section>
 
-<!-- COST -->
-<section class="section" id="sec-cost">
-  <div class="section-divider">💰 Cost <span class="sub">— spend tracking, cap, breakdown</span></div>
-  <div class="card">
-    <p style="font-size:11px;color:var(--dim);line-height:1.5">Klicka <b>💰 idag</b>-knappen i toppen för full kostnadsöversikt med per-agent och per-modell breakdown. Cost-tracker loggar varje Claude-anrop i realtid.</p>
-    <button class="run-btn" onclick="openCostModal()" style="margin-top:8px">Öppna kostnadsöversikt</button>
+<!-- ═══ COST-SIDA ═══ -->
+<section class="page" id="page-cost">
+  <div class="page-header"><span class="ph-ico">💰</span>Cost<span class="ph-sub">— spend tracking, cap, breakdown</span></div>
+  <div class="card" style="margin:0 10px">
+    <p style="font-size:12px;color:var(--dim);line-height:1.5">Cost-tracker loggar varje Claude-anrop i realtid. Daily cap (MAX_DAILY_SPEND_USD) stoppar automatiskt sessions vid överskridande.</p>
+    <button class="run-btn" onclick="openCostModal()" style="margin-top:10px">Öppna detaljerad kostnadsöversikt</button>
   </div>
 </section>
 
-<!-- TEAM section anchor (för sidebar — agent-team finns redan inom Trading-section) -->
-<section class="section" id="sec-team" style="display:none"></section>
-<section class="section" id="sec-settings" style="display:none"></section>
+<!-- ═══ SETTINGS-SIDA ═══ -->
+<section class="page settings-page" id="page-settings">
+  <div class="page-header"><span class="ph-ico">⚙️</span>Settings<span class="ph-sub">— backend, API-nycklar, mode</span></div>
+  <div class="card" style="margin:0 10px">
+    <h4>Backend-anslutning</h4>
+    <div class="grid">
+      <div>
+        <label>Backend URL</label>
+        <input type="text" id="cfg-url" placeholder="https://trading.aiupscale.agency" />
+      </div>
+      <div>
+        <label>API Key (valfri)</label>
+        <input type="password" id="cfg-key" placeholder="lämna tom om inget krävs" />
+      </div>
+      <div>
+        <label>Mode</label>
+        <select id="cfg-mode">
+          <option value="demo">Demo (simulerad data)</option>
+          <option value="live">Live backend</option>
+        </select>
+      </div>
+    </div>
+    <button class="test-btn" id="test-conn">Test Connection</button>
+    <div class="status-line" id="conn-status"></div>
+
+    <h4 style="margin-top:18px">Risk &amp; Position-sizing</h4>
+    <p style="font-size:11px;color:var(--dim);line-height:1.5">Sätts i <code style="background:var(--bg);padding:1px 4px;border-radius:2px">.env</code>-filen på VPS:en (DEFAULT/MIN/MAX_POSITION_USD, MAX_DAILY_SPEND_USD osv). Editor i appen byggs i Fas 2.</p>
+  </div>
+</section>
 
 <div class="ticker-strip">
   <div class="ticker-track" id="ticker"></div>
@@ -558,28 +635,7 @@ section.section{scroll-margin-top:70px}
 </div><!-- /main-wrap -->
 </div><!-- /app-shell -->
 
-<details class="settings">
-  <summary>⚙ Inställningar</summary>
-  <div class="grid">
-    <div>
-      <label>Backend URL</label>
-      <input type="text" id="cfg-url" value="https://trading.aiupscale.agency" />
-    </div>
-    <div>
-      <label>API Key (valfri)</label>
-      <input type="password" id="cfg-key" placeholder="lämna tom om inget krävs" />
-    </div>
-    <div>
-      <label>Mode</label>
-      <select id="cfg-mode">
-        <option value="demo">Demo (simulerad data)</option>
-        <option value="live">Live backend</option>
-      </select>
-    </div>
-  </div>
-  <button class="test-btn" id="test-conn">Test Connection</button>
-  <div class="status-line" id="conn-status"></div>
-</details>
+<!-- Gamla <details class="settings"> borttagen — nu Settings-sida i SPA -->
 
 <!-- LIVE-MODE KONFIRMATION (6-punkts checklista) -->
 <div class="live-modal-bg" id="live-modal-bg">
@@ -1225,8 +1281,8 @@ function fmtRel(d){
 }
 
 function renderTeamBanner(){
-  const banner = document.getElementById("team-banner");
-  if(!banner) return;
+  const banners = [document.getElementById("team-banner"), document.getElementById("team-banner-page")].filter(Boolean);
+  if(!banners.length) return;
   const now = new Date();
   const lastRunStr = STATE.lastRun ? fmtTimeUTC(STATE.lastRun) : "–";
   const next = getNextRun();
@@ -1237,7 +1293,7 @@ function renderTeamBanner(){
     const isNext = fmtTimeUTC(d) === fmtTimeUTC(next);
     return `<span class="slot ${isPast && !isNext ? 'done':''} ${isNext?'next':''}">${s} UTC</span>`;
   }).join("");
-  banner.innerHTML = `
+  const html = `
     <span class="auto-dot"></span>
     <b>Autonomt team</b>
     <span class="lbl">·</span>
@@ -1246,16 +1302,17 @@ function renderTeamBanner(){
     <span class="lbl">Nästa:</span> <span class="next-run">${fmtTimeUTC(next)} UTC (om ${fmtRel(next)})</span>
     <div class="schedule-list">${slotsHtml}</div>
   `;
+  banners.forEach(b=>{ b.innerHTML = html; });
 }
 
 function renderAgents(){
   const a = STATE.agents;
-  const grid = document.getElementById("agent-grid");
+  const grids = [document.getElementById("agent-grid"), document.getElementById("agent-grid-page")].filter(Boolean);
   const next = getNextRun();
   const lastStr = STATE.lastRun ? fmtTimeUTC(STATE.lastRun) : "–";
   const nextStr = fmtTimeUTC(next);
 
-  grid.innerHTML = AGENT_DEFS.map(def=>{
+  const html = AGENT_DEFS.map(def=>{
     const sig = agentSignal(def.key, a[def.key]);
     const isRunning = STATE.runningAgents?.includes(def.key);
     return `<div class="agent ${def.key} ${isRunning?'running':''}" data-agent="${def.key}" title="${def.person} (${def.role}) — klicka för analys, chat och order">
@@ -1275,8 +1332,12 @@ function renderAgents(){
     </div>`;
   }).join("");
 
-  grid.querySelectorAll(".agent").forEach(el=>{
-    el.addEventListener("click",()=>openAgent(el.dataset.agent));
+  // Rendera in i alla grids (Trade-sidan + Team-sidan)
+  grids.forEach(g=>{
+    g.innerHTML = html;
+    g.querySelectorAll(".agent").forEach(el=>{
+      el.addEventListener("click",()=>openAgent(el.dataset.agent));
+    });
   });
 
   renderTeamBanner();
@@ -1502,67 +1563,81 @@ function simulateAgentAnswer(key, q){
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
 /* ======================================================================
-   SIDEBAR NAVIGATION
+   SPA NAVIGATION — varje sidebar-knapp = egen sida
    ====================================================================== */
+const PAGES = ["trade","team","live","trades","cost","settings"];
+
+function switchPage(name){
+  if(!PAGES.includes(name)) name = "trade";
+  // Toggle pages
+  PAGES.forEach(p=>{
+    const el = document.getElementById("page-"+p);
+    if(el) el.classList.toggle("active", p===name);
+  });
+  // Toggle sidebar buttons
+  document.querySelectorAll("aside.sidebar button[data-page]").forEach(b=>{
+    b.classList.toggle("active", b.dataset.page === name);
+  });
+  // Persistera + reflektera i URL-hash
+  try{ localStorage.setItem("trading_page", name); }catch(_){}
+  if(location.hash.slice(1) !== name) history.replaceState(null,"","#"+name);
+  // Scroll till topp av main
+  window.scrollTo({top:0, behavior:"instant"});
+  // Re-rendera Team om vi går in på Team-sidan (för att visa dubbletter av agent-grid)
+  if(name === "team") renderAgents();
+}
+
 function wireSidebar(){
-  document.querySelectorAll("aside.sidebar button[data-target]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      document.querySelectorAll("aside.sidebar button").forEach(b=>b.classList.remove("active"));
-      btn.classList.add("active");
-      let targetId = btn.dataset.target;
-      // Sec-team scrollar till agent-grid (som lever inom Trading-section)
-      if(targetId === "sec-team"){
-        document.getElementById("ai-team-card")?.scrollIntoView({behavior:"smooth", block:"start"});
-        return;
-      }
-      if(targetId === "sec-settings"){
-        document.querySelector("details.settings")?.setAttribute("open","");
-        document.querySelector("details.settings")?.scrollIntoView({behavior:"smooth", block:"start"});
-        return;
-      }
-      const el = document.getElementById(targetId);
-      if(el) el.scrollIntoView({behavior:"smooth", block:"start"});
-    });
+  document.querySelectorAll("aside.sidebar button[data-page]").forEach(btn=>{
+    btn.addEventListener("click", ()=>switchPage(btn.dataset.page));
   });
   document.getElementById("kill-sidebar")?.addEventListener("click", ()=>{
     document.getElementById("kill-btn")?.click();
   });
+  // Hash-routing — ändra sida om URL ändras
+  window.addEventListener("hashchange", ()=>{
+    const h = location.hash.slice(1);
+    if(PAGES.includes(h)) switchPage(h);
+  });
+}
+
+function loadInitialPage(){
+  // Prio: URL-hash > localStorage > "trade"
+  const h = location.hash.slice(1);
+  if(PAGES.includes(h)) return switchPage(h);
+  let saved = null;
+  try{ saved = localStorage.getItem("trading_page"); }catch(_){}
+  switchPage(saved && PAGES.includes(saved) ? saved : "trade");
 }
 
 /* ======================================================================
-   LIVE AKTIVITET — cross-pair grid med realtid-uppdatering
+   LIVE AKTIVITET — 4 rullande tickers (CSS-animerade marquees)
    ====================================================================== */
 const CROSS_PAIRS = ["BTC/ETH","ETH/BTC","SOL/BTC","SOL/ETH","BNB/BTC","XRP/BTC"];
 const FOREX_PAIRS = ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/GBP","EUR/JPY","GBP/JPY"];
 const OTHER_PAIRS = ["XAU/USD","XAG/USD","USOIL","NATGAS","SPY","QQQ","DIA","IWM"];
 
-const livePrev = {}; // för flash-up/down-animation
-
-function buildLiveTile(sym){
-  const cur = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 0;
-  const base = BASE_PRICES[sym] ?? cur;
-  const chPct = base > 0 ? ((cur-base)/base)*100 : 0;
-  return `<div class="live-tile" data-sym="${sym}">
-    <div class="lt-row"><span class="pair">${sym}</span><span class="ch ${chPct>=0?'up':'down'}">${chPct>=0?'+':''}${chPct.toFixed(2)}%</span></div>
-    <div class="lt-row"><span class="price">${formatPrice(cur,sym)}</span><span class="vol">${formatVol(Math.round(50000+Math.random()*150000))}</span></div>
-  </div>`;
+function buildLsrItem(sym){
+  return `<span class="lsr-item" data-sym="${sym}"><span class="sym">${sym}</span><span class="price" data-price>--</span><span class="ch" data-ch>0.00%</span></span>`;
 }
 
-function renderLiveSections(){
-  const cryptoSyms = SYMBOLS.crypto;
-  document.getElementById("live-crypto").innerHTML = cryptoSyms.map(buildLiveTile).join("");
-  document.getElementById("live-cross").innerHTML = CROSS_PAIRS.map(buildLiveTile).join("");
-  document.getElementById("live-forex").innerHTML = FOREX_PAIRS.map(buildLiveTile).join("");
-  document.getElementById("live-other").innerHTML = OTHER_PAIRS.map(buildLiveTile).join("");
-  document.getElementById("live-crypto-count").textContent = cryptoSyms.length+" par";
-  document.getElementById("live-cross-count").textContent = CROSS_PAIRS.length+" par";
-  document.getElementById("live-forex-count").textContent = FOREX_PAIRS.length+" par";
-  document.getElementById("live-other-count").textContent = OTHER_PAIRS.length+" par";
-
-  // Klick på tile → laddar i chart
-  document.querySelectorAll(".live-tile").forEach(t=>{
-    t.addEventListener("click", ()=>{
-      const sym = t.dataset.sym;
+function renderLiveStrips(){
+  const sets = [
+    {id:"lsr-crypto", syms:SYMBOLS.crypto, dur:60},
+    {id:"lsr-cross",  syms:CROSS_PAIRS,    dur:50},
+    {id:"lsr-forex",  syms:FOREX_PAIRS,    dur:55},
+    {id:"lsr-other",  syms:OTHER_PAIRS,    dur:50},
+  ];
+  for(const s of sets){
+    const el = document.getElementById(s.id);
+    if(!el) continue;
+    // Dubbla items för seamless loop (translate -50%)
+    const items = s.syms.map(buildLsrItem).join("");
+    el.innerHTML = `<div class="lsr-inner" style="--scroll-dur:${s.dur}s">${items}${items}</div>`;
+  }
+  document.querySelectorAll(".lsr-item").forEach(it=>{
+    it.addEventListener("click", ()=>{
+      const sym = it.dataset.sym;
       const cat = symCategory(sym);
       const catEl = document.getElementById("cat-select");
       if([...catEl.options].some(o=>o.value===cat)) catEl.value = cat;
@@ -1572,36 +1647,25 @@ function renderLiveSections(){
         symEl.value = sym;
         STATE.symbol = sym;
         loadCandles(sym, STATE.tf);
-        document.getElementById("sec-trading").scrollIntoView({behavior:"smooth"});
+        switchPage("trade");
       }
     });
   });
 }
 
-function refreshLiveTiles(){
-  document.querySelectorAll(".live-tile").forEach(tile=>{
-    const sym = tile.dataset.sym;
+function refreshLiveStrips(){
+  document.querySelectorAll(".lsr-item").forEach(it=>{
+    const sym = it.dataset.sym;
     const cur = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 0;
-    const prev = livePrev[sym] ?? cur;
     const base = BASE_PRICES[sym] ?? cur;
     const chPct = base > 0 ? ((cur-base)/base)*100 : 0;
-
-    const priceEl = tile.querySelector(".price");
-    const chEl = tile.querySelector(".ch");
-    if(priceEl) priceEl.textContent = formatPrice(cur, sym);
-    if(chEl){
-      chEl.textContent = (chPct>=0?'+':'')+chPct.toFixed(2)+'%';
-      chEl.className = "ch "+(chPct>=0?'up':'down');
-    }
-
-    // Flash om pris ändrats
-    if(cur > prev){ tile.classList.remove("flash-down"); tile.classList.add("flash-up"); }
-    else if(cur < prev){ tile.classList.remove("flash-up"); tile.classList.add("flash-down"); }
-    setTimeout(()=>tile.classList.remove("flash-up","flash-down"), 500);
-
-    livePrev[sym] = cur;
+    const p = it.querySelector("[data-price]"); if(p) p.textContent = formatPrice(cur, sym);
+    const c = it.querySelector("[data-ch]");
+    if(c){ c.textContent = (chPct>=0?"+":"")+chPct.toFixed(2)+"%"; c.className = "ch "+(chPct>=0?"up":"down"); }
   });
 }
+
+/* (Gamla LIVE-grid-kod borttagen — ersatt med rullande lsr-strip ovan.) */
 
 /* ======================================================================
    COST TRACKING (visa ENDAST för dig — admin-vy)
@@ -1960,9 +2024,10 @@ function boot(){
   document.getElementById("bet-win").textContent = "$"+(STATE.betAmt*0.85).toFixed(2);
   wire();
   wireSidebar();
-  renderLiveSections();
+  renderLiveStrips();
+  loadInitialPage();
   setInterval(tick, 2000);
-  setInterval(refreshLiveTiles, 2000);
+  setInterval(refreshLiveStrips, 2000);
   refreshCost();
   setInterval(refreshCost, 30000); // Refresh kostnadsräknare var 30s
   if(CFG.mode === "live"){ loadFromBackend(); startSSE(); loadCurrentMode(); }
