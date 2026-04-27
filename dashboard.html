@@ -416,53 +416,132 @@ body.app-state-auth .ticker-strip,
 body.app-state-auth .fc-toggle,
 body.app-state-auth .fc-panel{display:none !important}
 
-.landing{min-height:100vh;background:radial-gradient(circle at 20% 0%, rgba(6,182,212,.08), transparent 50%),radial-gradient(circle at 80% 80%, rgba(59,130,246,.06), transparent 50%),var(--bg);display:flex;flex-direction:column}
-.landing-nav{display:flex;align-items:center;padding:18px 32px;gap:18px}
-.landing-nav .brand{font-size:18px}
-.landing-nav .ln-spacer{flex:1}
-.landing-nav button{padding:9px 20px;border-radius:6px;font-weight:700;font-size:13px;letter-spacing:.4px;border:none;cursor:pointer}
-.landing-nav .btn-login{background:transparent;color:var(--text);border:1.5px solid var(--border)}
-.landing-nav .btn-login:hover{border-color:var(--cyan);color:var(--cyan)}
-.landing-nav .btn-signup{background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;box-shadow:0 0 0 1.5px rgba(6,182,212,.5)}
-.landing-nav .btn-signup:hover{filter:brightness(1.1)}
+/* ═══ AION-INSPIRED LANDING (neon-blue glow, glass panels, monospace details) ═══ */
+.landing{min-height:100vh;background:#000;color:#cbd5e1;font-family:'Inter','SF Pro',system-ui,sans-serif;display:flex;flex-direction:column;position:relative;overflow:hidden}
+.landing::before{content:"";position:absolute;top:-10%;right:-10%;width:600px;height:600px;background:rgba(0,102,255,.08);filter:blur(140px);border-radius:50%;pointer-events:none}
+.landing::after{content:"";position:absolute;bottom:-10%;left:-10%;width:500px;height:500px;background:rgba(0,210,255,.04);filter:blur(120px);border-radius:50%;pointer-events:none}
+.landing .grid-bg{position:absolute;inset:0;background-image:radial-gradient(circle at 2px 2px, rgba(0,102,255,.08) 1px, transparent 0);background-size:40px 40px;opacity:.4;pointer-events:none}
 
-.landing-hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 24px;text-align:center}
-.landing-hero h1{font-size:48px;font-weight:800;color:#fff;letter-spacing:-.5px;line-height:1.1;margin-bottom:14px;max-width:800px}
-.landing-hero h1 .grad{background:linear-gradient(135deg,var(--cyan),var(--blue));-webkit-background-clip:text;background-clip:text;color:transparent}
-.landing-hero .sub{font-size:18px;color:var(--label);max-width:640px;margin-bottom:32px;line-height:1.6}
-.landing-hero .cta-row{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
-.landing-hero .cta-primary{padding:14px 28px;background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;border-radius:7px;font-weight:800;font-size:14px;letter-spacing:.5px;border:none;cursor:pointer;box-shadow:0 4px 16px rgba(6,182,212,.25)}
-.landing-hero .cta-primary:hover{filter:brightness(1.1);transform:translateY(-1px)}
-.landing-hero .cta-secondary{padding:14px 28px;background:transparent;color:var(--text);border-radius:7px;font-weight:700;font-size:14px;border:1.5px solid var(--border);cursor:pointer}
-.landing-hero .cta-secondary:hover{border-color:var(--cyan);color:var(--cyan)}
+.l-nav{position:relative;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:0 40px;height:88px;border-bottom:1px solid rgba(255,255,255,.05);backdrop-filter:blur(8px)}
+.l-brand{display:flex;align-items:center;gap:14px}
+.l-brand .l-logo{width:32px;height:32px;background:linear-gradient(45deg,#0066ff,#00d2ff);transform:rotate(45deg);padding:2px;border-radius:3px}
+.l-brand .l-logo > span{display:block;width:100%;height:100%;background:#000;border-radius:2px}
+.l-brand .l-name{font-size:20px;font-weight:800;letter-spacing:-.5px;color:#fff}
+.l-brand .l-name .l-sub{color:#0066ff;text-shadow:0 0 8px rgba(0,102,255,.8);font-weight:800}
 
-.landing-features{padding:60px 24px;background:var(--card2);border-top:1px solid var(--border)}
-.landing-features h2{font-size:24px;font-weight:800;color:#fff;text-align:center;margin-bottom:8px;letter-spacing:.3px}
-.landing-features .lf-sub{text-align:center;color:var(--label);margin-bottom:32px;font-size:14px}
-.landing-features .lf-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;max-width:1100px;margin:0 auto}
-.landing-features .lf-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;transition:border-color .15s}
-.landing-features .lf-card:hover{border-color:var(--cyan)}
-.landing-features .lf-card .lf-ico{font-size:28px;margin-bottom:10px}
-.landing-features .lf-card h3{font-size:14px;font-weight:800;color:#fff;letter-spacing:.3px;margin-bottom:6px;text-transform:none}
-.landing-features .lf-card p{font-size:12px;color:var(--label);line-height:1.6}
+.l-links{display:none;gap:40px;font-size:11px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:#94a3b8}
+.l-links a{text-decoration:none;color:#94a3b8;transition:color .2s}
+.l-links a:hover{color:#0066ff}
+@media(min-width:900px){.l-links{display:flex}}
 
-.landing-pricing{padding:60px 24px;text-align:center}
-.landing-pricing h2{font-size:24px;font-weight:800;color:#fff;margin-bottom:8px}
-.landing-pricing .lp-sub{color:var(--label);margin-bottom:32px;font-size:14px}
-.landing-pricing .lp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;max-width:980px;margin:0 auto}
-.landing-pricing .lp-tier{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px 20px;text-align:left;transition:border-color .15s}
-.landing-pricing .lp-tier:hover{border-color:var(--cyan)}
-.landing-pricing .lp-tier.featured{border-color:var(--cyan);box-shadow:0 0 0 1px var(--cyan)}
-.landing-pricing .lp-tier .lp-name{font-size:11px;font-weight:800;letter-spacing:.7px;color:var(--cyan);text-transform:uppercase;margin-bottom:4px}
-.landing-pricing .lp-tier .lp-price{font-size:30px;font-weight:800;color:#fff;margin-bottom:4px}
-.landing-pricing .lp-tier .lp-price .lp-mo{font-size:13px;color:var(--dim);font-weight:500}
-.landing-pricing .lp-tier ul{list-style:none;padding:0;margin:14px 0;font-size:12px;color:var(--label);line-height:1.8}
-.landing-pricing .lp-tier ul li::before{content:"✓ ";color:var(--green);font-weight:700}
-.landing-pricing .lp-tier button{width:100%;padding:10px;border-radius:5px;font-weight:700;letter-spacing:.3px;border:1.5px solid var(--border);background:transparent;color:var(--text);cursor:pointer;font-size:12px}
-.landing-pricing .lp-tier button:hover{border-color:var(--cyan);color:var(--cyan)}
-.landing-pricing .lp-tier.featured button{background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;border:none}
+.l-cta{display:flex;align-items:center;gap:10px}
+.l-btn{padding:9px 22px;border-radius:999px;font-size:10px;font-weight:800;letter-spacing:.1em;cursor:pointer;border:none;text-transform:uppercase}
+.l-btn-outline{background:transparent;border:1px solid rgba(0,102,255,.4);color:#0066ff;box-shadow:0 0 15px rgba(0,102,255,.2)}
+.l-btn-outline:hover{background:rgba(0,102,255,.1)}
+.l-btn-primary{background:#0066ff;color:#fff;box-shadow:0 0 20px rgba(0,102,255,.4)}
+.l-btn-primary:hover{filter:brightness(1.15)}
 
-.landing-foot{padding:30px;text-align:center;color:var(--dim);font-size:11px;border-top:1px solid var(--border)}
+.l-main{position:relative;z-index:10;flex:1;padding:48px 40px;max-width:1280px;margin:0 auto;width:100%}
+.l-hero{display:grid;grid-template-columns:1fr;gap:48px;align-items:center;width:100%}
+@media(min-width:1024px){.l-hero{grid-template-columns:1fr 1fr}}
+
+.l-hero .l-badge{display:inline-flex;align-items:center;gap:12px;padding:6px 16px;background:rgba(0,102,255,.1);border:1px solid rgba(0,102,255,.2);border-radius:999px;font-size:10px;font-weight:800;color:#0066ff;letter-spacing:.2em;text-transform:uppercase}
+.l-hero .l-badge .l-dot{width:8px;height:8px;border-radius:50%;background:#0066ff;box-shadow:0 0 10px #0066ff;animation:lpulse 1.5s infinite}
+@keyframes lpulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+.l-hero h1{font-size:72px;font-weight:300;color:#fff;letter-spacing:-.02em;line-height:1.05;margin:32px 0 24px}
+.l-hero h1 .l-grad{font-weight:800;font-style:italic;background:linear-gradient(90deg,#0066ff,#00d2ff,#003399);-webkit-background-clip:text;background-clip:text;color:transparent}
+@media(max-width:767px){.l-hero h1{font-size:44px}}
+
+.l-hero .l-tagline{color:#94a3b8;font-size:18px;max-width:480px;line-height:1.6;font-weight:300;margin-bottom:32px}
+
+.l-hero .l-cta-row{display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+.l-hero .l-launch{padding:16px 36px;background:#0066ff;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:900;letter-spacing:-.01em;cursor:pointer;box-shadow:0 0 40px rgba(0,102,255,.5);transition:filter .2s}
+.l-hero .l-launch:hover{filter:brightness(1.25)}
+.l-hero .l-stats{display:flex;flex-direction:column;gap:2px}
+.l-hero .l-stats .v{font-size:24px;font-family:'SF Mono',monospace;color:#fff;letter-spacing:-.05em;text-shadow:0 0 5px rgba(255,255,255,.3)}
+.l-hero .l-stats .l{font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.2em;font-weight:800}
+
+/* "10 ACTIVE CORES" circle */
+.l-circle-wrap{display:none;position:relative}
+@media(min-width:1024px){.l-circle-wrap{display:block}}
+.l-circle{aspect-ratio:1;width:420px;margin:0 auto;border-radius:50%;border:1px solid rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;padding:32px;background:rgba(255,255,255,.01);position:relative;overflow:hidden;box-shadow:inset 0 0 50px rgba(0,102,255,.1)}
+.l-circle .l-inner{width:100%;height:100%;border-radius:50%;border:1px solid rgba(0,102,255,.1);display:flex;align-items:center;justify-content:center;position:relative;backdrop-filter:blur(1px)}
+.l-circle .l-cross{position:absolute;width:100%;height:1px;background:linear-gradient(90deg,transparent,rgba(0,102,255,.4),transparent)}
+.l-circle .l-cross.r45{transform:rotate(45deg)}
+.l-circle .l-cross.rn45{transform:rotate(-45deg)}
+.l-circle .l-glow{width:224px;height:224px;border-radius:50%;background:radial-gradient(circle,rgba(0,102,255,.1),transparent);filter:blur(48px);position:absolute}
+.l-circle .l-num{position:absolute;display:flex;flex-direction:column;align-items:center;justify-content:center;inset:0}
+.l-circle .l-num b{font-size:120px;font-family:'SF Mono',monospace;color:#fff;letter-spacing:-.05em;line-height:1;text-shadow:0 0 20px rgba(0,102,255,.6),0 0 40px rgba(0,102,255,.2);transform:scale(1.1)}
+.l-circle .l-num span{font-size:10px;letter-spacing:.4em;font-weight:800;color:#0066ff;text-transform:uppercase;margin-top:8px}
+
+/* Agent roster */
+.l-agents{margin-top:80px}
+.l-agents-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:24px;border-bottom:1px solid rgba(255,255,255,.05);padding-bottom:12px}
+.l-agents-head h3{font-size:11px;font-weight:800;letter-spacing:.3em;text-transform:uppercase;color:#fff;display:flex;align-items:center;gap:8px}
+.l-agents-head h3::before{content:"⬢";color:#0066ff;font-size:14px}
+.l-agents-head .l-sync{font-size:10px;font-family:'SF Mono',monospace;color:#64748b;letter-spacing:.15em;text-transform:uppercase}
+.l-agent-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+@media(min-width:1024px){.l-agent-grid{grid-template-columns:repeat(5,1fr)}}
+.l-agent-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.1);padding:16px;border-radius:12px;position:relative;overflow:hidden;transition:transform .2s,border-color .2s,background .2s;cursor:default}
+.l-agent-card:hover{border-color:rgba(0,102,255,.4);background:rgba(255,255,255,.05);transform:translateY(-5px) scale(1.02)}
+.l-agent-card .l-ah{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}
+.l-agent-card .l-id{font-size:10px;font-family:'SF Mono',monospace;color:#0066ff;letter-spacing:-.05em}
+.l-agent-card .l-status{width:6px;height:6px;border-radius:50%;background:#10b981;box-shadow:0 0 10px rgba(16,185,129,.8)}
+.l-agent-card .l-aname{font-size:13px;font-weight:800;color:#fff;margin-bottom:4px;transition:color .2s}
+.l-agent-card:hover .l-aname{color:#0066ff}
+.l-agent-card .l-arole{font-size:10px;color:#64748b;letter-spacing:.15em;text-transform:uppercase;font-weight:600;margin-bottom:12px}
+.l-agent-card .l-aft{display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px solid rgba(255,255,255,.05);font-size:10px;color:#94a3b8;font-family:'SF Mono',monospace;font-style:italic}
+
+/* Tech section */
+.l-tech{margin-top:128px;padding:80px 0;display:grid;grid-template-columns:1fr;gap:80px;align-items:center}
+@media(min-width:1024px){.l-tech{grid-template-columns:1fr 1fr}}
+.l-tech .l-tag{font-size:11px;font-weight:800;color:#0066ff;letter-spacing:.4em;text-transform:uppercase}
+.l-tech h3{font-size:48px;font-weight:300;color:#fff;line-height:1.15;margin:24px 0 0}
+.l-tech h3 b{font-style:italic;font-weight:800}
+.l-tech .l-tech-list{margin-top:40px;display:flex;flex-direction:column;gap:32px}
+.l-tech .l-tech-item{display:flex;gap:20px}
+.l-tech .l-tech-icon{width:40px;height:40px;border-radius:8px;background:rgba(0,102,255,.05);border:1px solid rgba(0,102,255,.2);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px;box-shadow:0 0 10px rgba(0,102,255,.1);color:#0066ff}
+.l-tech .l-tech-text h4{font-size:14px;color:#fff;font-weight:800;margin-bottom:4px}
+.l-tech .l-tech-text p{font-size:13px;color:#94a3b8;line-height:1.6}
+.l-tech-glass{background:linear-gradient(135deg,rgba(255,255,255,.05),rgba(255,255,255,0));backdrop-filter:blur(12px);border:1px solid rgba(0,102,255,.2);padding:32px;border-radius:16px;position:relative;z-index:1}
+.l-tech-glass .l-th{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}
+.l-tech-glass .l-th .l-lbl{font-size:10px;font-family:'SF Mono',monospace;color:#0066ff}
+.l-tech-glass .l-bars{display:flex;flex-direction:column;gap:16px}
+.l-tech-glass .l-bar{height:8px;background:rgba(255,255,255,.05);border-radius:999px;overflow:hidden;border:1px solid rgba(255,255,255,.05)}
+.l-tech-glass .l-bar > span{display:block;height:100%;background:linear-gradient(90deg,rgba(0,102,255,.4),#0066ff);border-radius:999px;box-shadow:0 0 10px rgba(0,102,255,.4);animation:lbarFill 1.5s ease forwards;width:0}
+@keyframes lbarFill{to{width:var(--w)}}
+.l-tech-glass .l-console{margin-top:32px;font-size:11px;font-family:'SF Mono',monospace;color:#64748b;line-height:1.6;background:rgba(0,0,0,.4);padding:16px;border-radius:8px;border:1px solid rgba(255,255,255,.05)}
+.l-tech-glass .l-console b{color:#0066ff;font-weight:600}
+
+/* Pricing */
+.l-pricing{margin-top:128px;padding:40px 0;text-align:center}
+.l-pricing .l-tag{font-size:11px;font-weight:800;color:#0066ff;letter-spacing:.4em;text-transform:uppercase;margin-bottom:16px;display:block}
+.l-pricing h2{font-size:36px;font-weight:300;color:#fff;margin-bottom:8px}
+.l-pricing h2 b{font-weight:800}
+.l-pricing .l-psub{color:#94a3b8;margin-bottom:48px;font-size:14px}
+.l-pricing .l-pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;max-width:1080px;margin:0 auto;text-align:left}
+.l-pricing .l-tier{background:linear-gradient(135deg,rgba(255,255,255,.04),rgba(255,255,255,.01));backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:28px 22px;transition:border-color .2s,transform .2s}
+.l-pricing .l-tier:hover{border-color:rgba(0,102,255,.4);transform:translateY(-3px)}
+.l-pricing .l-tier.feat{border-color:#0066ff;box-shadow:0 0 30px rgba(0,102,255,.2)}
+.l-pricing .l-tname{font-size:10px;font-weight:800;letter-spacing:.3em;color:#0066ff;text-transform:uppercase;margin-bottom:8px}
+.l-pricing .l-tprice{font-size:32px;font-weight:800;color:#fff;margin-bottom:6px;font-family:'SF Mono',monospace;letter-spacing:-.02em}
+.l-pricing .l-tprice .l-mo{font-size:12px;color:#64748b;font-weight:400}
+.l-pricing .l-tier ul{list-style:none;padding:0;margin:18px 0;font-size:12px;color:#cbd5e1;line-height:2}
+.l-pricing .l-tier ul li::before{content:"⬡  ";color:#0066ff;font-weight:700}
+.l-pricing .l-tbtn{width:100%;padding:11px;border-radius:6px;font-weight:800;letter-spacing:.05em;border:1px solid rgba(255,255,255,.1);background:transparent;color:#fff;cursor:pointer;font-size:12px;text-transform:uppercase;transition:all .15s}
+.l-pricing .l-tbtn:hover{border-color:#0066ff;color:#0066ff}
+.l-pricing .l-tier.feat .l-tbtn{background:#0066ff;color:#fff;border:none;box-shadow:0 0 20px rgba(0,102,255,.4)}
+
+/* Footer */
+.l-foot{position:relative;z-index:10;background:rgba(0,102,255,.04);height:48px;padding:0 40px;border-top:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:space-between;font-size:10px;font-family:'SF Mono',monospace;letter-spacing:.15em;color:#64748b;text-transform:uppercase;margin-top:80px}
+.l-foot .l-col{display:flex;gap:32px}
+.l-foot .l-col .l-pair{display:flex;align-items:center;gap:8px}
+.l-foot .l-col .l-k{color:rgba(0,102,255,.4)}
+.l-foot .l-col .l-v{color:#cbd5e1}
+.l-foot .l-col .l-v.bull{color:#0066ff;font-weight:800;text-shadow:0 0 5px rgba(0,102,255,.5)}
+.l-foot .l-sync-pair{display:flex;align-items:center;gap:6px}
+.l-foot .l-sync-pair span:first-child{width:6px;height:6px;border-radius:50%;background:#0066ff;box-shadow:0 0 8px #0066ff;animation:lpulse 1.5s infinite}
 
 /* AUTH SCREEN */
 .auth-screen{min-height:100vh;background:radial-gradient(circle at 50% 30%, rgba(6,182,212,.1), transparent 50%),var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px}
@@ -567,119 +646,154 @@ body.app-state-onboard .fc-panel{display:none !important}
 </head>
 <body class="app-state-landing">
 
-<!-- ═══ LANDING-SIDA ═══ -->
+<!-- ═══ LANDING-SIDA — AION-inspirerad, neon-blue glow ═══ -->
 <div class="landing">
-  <nav class="landing-nav">
-    <span class="brand">MIKAEL TRADING OS</span>
-    <span class="ln-spacer"></span>
-    <button class="btn-login" id="land-login">Logga in</button>
-    <button class="btn-signup" id="land-signup">Skapa konto</button>
+  <div class="grid-bg"></div>
+
+  <nav class="l-nav">
+    <div class="l-brand">
+      <div class="l-logo"><span></span></div>
+      <span class="l-name">MIKAEL<span class="l-sub">TRADING</span></span>
+    </div>
+    <div class="l-links">
+      <a href="#agents">Agent Network (10)</a>
+      <a href="#tech">Strategy</a>
+      <a href="#pricing">Pricing</a>
+    </div>
+    <div class="l-cta">
+      <button class="l-btn l-btn-outline" id="land-login">LOGGA IN</button>
+      <button class="l-btn l-btn-primary" id="land-signup">SKAPA KONTO</button>
+    </div>
   </nav>
 
-  <section class="landing-hero">
-    <h1>AI-driven trading,<br><span class="grad">10 personer i ditt team</span></h1>
-    <p class="sub">
-      Multi-asset trading-system byggt på Claude. Lars researchar nyheterna,
-      8 specialister analyserar, Albert ger strategiskt djup, Hanna lägger ordrarna.
-      Crypto, forex och råvaror — autonomt eller på din kommando.
-    </p>
-    <div class="cta-row">
-      <button class="cta-primary" id="hero-signup">Kom igång gratis →</button>
-      <button class="cta-secondary" id="hero-login">Jag har redan konto</button>
-    </div>
-  </section>
+  <main class="l-main">
+    <div class="l-hero">
+      <div>
+        <span class="l-badge"><span class="l-dot"></span>ALLA SYSTEM IGÅNG · V2.4.1</span>
+        <h1>Autonomt<br><span class="l-grad">Wealth</span> Intelligence.</h1>
+        <p class="l-tagline">Ett kollektiv av 10 specialiserade agenter, var och en kalibrerad för specifika marknadsineffektiviteter. Ren matematisk exekvering — drivet av Claude.</p>
+        <div class="l-cta-row">
+          <button class="l-launch" id="hero-signup">LANSERA AGENTER</button>
+          <div class="l-stats">
+            <span class="v">$2.10</span>
+            <span class="l">VECKA / 7-DAGARS TEST</span>
+          </div>
+        </div>
+      </div>
 
-  <section class="landing-features">
-    <h2>Varför Mikael Trading OS</h2>
-    <p class="lf-sub">Inte en bot. Ett team som tänker tillsammans.</p>
-    <div class="lf-grid">
-      <div class="lf-card">
-        <div class="lf-ico">🧠</div>
-        <h3>10 specialiserade agenter</h3>
-        <p>Markus (makro), Tomas (teknisk), Sara (sentiment), Rasmus (risk), Karin (kvant), Petra (portfölj), Emma (exekvering), Albert (advisor) och Hanna (head trader). Plus Lars som research-analytiker.</p>
-      </div>
-      <div class="lf-card">
-        <div class="lf-ico">⚡</div>
-        <h3>Autonom + manuell</h3>
-        <p>Schemalagda sessions var 12:e timme. Eller chatta med teamet i realtid: "Köp BTC för $50" — Hanna lägger ordern.</p>
-      </div>
-      <div class="lf-card">
-        <div class="lf-ico">🛡️</div>
-        <h3>Hård risk-kontroll</h3>
-        <p>Rasmus har vetorätt över Hanna. Kill-switch, max position size, dagslimit, IP-whitelist. Cap på AI-spend så det inte rusar.</p>
-      </div>
-      <div class="lf-card">
-        <div class="lf-ico">📊</div>
-        <h3>Crypto + Forex</h3>
-        <p>Binance för crypto-spot, Oanda för forex (EUR/USD, GBP/USD). 15+ kryptopar och 9 valutapar out-of-the-box.</p>
-      </div>
-      <div class="lf-card">
-        <div class="lf-ico">💬</div>
-        <h3>Direkt kommunikation</h3>
-        <p>Klicka på vilken agent som helst, ställ frågor, utmana deras logik. Hanna förklarar varje beslut. Du har alltid kontrollen.</p>
-      </div>
-      <div class="lf-card">
-        <div class="lf-ico">🔬</div>
-        <h3>Test → Propose → Live</h3>
-        <p>Tre lägen: testa på testnet, låt teamet föreslå för manuell godkänning, eller kör autonomt med riktiga pengar. Du väljer.</p>
+      <div class="l-circle-wrap">
+        <div class="l-circle">
+          <div class="l-inner">
+            <div class="l-cross r45"></div>
+            <div class="l-cross rn45"></div>
+            <div class="l-glow"></div>
+            <div class="l-num"><b>10</b><span>AKTIVA AGENTER</span></div>
+          </div>
+        </div>
       </div>
     </div>
-  </section>
 
-  <section class="landing-pricing" id="pricing">
-    <h2>Pris</h2>
-    <p class="lp-sub">Du betalar för software-användningen — du behåller 100% av dina trades.</p>
-    <div class="lp-grid">
-      <div class="lp-tier">
-        <div class="lp-name">Family &amp; Friends</div>
-        <div class="lp-price">Gratis<span class="lp-mo"> · invite-only</span></div>
-        <ul>
-          <li>Alla agenter</li>
-          <li>1 broker (Binance)</li>
-          <li>5 symboler</li>
-          <li>Test + Propose</li>
-        </ul>
-        <button class="land-cta-signup">Be om inbjudan</button>
+    <!-- Agent roster -->
+    <div class="l-agents" id="agents">
+      <div class="l-agents-head">
+        <h3>Agent-roster</h3>
+        <span class="l-sync">Synced med Anthropic + Binance</span>
       </div>
-      <div class="lp-tier">
-        <div class="lp-name">Starter</div>
-        <div class="lp-price">$29<span class="lp-mo"> /månad</span></div>
-        <ul>
-          <li>50 AI-decisions/mån</li>
-          <li>1 broker</li>
-          <li>5 symboler</li>
-          <li>Test + Propose</li>
-        </ul>
-        <button class="land-cta-signup">Starta</button>
-      </div>
-      <div class="lp-tier featured">
-        <div class="lp-name">Pro · populärast</div>
-        <div class="lp-price">$99<span class="lp-mo"> /månad</span></div>
-        <ul>
-          <li>200 AI-decisions/mån</li>
-          <li>Alla brokers</li>
-          <li>Obegränsade symboler</li>
-          <li>Live trading</li>
-          <li>Lars (Perplexity)</li>
-        </ul>
-        <button class="land-cta-signup">Starta Pro</button>
-      </div>
-      <div class="lp-tier">
-        <div class="lp-name">Enterprise</div>
-        <div class="lp-price">$299<span class="lp-mo"> /månad</span></div>
-        <ul>
-          <li>Obegränsade decisions</li>
-          <li>Custom prompts</li>
-          <li>Dedicated support</li>
-          <li>SLA</li>
-        </ul>
-        <button class="land-cta-signup">Kontakta oss</button>
-      </div>
+      <div class="l-agent-grid" id="l-agent-grid"></div>
     </div>
-  </section>
 
-  <footer class="landing-foot">
-    © 2026 AI Upscale Agency · Mikael Trading OS · Bygger på Claude API · Säljer mjukvara, inte investmentråd
+    <!-- Tech section -->
+    <section class="l-tech" id="tech">
+      <div>
+        <span class="l-tag">NEURAL ARKITEKTUR</span>
+        <h3>Avancerad intelligens,<br><b>förenklad exekvering.</b></h3>
+        <div class="l-tech-list">
+          <div class="l-tech-item">
+            <div class="l-tech-icon">⬢</div>
+            <div class="l-tech-text">
+              <h4>Real-time research (Lars)</h4>
+              <p>Perplexity Sonar Pro hämtar nyheter, makro-händelser och geopolitik senaste 12h innan teamet analyserar.</p>
+            </div>
+          </div>
+          <div class="l-tech-item">
+            <div class="l-tech-icon">▲</div>
+            <div class="l-tech-text">
+              <h4>Multi-modal analys</h4>
+              <p>Markus läser makro, Tomas teknisk, Sara sentiment + politiker-trades, Karin kvantitativ vol-analys, Rasmus risk.</p>
+            </div>
+          </div>
+          <div class="l-tech-item">
+            <div class="l-tech-icon">◆</div>
+            <div class="l-tech-text">
+              <h4>Strategisk syntes</h4>
+              <p>Albert (Opus 4.7) ger contrarian-perspektiv. Hanna (Sonnet 4.6) syntetiserar och lägger faktiska ordrar.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="l-tech-glass">
+        <div class="l-th">
+          <span class="l-lbl">LIVE_SESSION_CYCLE</span>
+          <div style="display:flex;gap:4px"><div style="width:4px;height:4px;border-radius:50%;background:rgba(0,102,255,.4)"></div><div style="width:4px;height:4px;border-radius:50%;background:rgba(0,102,255,.4)"></div><div style="width:4px;height:4px;border-radius:50%;background:rgba(0,102,255,.4)"></div></div>
+        </div>
+        <div class="l-bars">
+          <div class="l-bar" style="--w:75%"><span></span></div>
+          <div class="l-bar" style="--w:45%"><span></span></div>
+          <div class="l-bar" style="--w:90%"><span></span></div>
+          <div class="l-bar" style="--w:60%"><span></span></div>
+        </div>
+        <div class="l-console">
+          System: Processing Layer_04...<br>
+          &gt; Lars-research: 3 nyheter, 0 risk-alerts<br>
+          &gt; Albert: cykel-fas <b>accumulation</b><br>
+          &gt; Hanna: BUY BTCUSDT \$50 — placerad<br>
+          &gt; Status: <b>OPTIMAL</b>
+        </div>
+      </div>
+    </section>
+
+    <!-- Pricing -->
+    <section class="l-pricing" id="pricing">
+      <span class="l-tag">PRIS</span>
+      <h2>Du betalar för <b>mjukvaran</b>.</h2>
+      <p class="l-psub">Dina egna API-nycklar. Dina egna trades. 100% lagligt.</p>
+      <div class="l-pgrid">
+        <div class="l-tier">
+          <div class="l-tname">Family</div>
+          <div class="l-tprice">Gratis<div class="l-mo">invite-only</div></div>
+          <ul><li>Alla agenter</li><li>1 broker</li><li>5 symboler</li><li>Test-läge</li></ul>
+          <button class="l-tbtn land-cta-signup">Be om inbjudan</button>
+        </div>
+        <div class="l-tier">
+          <div class="l-tname">Starter</div>
+          <div class="l-tprice">$29<span class="l-mo"> / mån</span></div>
+          <ul><li>50 decisions/mån</li><li>Test + Propose</li><li>1 broker</li><li>5 symboler</li></ul>
+          <button class="l-tbtn land-cta-signup">Starta</button>
+        </div>
+        <div class="l-tier feat">
+          <div class="l-tname">PRO ★</div>
+          <div class="l-tprice">$99<span class="l-mo"> / mån</span></div>
+          <ul><li>200 decisions/mån</li><li>Live trading</li><li>Alla brokers</li><li>Lars (research)</li></ul>
+          <button class="l-tbtn land-cta-signup">Starta PRO</button>
+        </div>
+        <div class="l-tier">
+          <div class="l-tname">Enterprise</div>
+          <div class="l-tprice">$299<span class="l-mo"> / mån</span></div>
+          <ul><li>Unlimited</li><li>Custom prompts</li><li>Dedicated support</li><li>SLA</li></ul>
+          <button class="l-tbtn land-cta-signup">Kontakta</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="l-foot">
+    <div class="l-col">
+      <div class="l-pair"><span class="l-k">Latency:</span><span class="l-v">0.14ms</span></div>
+      <div class="l-pair"><span class="l-k">Market:</span><span class="l-v bull">Bullish Confirmed</span></div>
+      <div class="l-pair"><span class="l-k">Build:</span><span class="l-v">v2.4.1</span></div>
+    </div>
+    <div class="l-sync-pair"><span></span><span>Global Sync · AI Upscale Agency</span></div>
   </footer>
 </div>
 
@@ -2554,7 +2668,36 @@ function wireOnboarding(){
   document.getElementById("ob-finish")?.addEventListener("click", finishOnboarding);
 }
 
+function renderLandingAgents(){
+  const grid = document.getElementById("l-agent-grid");
+  if(!grid) return;
+  const landingAgents = [
+    {name:"Lars",   role:"Research-Analytiker", stat:"Live news"},
+    {name:"Markus", role:"Makro-Analytiker",    stat:"Regim-läsning"},
+    {name:"Tomas",  role:"Teknisk Analytiker",  stat:"Score +3.2"},
+    {name:"Sara",   role:"Sentiment-Analyst",   stat:"Politicians"},
+    {name:"Rasmus", role:"Risk-Analytiker",     stat:"Vetorätt"},
+    {name:"Karin",  role:"Kvant-Analytiker",    stat:"Sharpe 1.14"},
+    {name:"Petra",  role:"Portfölj-Strateg",    stat:"Diversifiering"},
+    {name:"Emma",   role:"Exekvering",          stat:"TWAP / DCA"},
+    {name:"Albert", role:"Strategisk Advisor",  stat:"Opus 4.7"},
+    {name:"Hanna",  role:"Head Trader",         stat:"Sonnet 4.6"},
+  ];
+  grid.innerHTML = landingAgents.map((a,i)=>`
+    <div class="l-agent-card">
+      <div class="l-ah">
+        <span class="l-id">AGNT-${String(i+1).padStart(2,'0')}</span>
+        <div class="l-status"></div>
+      </div>
+      <div class="l-aname">${a.name}</div>
+      <div class="l-arole">${a.role}</div>
+      <div class="l-aft">${a.stat}</div>
+    </div>
+  `).join("");
+}
+
 function wireAuth(){
+  renderLandingAgents();
   // Landing → auth
   document.getElementById("land-login")?.addEventListener("click", ()=>showAuth("login"));
   document.getElementById("land-signup")?.addEventListener("click", ()=>showAuth("signup"));
