@@ -25,11 +25,13 @@ import type { OrderRequest, OrderResult } from "../types.js";
 //  Head Trader — teamets beslutsfattare.
 //
 //  Får rapporter från ALLA 9 specialister + tillgång till execution-tools.
-//  Modell: Opus (bästa reasoning för kritiska beslut).
-//  Specialisterna har redan samlat data — Head Trader syntetiserar + handlar.
+//  Modell: Sonnet 4.6 (kostnadsoptimerad — 5x billigare än Opus, fortfarande
+//  starkt reasoning för syntetisering. Advisor (Opus 4.7) ger strategisk djup-vy
+//  separat. Mike kan höja till Opus 4.7 efter 7-dagars utvärdering om kvaliteten
+//  inte räcker.)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const HEAD_TRADER_MODEL = "claude-opus-4-6";
+const HEAD_TRADER_MODEL = "claude-sonnet-4-6";
 
 export interface AllReports {
   macro: MacroReport;

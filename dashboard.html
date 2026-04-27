@@ -856,7 +856,7 @@ const AGENT_DEFS = [
   {key:"portfolio",  person:"Petra",  role:"Portfölj-Strateg",      title:"Portfölj-Strateg",      initial:"PS", model:"haiku 4.5"},
   {key:"execution",  person:"Emma",   role:"Exekverings-Optimerare",title:"Exekverings-Optimerare",initial:"EO", model:"haiku 4.5"},
   {key:"advisor",    person:"Albert", role:"Strategisk Advisor",    title:"Claude Advisor",        initial:"AD", model:"opus 4.7",  premium:true},
-  {key:"head",       person:"Hanna",  role:"Head Trader (chef)",    title:"Head Trader",           initial:"HT", model:"opus 4.6",  premium:true}
+  {key:"head",       person:"Hanna",  role:"Head Trader (chef)",    title:"Head Trader",           initial:"HT", model:"sonnet 4.6",premium:true}
 ];
 
 function genSimAgents(){
@@ -958,11 +958,12 @@ function agentSignal(key, d){
   return {text:"–", cls:""};
 }
 
-// Schemalagda körningstider — global loop var 6:e timme = 4 sessions/dag
+// Schemalagda körningstider — global loop var 12:e timme = 2 sessions/dag
+// Lean-läge för 7-dagars utvärdering: ~$0.30/dag, $2.10/vecka.
+// Matchar LOOP_INTERVAL_SECONDS=43200 i .env på VPS.
 const SCHEDULE = {
-  intervalSec: 21600,
-  // Synliga fasta tider (UTC) som visas i banner — matchar var-6h om container startar 00:00 UTC
-  slots: ["00:00","06:00","12:00","18:00"]
+  intervalSec: 43200,
+  slots: ["00:00","12:00"]
 };
 
 function getNextRun(){
