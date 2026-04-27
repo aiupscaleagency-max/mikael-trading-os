@@ -88,10 +88,42 @@ header{position:sticky;top:0;z-index:100;background:var(--card);border-bottom:1p
 .dot.live{background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 1.5s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
-/* LAYOUT */
-main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
+/* SIDEBAR + LAYOUT */
+.app-shell{display:grid;grid-template-columns:64px 1fr;min-height:calc(100vh - 80px)}
+aside.sidebar{background:var(--card);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:stretch;padding:8px 6px;gap:4px;position:sticky;top:54px;height:calc(100vh - 54px);overflow-y:auto;z-index:50}
+aside.sidebar button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:9px 4px;border-radius:5px;color:var(--dim);background:transparent;border:1px solid transparent;font-size:9px;letter-spacing:.4px;text-transform:uppercase;font-weight:600;cursor:pointer;transition:all .12s}
+aside.sidebar button:hover{background:var(--card2);color:var(--text)}
+aside.sidebar button.active{background:var(--card2);color:var(--cyan);border-color:var(--cyan)}
+aside.sidebar button .ico{font-size:18px}
+aside.sidebar .spacer{flex:1}
+aside.sidebar .live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 1.5s infinite;margin-top:6px}
+
+main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-width:0}
 .left{display:flex;flex-direction:column;gap:10px;min-width:0}
 .right{display:flex;flex-direction:column;gap:10px}
+
+/* LIVE AKTIVITET — cross-pair grid */
+.live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px}
+.live-tile{background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:8px 10px;transition:transform .15s,border-color .15s;cursor:pointer}
+.live-tile:hover{border-color:var(--cyan);transform:translateY(-1px)}
+.live-tile .lt-row{display:flex;justify-content:space-between;align-items:baseline}
+.live-tile .pair{font-size:11px;font-weight:700;color:var(--text);letter-spacing:.3px}
+.live-tile .price{font-size:14px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+.live-tile .ch{font-size:10px;font-weight:600;font-variant-numeric:tabular-nums}
+.live-tile .ch.up{color:var(--green)} .live-tile .ch.down{color:var(--red)}
+.live-tile.flash-up{animation:flashUp .5s}
+.live-tile.flash-down{animation:flashDown .5s}
+@keyframes flashUp{0%{background:rgba(16,185,129,.25)}100%{background:var(--card2)}}
+@keyframes flashDown{0%{background:rgba(239,68,68,.25)}100%{background:var(--card2)}}
+.live-tile .vol{font-size:9px;color:var(--dim);margin-top:2px}
+.live-section h3{display:flex;align-items:center;gap:8px}
+.live-section h3 .live-pulse{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 1.5s infinite}
+.live-section h3 .count{margin-left:auto;color:var(--dim);font-size:10px;font-weight:400;text-transform:none;letter-spacing:0}
+
+/* Section anchors — för sidebar-navigation */
+section.section{scroll-margin-top:70px}
+.section-divider{margin:14px 0 8px;padding:10px 12px;background:var(--card);border-radius:6px;border-left:3px solid var(--cyan);font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text)}
+.section-divider .sub{font-weight:400;color:var(--dim);margin-left:8px;text-transform:none;letter-spacing:0;font-size:10px}
 
 /* CARDS */
 .card{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:12px}
@@ -303,6 +335,33 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
   <button class="cost-mini" id="cost-mini" title="Klicka för detaljerad kostnadsvy">💰 <b id="cost-today">$0.00</b> idag</button>
 </header>
 
+<div class="app-shell">
+<aside class="sidebar">
+  <button class="active" data-target="sec-trading" title="Trading-vy">
+    <span class="ico">📊</span><span>Trade</span>
+  </button>
+  <button data-target="sec-team" title="AI-Team">
+    <span class="ico">🤖</span><span>Team</span>
+  </button>
+  <button data-target="sec-live" title="Live aktivitet — alla par">
+    <span class="ico">⚡</span><span>Live</span>
+    <span class="live-dot"></span>
+  </button>
+  <button data-target="sec-positions" title="Positioner & historik">
+    <span class="ico">📈</span><span>Trades</span>
+  </button>
+  <button data-target="sec-cost" title="Kostnader">
+    <span class="ico">💰</span><span>Cost</span>
+  </button>
+  <button data-target="sec-settings" title="Inställningar">
+    <span class="ico">⚙️</span><span>Settings</span>
+  </button>
+  <div class="spacer"></div>
+  <button id="kill-sidebar" title="Kill switch">
+    <span class="ico">⏻</span><span>Kill</span>
+  </button>
+</aside>
+
 <!-- COST MODAL — kostnadsdetaljer + cap-status -->
 <div class="modal-bg" id="cost-modal-bg">
   <div class="modal" style="max-width:680px">
@@ -351,6 +410,9 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
   </div>
 </div>
 
+<div class="main-wrap" style="min-width:0">
+<section class="section" id="sec-trading">
+<div class="section-divider">📊 Trading <span class="sub">— chart, snabb-trade, AI-team</span></div>
 <main>
   <!-- LEFT: CHART + AGENTS -->
   <div class="left">
@@ -404,7 +466,7 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
       <div id="macd-pane"></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="ai-team-card" style="scroll-margin-top:70px">
       <h3>AI-Team <span class="tag" id="last-turn">väntar…</span></h3>
       <div class="team-banner" id="team-banner"></div>
       <div class="agent-grid" id="agent-grid"></div>
@@ -445,10 +507,56 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
     </div>
   </div>
 </main>
+</section>
+
+<!-- LIVE AKTIVITET — cross-pairs, forex, crypto i realtid -->
+<section class="section live-section" id="sec-live">
+  <div class="section-divider">⚡ Live aktivitet <span class="sub">— valutapar mot varandra, realtid</span></div>
+  <div class="card" style="padding:14px">
+    <h3>Crypto vs USDT <span class="live-pulse"></span><span class="count" id="live-crypto-count">15 par</span></h3>
+    <div class="live-grid" id="live-crypto"></div>
+
+    <h3 style="margin-top:14px">Korspar (Crypto-mot-Crypto) <span class="live-pulse"></span><span class="count" id="live-cross-count">6 par</span></h3>
+    <div class="live-grid" id="live-cross"></div>
+
+    <h3 style="margin-top:14px">Forex (Valutor mot varandra) <span class="live-pulse"></span><span class="count" id="live-forex-count">9 par</span></h3>
+    <div class="live-grid" id="live-forex"></div>
+
+    <h3 style="margin-top:14px">Råvaror &amp; Index <span class="live-pulse"></span><span class="count" id="live-other-count">8 par</span></h3>
+    <div class="live-grid" id="live-other"></div>
+  </div>
+</section>
+
+<!-- POSITIONS & HISTORY -->
+<section class="section" id="sec-positions">
+  <div class="section-divider">📈 Trades <span class="sub">— positioner, historik, P&amp;L</span></div>
+  <div class="card">
+    <h3>Aktiva positioner</h3>
+    <div id="positions-list-full" style="font-size:11px;color:var(--dim);padding:8px">Ingen position öppen i demo-läge. När backend är aktiv visas riktiga positioner här.</div>
+    <h3 style="margin-top:14px">Senaste beslut (Hannas BUY/SELL/HOLD)</h3>
+    <div id="decisions-list" style="font-size:11px;color:var(--dim);padding:8px">Inga beslut ännu — kör analys eller vänta på schemalagd session.</div>
+  </div>
+</section>
+
+<!-- COST -->
+<section class="section" id="sec-cost">
+  <div class="section-divider">💰 Cost <span class="sub">— spend tracking, cap, breakdown</span></div>
+  <div class="card">
+    <p style="font-size:11px;color:var(--dim);line-height:1.5">Klicka <b>💰 idag</b>-knappen i toppen för full kostnadsöversikt med per-agent och per-modell breakdown. Cost-tracker loggar varje Claude-anrop i realtid.</p>
+    <button class="run-btn" onclick="openCostModal()" style="margin-top:8px">Öppna kostnadsöversikt</button>
+  </div>
+</section>
+
+<!-- TEAM section anchor (för sidebar — agent-team finns redan inom Trading-section) -->
+<section class="section" id="sec-team" style="display:none"></section>
+<section class="section" id="sec-settings" style="display:none"></section>
 
 <div class="ticker-strip">
   <div class="ticker-track" id="ticker"></div>
 </div>
+
+</div><!-- /main-wrap -->
+</div><!-- /app-shell -->
 
 <details class="settings">
   <summary>⚙ Inställningar</summary>
@@ -1394,6 +1502,108 @@ function simulateAgentAnswer(key, q){
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
 /* ======================================================================
+   SIDEBAR NAVIGATION
+   ====================================================================== */
+function wireSidebar(){
+  document.querySelectorAll("aside.sidebar button[data-target]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      document.querySelectorAll("aside.sidebar button").forEach(b=>b.classList.remove("active"));
+      btn.classList.add("active");
+      let targetId = btn.dataset.target;
+      // Sec-team scrollar till agent-grid (som lever inom Trading-section)
+      if(targetId === "sec-team"){
+        document.getElementById("ai-team-card")?.scrollIntoView({behavior:"smooth", block:"start"});
+        return;
+      }
+      if(targetId === "sec-settings"){
+        document.querySelector("details.settings")?.setAttribute("open","");
+        document.querySelector("details.settings")?.scrollIntoView({behavior:"smooth", block:"start"});
+        return;
+      }
+      const el = document.getElementById(targetId);
+      if(el) el.scrollIntoView({behavior:"smooth", block:"start"});
+    });
+  });
+  document.getElementById("kill-sidebar")?.addEventListener("click", ()=>{
+    document.getElementById("kill-btn")?.click();
+  });
+}
+
+/* ======================================================================
+   LIVE AKTIVITET — cross-pair grid med realtid-uppdatering
+   ====================================================================== */
+const CROSS_PAIRS = ["BTC/ETH","ETH/BTC","SOL/BTC","SOL/ETH","BNB/BTC","XRP/BTC"];
+const FOREX_PAIRS = ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/GBP","EUR/JPY","GBP/JPY"];
+const OTHER_PAIRS = ["XAU/USD","XAG/USD","USOIL","NATGAS","SPY","QQQ","DIA","IWM"];
+
+const livePrev = {}; // för flash-up/down-animation
+
+function buildLiveTile(sym){
+  const cur = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 0;
+  const base = BASE_PRICES[sym] ?? cur;
+  const chPct = base > 0 ? ((cur-base)/base)*100 : 0;
+  return `<div class="live-tile" data-sym="${sym}">
+    <div class="lt-row"><span class="pair">${sym}</span><span class="ch ${chPct>=0?'up':'down'}">${chPct>=0?'+':''}${chPct.toFixed(2)}%</span></div>
+    <div class="lt-row"><span class="price">${formatPrice(cur,sym)}</span><span class="vol">${formatVol(Math.round(50000+Math.random()*150000))}</span></div>
+  </div>`;
+}
+
+function renderLiveSections(){
+  const cryptoSyms = SYMBOLS.crypto;
+  document.getElementById("live-crypto").innerHTML = cryptoSyms.map(buildLiveTile).join("");
+  document.getElementById("live-cross").innerHTML = CROSS_PAIRS.map(buildLiveTile).join("");
+  document.getElementById("live-forex").innerHTML = FOREX_PAIRS.map(buildLiveTile).join("");
+  document.getElementById("live-other").innerHTML = OTHER_PAIRS.map(buildLiveTile).join("");
+  document.getElementById("live-crypto-count").textContent = cryptoSyms.length+" par";
+  document.getElementById("live-cross-count").textContent = CROSS_PAIRS.length+" par";
+  document.getElementById("live-forex-count").textContent = FOREX_PAIRS.length+" par";
+  document.getElementById("live-other-count").textContent = OTHER_PAIRS.length+" par";
+
+  // Klick på tile → laddar i chart
+  document.querySelectorAll(".live-tile").forEach(t=>{
+    t.addEventListener("click", ()=>{
+      const sym = t.dataset.sym;
+      const cat = symCategory(sym);
+      const catEl = document.getElementById("cat-select");
+      if([...catEl.options].some(o=>o.value===cat)) catEl.value = cat;
+      fillSymbols();
+      const symEl = document.getElementById("sym-select");
+      if([...symEl.options].some(o=>o.value===sym)){
+        symEl.value = sym;
+        STATE.symbol = sym;
+        loadCandles(sym, STATE.tf);
+        document.getElementById("sec-trading").scrollIntoView({behavior:"smooth"});
+      }
+    });
+  });
+}
+
+function refreshLiveTiles(){
+  document.querySelectorAll(".live-tile").forEach(tile=>{
+    const sym = tile.dataset.sym;
+    const cur = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 0;
+    const prev = livePrev[sym] ?? cur;
+    const base = BASE_PRICES[sym] ?? cur;
+    const chPct = base > 0 ? ((cur-base)/base)*100 : 0;
+
+    const priceEl = tile.querySelector(".price");
+    const chEl = tile.querySelector(".ch");
+    if(priceEl) priceEl.textContent = formatPrice(cur, sym);
+    if(chEl){
+      chEl.textContent = (chPct>=0?'+':'')+chPct.toFixed(2)+'%';
+      chEl.className = "ch "+(chPct>=0?'up':'down');
+    }
+
+    // Flash om pris ändrats
+    if(cur > prev){ tile.classList.remove("flash-down"); tile.classList.add("flash-up"); }
+    else if(cur < prev){ tile.classList.remove("flash-up"); tile.classList.add("flash-down"); }
+    setTimeout(()=>tile.classList.remove("flash-up","flash-down"), 500);
+
+    livePrev[sym] = cur;
+  });
+}
+
+/* ======================================================================
    COST TRACKING (visa ENDAST för dig — admin-vy)
    ====================================================================== */
 const AGENT_DISPLAY_NAMES = {
@@ -1749,7 +1959,10 @@ function boot(){
   document.querySelector("#bet-tf button[data-tf='300']")?.classList.add("active");
   document.getElementById("bet-win").textContent = "$"+(STATE.betAmt*0.85).toFixed(2);
   wire();
+  wireSidebar();
+  renderLiveSections();
   setInterval(tick, 2000);
+  setInterval(refreshLiveTiles, 2000);
   refreshCost();
   setInterval(refreshCost, 30000); // Refresh kostnadsräknare var 30s
   if(CFG.mode === "live"){ loadFromBackend(); startSSE(); loadCurrentMode(); }
