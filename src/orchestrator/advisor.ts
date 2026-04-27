@@ -63,10 +63,10 @@ export async function runClaudeAdvisor(
   });
 
   const client = new Anthropic({ apiKey });
-  const response = await client.messages.create({
-    model: ADVISOR_MODEL,
-    max_tokens: 2500,
-    system: `Du är en strategisk rådgivare ("Claude Advisor") i ett AI-trading-team. Du är INTE en specialist — du är en erfaren generalist som ser helheten.
+  // Prompt caching: Advisor är dyraste anropet (Opus 4.7).
+  // Om Mike triggar 2+ manual sessions inom 5 min → cache hits = -90% input cost.
+  // Schemalagda 12h-sessions: cache TTL passerat, ingen besparing där.
+  const ADVISOR_SYSTEM_PROMPT = `Du är en strategisk rådgivare ("Claude Advisor") i ett AI-trading-team. Du är INTE en specialist — du är en erfaren generalist som ser helheten.
 
 Ditt syfte:
 1. TÄNK PÅ HELHETEN — inte enskilda trades. Hur ser portföljen ut som helhet? Är exponeringen balanserad?
@@ -94,7 +94,14 @@ Viktiga riktlinjer:
 - behavioralWarnings: specifika kognitiva fällor baserat på teamets senaste beslut
 - contrarian: ALLTID motsäg den rådande uppfattningen — det är ditt jobb
 - Skriv allt på svenska
-- Svara BARA med JSON. Ingen annan text.`,
+- Svara BARA med JSON. Ingen annan text.`;
+
+  const response = await client.messages.create({
+    model: ADVISOR_MODEL,
+    max_tokens: 2500,
+    system: [
+      { type: "text", text: ADVISOR_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+    ],
     messages: [{ role: "user", content: `Här är teamets nuvarande läge:\n${dataContext}` }],
   });
   trackClaudeCall("advisor", ADVISOR_MODEL, response.usage).catch(() => {});

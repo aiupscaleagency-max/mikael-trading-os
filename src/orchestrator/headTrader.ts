@@ -95,10 +95,15 @@ export async function runHeadTrader(params: {
   const MAX_ITERATIONS = 12;
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    // Prompt caching: system prompt och tools är identiska varje iteration → cacha
+    // Cache TTL = 5 min, perfekt för tool-use-loopen (alla iterationer inom sek).
+    // Read: 90% billigare input. Write: +25% på första anropet. Net win efter 2+ iter.
     const response = await client.messages.create({
       model: HEAD_TRADER_MODEL,
       max_tokens: 4096,
-      system: systemPrompt,
+      system: [
+        { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } },
+      ],
       tools: toolDefinitions(),
       messages,
     });
