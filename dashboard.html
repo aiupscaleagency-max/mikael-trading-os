@@ -30,14 +30,15 @@ header{position:sticky;top:0;z-index:100;background:var(--card);border-bottom:1p
 .badge.paper{background:rgba(16,185,129,.15);color:var(--green);border:1px solid var(--green)}
 .badge.live{background:rgba(239,68,68,.15);color:var(--red);border:1px solid var(--red)}
 
-/* Mode-switcher (Paper / Propose / Live) */
-.mode-switcher{display:flex;gap:2px;background:var(--card2);padding:2px;border-radius:5px;border:1px solid var(--border)}
-.mode-btn{padding:5px 11px;font-size:11px;font-weight:600;border-radius:3px;color:var(--dim);transition:all .15s;letter-spacing:.3px}
-.mode-btn:hover{color:var(--text)}
-.mode-btn.paper.active{background:rgba(16,185,129,.15);color:var(--green);box-shadow:inset 0 0 0 1px var(--green)}
-.mode-btn.propose.active{background:rgba(245,158,11,.15);color:var(--yellow);box-shadow:inset 0 0 0 1px var(--yellow)}
-.mode-btn.live.active{background:rgba(239,68,68,.18);color:var(--red);box-shadow:inset 0 0 0 1px var(--red);animation:pulseLive 2s infinite}
-@keyframes pulseLive{0%,100%{box-shadow:inset 0 0 0 1px var(--red)}50%{box-shadow:inset 0 0 0 1px var(--red),0 0 8px rgba(239,68,68,.4)}}
+/* Mode-switcher (Test / Propose / Live) — Blofin-inspirerad, tydlig */
+.mode-switcher{display:flex;gap:0;background:var(--card2);padding:3px;border-radius:7px;border:1px solid var(--border)}
+.mode-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:6px 14px;font-size:12px;font-weight:700;border-radius:5px;color:var(--dim);transition:all .15s;letter-spacing:.5px;min-width:78px;line-height:1.1;gap:2px}
+.mode-btn .mode-sub{font-size:8px;font-weight:500;letter-spacing:.4px;opacity:.7;text-transform:uppercase}
+.mode-btn:hover{color:var(--text);background:rgba(255,255,255,.03)}
+.mode-btn.paper.active{background:rgba(16,185,129,.18);color:var(--green);box-shadow:inset 0 0 0 1.5px var(--green)}
+.mode-btn.propose.active{background:rgba(59,130,246,.18);color:var(--blue);box-shadow:inset 0 0 0 1.5px var(--blue)}
+.mode-btn.live.active{background:rgba(239,68,68,.22);color:var(--red);box-shadow:inset 0 0 0 1.5px var(--red);animation:pulseLive 2s infinite}
+@keyframes pulseLive{0%,100%{box-shadow:inset 0 0 0 1.5px var(--red)}50%{box-shadow:inset 0 0 0 1.5px var(--red),0 0 12px rgba(239,68,68,.5)}}
 
 /* Live-konfirmationsmodal */
 .live-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:300;padding:20px}
@@ -66,7 +67,8 @@ header{position:sticky;top:0;z-index:100;background:var(--card);border-bottom:1p
 .cost-mini b{color:var(--yellow);font-weight:700}
 .cost-mini.warning b{color:var(--yellow)}
 .cost-mini.exceeded{border-color:var(--red);background:rgba(239,68,68,.1)} .cost-mini.exceeded b{color:var(--red)}
-.run-btn{padding:6px 14px;background:var(--cyan);color:#000;border-radius:4px;font-weight:700;letter-spacing:.3px}
+.run-btn{padding:7px 16px;background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;border-radius:5px;font-weight:700;letter-spacing:.4px;box-shadow:0 1px 0 rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.2);transition:filter .15s}
+.run-btn:hover{filter:brightness(1.12)}
 
 .cost-summary{background:var(--card2);border-radius:6px;padding:12px}
 .cost-row{display:flex;align-items:baseline;gap:6px;margin:6px 0;font-size:12px}
@@ -145,6 +147,36 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .page-header .ph-spacer{flex:1}
 .page-header .ph-action{font-size:10px;padding:4px 10px;background:var(--card2);border:1px solid var(--border);border-radius:3px;color:var(--dim);font-weight:600;cursor:pointer}
 .page-header .ph-action:hover{color:var(--cyan);border-color:var(--cyan)}
+
+/* FLOATING CHAT WIDGET — alltid tillgänglig på alla sidor */
+.fc-toggle{position:fixed;bottom:20px;right:20px;width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;font-size:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 16px rgba(6,182,212,.4),inset 0 1px 0 rgba(255,255,255,.25);z-index:150;transition:transform .15s;border:none}
+.fc-toggle:hover{transform:scale(1.08)}
+.fc-toggle .fc-badge{position:absolute;top:-2px;right:-2px;background:var(--red);color:#fff;font-size:10px;font-weight:700;min-width:18px;height:18px;border-radius:9px;display:flex;align-items:center;justify-content:center;padding:0 5px;border:2px solid var(--bg)}
+.fc-panel{position:fixed;bottom:90px;right:20px;width:380px;max-width:calc(100vw - 40px);height:520px;max-height:calc(100vh - 120px);background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,.6);display:none;flex-direction:column;z-index:151;overflow:hidden}
+.fc-panel.on{display:flex;animation:fcSlideIn .2s ease}
+@keyframes fcSlideIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.fc-header{display:flex;align-items:center;gap:8px;padding:12px 14px;background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000}
+.fc-header b{font-size:13px;letter-spacing:.4px}
+.fc-header .fc-sub{font-size:10px;opacity:.7;margin-left:4px}
+.fc-header .fc-actions{margin-left:auto;display:flex;gap:6px}
+.fc-header button{background:rgba(0,0,0,.15);color:#000;border:none;padding:4px 8px;border-radius:3px;font-size:10px;font-weight:600;cursor:pointer}
+.fc-header button:hover{background:rgba(0,0,0,.25)}
+.fc-body{flex:1;overflow-y:auto;padding:12px;background:var(--card2);display:flex;flex-direction:column;gap:8px}
+.fc-body .msg{max-width:88%;padding:8px 12px;border-radius:6px;font-size:12px;line-height:1.5;white-space:pre-wrap}
+.fc-body .msg.user{align-self:flex-end;background:var(--cyan);color:#000;border-bottom-right-radius:2px}
+.fc-body .msg.team{align-self:flex-start;background:var(--card);border:1px solid var(--border);border-bottom-left-radius:2px}
+.fc-body .msg.team b{color:var(--cyan)}
+.fc-body .msg.system{align-self:center;background:rgba(59,130,246,.12);border:1px solid var(--blue);color:var(--blue);font-size:11px;text-align:center;padding:6px 10px}
+.fc-body .msg .meta{font-size:9px;color:var(--dim);margin-top:4px}
+.fc-empty{color:var(--dim);text-align:center;font-size:11px;padding:20px;line-height:1.5}
+.fc-input{padding:8px 10px;background:var(--card);border-top:1px solid var(--border)}
+.fc-quicks{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}
+.fc-quicks button{font-size:10px;padding:3px 7px;background:var(--card2);border:1px solid var(--border);border-radius:3px;color:var(--dim);cursor:pointer}
+.fc-quicks button:hover{color:var(--cyan);border-color:var(--cyan)}
+.fc-input-row{display:flex;gap:6px}
+.fc-input-row textarea{flex:1;background:var(--card2);color:var(--text);border:1px solid var(--border);padding:7px 10px;border-radius:4px;resize:none;font-family:inherit;font-size:12px;outline:none}
+.fc-input-row textarea:focus{border-color:var(--cyan)}
+.fc-input-row .fc-send{padding:0 14px;background:linear-gradient(135deg,var(--cyan),var(--blue));color:#000;border:none;border-radius:4px;font-weight:700;cursor:pointer}
 
 /* Chat-sida — direktinstruktioner till teamet */
 .chat-card{overflow:hidden}
@@ -378,9 +410,15 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
     <option value="blofin">Blofin</option>
   </select>
   <div class="mode-switcher" id="mode-switcher">
-    <button class="mode-btn paper active" data-mode="paper" title="Paper: testnet, inga riktiga pengar">🟢 Paper</button>
-    <button class="mode-btn propose" data-mode="propose" title="Propose: real data, du godkänner varje order">🟡 Propose</button>
-    <button class="mode-btn live" data-mode="live" title="Live: riktiga pengar, autonomt">🔴 Live</button>
+    <button class="mode-btn paper active" data-mode="paper" title="Test: testnet, inga riktiga pengar">
+      <span>TEST</span><span class="mode-sub">testnet</span>
+    </button>
+    <button class="mode-btn propose" data-mode="propose" title="Propose: real data, du godkänner varje order">
+      <span>PROPOSE</span><span class="mode-sub">manual approve</span>
+    </button>
+    <button class="mode-btn live" data-mode="live" title="Live: riktiga pengar, autonomt">
+      <span>LIVE</span><span class="mode-sub">real money</span>
+    </button>
   </div>
   <button class="kill" id="kill-btn">⏻ KILL SWITCH</button>
   <span class="pnl up" id="pnl">+$0.00 (0.00%)</span>
@@ -716,6 +754,36 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
     <div class="actions">
       <button class="cancel" id="live-cancel">Avbryt</button>
       <button class="confirm" id="live-confirm" disabled>🔴 Aktivera Live</button>
+    </div>
+  </div>
+</div>
+
+<!-- FLOATING CHAT WIDGET — alltid synlig på alla sidor -->
+<button class="fc-toggle" id="fc-toggle" title="Chatta med teamet" aria-label="Öppna chat">
+  💬
+</button>
+<div class="fc-panel" id="fc-panel">
+  <div class="fc-header">
+    <span>💬</span>
+    <b>Team Chat</b>
+    <span class="fc-sub">Alla agenter</span>
+    <div class="fc-actions">
+      <button id="fc-fullscreen" title="Öppna full chat-sida">↗</button>
+      <button id="fc-close" title="Stäng">×</button>
+    </div>
+  </div>
+  <div class="fc-body" id="fc-body"></div>
+  <div class="fc-input">
+    <div class="fc-quicks">
+      <button data-q="Köp BTC för $50">BTC $50</button>
+      <button data-q="Köp ETH för $50">ETH $50</button>
+      <button data-q="Köp SOL för $50">SOL $50</button>
+      <button data-q="Stäng alla positioner">Stäng allt</button>
+      <button data-q="Vad tycker teamet om marknaden just nu?">Status?</button>
+    </div>
+    <div class="fc-input-row">
+      <textarea id="fc-text" rows="2" placeholder="Skriv instruktion eller fråga..."></textarea>
+      <button class="fc-send" id="fc-send">Skicka</button>
     </div>
   </div>
 </div>
@@ -1627,22 +1695,44 @@ function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 const teamChatLog = []; // {role:"user"|"team"|"system", text, timestamp, instruction?}
 
 function renderTeamChatLog(){
-  const logEl = document.getElementById("team-chat-log");
-  if(!logEl) return;
-  if(teamChatLog.length === 0){
-    logEl.innerHTML = `<div class="empty">
-      💬 Inga instruktioner än. Skriv vad du vill att teamet ska göra eller välj ett snabbförslag.<br><br>
-      <span style="font-size:11px">Exempel: <i>"Köp BTC för $50"</i> · <i>"Sälj 50% av min ETH"</i> · <i>"Vad tycker Albert om guld just nu?"</i></span>
-    </div>`;
-    return;
-  }
-  logEl.innerHTML = teamChatLog.map(m=>{
-    const t = new Date(m.timestamp).toLocaleTimeString();
-    if(m.role === "user") return `<div class="msg user">${escapeHtml(m.text)}<div style="font-size:9px;opacity:.6;margin-top:4px">${t}</div></div>`;
-    if(m.role === "system") return `<div class="msg system">${escapeHtml(m.text)}</div>`;
-    return `<div class="msg team"><b>🤖 Teamet:</b><br>${escapeHtml(m.text)}<div class="meta">${t}${m.instruction?` · Instr: "${escapeHtml(m.instruction)}"`:""}</div></div>`;
-  }).join("");
-  logEl.scrollTop = logEl.scrollHeight;
+  // Renderar både full Chat-sida och floating widget
+  const renderTo = (logEl, isFloating)=>{
+    if(!logEl) return;
+    if(teamChatLog.length === 0){
+      if(isFloating){
+        logEl.innerHTML = `<div class="fc-empty">💬 Skriv en instruktion till teamet.<br>Exempel: <i>"Köp BTC för $50"</i></div>`;
+      } else {
+        logEl.innerHTML = `<div class="empty">
+          💬 Inga instruktioner än. Skriv vad du vill att teamet ska göra eller välj ett snabbförslag.<br><br>
+          <span style="font-size:11px">Exempel: <i>"Köp BTC för $50"</i> · <i>"Sälj 50% av min ETH"</i> · <i>"Vad tycker Albert om guld just nu?"</i></span>
+        </div>`;
+      }
+      return;
+    }
+    logEl.innerHTML = teamChatLog.map(m=>{
+      const t = new Date(m.timestamp).toLocaleTimeString();
+      if(m.role === "user") return `<div class="msg user">${escapeHtml(m.text)}<div style="font-size:9px;opacity:.6;margin-top:4px">${t}</div></div>`;
+      if(m.role === "system") return `<div class="msg system">${escapeHtml(m.text)}</div>`;
+      return `<div class="msg team"><b>🤖 Teamet:</b><br>${escapeHtml(m.text)}<div class="meta">${t}${m.instruction?` · Instr: "${escapeHtml(m.instruction)}"`:""}</div></div>`;
+    }).join("");
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  renderTo(document.getElementById("team-chat-log"), false);
+  renderTo(document.getElementById("fc-body"), true);
+
+  // Uppdatera badge på floating-toggle med oläst-räknare (alla team-meddelanden senaste minuten)
+  const badge = document.querySelector(".fc-toggle .fc-badge");
+  const recentTeamMsgs = teamChatLog.filter(m => m.role === "team" && (Date.now() - m.timestamp) < 60000).length;
+  if(recentTeamMsgs > 0 && !document.getElementById("fc-panel").classList.contains("on")){
+    if(!badge){
+      const b = document.createElement("span");
+      b.className = "fc-badge";
+      b.textContent = recentTeamMsgs;
+      document.getElementById("fc-toggle").appendChild(b);
+    } else {
+      badge.textContent = recentTeamMsgs;
+    }
+  } else if(badge){ badge.remove(); }
 }
 
 function escapeHtml(s){
@@ -1715,20 +1805,91 @@ function simulateTeamResponse(instr){
   return `Albert (Advisor): Bra fråga. Just nu ser teamet att marknaden är i ${["accumulation","markup","distribution"][Math.floor(Math.random()*3)]}-fas.\nKarin (Kvant): Sharpe ${(0.8+Math.random()*1).toFixed(2)}, vol-regim medium.\nHanna: Inget aktion nu — vi avvaktar.\n\n→ För riktig analys, aktivera Live-läge med riktiga API-nycklar.`;
 }
 
+async function sendFromFloating(){
+  const txt = document.getElementById("fc-text");
+  const send = document.getElementById("fc-send");
+  const instruction = txt.value.trim();
+  if(!instruction) return;
+
+  teamChatLog.push({role:"user", text:instruction, timestamp:Date.now()});
+  txt.value = "";
+  send.disabled = true; send.textContent = "...";
+  renderTeamChatLog();
+
+  teamChatLog.push({role:"system", text:"⏳ Teamet analyserar...", timestamp:Date.now()});
+  renderTeamChatLog();
+
+  try{
+    if(CFG.mode === "live"){
+      await apiPost("/api/run-agent", {instruction});
+      teamChatLog.pop();
+      teamChatLog.push({
+        role:"team",
+        text:`Instruktion mottagen. Team-session startad — beslut + ev. trades visas på Trades-sidan när klart.`,
+        timestamp:Date.now(), instruction
+      });
+    } else {
+      await new Promise(r=>setTimeout(r, 1200 + Math.random()*800));
+      teamChatLog.pop();
+      teamChatLog.push({role:"team", text: simulateTeamResponse(instruction), timestamp:Date.now(), instruction});
+    }
+  }catch(e){
+    teamChatLog.pop();
+    teamChatLog.push({role:"system", text:"❌ Fel: "+e.message, timestamp:Date.now()});
+  }finally{
+    send.disabled = false; send.textContent = "Skicka";
+    renderTeamChatLog();
+  }
+}
+
+function toggleFloatingChat(open){
+  const panel = document.getElementById("fc-panel");
+  if(open === undefined) open = !panel.classList.contains("on");
+  panel.classList.toggle("on", open);
+  if(open){
+    setTimeout(()=>document.getElementById("fc-text").focus(), 100);
+    // Rensa badge när man öppnar
+    const badge = document.querySelector(".fc-toggle .fc-badge");
+    if(badge) badge.remove();
+  }
+}
+
 function wireTeamChat(){
+  // Full Chat-sida
   const sendBtn = document.getElementById("team-chat-send");
   const txt = document.getElementById("team-chat-text");
-  if(!sendBtn || !txt) return;
-  sendBtn.addEventListener("click", sendTeamChat);
-  txt.addEventListener("keydown", e=>{
-    if((e.metaKey || e.ctrlKey) && e.key === "Enter") sendTeamChat();
+  if(sendBtn && txt){
+    sendBtn.addEventListener("click", sendTeamChat);
+    txt.addEventListener("keydown", e=>{
+      if((e.metaKey || e.ctrlKey) && e.key === "Enter") sendTeamChat();
+    });
+    document.querySelectorAll("#team-chat-suggestions button").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        txt.value = b.dataset.q;
+        txt.focus();
+      });
+    });
+  }
+
+  // Floating widget
+  document.getElementById("fc-toggle")?.addEventListener("click", ()=>toggleFloatingChat());
+  document.getElementById("fc-close")?.addEventListener("click", ()=>toggleFloatingChat(false));
+  document.getElementById("fc-fullscreen")?.addEventListener("click", ()=>{
+    toggleFloatingChat(false);
+    switchPage("chat");
   });
-  document.querySelectorAll("#team-chat-suggestions button").forEach(b=>{
+  document.getElementById("fc-send")?.addEventListener("click", sendFromFloating);
+  document.getElementById("fc-text")?.addEventListener("keydown", e=>{
+    if((e.metaKey || e.ctrlKey) && e.key === "Enter") sendFromFloating();
+  });
+  document.querySelectorAll(".fc-quicks button").forEach(b=>{
     b.addEventListener("click", ()=>{
-      txt.value = b.dataset.q;
-      txt.focus();
+      const t = document.getElementById("fc-text");
+      t.value = b.dataset.q;
+      t.focus();
     });
   });
+
   renderTeamChatLog();
 }
 
