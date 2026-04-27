@@ -2417,8 +2417,14 @@ function showError(msg){
   el.classList.add("on");
 }
 
+// Admin-genväg: hardkodat email + lösenord skippar Supabase auth helt.
+// För tidig fas där Supabase email-confirmation strular. Senare bygger
+// vi proper admin-flow via backend service-role.
+const ADMIN_EMAILS = new Set(["aiupscaleagency@gmail.com","mikael@aiupscaleagency.com"]);
+const ADMIN_BYPASS_PASSWORD = "Trading2026!";
+
 async function submitAuth(){
-  const email = document.getElementById("auth-email").value.trim();
+  const email = document.getElementById("auth-email").value.trim().toLowerCase();
   const password = document.getElementById("auth-password").value;
   const name = document.getElementById("auth-name").value.trim();
 
@@ -2431,6 +2437,24 @@ async function submitAuth(){
   btn.textContent = authMode === "signup" ? "Skapar..." : "Loggar in...";
 
   const isNewSignup = authMode === "signup";
+
+  // ── ADMIN BYPASS ──
+  // Om email matchar admin-listan och lösenord stämmer → skippa Supabase
+  if(ADMIN_EMAILS.has(email) && password === ADMIN_BYPASS_PASSWORD){
+    saveUser({
+      email,
+      name: name || "Mike",
+      tier: "enterprise",
+      isAdmin: true,
+      onboardingComplete: true,
+      createdAt: Date.now(),
+    });
+    btn.disabled = false;
+    btn.textContent = isNewSignup ? "Skapa konto" : "Logga in";
+    setAppState("app");
+    if(typeof postLoginInit === "function") postLoginInit();
+    return;
+  }
 
   try {
     if(useSupabase){
