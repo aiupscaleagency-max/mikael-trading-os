@@ -2263,7 +2263,9 @@ function updateUserChip(){
   const av = document.getElementById("uc-avatar");
   const nm = document.getElementById("uc-name");
   if(av) av.textContent = initial;
-  if(nm) nm.textContent = display;
+  if(nm) nm.innerHTML = currentUser.isAdmin
+    ? `${escapeHtml(display)} <span style="font-size:8px;background:var(--purple);color:#fff;padding:1px 5px;border-radius:3px;margin-left:4px;letter-spacing:.4px">ADMIN</span>`
+    : escapeHtml(display);
 }
 
 function showAuth(mode){
@@ -2323,9 +2325,19 @@ async function submitAuth(){
           btn.disabled = false; btn.textContent = "Skapa konto";
           return;
         }
+        // Hämta profil — triggers har möjligen markerat user som admin
+        let profile = null;
+        try {
+          await new Promise(r=>setTimeout(r,300)); // ge db-trigger en sekund
+          const r = await sb.from("profiles").select("*").eq("id", data.user.id).single();
+          profile = r.data;
+        } catch(_){}
         saveUser({
           id: data.user.id, email, name,
-          tier: "family", createdAt: Date.now(), onboardingComplete: false,
+          tier: profile?.tier || "family",
+          isAdmin: profile?.is_admin || false,
+          onboardingComplete: profile?.onboarding_complete || false,
+          createdAt: Date.now(),
         });
       } else {
         const { data, error } = await sb.auth.signInWithPassword({ email, password });
@@ -2337,6 +2349,7 @@ async function submitAuth(){
           email: data.user.email,
           name: profile?.name || data.user.email.split("@")[0],
           tier: profile?.tier || "family",
+          isAdmin: profile?.is_admin || false,
           onboardingComplete: profile?.onboarding_complete || false,
           createdAt: profile?.created_at ? new Date(profile.created_at).getTime() : Date.now(),
         });
@@ -2359,6 +2372,13 @@ async function submitAuth(){
 
   btn.disabled = false;
   btn.textContent = isNewSignup ? "Skapa konto" : "Logga in";
+
+  // Admins skippar onboarding — använder system-default-nycklar (VPS .env)
+  if(currentUser?.isAdmin){
+    setAppState("app");
+    if(typeof postLoginInit === "function") postLoginInit();
+    return;
+  }
 
   if(isNewSignup || !currentUser?.onboardingComplete){
     // Nya users + users som inte slutfört onboarding → wizard
@@ -3269,6 +3289,7 @@ async function boot(){
           email: session.user.email,
           name: profile?.name || session.user.email.split("@")[0],
           tier: profile?.tier || "family",
+          isAdmin: profile?.is_admin || false,
           onboardingComplete: profile?.onboarding_complete || false,
           createdAt: profile?.created_at ? new Date(profile.created_at).getTime() : Date.now(),
         });
@@ -3302,6 +3323,12 @@ function postLoginInit(){
 }
 
 function checkKeysSetup(){
+  // Admins använder system-default-nycklar (VPS .env) — banner aldrig
+  if(currentUser?.isAdmin){
+    const banner = document.getElementById("setup-banner");
+    if(banner) banner.style.display = "none";
+    return;
+  }
   const keys = getUserKeys();
   const missing = !keys.anthropic || !keys.binance_key;
   const banner = document.getElementById("setup-banner");
