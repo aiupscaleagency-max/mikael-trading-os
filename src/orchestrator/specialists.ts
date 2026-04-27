@@ -7,6 +7,7 @@ import { computeIndicators } from "../indicators/ta.js";
 import type { StrategyEngine } from "../strategies/types.js";
 import type { MacroReport, TechnicalReport, SentimentReport } from "./types.js";
 import { log } from "../logger.js";
+import { trackClaudeCall } from "../cost/tracker.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Specialist Agents — varje specialist kör sin analys parallellt.
@@ -64,6 +65,7 @@ Du får rådata (makro-snapshot + nyhetsrubriker). Analysera och svara i EXAKT d
 Svara BARA med JSON. Ingen annan text.`,
     messages: [{ role: "user", content: `Här är dagens data:\n${dataContext}` }],
   });
+  trackClaudeCall("macro", SPECIALIST_MODEL, response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -160,6 +162,7 @@ Inkludera entry/target BARA om score >= 3 eller <= -3.
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: dataContext }],
   });
+  trackClaudeCall("technical", SPECIALIST_MODEL, response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -224,6 +227,7 @@ contrarySignal = true om sentimentet är extremt (extreme_fear ELLER extreme_gre
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: dataContext }],
   });
+  trackClaudeCall("sentiment", SPECIALIST_MODEL, response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")

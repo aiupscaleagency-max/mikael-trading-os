@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { trackClaudeCall } from "../cost/tracker.js";
 import type { Config } from "../config.js";
 import type { AgentState } from "../memory/store.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
@@ -101,6 +102,7 @@ export async function runHeadTrader(params: {
       tools: toolDefinitions(),
       messages,
     });
+    trackClaudeCall("head", HEAD_TRADER_MODEL, response.usage).catch(() => {});
 
     messages.push({ role: "assistant", content: response.content });
 

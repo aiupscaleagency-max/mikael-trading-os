@@ -7,6 +7,7 @@ import type { BrokerAdapter } from "../brokers/adapter.js";
 import { computeIndicators } from "../indicators/ta.js";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { getCostSummary } from "../cost/tracker.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
@@ -229,6 +230,17 @@ export function startServer(
         } catch (err) {
           json(res, { error: String(err) });
         }
+        return;
+      }
+
+      // ── Cost summary (today/week/month + per-agent breakdown) ──
+      // ENDAST för admin/owner. När multi-tenant byggs: scope:a per user_id.
+      if (url.pathname === "/api/cost" && method === "GET") {
+        const summary = await getCostSummary({
+          dailyCapUsd: config.costCap.dailyUsd,
+          weeklyCapUsd: config.costCap.weeklyUsd,
+        });
+        json(res, summary);
         return;
       }
 

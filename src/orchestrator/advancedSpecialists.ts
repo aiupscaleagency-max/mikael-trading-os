@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { trackClaudeCall } from "../cost/tracker.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { computeIndicators } from "../indicators/ta.js";
 import { loadRecentDecisions, summarizePastPerformance } from "../memory/store.js";
@@ -91,6 +92,7 @@ suggestedPositionSize = max USD för nästa position givet nuvarande risk.
 Svara BARA med JSON. Ingen annan text.`,
     messages: [{ role: "user", content: `Här är riskdata:\n${dataContext}` }],
   });
+  trackClaudeCall("risk", SPECIALIST_MODEL, response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -201,6 +203,7 @@ suggestedSizeMultiplier: 0.5–1.5. 1.0 = standardposition. <1 vid hög vol/extr
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är kvantdata:\n${dataContext}` }],
   });
+  trackClaudeCall("quant", SPECIALIST_MODEL, response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -311,6 +314,7 @@ Om brokern inte stödjer optioner, returnera tomma opportunities och "none" som 
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är optionsdata:\n${dataContext}` }],
   });
+  trackClaudeCall("options", SPECIALIST_MODEL, response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -379,6 +383,7 @@ timing: "avoid" om score är för låg eller marknaden är ogynsam.
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är föreslagna trades:\n${dataContext}` }],
   });
+  trackClaudeCall("execution", SPECIALIST_MODEL, response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -479,6 +484,7 @@ assetAllocation: procentuell fördelning, ska summera till ~100.
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är portföljdata:\n${dataContext}` }],
   });
+  trackClaudeCall("portfolio", SPECIALIST_MODEL, response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")

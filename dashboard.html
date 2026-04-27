@@ -61,7 +61,27 @@ header{position:sticky;top:0;z-index:100;background:var(--card);border-bottom:1p
 .kill:hover{background:rgba(239,68,68,.2)}
 .pnl{margin-left:auto;font-weight:700}
 .pnl.up{color:var(--green)} .pnl.down{color:var(--red)}
+.cost-mini{padding:5px 11px;background:var(--card2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px;font-weight:500;cursor:pointer;transition:border-color .15s}
+.cost-mini:hover{border-color:var(--yellow)}
+.cost-mini b{color:var(--yellow);font-weight:700}
+.cost-mini.warning b{color:var(--yellow)}
+.cost-mini.exceeded{border-color:var(--red);background:rgba(239,68,68,.1)} .cost-mini.exceeded b{color:var(--red)}
 .run-btn{padding:6px 14px;background:var(--cyan);color:#000;border-radius:4px;font-weight:700;letter-spacing:.3px}
+
+.cost-summary{background:var(--card2);border-radius:6px;padding:12px}
+.cost-row{display:flex;align-items:baseline;gap:6px;margin:6px 0;font-size:12px}
+.cost-row .lbl{color:var(--dim);flex:1}
+.cost-row .val{font-size:14px;font-weight:700;color:var(--text)}
+.cost-row .cap{color:var(--dim);font-size:10px}
+.cost-status{margin-top:10px;padding:6px 10px;border-radius:4px;font-size:11px;text-align:center;background:rgba(16,185,129,.1);color:var(--green);border:1px solid var(--green)}
+.cost-status.warning{background:rgba(245,158,11,.1);color:var(--yellow);border-color:var(--yellow)}
+.cost-status.exceeded{background:rgba(239,68,68,.1);color:var(--red);border-color:var(--red)}
+.cost-info{margin-top:12px;padding:8px 10px;background:rgba(6,182,212,.08);border-left:2px solid var(--cyan);border-radius:3px;font-size:11px;line-height:1.5}
+.cost-info code{background:var(--bg);padding:1px 4px;border-radius:2px;color:var(--cyan)}
+.cost-line{display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px dashed var(--border)}
+.cost-line .agent{color:var(--text);font-weight:600}
+.cost-line .calls{color:var(--dim);font-size:10px}
+.cost-line .amt{color:var(--yellow);font-weight:700}
 .run-btn:hover{background:#0891b2}
 .run-btn:disabled{opacity:.5;cursor:not-allowed}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--dim)}
@@ -280,7 +300,56 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
   <button class="kill" id="kill-btn">⏻ KILL SWITCH</button>
   <span class="pnl up" id="pnl">+$0.00 (0.00%)</span>
   <button class="run-btn" id="run-btn">▶ Kör analys</button>
+  <button class="cost-mini" id="cost-mini" title="Klicka för detaljerad kostnadsvy">💰 <b id="cost-today">$0.00</b> idag</button>
 </header>
+
+<!-- COST MODAL — kostnadsdetaljer + cap-status -->
+<div class="modal-bg" id="cost-modal-bg">
+  <div class="modal" style="max-width:680px">
+    <button class="close" id="cost-close">×</button>
+    <div class="modal-header">
+      <div class="modal-avatar" style="background:linear-gradient(135deg,#facc15,#a16207);color:#000">$</div>
+      <div class="modal-info">
+        <h2>Kostnadsöversikt</h2>
+        <span class="modal-role">Bara för dig (ditt konto)</span>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="cost-summary">
+        <div class="cost-row">
+          <span class="lbl">Idag</span>
+          <span class="val" id="c-today">$0.00</span>
+          <span class="cap" id="c-today-cap">/ $2 cap</span>
+        </div>
+        <div class="bar" id="c-today-bar"><span style="width:0%"></span></div>
+        <div class="cost-row">
+          <span class="lbl">Denna vecka</span>
+          <span class="val" id="c-week">$0.00</span>
+          <span class="cap" id="c-week-cap">/ $10 cap</span>
+        </div>
+        <div class="bar" id="c-week-bar"><span style="width:0%"></span></div>
+        <div class="cost-row">
+          <span class="lbl">Senaste 30 dagarna</span>
+          <span class="val" id="c-month">$0.00</span>
+        </div>
+        <div class="cost-status" id="c-status">✓ Inom budget</div>
+      </div>
+
+      <h4 style="margin-top:14px">Idag — per agent</h4>
+      <div id="c-by-agent" style="font-size:11px"></div>
+
+      <h4 style="margin-top:12px">Idag — per modell</h4>
+      <div id="c-by-model" style="font-size:11px"></div>
+
+      <h4 style="margin-top:12px">Senaste anrop</h4>
+      <div id="c-recent" style="font-size:10px;max-height:200px;overflow-y:auto"></div>
+
+      <div class="cost-info">
+        💡 <b>Cap = circuit breaker.</b> När dagens spend når $<span id="c-cap-val">2</span> stoppas alla framtida sessions automatiskt tills imorgon. Sätt högre via <code>MAX_DAILY_SPEND_USD</code> i .env om du vill.
+      </div>
+    </div>
+  </div>
+</div>
 
 <main>
   <!-- LEFT: CHART + AGENTS -->
@@ -1325,6 +1394,86 @@ function simulateAgentAnswer(key, q){
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
 /* ======================================================================
+   COST TRACKING (visa ENDAST för dig — admin-vy)
+   ====================================================================== */
+const AGENT_DISPLAY_NAMES = {
+  research:"Lars (Research)",macro:"Markus (Makro)",technical:"Tomas (Teknisk)",
+  sentiment:"Sara (Sentiment)",risk:"Rasmus (Risk)",quant:"Karin (Kvant)",
+  options:"Olof (Options)",portfolio:"Petra (Portfölj)",execution:"Emma (Exekver)",
+  advisor:"Albert (Advisor)",head:"Hanna (Head Trader)"
+};
+
+async function refreshCost(){
+  if(CFG.mode !== "live"){
+    // Demo-läge: fejka data
+    document.getElementById("cost-today").textContent = "$0.32";
+    return;
+  }
+  try{
+    const c = await apiGet("/api/cost");
+    document.getElementById("cost-today").textContent = "$"+c.todayUsd.toFixed(2);
+    const mini = document.getElementById("cost-mini");
+    mini.classList.remove("warning","exceeded");
+    if(c.capStatus === "warning") mini.classList.add("warning");
+    if(c.capStatus === "exceeded") mini.classList.add("exceeded");
+  }catch(e){ /* swallow */ }
+}
+
+async function openCostModal(){
+  document.getElementById("cost-modal-bg").classList.add("on");
+  let c;
+  if(CFG.mode === "live"){
+    try{ c = await apiGet("/api/cost"); }catch(e){
+      document.getElementById("c-today").textContent = "Fel: "+e.message;
+      return;
+    }
+  } else {
+    // Demo-data
+    c = {
+      todayUsd:0.32, weekUsd:1.05, monthUsd:3.40,
+      dailyCap:2, weeklyCap:10, capStatus:"ok",
+      byAgent:{research:{calls:2,costUsd:0.01},macro:{calls:2,costUsd:0.005},advisor:{calls:2,costUsd:0.21},head:{calls:2,costUsd:0.04}},
+      byModel:{"claude-haiku-4-5-20251001":{calls:14,costUsd:0.04},"claude-opus-4-7":{calls:2,costUsd:0.21},"claude-sonnet-4-6":{calls:2,costUsd:0.04},"perplexity-sonar-pro":{calls:2,costUsd:0.01}},
+      recentCalls:[
+        {timestamp:Date.now()-300000,agent:"head",model:"claude-sonnet-4-6",inputTokens:3200,outputTokens:850,costUsd:0.022},
+        {timestamp:Date.now()-360000,agent:"advisor",model:"claude-opus-4-7",inputTokens:2800,outputTokens:780,costUsd:0.101},
+      ]
+    };
+  }
+  document.getElementById("c-today").textContent = "$"+c.todayUsd.toFixed(3);
+  document.getElementById("c-week").textContent = "$"+c.weekUsd.toFixed(2);
+  document.getElementById("c-month").textContent = "$"+c.monthUsd.toFixed(2);
+  document.getElementById("c-today-cap").textContent = "/ $"+c.dailyCap+" cap";
+  document.getElementById("c-week-cap").textContent = "/ $"+c.weeklyCap+" cap";
+  document.getElementById("c-cap-val").textContent = c.dailyCap;
+  document.querySelector("#c-today-bar > span").style.width = Math.min(100, c.todayUsd/c.dailyCap*100)+"%";
+  document.querySelector("#c-today-bar").className = "bar "+(c.capStatus==="exceeded"?"red":c.capStatus==="warning"?"yellow":"green");
+  document.querySelector("#c-week-bar > span").style.width = Math.min(100, c.weekUsd/c.weeklyCap*100)+"%";
+  document.querySelector("#c-week-bar").className = "bar "+(c.weekUsd>=c.weeklyCap?"red":c.weekUsd>=c.weeklyCap*0.8?"yellow":"green");
+
+  const status = document.getElementById("c-status");
+  status.className = "cost-status "+(c.capStatus==="exceeded"?"exceeded":c.capStatus==="warning"?"warning":"");
+  status.textContent = c.capStatus==="exceeded" ? "⛔ Cap nått — sessions stoppade tills imorgon" :
+                       c.capStatus==="warning" ? "⚠ 80% av dagens cap förbrukat" :
+                       "✓ Inom budget";
+
+  document.getElementById("c-by-agent").innerHTML = Object.entries(c.byAgent||{})
+    .sort((a,b)=>b[1].costUsd-a[1].costUsd)
+    .map(([k,v])=>`<div class="cost-line"><span class="agent">${AGENT_DISPLAY_NAMES[k]||k}</span> <span class="calls">${v.calls} anrop</span> <span class="amt">$${v.costUsd.toFixed(4)}</span></div>`).join("") || "<div style='color:var(--dim)'>Inga anrop idag</div>";
+
+  document.getElementById("c-by-model").innerHTML = Object.entries(c.byModel||{})
+    .sort((a,b)=>b[1].costUsd-a[1].costUsd)
+    .map(([k,v])=>`<div class="cost-line"><span class="agent">${k.replace("claude-","").replace("-20251001","")}</span> <span class="calls">${v.calls} anrop</span> <span class="amt">$${v.costUsd.toFixed(4)}</span></div>`).join("") || "<div style='color:var(--dim)'>–</div>";
+
+  document.getElementById("c-recent").innerHTML = (c.recentCalls||[]).slice(0,30).map(e=>{
+    const t = new Date(e.timestamp).toLocaleTimeString();
+    return `<div class="cost-line"><span class="calls">${t}</span> <span class="agent">${AGENT_DISPLAY_NAMES[e.agent]||e.agent}</span> <span class="calls">${e.inputTokens}+${e.outputTokens}tok</span> <span class="amt">$${e.costUsd.toFixed(4)}</span></div>`;
+  }).join("") || "<div style='color:var(--dim)'>–</div>";
+}
+
+function closeCostModal(){ document.getElementById("cost-modal-bg").classList.remove("on"); }
+
+/* ======================================================================
    MODE SWITCHER (Paper / Propose / Live)
    ====================================================================== */
 let currentUiMode = "paper";
@@ -1538,6 +1687,13 @@ function wire(){
     if(e.target.id === "live-modal-bg") closeLiveConfirm();
   });
 
+  // Cost-modal
+  document.getElementById("cost-mini").addEventListener("click", openCostModal);
+  document.getElementById("cost-close").addEventListener("click", closeCostModal);
+  document.getElementById("cost-modal-bg").addEventListener("click", e=>{
+    if(e.target.id === "cost-modal-bg") closeCostModal();
+  });
+
   // Modal
   document.getElementById("modal-close").addEventListener("click", closeChat);
   document.getElementById("modal-bg").addEventListener("click", e=>{ if(e.target.id==="modal-bg") closeChat(); });
@@ -1594,6 +1750,8 @@ function boot(){
   document.getElementById("bet-win").textContent = "$"+(STATE.betAmt*0.85).toFixed(2);
   wire();
   setInterval(tick, 2000);
+  refreshCost();
+  setInterval(refreshCost, 30000); // Refresh kostnadsräknare var 30s
   if(CFG.mode === "live"){ loadFromBackend(); startSSE(); loadCurrentMode(); }
 }
 

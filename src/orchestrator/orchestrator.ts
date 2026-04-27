@@ -18,6 +18,7 @@ import {
 import { runClaudeAdvisor } from "./advisor.js";
 import { runResearcher, type ResearchReport, formatResearchForPrompt } from "./researcher.js";
 import { runHeadTrader, type HeadTraderResult } from "./headTrader.js";
+import { canSpend } from "../cost/tracker.js";
 import { loadRecentDecisions } from "../memory/store.js";
 import type {
   MacroReport,
@@ -80,6 +81,22 @@ export async function runOrchestratedTurn(params: {
   const apiKey = config.anthropicApiKey;
 
   const totalStart = Date.now();
+
+  // ── CIRCUIT BREAKER: Spend-cap-koll innan vi ens börjar ──
+  // Stoppar session om dagen/veckan redan överskridit cap. Skyddar mot
+  // oväntade kostnader. Mike kan höja cap i .env om hon vill.
+  const spendCheck = await canSpend({
+    dailyCapUsd: config.costCap.dailyUsd,
+    weeklyCapUsd: config.costCap.weeklyUsd,
+  });
+  if (!spendCheck.allowed) {
+    log.warn(`╔══ SESSION SKIPPAD: ${spendCheck.reason} ══╗`);
+    log.warn(`Dagens spend: $${spendCheck.spent?.today.toFixed(2)} / cap $${config.costCap.dailyUsd}`);
+    log.warn(`Veckans spend: $${spendCheck.spent?.week.toFixed(2)} / cap $${config.costCap.weeklyUsd}`);
+    log.warn(`Höj cap i .env (MAX_DAILY_SPEND_USD / MAX_WEEKLY_SPEND_USD) eller vänta tills cap rullar.`);
+    throw new Error(`Spend cap reached: ${spendCheck.reason}`);
+  }
+  log.info(`[Cost] Dagens spend: $${spendCheck.spent?.today.toFixed(2)} / cap $${config.costCap.dailyUsd} | Vecka: $${spendCheck.spent?.week.toFixed(2)} / $${config.costCap.weeklyUsd}`);
 
   // ── Fas 1: Alla specialister + Advisor parallellt ──
   // ── Fas 0: Lars (Perplexity Research) ──

@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AdvisorReport } from "./types.js";
 import { log } from "../logger.js";
+import { trackClaudeCall } from "../cost/tracker.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Claude Advisor — strategisk rådgivare som kör parallellt med specialisterna.
@@ -96,6 +97,7 @@ Viktiga riktlinjer:
 - Svara BARA med JSON. Ingen annan text.`,
     messages: [{ role: "user", content: `Här är teamets nuvarande läge:\n${dataContext}` }],
   });
+  trackClaudeCall("advisor", ADVISOR_MODEL, response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")

@@ -77,6 +77,10 @@ const schema = z.object({
   MAX_DAILY_LOSS_USD: z.coerce.number().positive().default(50),
   MAX_OPEN_POSITIONS: z.coerce.number().int().positive().default(5),
 
+  // ── AI-Spend cap (circuit breaker — stoppar sessions om överskridet) ──
+  MAX_DAILY_SPEND_USD: z.coerce.number().positive().default(2),
+  MAX_WEEKLY_SPEND_USD: z.coerce.number().positive().default(10),
+
   // ── Symbol-listor per motor ──
   CRYPTO_SYMBOLS: csvList.default("BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,DOGEUSDT,DOTUSDT,LINKUSDT,MATICUSDT,UNIUSDT,LTCUSDT,ATOMUSDT,NEARUSDT"),
   STOCK_SYMBOLS: csvList.default("TSLA,NVDA,AAPL,MSFT"),
@@ -190,6 +194,11 @@ export const config = {
     maxTotalExposureUsd: env.MAX_TOTAL_EXPOSURE_USD,
     maxDailyLossUsd: env.MAX_DAILY_LOSS_USD,
     maxOpenPositions: env.MAX_OPEN_POSITIONS,
+  },
+
+  costCap: {
+    dailyUsd: env.MAX_DAILY_SPEND_USD,
+    weeklyUsd: env.MAX_WEEKLY_SPEND_USD,
   },
 
   crypto: {

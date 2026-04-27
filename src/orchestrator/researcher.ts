@@ -11,6 +11,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { log } from "../logger.js";
+import { trackPerplexityCall } from "../cost/tracker.js";
 
 export interface ResearchReport {
   role: "researcher";
@@ -88,7 +89,11 @@ export async function runResearcher(apiKey: string): Promise<ResearchReport> {
     const data = await response.json() as {
       choices: Array<{ message: { content: string } }>;
       citations?: string[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
+    if (data.usage) {
+      trackPerplexityCall("research", data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0).catch(() => {});
+    }
 
     const content = data.choices?.[0]?.message?.content ?? "";
 
