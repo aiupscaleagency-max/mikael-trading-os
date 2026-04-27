@@ -6,6 +6,7 @@ import { loadState, saveState, loadRecentDecisions } from "../memory/store.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { computeIndicators } from "../indicators/ta.js";
 import { log } from "../logger.js";
+import { config } from "../config.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
@@ -228,6 +229,72 @@ export function startServer(
         } catch (err) {
           json(res, { error: String(err) });
         }
+        return;
+      }
+
+      // ── Mode (Paper/Propose/Live) ──
+      // GET → returnerar nuvarande mode + executionMode
+      // POST → uppdaterar in-memory + persisterar till .env
+      // För Live krävs explicit confirmation-array (6-punkts-checklista)
+      if (url.pathname === "/api/mode" && method === "GET") {
+        json(res, {
+          mode: config.mode,
+          executionMode: config.executionMode,
+          // Härled UI-läge från kombination
+          uiMode: config.mode === "paper" ? "paper" :
+                  config.executionMode === "approve" ? "propose" : "live",
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/mode" && method === "POST") {
+        const body = await readBody(req);
+        const { uiMode, confirmation } = JSON.parse(body) as {
+          uiMode: "paper" | "propose" | "live";
+          confirmation?: { confirmed: boolean[] };
+        };
+
+        // Live-läge kräver att alla 6 checklistor är confirmed
+        if (uiMode === "live") {
+          const allChecked = confirmation?.confirmed?.length === 6 &&
+                             confirmation.confirmed.every((c) => c === true);
+          if (!allChecked) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: "Live-läge kräver 6 bekräftelser." }));
+            return;
+          }
+        }
+
+        // Mappa UI-läge → config
+        const newMode = uiMode === "paper" ? "paper" : "live";
+        const newExecMode = uiMode === "propose" ? "approve" : "auto";
+
+        // Mutera in-memory config — alla framtida agent-anrop använder nya värden
+        (config as { mode: string }).mode = newMode;
+        (config as { executionMode: string }).executionMode = newExecMode;
+
+        // Persistera till .env så det överlever restart
+        try {
+          const envPath = "/root/mikael-trading-os/.env";
+          const envContent = await fs.readFile(envPath, "utf8").catch(() => "");
+          let updated = envContent;
+          updated = updated.includes("\nMODE=")
+            ? updated.replace(/\nMODE=[^\n]*/, `\nMODE=${newMode}`)
+            : updated.replace(/^MODE=[^\n]*/, `MODE=${newMode}`);
+          updated = updated.includes("\nEXECUTION_MODE=")
+            ? updated.replace(/\nEXECUTION_MODE=[^\n]*/, `\nEXECUTION_MODE=${newExecMode}`)
+            : updated + `\nEXECUTION_MODE=${newExecMode}`;
+          updated = updated.includes("\nLIVE_TRADING_CONFIRMED=")
+            ? updated.replace(/\nLIVE_TRADING_CONFIRMED=[^\n]*/, `\nLIVE_TRADING_CONFIRMED=${newMode === "live" ? "true" : "false"}`)
+            : updated + `\nLIVE_TRADING_CONFIRMED=${newMode === "live" ? "true" : "false"}`;
+          await fs.writeFile(envPath, updated, "utf8");
+        } catch (err) {
+          log.warn(`Kunde inte persistera mode till .env: ${err instanceof Error ? err.message : String(err)}`);
+        }
+
+        log.warn(`Mode bytt: ${uiMode.toUpperCase()} (mode=${newMode}, exec=${newExecMode}) via dashboard`);
+        broadcastEvent("mode-changed", { uiMode, mode: newMode, executionMode: newExecMode });
+        json(res, { ok: true, uiMode, mode: newMode, executionMode: newExecMode });
         return;
       }
 

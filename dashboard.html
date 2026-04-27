@@ -29,6 +29,33 @@ header{position:sticky;top:0;z-index:100;background:var(--card);border-bottom:1p
 .badge{padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;letter-spacing:.5px}
 .badge.paper{background:rgba(16,185,129,.15);color:var(--green);border:1px solid var(--green)}
 .badge.live{background:rgba(239,68,68,.15);color:var(--red);border:1px solid var(--red)}
+
+/* Mode-switcher (Paper / Propose / Live) */
+.mode-switcher{display:flex;gap:2px;background:var(--card2);padding:2px;border-radius:5px;border:1px solid var(--border)}
+.mode-btn{padding:5px 11px;font-size:11px;font-weight:600;border-radius:3px;color:var(--dim);transition:all .15s;letter-spacing:.3px}
+.mode-btn:hover{color:var(--text)}
+.mode-btn.paper.active{background:rgba(16,185,129,.15);color:var(--green);box-shadow:inset 0 0 0 1px var(--green)}
+.mode-btn.propose.active{background:rgba(245,158,11,.15);color:var(--yellow);box-shadow:inset 0 0 0 1px var(--yellow)}
+.mode-btn.live.active{background:rgba(239,68,68,.18);color:var(--red);box-shadow:inset 0 0 0 1px var(--red);animation:pulseLive 2s infinite}
+@keyframes pulseLive{0%,100%{box-shadow:inset 0 0 0 1px var(--red)}50%{box-shadow:inset 0 0 0 1px var(--red),0 0 8px rgba(239,68,68,.4)}}
+
+/* Live-konfirmationsmodal */
+.live-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:300;padding:20px}
+.live-modal-bg.on{display:flex}
+.live-modal{background:var(--card);border:2px solid var(--red);border-radius:8px;width:100%;max-width:560px;padding:20px;max-height:90vh;overflow-y:auto}
+.live-modal h2{font-size:16px;color:var(--red);margin-bottom:8px;letter-spacing:.5px}
+.live-modal .warning{background:rgba(239,68,68,.1);border-left:3px solid var(--red);padding:10px;border-radius:4px;font-size:12px;line-height:1.5;margin:10px 0}
+.live-modal .checklist{margin:14px 0;display:flex;flex-direction:column;gap:8px}
+.live-modal .check-item{display:flex;align-items:flex-start;gap:8px;padding:8px;background:var(--card2);border-radius:4px;cursor:pointer;font-size:12px;line-height:1.5}
+.live-modal .check-item:hover{background:#131a26}
+.live-modal .check-item input{width:16px;height:16px;margin-top:2px;flex-shrink:0;accent-color:var(--red)}
+.live-modal .check-item label{flex:1;cursor:pointer}
+.live-modal .actions{display:flex;gap:8px;margin-top:14px}
+.live-modal .actions button{flex:1;padding:10px;border-radius:4px;font-weight:700;letter-spacing:.5px}
+.live-modal .actions .cancel{background:var(--card2);color:var(--dim);border:1px solid var(--border)}
+.live-modal .actions .confirm{background:var(--red);color:#fff}
+.live-modal .actions .confirm:disabled{opacity:.4;cursor:not-allowed}
+.live-modal .actions .confirm:not(:disabled):hover{background:#dc2626}
 .kill{padding:6px 14px;background:rgba(239,68,68,.1);border:1px solid var(--red);color:var(--red);border-radius:4px;font-weight:700;letter-spacing:.5px}
 .kill.active{background:var(--red);color:#fff}
 .kill:hover{background:rgba(239,68,68,.2)}
@@ -245,7 +272,11 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
     <option value="alpaca">Alpaca</option>
     <option value="blofin">Blofin</option>
   </select>
-  <span class="badge paper" id="mode-badge">PAPER</span>
+  <div class="mode-switcher" id="mode-switcher">
+    <button class="mode-btn paper active" data-mode="paper" title="Paper: testnet, inga riktiga pengar">🟢 Paper</button>
+    <button class="mode-btn propose" data-mode="propose" title="Propose: real data, du godkänner varje order">🟡 Propose</button>
+    <button class="mode-btn live" data-mode="live" title="Live: riktiga pengar, autonomt">🔴 Live</button>
+  </div>
   <button class="kill" id="kill-btn">⏻ KILL SWITCH</button>
   <span class="pnl up" id="pnl">+$0.00 (0.00%)</span>
   <button class="run-btn" id="run-btn">▶ Kör analys</button>
@@ -372,6 +403,30 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
   <button class="test-btn" id="test-conn">Test Connection</button>
   <div class="status-line" id="conn-status"></div>
 </details>
+
+<!-- LIVE-MODE KONFIRMATION (6-punkts checklista) -->
+<div class="live-modal-bg" id="live-modal-bg">
+  <div class="live-modal">
+    <h2>⚠ AKTIVERA LIVE-LÄGE</h2>
+    <div class="warning">
+      Du är på väg att aktivera <b>Live-läge</b>. Hanna kommer lägga <b>RIKTIGA ordrar</b>
+      med <b>RIKTIGA pengar</b> på din Binance. Förluster är permanenta.
+      Bekräfta varje punkt nedan innan du fortsätter.
+    </div>
+    <div class="checklist" id="live-checklist">
+      <div class="check-item"><input type="checkbox" data-idx="0" id="lc0"><label for="lc0">Jag har testat i Paper-läge i minst 7 dagar och ser att Hannas beslut är acceptabla.</label></div>
+      <div class="check-item"><input type="checkbox" data-idx="1" id="lc1"><label for="lc1">Jag har separata <b>BINANCE_LIVE_API_KEY/SECRET</b> (inte testnet-nycklar) konfigurerade.</label></div>
+      <div class="check-item"><input type="checkbox" data-idx="2" id="lc2"><label for="lc2">Jag har bestämt ett <b>maxbelopp</b> jag är villig att förlora och konfigurerat MAX_TOTAL_EXPOSURE_USD därefter.</label></div>
+      <div class="check-item"><input type="checkbox" data-idx="3" id="lc3"><label for="lc3">Jag förstår att Hanna kan göra fel-trades — och att jag inte kan ångra dem.</label></div>
+      <div class="check-item"><input type="checkbox" data-idx="4" id="lc4"><label for="lc4">Jag har testat <b>kill-switchen</b> och vet att den faktiskt stoppar all trading.</label></div>
+      <div class="check-item"><input type="checkbox" data-idx="5" id="lc5"><label for="lc5">Jag har en plan om systemet failar nattetid — t.ex. notifieringar, daily-loss-cap.</label></div>
+    </div>
+    <div class="actions">
+      <button class="cancel" id="live-cancel">Avbryt</button>
+      <button class="confirm" id="live-confirm" disabled>🔴 Aktivera Live</button>
+    </div>
+  </div>
+</div>
 
 <!-- AGENT MODAL — Analys + Chat -->
 <div class="modal-bg" id="modal-bg">
@@ -1270,6 +1325,60 @@ function simulateAgentAnswer(key, q){
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
 /* ======================================================================
+   MODE SWITCHER (Paper / Propose / Live)
+   ====================================================================== */
+let currentUiMode = "paper";
+
+function setActiveMode(uiMode){
+  currentUiMode = uiMode;
+  document.querySelectorAll(".mode-btn").forEach(b=>{
+    b.classList.toggle("active", b.dataset.mode === uiMode);
+  });
+}
+
+async function loadCurrentMode(){
+  if(CFG.mode !== "live") return; // demo: bara visa Paper som default
+  try{
+    const r = await apiGet("/api/mode");
+    setActiveMode(r.uiMode || "paper");
+  }catch(_){}
+}
+
+async function requestMode(uiMode, confirmation){
+  if(CFG.mode !== "live"){
+    // Demo-läge: bara byt visuellt
+    setActiveMode(uiMode);
+    return {ok:true};
+  }
+  return await apiPost("/api/mode", {uiMode, confirmation});
+}
+
+function openLiveConfirm(){
+  document.querySelectorAll("#live-checklist input").forEach(i=>{ i.checked = false; });
+  document.getElementById("live-confirm").disabled = true;
+  document.getElementById("live-modal-bg").classList.add("on");
+}
+function closeLiveConfirm(){
+  document.getElementById("live-modal-bg").classList.remove("on");
+}
+function liveChecklistChanged(){
+  const all = [...document.querySelectorAll("#live-checklist input")];
+  const allChecked = all.every(i => i.checked);
+  document.getElementById("live-confirm").disabled = !allChecked;
+}
+async function confirmLive(){
+  const confirmed = [...document.querySelectorAll("#live-checklist input")].map(i=>i.checked);
+  try{
+    await requestMode("live", {confirmed});
+    setActiveMode("live");
+    closeLiveConfirm();
+    alert("⚠ LIVE-LÄGE AKTIVT. Hanna handlar nu med riktiga pengar.");
+  }catch(e){
+    alert("Fel: "+e.message);
+  }
+}
+
+/* ======================================================================
    API CLIENT
    ====================================================================== */
 async function apiGet(path){
@@ -1301,6 +1410,7 @@ function startSSE(){
         else if(ev.type === "trade"){ /* could prepend to a trade log */ }
         else if(ev.type === "kill-switch"){ STATE.killActive = !!ev.payload?.active; document.getElementById("kill-btn").classList.toggle("active", STATE.killActive); }
         else if(ev.type === "broker-changed"){ document.getElementById("broker-select").value = ev.payload?.broker; }
+        else if(ev.type === "mode-changed"){ setActiveMode(ev.payload?.uiMode || "paper"); }
       }catch(_){}
     };
     sse.onerror = ()=>{ document.getElementById("conn-dot").classList.remove("live"); };
@@ -1404,6 +1514,30 @@ function wire(){
     }
   });
 
+  // Mode-switcher (Paper / Propose / Live)
+  document.querySelectorAll(".mode-btn").forEach(b=>{
+    b.addEventListener("click", async ()=>{
+      const target = b.dataset.mode;
+      if(target === currentUiMode) return;
+      if(target === "live"){
+        openLiveConfirm();
+        return;
+      }
+      try{
+        await requestMode(target);
+        setActiveMode(target);
+      }catch(e){ alert("Fel: "+e.message); }
+    });
+  });
+  document.getElementById("live-cancel").addEventListener("click", closeLiveConfirm);
+  document.getElementById("live-confirm").addEventListener("click", confirmLive);
+  document.querySelectorAll("#live-checklist input").forEach(i=>{
+    i.addEventListener("change", liveChecklistChanged);
+  });
+  document.getElementById("live-modal-bg").addEventListener("click", e=>{
+    if(e.target.id === "live-modal-bg") closeLiveConfirm();
+  });
+
   // Modal
   document.getElementById("modal-close").addEventListener("click", closeChat);
   document.getElementById("modal-bg").addEventListener("click", e=>{ if(e.target.id==="modal-bg") closeChat(); });
@@ -1460,7 +1594,7 @@ function boot(){
   document.getElementById("bet-win").textContent = "$"+(STATE.betAmt*0.85).toFixed(2);
   wire();
   setInterval(tick, 2000);
-  if(CFG.mode === "live"){ loadFromBackend(); startSSE(); }
+  if(CFG.mode === "live"){ loadFromBackend(); startSSE(); loadCurrentMode(); }
 }
 
 document.addEventListener("DOMContentLoaded", boot);
