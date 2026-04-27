@@ -2,7 +2,9 @@ services:
   trading-os:
     build: .
     container_name: trading-os
-    restart: always
+    # on-failure:3 — startar bara om vid icke-noll exit, max 3 ggr.
+    # Förhindrar oändlig restart-loop vid kraschad initial-turn (kostar credits).
+    restart: on-failure:3
     env_file:
       - .env
     volumes:

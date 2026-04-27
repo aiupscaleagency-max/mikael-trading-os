@@ -352,12 +352,24 @@ async function main(): Promise<void> {
     execute: () => runOnce(brokers, engines, buildDailyPnlPrompt()),
   });
 
-  // Kör direkt en gång innan loopen startar
-  log.info("Kör initial agent-turn…");
-  await runOnce(brokers, engines);
+  // INGEN initial agent-turn vid boot — väntar på schemalagd tid.
+  // Anledning: tidigare orsakade en exit-loop (boot → fel → restart → boot → fel)
+  // hundratals oavsiktliga Claude-anrop. Schemalagd loop hanterar all körning.
+  // Manuell trigger finns via "Kör analys"-knappen i dashboarden (POST /api/run-agent).
+  log.info("Boot klart. Väntar på schemalagd körning eller manuell trigger.");
 
   await scheduler.start();
 }
+
+// Fångar oväntade fel som annars skulle krascha processen — loggar utan att exit.
+// Detta tillsammans med restart: on-failure:3 i compose säkerställer att containern
+// INTE restartar i loop och bränner credits vid oväntat fel.
+process.on("unhandledRejection", (reason) => {
+  log.error(`Unhandled rejection: ${reason instanceof Error ? reason.message : String(reason)}`);
+});
+process.on("uncaughtException", (err) => {
+  log.error(`Uncaught exception: ${err.message}`);
+});
 
 main().catch((err) => {
   log.error(`Fatalt fel: ${err instanceof Error ? err.message : String(err)}`);
