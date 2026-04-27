@@ -146,6 +146,30 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .page-header .ph-action{font-size:10px;padding:4px 10px;background:var(--card2);border:1px solid var(--border);border-radius:3px;color:var(--dim);font-weight:600;cursor:pointer}
 .page-header .ph-action:hover{color:var(--cyan);border-color:var(--cyan)}
 
+/* Chat-sida — direktinstruktioner till teamet */
+.chat-card{overflow:hidden}
+.chat-banner{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--card2);border-bottom:1px solid var(--border);font-size:11px}
+.chat-banner .lbl{color:var(--dim);font-size:10px}
+.team-chat-log{flex:1;overflow-y:auto;padding:14px;background:var(--card2);min-height:200px;display:flex;flex-direction:column;gap:10px}
+.team-chat-log .msg{max-width:85%;padding:10px 14px;border-radius:6px;font-size:12px;line-height:1.5;white-space:pre-wrap}
+.team-chat-log .msg.user{align-self:flex-end;background:var(--cyan);color:#000;border-bottom-right-radius:2px}
+.team-chat-log .msg.team{align-self:flex-start;background:var(--card);border:1px solid var(--border);border-bottom-left-radius:2px}
+.team-chat-log .msg.team b{color:var(--cyan)}
+.team-chat-log .msg.team .meta{font-size:10px;color:var(--dim);margin-top:6px;border-top:1px dashed var(--border);padding-top:5px}
+.team-chat-log .msg.system{align-self:center;background:rgba(245,158,11,.1);border:1px solid var(--yellow);color:var(--yellow);font-size:11px;text-align:center}
+.team-chat-log .empty{color:var(--dim);text-align:center;font-size:12px;padding:20px}
+.team-chat-input{border-top:1px solid var(--border);padding:10px 14px;background:var(--card)}
+.team-chat-suggestions{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px}
+.team-chat-suggestions button{font-size:10px;padding:4px 9px;background:var(--card2);border:1px solid var(--border);border-radius:4px;color:var(--dim)}
+.team-chat-suggestions button:hover{color:var(--cyan);border-color:var(--cyan)}
+.team-chat-row{display:flex;gap:8px}
+.team-chat-row textarea{flex:1;background:var(--card2);color:var(--text);border:1px solid var(--border);padding:10px 12px;border-radius:5px;resize:none;font-family:inherit;font-size:12px;outline:none}
+.team-chat-row textarea:focus{border-color:var(--cyan)}
+.team-chat-row .send-btn{padding:0 18px;background:var(--cyan);color:#000;border-radius:5px;font-weight:700;letter-spacing:.3px;display:flex;align-items:center;justify-content:center}
+.team-chat-row .send-btn:hover{background:#0891b2}
+.team-chat-row .send-btn:disabled{opacity:.5;cursor:not-allowed}
+.team-chat-info{margin-top:8px;font-size:10px;color:var(--dim);line-height:1.5}
+
 /* Settings-sida (egen, inte längre <details>) */
 .settings-page{padding:0 10px 10px}
 .settings-page .card{padding:18px}
@@ -372,6 +396,9 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
   <button data-page="team" title="AI-Team — alla agenter">
     <span class="ico">🤖</span><span>Team</span>
   </button>
+  <button data-page="chat" title="Chatta med teamet — instruera trades">
+    <span class="ico">💬</span><span>Chat</span>
+  </button>
   <button data-page="live" title="Live aktivitet — rullande par">
     <span class="ico">⚡</span><span>Live</span>
     <span class="live-dot"></span>
@@ -574,6 +601,38 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
     <div class="agent-grid" id="agent-grid-page" style="margin-top:10px"></div>
     <div class="timing" id="timing-page" style="margin-top:12px">
       Specialists: <b id="t-spec-page">–</b> | Exec: <b id="t-exec-page">–</b> | Head: <b id="t-head-page">–</b> | Total: <b id="t-tot-page">–</b>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ CHAT-SIDA — instruera teamet i naturligt språk ═══ -->
+<section class="page chat-page" id="page-chat">
+  <div class="page-header"><span class="ph-ico">💬</span>Chatta med teamet<span class="ph-sub">— skriv instruktioner i klartext, Hanna kör</span></div>
+  <div class="card chat-card" style="margin:0 10px;display:flex;flex-direction:column;gap:0;padding:0;height:calc(100vh - 140px)">
+    <div class="chat-banner">
+      <span class="auto-dot"></span>
+      <b>Direktinstruktion</b>
+      <span class="lbl">·</span>
+      <span class="lbl">Risk-managern blockerar fortfarande orders utanför ramen (MIN/MAX_POSITION_USD).</span>
+    </div>
+    <div class="team-chat-log" id="team-chat-log"></div>
+    <div class="team-chat-input">
+      <div class="team-chat-suggestions" id="team-chat-suggestions">
+        <button data-q="Köp BTC för $50">Köp BTC för $50</button>
+        <button data-q="Köp ETH och SOL för $30 vardera">ETH + SOL $30 vardera</button>
+        <button data-q="Sälj alla mina BTC-positioner nu">Sälj alla BTC</button>
+        <button data-q="Vad tycker teamet om SOL just nu?">Vad tycker ni om SOL?</button>
+        <button data-q="Stäng alla positioner och avvakta">Stäng allt + avvakta</button>
+        <button data-q="Justera stop-loss till -2% på alla positioner">Stop-loss -2%</button>
+      </div>
+      <div class="team-chat-row">
+        <textarea id="team-chat-text" rows="2" placeholder="Skriv instruktion eller fråga... t.ex. 'Köp BTC för $50' eller 'Vad är bäst entry på ETH?'"></textarea>
+        <button class="send-btn" id="team-chat-send">Skicka <span style="font-size:9px;color:rgba(0,0,0,.6);margin-left:4px">⌘↵</span></button>
+      </div>
+      <div class="team-chat-info">
+        💡 Hanna får din instruktion som "SPECIAL INSTRUKTION" — hon väger den mot Risk + Advisor innan hon agerar.
+        Live-läge → riktiga ordrar. Paper-läge → testnet. Propose-läge → förslag du godkänner.
+      </div>
     </div>
   </div>
 </section>
@@ -1563,9 +1622,120 @@ function simulateAgentAnswer(key, q){
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
 /* ======================================================================
+   TEAM CHAT — direktinstruktioner till hela teamet
+   ====================================================================== */
+const teamChatLog = []; // {role:"user"|"team"|"system", text, timestamp, instruction?}
+
+function renderTeamChatLog(){
+  const logEl = document.getElementById("team-chat-log");
+  if(!logEl) return;
+  if(teamChatLog.length === 0){
+    logEl.innerHTML = `<div class="empty">
+      💬 Inga instruktioner än. Skriv vad du vill att teamet ska göra eller välj ett snabbförslag.<br><br>
+      <span style="font-size:11px">Exempel: <i>"Köp BTC för $50"</i> · <i>"Sälj 50% av min ETH"</i> · <i>"Vad tycker Albert om guld just nu?"</i></span>
+    </div>`;
+    return;
+  }
+  logEl.innerHTML = teamChatLog.map(m=>{
+    const t = new Date(m.timestamp).toLocaleTimeString();
+    if(m.role === "user") return `<div class="msg user">${escapeHtml(m.text)}<div style="font-size:9px;opacity:.6;margin-top:4px">${t}</div></div>`;
+    if(m.role === "system") return `<div class="msg system">${escapeHtml(m.text)}</div>`;
+    return `<div class="msg team"><b>🤖 Teamet:</b><br>${escapeHtml(m.text)}<div class="meta">${t}${m.instruction?` · Instr: "${escapeHtml(m.instruction)}"`:""}</div></div>`;
+  }).join("");
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function escapeHtml(s){
+  const div = document.createElement("div");
+  div.textContent = String(s ?? "");
+  return div.innerHTML;
+}
+
+async function sendTeamChat(){
+  const txt = document.getElementById("team-chat-text");
+  const send = document.getElementById("team-chat-send");
+  const instruction = txt.value.trim();
+  if(!instruction) return;
+
+  // Push user msg
+  teamChatLog.push({role:"user", text:instruction, timestamp:Date.now()});
+  txt.value = "";
+  send.disabled = true;
+  send.textContent = "Kör...";
+  renderTeamChatLog();
+
+  // Push system status
+  teamChatLog.push({role:"system", text:"⏳ Teamet analyserar och kör... (Lars + 8 specialister + Albert + Hanna)", timestamp:Date.now()});
+  renderTeamChatLog();
+
+  try{
+    if(CFG.mode === "live"){
+      // Skicka instruction till backend
+      const result = await apiPost("/api/run-agent", {instruction});
+      // Ta bort system-msg, vänta på SSE för riktigt svar
+      teamChatLog.pop();
+      teamChatLog.push({
+        role:"team",
+        text:`Instruktion mottagen: "${instruction}".\nTeam-session startad — beslut + ev. trades visas på Trades-sidan när klart (~10-30s).`,
+        timestamp:Date.now(),
+        instruction
+      });
+    } else {
+      // Demo-läge: simulera svar
+      await new Promise(r=>setTimeout(r, 1500 + Math.random()*1000));
+      teamChatLog.pop();
+      teamChatLog.push({
+        role:"team",
+        text: simulateTeamResponse(instruction),
+        timestamp:Date.now(),
+        instruction
+      });
+    }
+  } catch(e) {
+    teamChatLog.pop();
+    teamChatLog.push({role:"system", text:"❌ Fel: "+e.message, timestamp:Date.now()});
+  } finally {
+    send.disabled = false;
+    send.innerHTML = `Skicka <span style="font-size:9px;color:rgba(0,0,0,.6);margin-left:4px">⌘↵</span>`;
+    renderTeamChatLog();
+  }
+}
+
+function simulateTeamResponse(instr){
+  const i = instr.toLowerCase();
+  if(i.includes("köp") || i.includes("buy")){
+    return `Albert (Advisor): Risk-on regim, OK att öppna position.\nRasmus (Risk): Inom ramen, godkänner sizing.\nHanna (Head Trader): BUY-order placerad enligt din instruktion. Trail stop -2%.\n\n→ Demo-läge: ingen riktig order skickad. Aktivera Live-läge för att exekvera.`;
+  }
+  if(i.includes("sälj") || i.includes("sell") || i.includes("stäng")){
+    return `Hanna: Säljer enligt din instruktion. Realiserad vinst loggad.\nRasmus: Position-heat sänks till säker nivå.\n\n→ Demo-läge: simulerat. Aktivera Live för riktig exekvering.`;
+  }
+  if(i.includes("stop")){
+    return `Hanna: Trailing stop justerad till -2% på alla aktiva positioner.\nRasmus: Bra disciplin — stop-loss-justeringar minskar drawdown.`;
+  }
+  return `Albert (Advisor): Bra fråga. Just nu ser teamet att marknaden är i ${["accumulation","markup","distribution"][Math.floor(Math.random()*3)]}-fas.\nKarin (Kvant): Sharpe ${(0.8+Math.random()*1).toFixed(2)}, vol-regim medium.\nHanna: Inget aktion nu — vi avvaktar.\n\n→ För riktig analys, aktivera Live-läge med riktiga API-nycklar.`;
+}
+
+function wireTeamChat(){
+  const sendBtn = document.getElementById("team-chat-send");
+  const txt = document.getElementById("team-chat-text");
+  if(!sendBtn || !txt) return;
+  sendBtn.addEventListener("click", sendTeamChat);
+  txt.addEventListener("keydown", e=>{
+    if((e.metaKey || e.ctrlKey) && e.key === "Enter") sendTeamChat();
+  });
+  document.querySelectorAll("#team-chat-suggestions button").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      txt.value = b.dataset.q;
+      txt.focus();
+    });
+  });
+  renderTeamChatLog();
+}
+
+/* ======================================================================
    SPA NAVIGATION — varje sidebar-knapp = egen sida
    ====================================================================== */
-const PAGES = ["trade","team","live","trades","cost","settings"];
+const PAGES = ["trade","team","chat","live","trades","cost","settings"];
 
 function switchPage(name){
   if(!PAGES.includes(name)) name = "trade";
@@ -2024,6 +2194,7 @@ function boot(){
   document.getElementById("bet-win").textContent = "$"+(STATE.betAmt*0.85).toFixed(2);
   wire();
   wireSidebar();
+  wireTeamChat();
   renderLiveStrips();
   loadInitialPage();
   setInterval(tick, 2000);

@@ -317,7 +317,7 @@ async function main(): Promise<void> {
 
   // Registrera API-nyckel + run-callback för manuella agent-frågor och dashboard-triggar
   setApiKey(config.anthropicApiKey);
-  setRunAgentCallback(() => runOnce(brokers, engines));
+  setRunAgentCallback((instruction?: string) => runOnce(brokers, engines, instruction));
 
   // Engångs-körning
   if (args.once || args.propose) {

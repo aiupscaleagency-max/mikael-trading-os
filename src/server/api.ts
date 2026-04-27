@@ -97,13 +97,13 @@ const AGENT_PROMPTS: Record<string, { model: string; system: string }> = {
 };
 
 let anthropicApiKey: string | null = null;
-let runAgentCallback: (() => Promise<void>) | null = null;
+let runAgentCallback: ((instruction?: string) => Promise<void>) | null = null;
 
 export function setApiKey(key: string): void {
   anthropicApiKey = key;
 }
 
-export function setRunAgentCallback(cb: () => Promise<void>): void {
+export function setRunAgentCallback(cb: (instruction?: string) => Promise<void>): void {
   runAgentCallback = cb;
 }
 
@@ -396,7 +396,7 @@ export function startServer(
         return;
       }
 
-      // ── Run Agent (trigga ny analys-turn) ──
+      // ── Run Agent (trigga ny analys-turn, valfritt med Mikes instruktion) ──
       if (url.pathname === "/api/run-agent" && method === "POST") {
         if (!runAgentCallback) {
           res.writeHead(500);
@@ -404,11 +404,21 @@ export function startServer(
           return;
         }
 
-        log.info("[API] Manuell agent-turn triggad via dashboard");
-        json(res, { ok: true, message: "Agent-turn startar..." });
+        // Body kan vara tom eller ha {instruction: "Köp BTC för $50"}
+        let instruction: string | undefined;
+        try {
+          const body = await readBody(req);
+          if (body) {
+            const parsed = JSON.parse(body) as { instruction?: string };
+            instruction = parsed.instruction?.trim() || undefined;
+          }
+        } catch { /* ignore parse fel — kör utan instruktion */ }
+
+        log.info(`[API] Manuell agent-turn triggad${instruction ? ` med instruktion: "${instruction}"` : ""}`);
+        json(res, { ok: true, message: "Agent-turn startar...", instruction });
 
         // Kör async utan att blocka response
-        runAgentCallback().catch((err) => {
+        runAgentCallback(instruction).catch((err) => {
           log.error(`Manuell turn misslyckades: ${err instanceof Error ? err.message : String(err)}`);
         });
         return;
