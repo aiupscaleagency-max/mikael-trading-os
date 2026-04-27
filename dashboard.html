@@ -1664,9 +1664,9 @@ async function sendChat(){
       const r = await apiPost("/api/ask-agent", {agent:key, question:q});
       answer = r?.response || JSON.stringify(r);
     } else {
-      // simulated answer
+      // simulated answer (skicka history för kontext)
       await sleep(600 + Math.random()*900);
-      answer = simulateAgentAnswer(key, q);
+      answer = simulateAgentAnswer(key, q, chatLogs[key] || []);
     }
     chatLogs[key][chatLogs[key].length-1].a = answer;
     renderChat(key);
@@ -1675,21 +1675,81 @@ async function sendChat(){
     renderChat(key);
   }
 }
-function simulateAgentAnswer(key, q){
-  const def = AGENT_DEFS.find(a=>a.key===key);
+// Naturlig demo-konversation — agent förstår intent + svarar konkret
+function simulateAgentAnswer(key, q, history){
+  const lower = (q||"").toLowerCase();
+  const prevTurns = (history || []).length;
+  const pick = a => a[Math.floor(Math.random()*a.length)];
+
+  // Intent-detektion (prefix-matchning för att fånga böjda former: väljer, lägger, köper, etc.)
+  const wantsDecision = /\b(välj|bestäm|plock|kör|gör|lägg|köp|sälj|stäng|välja)/.test(lower);
+  const challenging = /\b(varför|säker|men |istället|riskabelt|fel|smart|verkligen)/.test(lower);
+  const askingOpinion = /\b(tyck|tänk|tror|åsikt|vy|view)/.test(lower);
+  const wantsAnalysis = /\b(analys|hur ser|vad ser|status|situation|läge)/.test(lower);
+
+  const symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT"];
+  const randSym = pick(symbols);
+  const randPrice = (BASE_PRICES[randSym] || 100).toFixed(2);
+  const amount = pick([30, 50, 75]);
+
+  // ── HEAD TRADER (Hanna) ──
+  if(key === "head"){
+    if(wantsDecision){
+      const action = Math.random() > 0.4 ? "BUY" : (Math.random() > 0.5 ? "HOLD" : "SELL");
+      if(action === "HOLD") return `Jag väljer att avvakta just nu. Tomas signal är svag på top-pickarna och Rasmus heat ligger på ${30+Math.floor(Math.random()*20)}% — inget akut tryck att öppna nytt.\n\nFöreslår vi väntar 1-2 sessioner till. Vill du att jag kör ändå?`;
+      const reasons = pick([
+        `${randSym} bröt 4h-motståndet i morse, Tomas score +3`,
+        `${randSym} har bästa risk/reward — Karin kalibrerar 1.0x sizing`,
+        `${randSym} ligger nära 200-EMA stöd, Albert ser uppstuds-setup`
+      ]);
+      return `OK. Jag tar **${action} ${randSym}** för $${amount} (price ~${randPrice}).\n\nGrund: ${reasons}. Stop -2% från entry.\n\n${CFG.mode==="live"?"Ska jag köra ordern direkt?":"⚠️ Du är i TEST-läge — ordern går till testnet, inte real Binance."}`;
+    }
+    if(challenging){
+      return `Schysst utmaning. ${pick([
+        `Det stämmer att alternativet skulle vara mindre risk. Min läsning byggde på Tomas signal — om du ser nåt jag missar, säg.`,
+        `Du har en poäng. Jag kan ompröva — vill du jag tar ${pick(symbols)} istället?`,
+        `Ärligt: jag är inte 100% säker. Men ${randSym} har bättre likviditet just nu. Vad är ditt skäl mot?`
+      ])}`;
+    }
+    if(askingOpinion){
+      return pick([
+        `Jag är ${pick(["försiktigt positiv","neutral","lite skeptisk"])} just nu. ${pick(["Volymen är OK men inte explosiv","Tekniskt OK men makro skvalpar","Bredd försämrad — selektiv läge"])}.`,
+        `Min tanke: ${pick(["små positioner i top-3","håll cash 30%","lägga 1 swing-trade"])}. Inget att hetsa med.`
+      ]);
+    }
+    return `Sammanfattat: regim ${STATE.agents.macro?.regime||"NEUTRAL"}, vol medium, Albert i ${STATE.agents.advisor?.cycle||"accumulation"}-fas. Inget akut beslut just nu — vill du jag tar något specifikt?`;
+  }
+
+  // ── ALBERT (Advisor) ──
+  if(key === "advisor"){
+    if(challenging) return pick([
+      `Bra invändning. Mitt argument byggde på cykel-positionering, men du kan ha rätt — kortsiktigt sentiment kan trumfa.`,
+      `Jag står fast vid huvudthesis, men erkänner: blind spot är geopolitisk eskalering. Vad ser du?`
+    ]);
+    if(wantsDecision) return `Jag rekommenderar ${pick(["lätt risk-on","selektiv approach","defensivt läge"])} just nu. Konkret: ${pick(["BTC core + lite SOL","behåll cash, vänta dip","trim toppen, addera på dipp"])}.`;
+    return pick([
+      `Tankar: marknaden är i ${STATE.agents.advisor?.cycle||"accumulation"}. ${pick(["FOMO börjar krypa in","retail entusiasm sval","institutional flöden positiva"])}. Var disciplinerad.`,
+      `Jag ser ${pick(["för mycket optimism","skön balans","underliggande svaghet"])} i sentimentet. Min läsning: ${pick(["trim 20%","håll","lägg till på rött"])}.`,
+      `Långsiktigt: ${pick(["BTC cycle-mid","alts börjar lyfta","makro-rotation pågår"])}. Behavioral risk: ${pick(["overconfidence","FOMO","disposition effect"])}.`
+    ]);
+  }
+
+  // ── ÖVRIGA SPECIALISTER ──
   const replies = {
-    macro:`Min makro-läsning just nu: ${STATE.agents.macro?.regime||"NEUTRAL"} regim. Du frågar om "${q}" — nyckelfaktorer är Fed-policy, dollar-styrka och commodity-priser. Förväntad volatilitet kommande vecka är förhöjd givet centralbanks-kalendern.`,
-    technical:`Tekniskt på din fråga "${q}": jag ser ${STATE.agents.technical?.bias||"mixed"} bias på huvudpariteter. Stöd ligger vid 50-EMA, motstånd vid förra veckans high. Bredd är försämrad — tradera selektivt.`,
-    sentiment:`Sentiment är ${STATE.agents.sentiment?.sentiment||"neutral"}. På "${q}" — narrativen i marknaden domineras av AI-temat och rate-cut förväntningar. Politiker-flöden visar köp i tech.`,
-    risk:`Risk-bedömning: nivå ${STATE.agents.risk?.level||"medium"}, heat ${STATE.agents.risk?.heat||0}%. Din fråga "${q}" — jag rekommenderar att hålla position size konservativ tills korrelationen sjunker.`,
-    quant:`Kvantitativ vy på "${q}": vol-regim är ${STATE.agents.quant?.volRegime||"medium"}, Sharpe ${STATE.agents.quant?.sharpe||"–"}. Trend-modeller är positiva men mean-reversion-signal flashar i shortterm.`,
-    options:`Options-perspektiv på "${q}": IV-miljön är ${STATE.agents.options?.ivEnv||"normal"}. Sälj-premium-strategier är attraktiva i high-IV-rank namn. Wheeling fortsätter fungera i TSLA/NVDA.`,
-    portfolio:`Portfölj-vy på "${q}": diversifiering ${STATE.agents.portfolio?.diversification||0}/100, cash ${STATE.agents.portfolio?.cashPct||0}%. Sektor-koncentrationen i crypto är hög — överväg trim.`,
-    execution:`Exekvering på "${q}": urgency ${STATE.agents.execution?.urgency||"medium"}. Använd TWAP eller DCA i 3 splits för att minimera slippage. Undvik market-orders första 5 min efter open.`,
-    advisor:`Strategisk reflektion på "${q}": ${STATE.agents.advisor?.outlook||"Marknaden är i en mellancykel-fas."} Akta dig för FOMO efter senaste rallyt — håll thesisen disciplinerad. Jag ser ${STATE.agents.advisor?.contrarian||"inga starka contrarian-positioner"}.`,
-    head:`Head Trader-beslut: ${STATE.agents.head?.decision||"HOLD"}. På din fråga "${q}" — vi konsoliderar position innan nästa makro-trigger. Rule of 3 håller.`
+    research: pick([
+      `Senaste 12h: ${pick(["BlackRock IBIT-inflöden","Fed-tal idag 14:00","ETH-uppgradering live"])}. Inga akuta risk-alerts.`,
+      `Färska nyheter: ${pick(["BTC bröt 67k","Ethereum gas låg","Solana DePIN trend"])}. Geopolitik lugnt.`,
+    ]),
+    macro:`Regim är ${STATE.agents.macro?.regime||"NEUTRAL"}. ${pick(["Fed hawkish-bias","ECB håller","CPI under förväntan"])} är drivkraft. ${challenging?"Du ifrågasätter — fair, alternativet vore om dollar svartnar och guld lyfter":"Konkret: lite risk-on bias om VIX < 17"}.`,
+    technical:`${wantsAnalysis?`Top-pick: ${STATE.agents.technical?.topPick||randSym}, score +${(2+Math.random()*3).toFixed(1)}. Stöd vid 50-EMA, motstånd förra veckans high.`:`${pick(["bullish setup","mixed","ranging"])} på huvudpariteter. ${pick(["Volymen bekräftar","Volymen tunn","Divergens i RSI"])}.`}`,
+    sentiment:`Sentiment ${STATE.agents.sentiment?.sentiment||"neutral"}. ${pick(["Reddit börjar bli FOMO-igt","Politiker köpte tech","Crypto-twitter sval"])}. ${challenging?"Min contrary-läsning kan vara fel om institutionella flöden fortsätter":"Inga extreme-zoner just nu"}.`,
+    risk:`Heat ${STATE.agents.risk?.heat||0}%, korrelation ${(STATE.agents.risk?.correlation||0.5).toFixed(2)}. ${wantsDecision?`Får du köpa ${randSym} för $${amount}? Ja, inom MAX_POSITION_USD.`:`${pick(["Inom acceptabel risk","Vill se ner till 50% heat","Diversifiera mer"])}.`}`,
+    quant:`Vol ${STATE.agents.quant?.volRegime||"medium"}, Sharpe ${STATE.agents.quant?.sharpe||"0.9"}. ${pick(["Trend > mean-rev just nu","Mean-rev signal i SOL","Volcluster ovanligt"])}.`,
+    options:`IV ${STATE.agents.options?.ivEnv||"normal"}. ${pick(["Sell-premium attraktivt","Köp riktning bättre","Iron condor-zon"])}. (OBS: irrelevant för crypto-spot, vi behåller mig som backup.)`,
+    portfolio:`Diversifiering ${STATE.agents.portfolio?.diversification||60}/100. ${pick(["Crypto för tungt — trim","Lägg till FX-hedge","OK balans nu"])}. Cash ${STATE.agents.portfolio?.cashPct||25}%.`,
+    execution:`Urgency ${STATE.agents.execution?.urgency||"medium"}. För ${randSym}: ${pick(["TWAP 3 splits","limit -0.1%","market OK"])}. Slippage <0.05%.`,
   };
-  return replies[key] || "Inget svar tillgängligt i demo-läge.";
+  return replies[key] || "Hej! Vad vill du veta?";
 }
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
@@ -1796,17 +1856,46 @@ async function sendTeamChat(){
 }
 
 function simulateTeamResponse(instr){
-  const i = instr.toLowerCase();
-  if(i.includes("köp") || i.includes("buy")){
-    return `Albert (Advisor): Risk-on regim, OK att öppna position.\nRasmus (Risk): Inom ramen, godkänner sizing.\nHanna (Head Trader): BUY-order placerad enligt din instruktion. Trail stop -2%.\n\n→ Demo-läge: ingen riktig order skickad. Aktivera Live-läge för att exekvera.`;
+  const i = (instr||"").toLowerCase();
+  const pick = a => a[Math.floor(Math.random()*a.length)];
+  const isTest = CFG.mode !== "live";
+  const testNote = isTest ? `\n\n_(TEST-läge — inget riktigt händer på Binance. Säg till om du vill jag ändå utför symbolisk testorder.)_` : "";
+
+  // Konkreta ordrar i text (köp/sälj med belopp/symbol)
+  const buyMatch = i.match(/(köp|buy)\s+([a-z]{3,5})/i);
+  if(buyMatch){
+    const sym = buyMatch[2].toUpperCase()+(buyMatch[2].endsWith("usdt")?"":"USDT");
+    const amt = (i.match(/\$?(\d{2,4})/) || [])[1] || 50;
+    return `Hanna: OK, köper **${sym}** för $${amt}.\nRasmus: Inom MAX_POSITION_USD, godkänner.\nKarin: Vol-regim medium, sizing-multiplier 1.0.\nAlbert: Cykel-fas ${pick(["accumulation","early-markup"])} — passar in.${testNote}`;
   }
-  if(i.includes("sälj") || i.includes("sell") || i.includes("stäng")){
-    return `Hanna: Säljer enligt din instruktion. Realiserad vinst loggad.\nRasmus: Position-heat sänks till säker nivå.\n\n→ Demo-läge: simulerat. Aktivera Live för riktig exekvering.`;
+  if(/(sälj|sell|stäng|close)/.test(i)){
+    return `Hanna: Stänger enligt instruktion. ${pick(["Realiserad vinst loggad","Tar hem för att frigöra cash","Reducerar exponering"])}.\nRasmus: Heat sänks. Bra disciplin.${testNote}`;
   }
-  if(i.includes("stop")){
-    return `Hanna: Trailing stop justerad till -2% på alla aktiva positioner.\nRasmus: Bra disciplin — stop-loss-justeringar minskar drawdown.`;
+  if(/stop[- ]?loss|sl /.test(i)){
+    return `Hanna: Trailing stop justerad. Påverkar alla öppna positioner.\nRasmus: Bra — tightare stop minskar drawdown om det vänder.`;
   }
-  return `Albert (Advisor): Bra fråga. Just nu ser teamet att marknaden är i ${["accumulation","markup","distribution"][Math.floor(Math.random()*3)]}-fas.\nKarin (Kvant): Sharpe ${(0.8+Math.random()*1).toFixed(2)}, vol-regim medium.\nHanna: Inget aktion nu — vi avvaktar.\n\n→ För riktig analys, aktivera Live-läge med riktiga API-nycklar.`;
+
+  // Frågor / utmaningar (prefix-matchning för böjda former)
+  if(/(välj|bestäm|plock|kör för mig|lägg)/.test(i)){
+    const sym = pick(["BTCUSDT","ETHUSDT","SOLUSDT"]);
+    return `Hanna: Jag väljer **${sym}** för $50, BUY.\nGrund: Tomas score +${(2+Math.random()*2).toFixed(1)}, Karin OK på vol, Rasmus inom risk.\nAlbert flaggar inga blind spots.${testNote}`;
+  }
+  if(/(varför|säker|men |istället|fel|verkligen)/.test(i)){
+    return `Hanna: Schysst utmaning. ${pick([
+      "Min logik byggde på Tomas signal — om du ser nåt jag missar, säg så ändrar jag.",
+      "Du har en poäng. Alternativet vore att avvakta. Jag ompröver om du vill.",
+      "Ärligt: jag är inte 100% säker. Vad är ditt skäl mot?"
+    ])}`;
+  }
+  if(/(tyck|tänk|status|läge|hur är|vad ser)/.test(i)){
+    return pick([
+      `Albert: Marknaden i ${pick(["accumulation","konsolidering","early-markup"])}-fas. ${pick(["Måttlig optimism","Sval entusiasm","Underliggande styrka"])}.\nHanna: Inget akut beslut — vill du jag tar nåt specifikt?`,
+      `Karin: Sharpe ${(0.8+Math.random()*0.7).toFixed(2)}, vol medium.\nTomas: Top-pick BTC (score +${(2+Math.random()*2).toFixed(1)}).\nHanna: Avvaktar.`,
+      `Lars: ${pick(["BlackRock IBIT-inflöden","Fed-tal ikväll","ETH-uppgradering live"])}.\nMarkus: Regim ${pick(["RISK_ON","NEUTRAL"])}, försiktig optimism.\nHanna: Lutar mot ${pick(["BTC core position","SOL momentum-trade","vänta på dipp"])}.`
+    ]);
+  }
+  // Fallback — direkt fråga teamet
+  return `Albert: ${pick(["Bra fråga","Värt att överväga","Intressant"])}. ${pick(["Cykel-fas accumulation","Marknaden ser ok ut","Sentiment skvalpar"])}.\nHanna: ${pick(["Inget aktion just nu","Kan kolla närmare om du vill","Ge mig konkret order så kör jag"])}.${testNote}`;
 }
 
 async function sendFromFloating(){
