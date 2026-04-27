@@ -629,13 +629,18 @@ body.app-state-onboard .fc-panel{display:none !important}
 .onboard-footer{margin-top:14px;text-align:center;font-size:10px;color:var(--dim);line-height:1.5}
 .onboard-footer code{background:var(--card2);padding:1px 5px;border-radius:2px;color:var(--cyan);font-size:10px}
 
-/* SETUP-BANNER på dashboard om nycklar saknas */
-.setup-banner{margin:10px;padding:12px 16px;background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(245,158,11,.05));border:1px solid var(--yellow);border-radius:6px;display:flex;align-items:center;gap:12px;font-size:12px}
-.setup-banner .sb-ico{font-size:20px}
-.setup-banner b{color:var(--yellow)}
+/* SETUP-BANNER på dashboard om nycklar saknas — prominent, röd */
+.setup-banner{margin:10px;padding:14px 18px;background:linear-gradient(135deg,rgba(239,68,68,.18),rgba(239,68,68,.06));border:1.5px solid var(--red);border-radius:8px;display:flex;align-items:center;gap:14px;font-size:13px;box-shadow:0 0 24px rgba(239,68,68,.15)}
+.setup-banner .sb-ico{font-size:24px;animation:pulse 2s infinite}
+.setup-banner b{color:var(--red);font-weight:800;letter-spacing:.3px}
 .setup-banner .sb-spacer{flex:1}
-.setup-banner button{padding:7px 14px;background:var(--yellow);color:#000;border:none;border-radius:4px;font-weight:800;font-size:11px;cursor:pointer;letter-spacing:.4px;text-transform:uppercase}
-.setup-banner button:hover{filter:brightness(1.1)}
+.setup-banner button{padding:9px 18px;background:var(--red);color:#fff;border:none;border-radius:5px;font-weight:800;font-size:11px;cursor:pointer;letter-spacing:.5px;text-transform:uppercase;box-shadow:0 0 16px rgba(239,68,68,.3)}
+.setup-banner button:hover{filter:brightness(1.15)}
+
+/* Disabled trading-knappar när nycklar saknas */
+.trade-locked{opacity:.45;cursor:not-allowed !important;position:relative}
+.trade-locked::after{content:"🔒 Koppla API först";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--red);color:#fff;padding:4px 10px;border-radius:4px;font-size:10px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s;z-index:10}
+.trade-locked:hover::after{opacity:1}
 @media (max-width:767px){
   header{font-size:11px;gap:8px;padding:8px}
   .brand{font-size:12px}
@@ -1050,12 +1055,13 @@ body.app-state-onboard .fc-panel{display:none !important}
 
 <!-- Setup-banner — visas om API-nycklar saknas -->
 <div class="setup-banner" id="setup-banner" style="display:none">
-  <span class="sb-ico">⚠️</span>
+  <span class="sb-ico">🔒</span>
   <div>
-    <b>API-nycklar saknas.</b> <span style="color:var(--label)">Du måste koppla din Anthropic + Binance för att teamet ska kunna jobba.</span>
+    <b>TRADING LÅST</b>
+    <div style="color:var(--label);margin-top:2px">Du har dashboard-access — men för att <b style="color:#fff">köra trades (test eller live)</b> behöver du koppla din Anthropic + Binance API först.</div>
   </div>
   <span class="sb-spacer"></span>
-  <button id="setup-banner-go">Konfigurera nu</button>
+  <button id="setup-banner-go">Koppla API nu →</button>
 </div>
 
 <!-- ═══ TRADE-SIDA ═══ -->
@@ -1783,6 +1789,7 @@ function updateTickerStrip(){
    BET / POSITIONS
    ====================================================================== */
 function placeBet(direction){
+  if(!requireTradingKeys(`Lägga ${direction}-trade`)) return;
   if(STATE.killActive){ alert("Kill switch är aktiverad — inga nya trades."); return; }
   const sym = document.getElementById("bet-sym").value;
   const tf = STATE.betTf;
@@ -2490,20 +2497,10 @@ async function submitAuth(){
   btn.disabled = false;
   btn.textContent = isNewSignup ? "Skapa konto" : "Logga in";
 
-  // Admins skippar onboarding — använder system-default-nycklar (VPS .env)
-  if(currentUser?.isAdmin){
-    setAppState("app");
-    if(typeof postLoginInit === "function") postLoginInit();
-    return;
-  }
-
-  if(isNewSignup || !currentUser?.onboardingComplete){
-    // Nya users + users som inte slutfört onboarding → wizard
-    const keys = await loadKeysFromBackend();
-    if(!keys.anthropic || !keys.binance_key){
-      startOnboarding();
-      return;
-    }
+  // Alla går direkt till dashboard efter login/signup
+  // (API-nycklar kopplas senare via Settings — trading är gated tills dess)
+  if(useSupabase && currentUser?.id){
+    await loadKeysFromBackend();
   }
   setAppState("app");
   if(typeof postLoginInit === "function") postLoginInit();
@@ -2794,6 +2791,7 @@ async function sendTeamChat(){
   const send = document.getElementById("team-chat-send");
   const instruction = txt.value.trim();
   if(!instruction) return;
+  if(!requireTradingKeys("Skicka instruktion till teamet")) return;
 
   // Push user msg
   teamChatLog.push({role:"user", text:instruction, timestamp:Date.now()});
@@ -2887,6 +2885,7 @@ async function sendFromFloating(){
   const send = document.getElementById("fc-send");
   const instruction = txt.value.trim();
   if(!instruction) return;
+  if(!requireTradingKeys("Skicka instruktion")) return;
 
   teamChatLog.push({role:"user", text:instruction, timestamp:Date.now()});
   txt.value = "";
@@ -3323,6 +3322,7 @@ function wire(){
   });
 
   document.getElementById("run-btn").addEventListener("click", async ()=>{
+    if(!requireTradingKeys("Köra agent-analys")) return;
     const btn = document.getElementById("run-btn");
     btn.disabled = true; btn.textContent = "Kör…";
     try{
@@ -3468,17 +3468,41 @@ function postLoginInit(){
   initApp();
 }
 
-function checkKeysSetup(){
-  // Admins använder system-default-nycklar (VPS .env) — banner aldrig
-  if(currentUser?.isAdmin){
-    const banner = document.getElementById("setup-banner");
-    if(banner) banner.style.display = "none";
-    return;
-  }
+// Kollar om user har nycklar nog att tradea (Anthropic + Binance).
+// Admins använder system-default-nycklar (VPS .env) — alltid OK.
+function hasTradingKeys(){
+  if(currentUser?.isAdmin) return true;
   const keys = getUserKeys();
-  const missing = !keys.anthropic || !keys.binance_key;
+  return !!(keys.anthropic && keys.binance_key && keys.binance_secret);
+}
+
+function checkKeysSetup(){
   const banner = document.getElementById("setup-banner");
+  const missing = !hasTradingKeys();
   if(banner) banner.style.display = missing ? "flex" : "none";
+
+  // Lås/lås upp trade-knappar
+  const tradeButtons = [
+    document.getElementById("bet-call"),
+    document.getElementById("bet-put"),
+    document.getElementById("run-btn"),
+    document.getElementById("team-chat-send"),
+    document.getElementById("fc-send"),
+  ];
+  tradeButtons.forEach(b => {
+    if(!b) return;
+    b.classList.toggle("trade-locked", missing);
+  });
+}
+
+function requireTradingKeys(action){
+  if(hasTradingKeys()) return true;
+  const ok = confirm(
+    `🔒 ${action} kräver att du kopplat Anthropic + Binance API först.\n\n` +
+    `Vill du gå till Settings nu och konfigurera?`
+  );
+  if(ok) switchPage("settings");
+  return false;
 }
 
 function loadKeysIntoSettings(){
@@ -3522,7 +3546,7 @@ async function saveKeysFromSettings(){
 function initApp(){
   checkKeysSetup();
   loadKeysIntoSettings();
-  document.getElementById("setup-banner-go")?.addEventListener("click", ()=>startOnboarding());
+  document.getElementById("setup-banner-go")?.addEventListener("click", ()=>switchPage("settings"));
   document.getElementById("save-keys-btn")?.addEventListener("click", saveKeysFromSettings);
   fillSymbols();
   fillBetSymbols();
