@@ -91,26 +91,51 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
 .win-rate{text-align:center;font-size:12px;margin-top:6px;padding:6px;background:var(--card2);border-radius:4px}
 .win-rate b{color:var(--green)}
 
-/* AGENT TILES — kompakt rad, Binance-stil */
-.agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:4px}
-.agent{background:var(--card2);border:1px solid var(--border);border-radius:4px;padding:7px 9px;cursor:pointer;transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:3px;min-height:54px;position:relative}
-.agent:hover{border-color:var(--cyan);background:#131a26}
-.agent .head{display:flex;align-items:center;gap:5px}
-.agent .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;background:var(--dim)}
-.agent.macro .dot{background:var(--yellow)}
-.agent.technical .dot{background:var(--blue)}
-.agent.sentiment .dot{background:var(--orange)}
-.agent.risk .dot{background:var(--red)}
-.agent.quant .dot{background:#60a5fa}
-.agent.options .dot{background:var(--yellow)}
-.agent.portfolio .dot{background:var(--green)}
-.agent.execution .dot{background:var(--cyan)}
-.agent.advisor .dot{background:var(--purple)}
-.agent.head .dot{background:#fff}
-.agent .name{font-size:10px;font-weight:600;letter-spacing:.3px;color:var(--text);text-transform:uppercase;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.agent .star{color:var(--purple);font-size:9px;flex-shrink:0}
-.agent .signal{font-size:11px;color:var(--text);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.agent .signal.green{color:var(--green)} .agent .signal.red{color:var(--red)} .agent .signal.yellow{color:var(--yellow)}
+/* AGENT-TEAM — varje agent som en "person" med avatar */
+.team-banner{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card2);border-radius:4px;margin-bottom:10px;font-size:11px;flex-wrap:wrap}
+.team-banner .auto-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite;flex-shrink:0}
+.team-banner b{color:var(--text)}
+.team-banner .lbl{color:var(--dim)}
+.team-banner .next-run{color:var(--cyan);font-weight:600}
+.team-banner .schedule-list{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+.team-banner .slot{padding:2px 7px;border-radius:3px;background:var(--bg);border:1px solid var(--border);font-size:10px;color:var(--dim)}
+.team-banner .slot.done{color:var(--green);border-color:var(--green)}
+.team-banner .slot.next{color:var(--cyan);border-color:var(--cyan);font-weight:700}
+
+.agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:8px}
+.agent{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;cursor:pointer;transition:border-color .12s,background .12s,transform .12s;display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto auto;gap:3px 10px;align-items:center;position:relative;min-height:84px}
+.agent:hover{border-color:var(--cyan);background:#131a26;transform:translateY(-1px)}
+.agent.running{border-color:var(--cyan);box-shadow:0 0 0 1px var(--cyan)}
+
+/* Avatar: cirkel + initial, agentens karaktärsfärg */
+.agent .avatar{grid-row:1/4;grid-column:1;width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:#fff;letter-spacing:.5px;font-family:'SF Mono',monospace;position:relative;flex-shrink:0}
+.agent.macro .avatar{background:linear-gradient(135deg,#f59e0b,#d97706)}
+.agent.technical .avatar{background:linear-gradient(135deg,#3b82f6,#1d4ed8)}
+.agent.sentiment .avatar{background:linear-gradient(135deg,#fb923c,#ea580c)}
+.agent.risk .avatar{background:linear-gradient(135deg,#ef4444,#b91c1c)}
+.agent.quant .avatar{background:linear-gradient(135deg,#60a5fa,#2563eb)}
+.agent.options .avatar{background:linear-gradient(135deg,#eab308,#a16207)}
+.agent.portfolio .avatar{background:linear-gradient(135deg,#10b981,#047857)}
+.agent.execution .avatar{background:linear-gradient(135deg,#06b6d4,#0e7490)}
+.agent.advisor .avatar{background:linear-gradient(135deg,#8b5cf6,#6d28d9)}
+.agent.head .avatar{background:linear-gradient(135deg,#fff,#cbd5e1);color:#0a0e17}
+.agent .avatar .live-ring{position:absolute;inset:-3px;border-radius:50%;border:2px solid var(--cyan);opacity:0;animation:pulseRing 1.5s infinite}
+.agent.running .avatar .live-ring{opacity:1}
+@keyframes pulseRing{0%{opacity:.8;transform:scale(1)}100%{opacity:0;transform:scale(1.25)}}
+.agent .avatar .star{position:absolute;top:-3px;right:-3px;background:var(--purple);color:#fff;width:14px;height:14px;border-radius:50%;font-size:8px;display:flex;align-items:center;justify-content:center;border:1px solid var(--card2)}
+.agent.head .avatar .star{background:var(--cyan);color:#000}
+
+.agent .name-row{grid-column:2;display:flex;flex-direction:column;gap:1px;min-width:0;padding-right:46px}
+.agent .person-name{font-size:13px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15}
+.agent .person-role{font-size:10px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
+.agent .signal{grid-column:2;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.agent .signal.green{color:var(--green)} .agent .signal.red{color:var(--red)} .agent .signal.yellow{color:var(--yellow)} .agent .signal.cyan{color:var(--cyan)}
+.agent .schedule{grid-column:2;font-size:10px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent .schedule b{color:var(--text);font-weight:500}
+.agent .model-tag{position:absolute;top:8px;right:10px;padding:1px 6px;background:var(--bg);border:1px solid var(--border);border-radius:2px;text-transform:uppercase;letter-spacing:.3px;font-size:9px;color:var(--dim)}
+.agent .model-tag.opus{color:var(--purple);border-color:var(--purple)}
+.agent .running-badge{position:absolute;bottom:8px;right:10px;font-size:9px;color:var(--cyan);text-transform:uppercase;letter-spacing:.5px;background:rgba(6,182,212,.1);padding:1px 6px;border-radius:2px;border:1px solid var(--cyan)}
+.agent.running .running-badge::before{content:"● "}
 /* Detail (i modalen) */
 .detail{font-size:11px;color:var(--text);line-height:1.5}
 .detail .kv{display:flex;justify-content:space-between;margin:3px 0;padding:2px 0;border-bottom:1px dashed transparent}
@@ -154,10 +179,13 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
 .modal-bg.on{display:flex}
 .modal{background:var(--card);border:1px solid var(--border);border-radius:6px;width:100%;max-width:640px;padding:0;max-height:88vh;display:flex;flex-direction:column;position:relative;overflow:hidden}
-.modal-header{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;background:var(--card2)}
-.modal-header .agent-mark{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.modal-header h2{font-size:12px;font-weight:700;letter-spacing:.4px;color:var(--text);text-transform:uppercase}
-.modal-header .meta{margin-left:auto;font-size:10px;color:var(--dim)}
+.modal-header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;background:var(--card2)}
+.modal-header .modal-avatar{width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;color:#fff;letter-spacing:.5px;flex-shrink:0;position:relative}
+.modal-header .modal-avatar .star{position:absolute;top:-2px;right:-2px;background:var(--purple);color:#fff;width:16px;height:16px;border-radius:50%;font-size:9px;display:flex;align-items:center;justify-content:center;border:2px solid var(--card2)}
+.modal-header .modal-info{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.modal-header h2{font-size:14px;font-weight:700;color:var(--text);letter-spacing:.2px;margin:0}
+.modal-header .modal-role{font-size:11px;color:var(--dim)}
+.modal-header .meta{font-size:10px;color:var(--dim);text-align:right}
 .modal-tabs{display:flex;border-bottom:1px solid var(--border);background:var(--card2)}
 .modal-tabs button{flex:1;padding:8px;font-size:11px;color:var(--dim);border-bottom:2px solid transparent;letter-spacing:.4px;text-transform:uppercase;font-weight:600}
 .modal-tabs button.on{color:var(--cyan);border-bottom-color:var(--cyan)}
@@ -276,7 +304,8 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
     </div>
 
     <div class="card">
-      <h3>AI Agent-team <span class="tag" id="last-turn">väntar…</span></h3>
+      <h3>AI-Team <span class="tag" id="last-turn">väntar…</span></h3>
+      <div class="team-banner" id="team-banner"></div>
       <div class="agent-grid" id="agent-grid"></div>
       <div class="timing" id="timing">
         Specialists: <b id="t-spec">–</b> | Exec: <b id="t-exec">–</b> | Head: <b id="t-head">–</b> | Total: <b id="t-tot">–</b>
@@ -348,8 +377,11 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px}
   <div class="modal">
     <button class="close" id="modal-close">×</button>
     <div class="modal-header">
-      <span class="agent-mark" id="modal-mark"></span>
-      <h2 id="modal-title">—</h2>
+      <div class="modal-avatar" id="modal-avatar">—</div>
+      <div class="modal-info">
+        <h2 id="modal-title">—</h2>
+        <span class="modal-role" id="modal-role"></span>
+      </div>
       <span class="meta" id="modal-meta"></span>
     </div>
     <div class="modal-tabs">
@@ -813,17 +845,18 @@ function updatePnL(){
 /* ======================================================================
    AGENTS
    ====================================================================== */
+// Agent-team — varje agent som "person" med avatar + roll
 const AGENT_DEFS = [
-  {key:"macro", name:"Makro-Analytiker", model:"haiku 4.5"},
-  {key:"technical", name:"Teknisk Analytiker", model:"haiku 4.5"},
-  {key:"sentiment", name:"Sentiment-Analytiker", model:"haiku 4.5"},
-  {key:"risk", name:"Risk-Analytiker", model:"haiku 4.5"},
-  {key:"quant", name:"Kvant-Analytiker", model:"haiku 4.5"},
-  {key:"options", name:"Options-Strateg", model:"haiku 4.5"},
-  {key:"portfolio", name:"Portfölj-Strateg", model:"haiku 4.5"},
-  {key:"execution", name:"Exekverings-Optimerare", model:"haiku 4.5"},
-  {key:"advisor", name:"Claude Advisor", model:"opus 4.7", premium:true},
-  {key:"head", name:"Head Trader", model:"opus 4.6", premium:true}
+  {key:"macro",      person:"Markus", role:"Makro-Analytiker",      title:"Makro-Analytiker",      initial:"MA", model:"haiku 4.5"},
+  {key:"technical",  person:"Tomas",  role:"Teknisk Analytiker",    title:"Teknisk Analytiker",    initial:"TA", model:"haiku 4.5"},
+  {key:"sentiment",  person:"Sara",   role:"Sentiment-Analytiker",  title:"Sentiment-Analytiker",  initial:"SA", model:"haiku 4.5"},
+  {key:"risk",       person:"Rasmus", role:"Risk-Analytiker",       title:"Risk-Analytiker",       initial:"RA", model:"haiku 4.5"},
+  {key:"quant",      person:"Karin",  role:"Kvant-Analytiker",      title:"Kvant-Analytiker",      initial:"KA", model:"haiku 4.5"},
+  {key:"options",    person:"Olof",   role:"Options-Strateg",       title:"Options-Strateg",       initial:"OS", model:"haiku 4.5"},
+  {key:"portfolio",  person:"Petra",  role:"Portfölj-Strateg",      title:"Portfölj-Strateg",      initial:"PS", model:"haiku 4.5"},
+  {key:"execution",  person:"Emma",   role:"Exekverings-Optimerare",title:"Exekverings-Optimerare",initial:"EO", model:"haiku 4.5"},
+  {key:"advisor",    person:"Albert", role:"Strategisk Advisor",    title:"Claude Advisor",        initial:"AD", model:"opus 4.7",  premium:true},
+  {key:"head",       person:"Hanna",  role:"Head Trader (chef)",    title:"Head Trader",           initial:"HT", model:"opus 4.6",  premium:true}
 ];
 
 function genSimAgents(){
@@ -925,25 +958,91 @@ function agentSignal(key, d){
   return {text:"–", cls:""};
 }
 
+// Schemalagda körningstider — global loop var 6:e timme = 4 sessions/dag
+const SCHEDULE = {
+  intervalSec: 21600,
+  // Synliga fasta tider (UTC) som visas i banner — matchar var-6h om container startar 00:00 UTC
+  slots: ["00:00","06:00","12:00","18:00"]
+};
+
+function getNextRun(){
+  // Använd lastRun (om finns) annars antag att senaste slot redan inträffat
+  const now = new Date();
+  const slots = SCHEDULE.slots.map(s=>{
+    const [h,m] = s.split(":").map(Number);
+    const d = new Date(); d.setUTCHours(h,m,0,0);
+    return d;
+  });
+  // Hitta nästa slot som ligger efter "nu"
+  let next = slots.find(d => d > now);
+  if(!next){ next = new Date(slots[0]); next.setUTCDate(next.getUTCDate()+1); }
+  return next;
+}
+function fmtTimeUTC(d){ return String(d.getUTCHours()).padStart(2,"0")+":"+String(d.getUTCMinutes()).padStart(2,"0"); }
+function fmtRel(d){
+  const ms = d - new Date();
+  if(ms <= 0) return "nu";
+  const h = Math.floor(ms/3600000), m = Math.floor((ms%3600000)/60000);
+  if(h>0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function renderTeamBanner(){
+  const banner = document.getElementById("team-banner");
+  if(!banner) return;
+  const now = new Date();
+  const lastRunStr = STATE.lastRun ? fmtTimeUTC(STATE.lastRun) : "–";
+  const next = getNextRun();
+  const slotsHtml = SCHEDULE.slots.map(s=>{
+    const [h,m] = s.split(":").map(Number);
+    const d = new Date(); d.setUTCHours(h,m,0,0);
+    const isPast = d < now;
+    const isNext = fmtTimeUTC(d) === fmtTimeUTC(next);
+    return `<span class="slot ${isPast && !isNext ? 'done':''} ${isNext?'next':''}">${s} UTC</span>`;
+  }).join("");
+  banner.innerHTML = `
+    <span class="auto-dot"></span>
+    <b>Autonomt team</b>
+    <span class="lbl">·</span>
+    <span class="lbl">Senaste:</span> <b>${lastRunStr}</b>
+    <span class="lbl">·</span>
+    <span class="lbl">Nästa:</span> <span class="next-run">${fmtTimeUTC(next)} UTC (om ${fmtRel(next)})</span>
+    <div class="schedule-list">${slotsHtml}</div>
+  `;
+}
+
 function renderAgents(){
   const a = STATE.agents;
   const grid = document.getElementById("agent-grid");
+  const next = getNextRun();
+  const lastStr = STATE.lastRun ? fmtTimeUTC(STATE.lastRun) : "–";
+  const nextStr = fmtTimeUTC(next);
+
   grid.innerHTML = AGENT_DEFS.map(def=>{
     const sig = agentSignal(def.key, a[def.key]);
-    const short = ({macro:"Makro",technical:"Teknisk",sentiment:"Sentiment",risk:"Risk",quant:"Kvant",options:"Options",portfolio:"Portfölj",execution:"Exekver",advisor:"Advisor",head:"Head"})[def.key];
-    return `<div class="agent ${def.key}" data-agent="${def.key}" title="${def.name} — klicka för analys + chat">
-      <div class="head">
-        <span class="dot"></span>
-        <span class="name">${short}</span>
+    const isRunning = STATE.runningAgents?.includes(def.key);
+    return `<div class="agent ${def.key} ${isRunning?'running':''}" data-agent="${def.key}" title="${def.person} (${def.role}) — klicka för analys, chat och order">
+      <div class="avatar">
+        <span class="live-ring"></span>
+        ${def.initial}
         ${def.premium?'<span class="star">★</span>':''}
       </div>
+      <div class="name-row">
+        <span class="person-name">${def.person}</span>
+        <span class="person-role">${def.role}</span>
+      </div>
       <div class="signal ${sig.cls}">${sig.text}</div>
+      <div class="schedule">⏱ Senaste <b>${lastStr}</b> · Nästa <b>${nextStr} UTC</b></div>
+      <span class="model-tag ${def.premium?'opus':''}">${def.model}</span>
+      ${isRunning?'<span class="running-badge">kör</span>':''}
     </div>`;
   }).join("");
 
   grid.querySelectorAll(".agent").forEach(el=>{
     el.addEventListener("click",()=>openAgent(el.dataset.agent));
   });
+
+  renderTeamBanner();
 }
 
 // Full analys-rendering (för modal)
@@ -1065,11 +1164,17 @@ let activeTab = "analysis";
 function openAgent(agentKey){
   activeAgent = agentKey;
   const def = AGENT_DEFS.find(a=>a.key===agentKey);
-  document.getElementById("modal-title").textContent = def.name;
-  document.getElementById("modal-meta").textContent = def.model.toUpperCase();
-  // Färgmarkering
-  const dotColors = {macro:"#f59e0b",technical:"#3b82f6",sentiment:"#fb923c",risk:"#ef4444",quant:"#60a5fa",options:"#f59e0b",portfolio:"#10b981",execution:"#06b6d4",advisor:"#8b5cf6",head:"#fff"};
-  document.getElementById("modal-mark").style.background = dotColors[agentKey] || "#64748b";
+  document.getElementById("modal-title").textContent = def.person + " — " + def.title;
+  document.getElementById("modal-role").textContent = def.role;
+  const next = getNextRun();
+  const lastStr = STATE.lastRun ? fmtTimeUTC(STATE.lastRun) : "–";
+  document.getElementById("modal-meta").innerHTML = `${def.model.toUpperCase()}<br>Senaste ${lastStr} · Nästa ${fmtTimeUTC(next)}`;
+  // Avatar gradient + initial
+  const avGradients = {macro:"linear-gradient(135deg,#f59e0b,#d97706)",technical:"linear-gradient(135deg,#3b82f6,#1d4ed8)",sentiment:"linear-gradient(135deg,#fb923c,#ea580c)",risk:"linear-gradient(135deg,#ef4444,#b91c1c)",quant:"linear-gradient(135deg,#60a5fa,#2563eb)",options:"linear-gradient(135deg,#eab308,#a16207)",portfolio:"linear-gradient(135deg,#10b981,#047857)",execution:"linear-gradient(135deg,#06b6d4,#0e7490)",advisor:"linear-gradient(135deg,#8b5cf6,#6d28d9)",head:"linear-gradient(135deg,#fff,#cbd5e1)"};
+  const av = document.getElementById("modal-avatar");
+  av.style.background = avGradients[agentKey] || "var(--card)";
+  av.style.color = agentKey==="head" ? "#0a0e17" : "#fff";
+  av.innerHTML = def.initial + (def.premium ? '<span class="star">★</span>' : '');
 
   document.getElementById("analysis-detail").innerHTML = agentDetailHTML(agentKey);
   // Quick prompts
