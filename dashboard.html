@@ -1241,7 +1241,12 @@ body.app-state-onboard .fc-panel{display:none !important}
 
 <!-- ═══ CHAT-SIDA — instruera teamet i naturligt språk ═══ -->
 <section class="page chat-page" id="page-chat">
-  <div class="page-header"><span class="ph-ico">💬</span>Chatta med teamet<span class="ph-sub">— skriv instruktioner i klartext, Hanna kör</span></div>
+  <div class="page-header">
+    <span class="ph-ico">💬</span>Chatta med teamet
+    <span class="ph-sub">— skriv instruktioner i klartext, Hanna kör</span>
+    <span class="ph-spacer"></span>
+    <button class="ph-action" id="chat-clear-btn">↻ Rensa</button>
+  </div>
   <div class="card chat-card" style="margin:0 10px;display:flex;flex-direction:column;gap:0;padding:0;height:calc(100vh - 140px)">
     <div class="chat-banner">
       <span class="auto-dot"></span>
@@ -2850,12 +2855,53 @@ function wireAuth(){
 }
 
 /* ======================================================================
-   TEAM CHAT — direktinstruktioner till hela teamet
+   TEAM CHAT — direktinstruktioner till hela teamet (persistent)
    ====================================================================== */
-const teamChatLog = []; // {role:"user"|"team"|"system", text, timestamp, instruction?}
+let teamChatLog = []; // {role:"user"|"team"|"system", text, timestamp, instruction?}
+
+// Ladda från localStorage vid boot
+(function loadChatLog(){
+  try {
+    const saved = localStorage.getItem("trading_team_chat");
+    if(saved){
+      const parsed = JSON.parse(saved);
+      // Behåll bara senaste 200 meddelanden för att undvika oändlig tillväxt
+      teamChatLog = Array.isArray(parsed) ? parsed.slice(-200) : [];
+    }
+  } catch(_){}
+})();
+
+function saveChatLog(){
+  try { localStorage.setItem("trading_team_chat", JSON.stringify(teamChatLog.slice(-200))); }
+  catch(_){}
+}
+
+function clearChatLog(){
+  if(!confirm("Rensa all chat-historik? Detta går inte att ångra.")) return;
+  teamChatLog = [];
+  saveChatLog();
+  renderTeamChatLog();
+}
+
+// Format: "Mån 28 apr · 14:23" eller "Idag 14:23" om samma dag
+function fmtChatTime(ts){
+  const d = new Date(ts);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const yesterday = new Date(now); yesterday.setDate(now.getDate()-1);
+  const isYesterday = d.toDateString() === yesterday.toDateString();
+  const time = String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
+  if(sameDay) return "Idag · " + time;
+  if(isYesterday) return "Igår · " + time;
+  const days = ["Sön","Mån","Tis","Ons","Tor","Fre","Lör"];
+  const months = ["jan","feb","mar","apr","maj","jun","jul","aug","sep","okt","nov","dec"];
+  return `${days[d.getDay()]} ${d.getDate()} ${months[d.getMonth()]} · ${time}`;
+}
 
 function renderTeamChatLog(){
-  // Renderar både full Chat-sida och floating widget
+  // Spara persistent först
+  saveChatLog();
+
   const renderTo = (logEl, isFloating)=>{
     if(!logEl) return;
     if(teamChatLog.length === 0){
@@ -2870,8 +2916,8 @@ function renderTeamChatLog(){
       return;
     }
     logEl.innerHTML = teamChatLog.map(m=>{
-      const t = new Date(m.timestamp).toLocaleTimeString();
-      if(m.role === "user") return `<div class="msg user">${escapeHtml(m.text)}<div style="font-size:9px;opacity:.6;margin-top:4px">${t}</div></div>`;
+      const t = fmtChatTime(m.timestamp);
+      if(m.role === "user") return `<div class="msg user">${escapeHtml(m.text)}<div style="font-size:9px;opacity:.7;margin-top:4px">${t}</div></div>`;
       if(m.role === "system") return `<div class="msg system">${escapeHtml(m.text)}</div>`;
       return `<div class="msg team"><b>🤖 Teamet:</b><br>${escapeHtml(m.text)}<div class="meta">${t}${m.instruction?` · Instr: "${escapeHtml(m.instruction)}"`:""}</div></div>`;
     }).join("");
@@ -3414,6 +3460,9 @@ function wireTeamChat(){
       t.focus();
     });
   });
+
+  // Rensa chat-historik
+  document.getElementById("chat-clear-btn")?.addEventListener("click", clearChatLog);
 
   renderTeamChatLog();
 }
