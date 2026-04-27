@@ -425,14 +425,23 @@ export function startServer(
       }
 
       // ── Dashboard HTML ──
-      if (url.pathname === "/" && method === "GET") {
+      // Servera root-dashboard.html (single source of truth) framför gamla ui/index.html
+      if ((url.pathname === "/" || url.pathname === "/dashboard.html") && method === "GET") {
         try {
-          const html = await fs.readFile(path.join(uiDir, "index.html"), "utf8");
+          const rootDashboard = path.resolve(import.meta.dirname, "../../dashboard.html");
+          const html = await fs.readFile(rootDashboard, "utf8");
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
           res.end(html);
         } catch {
-          res.writeHead(500);
-          res.end("Dashboard HTML not found");
+          // Fallback: gamla ui/index.html
+          try {
+            const html = await fs.readFile(path.join(uiDir, "index.html"), "utf8");
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(html);
+          } catch {
+            res.writeHead(500);
+            res.end("Dashboard HTML not found");
+          }
         }
         return;
       }
