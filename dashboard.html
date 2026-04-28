@@ -1289,6 +1289,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         </div>
         <span class="cur-price" id="cur-price">--</span>
         <span id="cur-chg" class="ch">--</span>
+        <span id="data-source-indicator" style="margin-left:auto;font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px"><span style="color:var(--label)">○</span> Demo (simulerade priser)</span>
         <div class="tf-group" id="tf-group">
           <button data-tf="1m">1m</button>
           <button data-tf="5m">5m</button>
@@ -4915,12 +4916,64 @@ function closeCostModal(){ document.getElementById("cost-modal-bg").classList.re
    MODE SWITCHER (Paper / Propose / Live)
    ====================================================================== */
 let currentUiMode = "paper";
+let binancePollInterval = null;
+let binanceLastUpdate = null;
+
+// Poll riktiga Binance-priser när PROPOSE-mode är aktivt
+async function pollBinancePrices(){
+  try {
+    const symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","MATICUSDT","BNBUSDT","TRXUSDT"];
+    const r = await fetch(`/api/binance/prices?symbols=${symbols.join(",")}`);
+    if(!r.ok) return;
+    const data = await r.json();
+    if(data.prices){
+      let count = 0;
+      for(const [sym, price] of Object.entries(data.prices)){
+        STATE.livePrices[sym] = price;
+        count++;
+      }
+      binanceLastUpdate = Date.now();
+      // UI-indikator
+      const ind = document.getElementById("data-source-indicator");
+      if(ind){
+        ind.innerHTML = `<span style="color:var(--green)">●</span> Binance live · ${count} symbols · ${new Date().toLocaleTimeString().slice(0,8)}`;
+      }
+    }
+  } catch(e){
+    console.warn("Binance poll-fel:", e);
+  }
+}
+
+function startBinancePolling(){
+  if(binancePollInterval) return;
+  pollBinancePrices(); // omedelbar
+  binancePollInterval = setInterval(pollBinancePrices, 10000); // var 10s
+  log_ok("📡 PROPOSE-mode: live-priser från Binance startade (poll var 10s)");
+}
+function stopBinancePolling(){
+  if(binancePollInterval){
+    clearInterval(binancePollInterval);
+    binancePollInterval = null;
+    binanceLastUpdate = null;
+    const ind = document.getElementById("data-source-indicator");
+    if(ind){
+      ind.innerHTML = `<span style="color:var(--label)">○</span> Demo (simulerade priser)`;
+    }
+    log_ok("Binance-poll stoppad — tillbaka till simulerad data");
+  }
+}
 
 function setActiveMode(uiMode){
   currentUiMode = uiMode;
   document.querySelectorAll(".mode-btn").forEach(b=>{
     b.classList.toggle("active", b.dataset.mode === uiMode);
   });
+  // PROPOSE = riktiga priser från Binance
+  if(uiMode === "propose"){
+    startBinancePolling();
+  } else {
+    stopBinancePolling();
+  }
 }
 
 async function loadCurrentMode(){
