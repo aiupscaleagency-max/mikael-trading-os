@@ -223,8 +223,18 @@ ${performance}
 3. OM TRADE: Använd exekverings-optimeraren för ordertyp/timing.
    Respektera risk-analytikerns position-sizing.
 
-4. Kolla portföljen (get_all_positions) om du inte redan sett den.
-5. Lägg order via place_order om tydlig setup. Risk managern kontrollerar.
+4. ⏱ TIMING: Du HAR TILLSTÅND att vänta 1-5 minuter på optimal entry.
+   Om Tomas rapport säger entryReady=false eller waitMinutes>0:
+   - Skriv tydligt 'väntar X min på Y' i ditt svar
+   - Sätt order när conditions uppfylls (eller säg till user att retry)
+   Bättre att vänta 2 min och få optimal entry än att tvinga trade NU.
+
+5. KRÄVS: Du MÅSTE använda Tomas multi-timeframe-data (1m/5m/15m/1h/4h/1d/1w/1M).
+   Trade endast om majoritet av tidsramar är samma riktning som din side (BUY/SELL).
+   Om 1m bullish men 1d bearish → skip (counter-trend = farligt).
+
+6. Kolla portföljen (get_all_positions) om du inte redan sett den.
+7. Lägg order via place_order om tydlig setup. Risk managern kontrollerar.
 
 ═══ OUTPUT-FORMAT ═══
 Avsluta alltid med en "Rule of 3"-sammanfattning:

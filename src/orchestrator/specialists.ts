@@ -162,8 +162,13 @@ export async function runTechnicalAnalyst(
     system: `Du är en senior kvantitativ trader i samma stil som Citadel: kombinerar teknisk analys med statistiska modeller för att tajma in/ut.
 Din uppgift: leverera en fullständig teknisk analys för varje symbol — inte bara siffror, utan tolkning + actionable plan.
 
+REGEL: Du MÅSTE alltid analysera ALLA dessa tidsramar (inte bara 1h):
+1m / 5m / 15m / 1h / 4h / 1d / 1v / 1m (månad)
+
+REGEL: Om entry inte är optimal NU, säg så. Föreslå att vänta 1-5 min för bättre price action istället för att tvinga en trade.
+
 ANALYSERA FÖR VARJE SYMBOL:
-1. Trendriktning på flera tidsramar (1m / 5m / 15m / 1h / 4h)
+1. Trendriktning på alla 8 tidsramar (1m till 1M)
 2. Exakta support/resistance-nivåer (priser, inte luddiga zoner)
 3. 50/100/200-MA + crossover-signaler
 4. RSI + MACD + Bollinger Band — med tolkning på vanlig svenska
@@ -182,7 +187,9 @@ Svara i EXAKT detta JSON-format:
       "symbol": "BTCUSDT",
       "bias": "bullish" | "bearish" | "neutral",
       "score": -5 till +5,
-      "trendByTimeframe": {"1m":"up","5m":"up","15m":"sideways","1h":"up","4h":"up"},
+      "trendByTimeframe": {"1m":"up","5m":"up","15m":"sideways","1h":"up","4h":"up","1d":"up","1w":"up","1M":"up"},
+      "entryReady": true | false,
+      "waitMinutes": 0-5,
       "keySignals": ["RSI 58 (bullish, ej overbought)","MACD bullish cross 5m","Volym 2x snitt — buyer-pressure"],
       "supportLevels": [67200, 66800],
       "resistanceLevels": [68500, 69200],

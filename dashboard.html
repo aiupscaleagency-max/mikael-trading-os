@@ -431,10 +431,11 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .status-line.err{color:var(--red)}
 .status-line.warn{color:var(--yellow)}
 
-/* RESPONSIVE */
+/* ═══ RESPONSIVE — desktop / tablet / mobile ═══ */
 @media (max-width:1279px){
   main{grid-template-columns:1fr}
   #chart{height:360px}
+  .right{order:-1}
 }
 
 /* ═══ LANDING / AUTH SCREENS — visning per app-state ═══ */
@@ -678,11 +679,113 @@ body.app-state-onboard .fc-panel{display:none !important}
 .trade-locked{opacity:.45;cursor:not-allowed !important;position:relative}
 .trade-locked::after{content:"🔒 Koppla API först";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--red);color:#fff;padding:4px 10px;border-radius:4px;font-size:10px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s;z-index:10}
 .trade-locked:hover::after{opacity:1}
+/* Tablet — kompaktare UI */
+@media (max-width:1023px){
+  header{padding:8px 12px;gap:10px;flex-wrap:wrap}
+  .brand{font-size:13px}
+  .l-hero h1{font-size:48px}
+  .l-circle-wrap{display:none}
+  .agent-grid{grid-template-columns:repeat(2,1fr)}
+  .live-grid{grid-template-columns:repeat(2,1fr)}
+  .lp-grid{grid-template-columns:repeat(2,1fr)}
+  aside.sidebar{width:60px}
+  aside.sidebar button{font-size:9px}
+  aside.sidebar button .ico{font-size:16px}
+  .modal{max-width:90vw}
+  .fc-panel{width:calc(100vw - 32px);max-width:380px}
+}
+
+/* Mobil — bottom-nav, full-screen chat, allt stackat */
 @media (max-width:767px){
-  header{font-size:11px;gap:8px;padding:8px}
-  .brand{font-size:12px}
-  .agent-grid{grid-template-columns:1fr}
-  #chart{height:280px}
+  body{padding-bottom:60px}
+  header{padding:6px 8px;gap:6px;font-size:11px;flex-wrap:wrap}
+  .brand{font-size:11px}
+  .mode-switcher{padding:2px}
+  .mode-btn{padding:5px 9px;font-size:10px;letter-spacing:.3px;min-width:auto}
+  .mode-btn .mode-sub{display:none}
+  .kill{padding:5px 9px;font-size:10px;letter-spacing:.4px}
+  .pnl{font-size:11px}
+  .run-btn{padding:5px 10px;font-size:11px}
+  .cost-mini,.paper-balance{padding:4px 8px;font-size:10px}
+  .user-chip{padding:3px 8px;font-size:10px}
+  .user-chip .uc-avatar{width:18px;height:18px;font-size:9px}
+
+  /* Sidomeny → bottom-nav */
+  .app-shell{grid-template-columns:1fr;min-height:auto}
+  aside.sidebar{position:fixed;bottom:0;left:0;right:0;width:100%;height:60px;flex-direction:row;border-right:none;border-top:1px solid var(--border);padding:4px;gap:0;top:auto;z-index:100;justify-content:space-around;background:var(--card)}
+  aside.sidebar button{flex:1;padding:4px;font-size:8px;border-radius:4px;gap:1px;min-width:0}
+  aside.sidebar button .ico{font-size:18px}
+  aside.sidebar .spacer{display:none}
+  aside.sidebar .live-dot{position:absolute;top:2px;right:14px;margin:0;width:5px;height:5px}
+
+  /* Layout — allt stackat */
+  main{grid-template-columns:1fr;gap:8px;padding:8px}
+  #chart{height:240px}
+  .agent-grid{grid-template-columns:1fr;gap:6px}
+  .agent{min-height:64px;padding:8px 10px}
+  .agent .avatar{width:36px;height:36px;font-size:13px}
+  .agent .person-name{font-size:12px}
+  .agent .person-role{font-size:9px}
+  .live-grid{grid-template-columns:1fr}
+  .lp-grid{grid-template-columns:1fr}
+
+  /* Live-strips */
+  .live-strip-row{height:36px}
+  .live-strip-row .lsr-label{min-width:90px;font-size:9px;padding:0 8px;letter-spacing:.4px}
+  .lsr-item{padding:0 10px;font-size:10px}
+
+  /* Page headers */
+  .page-header{padding:8px 12px;font-size:11px;flex-wrap:wrap;margin:8px}
+  .page-header .ph-ico{font-size:16px}
+  .page-header .ph-sub{font-size:10px;display:block;width:100%;margin-left:0}
+
+  /* Floating chat — fullscreen */
+  .fc-toggle{bottom:72px;right:12px;width:48px;height:48px;font-size:20px}
+  .fc-panel{position:fixed;inset:0;width:100%;max-width:100%;height:100%;max-height:100%;border-radius:0;border:none}
+
+  /* Modaler — fullscreen */
+  .modal-bg{padding:0}
+  .modal{max-width:100%;max-height:100vh;height:100vh;border-radius:0}
+
+  /* Auth + Onboarding */
+  .auth-card,.onboard-card{padding:20px;max-width:100%}
+  .auth-card .auth-brand{font-size:15px}
+  .l-hero h1{font-size:32px}
+  .l-hero .l-tagline{font-size:14px}
+  .l-nav{padding:12px 16px;height:auto}
+  .l-links{display:none}
+  .l-cta{gap:6px}
+  .l-cta .l-btn{padding:7px 12px;font-size:9px}
+
+  /* Trades-tabeller */
+  .tt-row{grid-template-columns:auto 1fr auto;gap:8px;padding:8px;font-size:11px}
+  .tt-row .tt-act{padding:3px 6px;font-size:9px}
+
+  /* Paper-card kompakt */
+  .paper-card{padding:12px}
+  .paper-card .pc-row{gap:12px;flex-wrap:wrap}
+  .paper-card .pc-equity{font-size:22px}
+  .paper-card .pc-pnl,.paper-card .pc-cash,.paper-card .pc-trades,.paper-card .pc-winrate{font-size:14px}
+  .paper-card .pc-reset{padding:4px 9px;font-size:9px}
+
+  /* Chart toolbar */
+  .chart-toolbar{gap:4px}
+  .tf-group button{padding:3px 7px;font-size:10px}
+  .ind-toggle{padding:3px 6px;font-size:10px}
+  .price-row{font-size:10px;gap:8px}
+  .cur-price{font-size:18px}
+
+  /* Bet panel */
+  .bet-call,.bet-put{padding:11px;font-size:13px}
+  .bet-tf button{font-size:10px;padding:4px 6px}
+
+  /* Cost modal */
+  .cost-summary{padding:10px}
+  .cost-row .val{font-size:12px}
+
+  /* Team chat */
+  .team-chat-log .msg{max-width:92%;font-size:11px;padding:8px 11px}
+  .team-chat-suggestions button{font-size:9px;padding:3px 6px}
 }
 </style>
 </head>
@@ -3001,12 +3104,104 @@ async function sendTeamChat(){
   }
 }
 
+// ── Intent-klassificering — agent ska "lyssna" som en människa ──
+// Kategoriserar varje meddelande: chat / decide / execute / analyze / challenge / confirm
+function classifyIntent(text){
+  const i = (text||"").toLowerCase().trim();
+  const last = (teamChatLog||[]).filter(m=>m.role==="team").pop();
+
+  // KORTA confirm-svar — beror på senaste team-meddelande
+  if(/^(ja|jajeman|kör|gör det|absolut|klart|go|sätt igång|kör på|okej|ok)\.?$/i.test(i)){
+    return { intent: "confirm", contextual: true, lastTeamMsg: last };
+  }
+  // Avbryt / nej
+  if(/^(nej|stopp|avbryt|vänta|hoppa över|skippa|nehe?|näe?)\.?$/i.test(i)){
+    return { intent: "cancel", contextual: true };
+  }
+  // Chat / hälsning / småprat
+  if(/^(hej|hallå|tjena|hi|hello|tack|tackar|trevligt|bra jobbat|nice|wow|ok\.?$)/i.test(i)){
+    return { intent: "chat" };
+  }
+  // Execute — explicit order
+  if(/^(köp|sälj|stäng|öppna|placera)\b/i.test(i) ||
+     /(köp|sälj|stäng|öppna|placera)\s+\w+/i.test(i)){
+    return { intent: "execute" };
+  }
+  // Decide — be teamet välja
+  if(/(välj|bestäm|plock|kör för mig|lägg|ta\s)/i.test(i) ||
+     /(vad\s+ska|borde|kan du|skulle du)/i.test(i)){
+    return { intent: "decide" };
+  }
+  // Analyze — be om analys
+  if(/(analys|hur ser|vad ser|status|läge|kollar du|titta|läs av)/i.test(i)){
+    return { intent: "analyze" };
+  }
+  // Challenge — utmana / ifrågasätta
+  if(/(varför|säker|men |istället|fel|verkligen|tror du|är det smart)/i.test(i)){
+    return { intent: "challenge", contextual: !!last };
+  }
+  // Opinion / fråga
+  if(/(tyck|tänk|tror|åsikt|vy|view)/i.test(i)){
+    return { intent: "opinion" };
+  }
+  // Default — generic chat
+  return { intent: "chat" };
+}
+
 // Returnerar { text, executedTrade?: {...} }
 function simulateTeamResponse(instr){
   const i = (instr||"").toLowerCase();
   const pick = a => a[Math.floor(Math.random()*a.length)];
   const isTest = CFG.mode !== "live";
   const testNote = isTest ? `\n\n_(TEST-läge — simulerad order, ingen riktig pengar.)_` : "";
+
+  // Klassa intent — för att kunna respondera mänskligt
+  const { intent, contextual, lastTeamMsg } = classifyIntent(instr);
+
+  // Korta confirm-svar ("ja", "kör på") — agera på SENASTE förslag i historiken
+  if(intent === "confirm"){
+    // Hitta senaste user-message som hade ett konkret förslag
+    const lastUserDecide = (teamChatLog||[]).filter(m=>m.role==="user")
+      .map(m=>m.text)
+      .reverse()
+      .find(t=>{
+        const c = classifyIntent(t).intent;
+        return c === "decide" || c === "execute" || c === "analyze";
+      });
+    if(lastUserDecide){
+      // Återanvänd senaste decide-instruktion
+      return simulateTeamResponse(lastUserDecide);
+    }
+    return { text: pick([
+      "OK, kör på vad? Säg vilken symbol/belopp/timeframe så drar jag igång.",
+      "Säkert, men du behöver berätta vad — köp BTC? Sälj ETH? 4 forex-trades? Säg så fixar jag.",
+      "Yep. Vill du att jag tar det senaste förslaget eller nåt nytt?"
+    ])};
+  }
+  if(intent === "cancel"){
+    return { text: pick([
+      "OK, hoppar över. Säg när du är redo.",
+      "Avbryter. Inget händer. Vad vill du göra istället?",
+      "Yep, jag väntar."
+    ])};
+  }
+  if(intent === "chat"){
+    return { text: pick([
+      "Hej! Vad vill du göra? Säg t.ex. 'kör 4 forex-trades på $500' eller 'vad tycker ni om BTC?'",
+      "Tjena — jag är här. Vill du analys, trades, eller bara prata marknad?",
+      "Yo. Säg vad du tänker så hjälper jag till."
+    ])};
+  }
+  if(intent === "opinion"){
+    return { text: pick([
+      `Marknaden är i ${pick(["accumulation","early-markup","konsolidering"])}-fas just nu. ${pick(["Försiktigt positiv","Neutral","Lite skeptisk"])}.\nAlbert flaggar inga akuta blind spots. Vad vill du jag tar?`,
+      `${pick(["Tomas pekar på BTC bullish setup","Karin säger volatiliteten är medium","Markus regim risk-on"])}. Ge mig en konkret instruktion så fixar jag.`,
+      `Status: ${pick(["risk-on","neutral","sval"])}. Sharpe ${(0.8+Math.random()*0.7).toFixed(2)}, win-rate ${Math.round(55+Math.random()*15)}%. Vad behöver du?`
+    ])};
+  }
+  if(intent === "analyze"){
+    return { text: `Vi har just nu:\n- Markus: regim ${pick(["RISK_ON","NEUTRAL","RISK_OFF"])}\n- Tomas: top-pick ${pick(["BTCUSDT","ETHUSDT","EUR/USD"])} score +${(2+Math.random()*2).toFixed(1)}\n- Karin: vol medium, Sharpe ${(0.8+Math.random()*0.7).toFixed(2)}\n- Rasmus: heat ${Math.round(20+Math.random()*30)}%, OK för nya trades\n- Albert: ${pick(["accumulation","early-markup"])}-fas, inga FOMO-warnings\n\nSäg vad du vill att jag tar — t.ex. "kör 3 forex-scalpar på $500".${testNote}` };
+  }
 
   // Plocka ut antal trades — flera mönster: "4 trades", "4 olika trades", "kör 4", "ha 4"
   const tradeCountMatch =
