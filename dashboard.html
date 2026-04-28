@@ -228,6 +228,21 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .paper-card .pc-reset{margin-left:auto;padding:6px 12px;background:transparent;border:1px solid var(--border);color:var(--label);border-radius:4px;font-size:10px;font-weight:700;letter-spacing:.4px;cursor:pointer;text-transform:uppercase;align-self:center}
 .paper-card .pc-reset:hover{color:var(--red);border-color:var(--red)}
 
+/* Lifetime-stats card */
+.stats-card .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:14px}
+.stats-card .stat-cell{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:11px 14px}
+.stats-card .stat-cell .sl{font-size:9px;letter-spacing:.4px;text-transform:uppercase;color:var(--label);font-weight:700;margin-bottom:4px}
+.stats-card .stat-cell .sv{font-size:18px;font-weight:800;color:#fff;font-family:'SF Mono',monospace;letter-spacing:-.02em}
+.stats-card .stat-cell .sv.up{color:var(--green)} .stats-card .stat-cell .sv.down{color:var(--red)}
+.stats-card .stat-cell .ss{font-size:10px;color:var(--dim);margin-top:2px}
+.stats-card .breakdown{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px}
+.stats-card .breakdown h4{font-size:10px;color:var(--label);letter-spacing:.4px;text-transform:uppercase;margin-bottom:6px;font-weight:700}
+.stats-card .breakdown .row{display:flex;justify-content:space-between;padding:5px 8px;background:var(--card2);border-radius:3px;font-size:11px;margin-bottom:3px;font-variant-numeric:tabular-nums}
+.stats-card .breakdown .row .lbl{color:var(--text);font-weight:600}
+.stats-card .breakdown .row .val{font-weight:700}
+.stats-card .breakdown .row .val.up{color:var(--green)} .stats-card .breakdown .row .val.down{color:var(--red)}
+.stats-empty{color:var(--dim);text-align:center;font-size:12px;padding:18px;font-style:italic}
+
 /* Trades-sida tabeller */
 .tt-tbl{display:grid;gap:6px;font-size:12px;margin-top:8px}
 .tt-row{display:grid;grid-template-columns:auto 1fr auto auto auto;gap:12px;padding:10px 12px;background:var(--card2);border:1px solid var(--border);border-radius:5px;align-items:center;font-variant-numeric:tabular-nums}
@@ -1428,6 +1443,12 @@ body.app-state-onboard .fc-panel{display:none !important}
     <div class="card">
       <h3>🤖 Hannas beslut (senaste)</h3>
       <div id="trade-decisions-table"></div>
+    </div>
+
+    <!-- Statistik sedan start -->
+    <div class="card stats-card" id="stats-card">
+      <h3>📈 Statistik sedan start <span id="stats-period" class="tag" style="margin-left:auto;color:var(--label);font-weight:500"></span></h3>
+      <div id="lifetime-stats"></div>
     </div>
 
     <div class="card">
@@ -3368,6 +3389,68 @@ function savePaperAccount(){
   catch(_){}
 }
 
+// Persistera ALL trade-data (positions, history, decisions) — sedan start
+function saveTradeData(){
+  try {
+    localStorage.setItem("trading_positions", JSON.stringify(STATE.tradePositions || []));
+    // Cap history och decisions på 1000 för att undvika oändlig tillväxt
+    localStorage.setItem("trading_history", JSON.stringify((STATE.tradeHistory || []).slice(0, 1000)));
+    localStorage.setItem("trading_decisions", JSON.stringify((STATE.tradeDecisions || []).slice(0, 500)));
+  } catch(_){}
+}
+
+function loadTradeData(){
+  try {
+    const pos = localStorage.getItem("trading_positions");
+    const hist = localStorage.getItem("trading_history");
+    const dec = localStorage.getItem("trading_decisions");
+    if(pos) STATE.tradePositions = JSON.parse(pos);
+    if(hist) STATE.tradeHistory = JSON.parse(hist);
+    if(dec) STATE.tradeDecisions = JSON.parse(dec);
+  } catch(_){}
+}
+
+// Beräkna statistik "sedan start" från full history
+function calcLifetimeStats(){
+  const history = STATE.tradeHistory || [];
+  const decisions = STATE.tradeDecisions || [];
+  if(!history.length) return null;
+  let wins = 0, losses = 0, totalPnl = 0, bestPnl = -Infinity, worstPnl = Infinity;
+  let avgWin = 0, avgLoss = 0;
+  const bySym = {}; // {symbol: {wins, losses, pnl}}
+  const bySide = { BUY: {wins:0, losses:0, pnl:0}, SELL: {wins:0, losses:0, pnl:0} };
+  for(const h of history){
+    const won = (h.pnl || 0) > 0;
+    if(won){ wins++; avgWin += h.pnl; }
+    else { losses++; avgLoss += h.pnl; }
+    totalPnl += (h.pnl || 0);
+    bestPnl = Math.max(bestPnl, h.pnl || 0);
+    worstPnl = Math.min(worstPnl, h.pnl || 0);
+    if(!bySym[h.sym]) bySym[h.sym] = {wins:0, losses:0, pnl:0};
+    bySym[h.sym].pnl += (h.pnl || 0);
+    if(won) bySym[h.sym].wins++; else bySym[h.sym].losses++;
+    if(bySide[h.side]){
+      bySide[h.side].pnl += (h.pnl || 0);
+      if(won) bySide[h.side].wins++; else bySide[h.side].losses++;
+    }
+  }
+  return {
+    totalTrades: history.length,
+    wins, losses,
+    winRate: history.length ? (wins / history.length) * 100 : 0,
+    totalPnl,
+    avgWin: wins ? avgWin / wins : 0,
+    avgLoss: losses ? avgLoss / losses : 0,
+    bestPnl: bestPnl === -Infinity ? 0 : bestPnl,
+    worstPnl: worstPnl === Infinity ? 0 : worstPnl,
+    profitFactor: avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : 0,
+    bySym,
+    bySide,
+    firstTrade: history[history.length-1]?.openedAt,
+    lastTrade: history[0]?.closedAt,
+  };
+}
+
 function resetPaperAccount(){
   STATE.paperAccount = {
     startBalance: PAPER_START_BALANCE,
@@ -3382,6 +3465,7 @@ function resetPaperAccount(){
   STATE.tradeHistory = [];
   STATE.tradeDecisions = [];
   savePaperAccount();
+  saveTradeData(); // rensa persisterat också
   renderTradesPage();
   renderPaperBadge();
 }
@@ -3444,6 +3528,7 @@ function simulateExecuteTrade(sym, side, amount, timeframeSec){
   acc.cash -= amount;
   acc.totalTrades++;
   savePaperAccount();
+  saveTradeData();
   renderTradesPage();
   renderPaperBadge();
   return trade;
@@ -3480,6 +3565,7 @@ function resolveScalpTrade(p){
     source: "auto"
   });
   savePaperAccount();
+  saveTradeData();
 }
 
 // Tick-loop kallar denna för att auto-stänga utgångna trades
@@ -3535,8 +3621,84 @@ function renderPaperBadge(){
   setVal("pc-winrate", totalClosed > 0 ? `${Math.round(acc.winningTrades/totalClosed*100)}%` : "–");
 }
 
+function renderLifetimeStats(){
+  const wrap = document.getElementById("lifetime-stats");
+  const period = document.getElementById("stats-period");
+  if(!wrap) return;
+  const stats = calcLifetimeStats();
+  if(!stats){
+    wrap.innerHTML = `<div class="stats-empty">Inga stängda trades än. Kör några scalpar så börjar statistiken byggas upp.</div>`;
+    if(period) period.textContent = "";
+    return;
+  }
+  const fmt = n => "$" + n.toLocaleString("en-US",{minimumFractionDigits:2, maximumFractionDigits:2});
+  const pct = n => n.toFixed(1) + "%";
+  const days = stats.firstTrade ? Math.max(1, Math.ceil((Date.now() - stats.firstTrade) / 86400000)) : 1;
+  if(period) period.textContent = `${days} ${days===1?'dag':'dagar'} · första trade ${new Date(stats.firstTrade).toLocaleDateString("sv-SE")}`;
+  // Top-symbol per pnl
+  const symEntries = Object.entries(stats.bySym).sort((a,b)=>b[1].pnl - a[1].pnl);
+  const topSyms = symEntries.slice(0, 5);
+
+  wrap.innerHTML = `
+    <div class="stats-grid">
+      <div class="stat-cell">
+        <div class="sl">Totalt antal trades</div>
+        <div class="sv">${stats.totalTrades}</div>
+        <div class="ss">${stats.wins} vinster · ${stats.losses} förluster</div>
+      </div>
+      <div class="stat-cell">
+        <div class="sl">Win-rate</div>
+        <div class="sv ${stats.winRate>=55?'up':stats.winRate<=45?'down':''}">${pct(stats.winRate)}</div>
+        <div class="ss">break-even @ 53% (vid 1.90x payout)</div>
+      </div>
+      <div class="stat-cell">
+        <div class="sl">Net PnL</div>
+        <div class="sv ${stats.totalPnl>=0?'up':'down'}">${stats.totalPnl>=0?'+':''}${fmt(stats.totalPnl)}</div>
+        <div class="ss">${stats.totalTrades} trades · ~${fmt(stats.totalPnl/stats.totalTrades)} per trade</div>
+      </div>
+      <div class="stat-cell">
+        <div class="sl">Profit factor</div>
+        <div class="sv ${stats.profitFactor>=1.5?'up':stats.profitFactor<1?'down':''}">${stats.profitFactor.toFixed(2)}</div>
+        <div class="ss">avg-win / avg-loss-ratio</div>
+      </div>
+      <div class="stat-cell">
+        <div class="sl">Avg win / Avg loss</div>
+        <div class="sv">${fmt(stats.avgWin)} / ${fmt(stats.avgLoss)}</div>
+        <div class="ss">EV per trade: ${fmt((stats.wins*stats.avgWin + stats.losses*stats.avgLoss) / Math.max(1,stats.totalTrades))}</div>
+      </div>
+      <div class="stat-cell">
+        <div class="sl">Bästa / Värsta</div>
+        <div class="sv">${fmt(stats.bestPnl)} / ${fmt(stats.worstPnl)}</div>
+        <div class="ss">enskilda trades</div>
+      </div>
+    </div>
+
+    <div class="breakdown">
+      <div>
+        <h4>Per riktning (LONG vs SHORT)</h4>
+        ${["BUY","SELL"].map(s=>{
+          const b = stats.bySide[s];
+          const total = b.wins + b.losses;
+          if(!total) return "";
+          const wr = (b.wins/total)*100;
+          return `<div class="row"><span class="lbl">${s==="BUY"?"📈 LONG":"📉 SHORT"}</span><span>${b.wins}/${total} (${pct(wr)}) <span class="val ${b.pnl>=0?'up':'down'}">${b.pnl>=0?'+':''}${fmt(b.pnl)}</span></span></div>`;
+        }).join("") || `<div class="row" style="color:var(--dim)">Ingen data än</div>`}
+      </div>
+      <div>
+        <h4>Top 5 symboler (efter PnL)</h4>
+        ${topSyms.map(([sym, b])=>{
+          const total = b.wins + b.losses;
+          const wr = total ? (b.wins/total)*100 : 0;
+          return `<div class="row"><span class="lbl">${sym}</span><span>${b.wins}/${total} (${pct(wr)}) <span class="val ${b.pnl>=0?'up':'down'}">${b.pnl>=0?'+':''}${fmt(b.pnl)}</span></span></div>`;
+        }).join("") || `<div class="row" style="color:var(--dim)">Ingen data än</div>`}
+      </div>
+    </div>
+  `;
+}
+
 // Render Trades-sidan (kallas vid trade-events + från tick för live PnL)
 function renderTradesPage(){
+  renderLifetimeStats();
   const positions = STATE.tradePositions || [];
   const decisions = STATE.tradeDecisions || [];
   const history = STATE.tradeHistory || [];
@@ -3681,6 +3843,7 @@ function closePosition(id){
   });
   positions.splice(idx, 1);
   savePaperAccount();
+  saveTradeData();
   renderTradesPage();
   renderPaperBadge();
 }
@@ -3712,6 +3875,7 @@ function closeAllPositions(){
     });
   }
   savePaperAccount();
+  saveTradeData();
   renderTradesPage();
   renderPaperBadge();
   return closed;
@@ -4387,6 +4551,7 @@ async function saveKeysFromSettings(){
 }
 
 function initApp(){
+  loadTradeData(); // ladda persisterad trade-historik först
   checkKeysSetup();
   loadKeysIntoSettings();
   document.getElementById("setup-banner-go")?.addEventListener("click", ()=>switchPage("settings"));
