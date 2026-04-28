@@ -241,6 +241,32 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .stats-card .breakdown .row .lbl{color:var(--text);font-weight:600}
 .stats-card .breakdown .row .val{font-weight:700}
 .stats-card .breakdown .row .val.up{color:var(--green)} .stats-card .breakdown .row .val.down{color:var(--red)}
+/* Session Mode */
+.session-card{border-left:3px solid #06b6d4}
+.session-card.active{border-left-color:#22c55e;background:linear-gradient(135deg,rgba(34,197,94,.04),transparent)}
+.session-card.warning{border-left-color:#f59e0b;background:linear-gradient(135deg,rgba(245,158,11,.04),transparent)}
+.session-card .sess-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.session-card .sess-title{font-size:15px;font-weight:800;color:#fff;letter-spacing:-.01em}
+.session-card .sess-sub{font-size:11px;color:var(--dim)}
+.session-card .sess-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:12px}
+.session-card .sess-cell{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.session-card .sess-cell .sl{font-size:9px;letter-spacing:.4px;text-transform:uppercase;color:var(--label);font-weight:700;margin-bottom:3px}
+.session-card .sess-cell .sv{font-size:18px;font-weight:800;color:#fff;font-family:'SF Mono',monospace}
+.session-card .sess-cell .sv.up{color:var(--green)} .session-card .sess-cell .sv.down{color:var(--red)}
+.session-card .sess-bar{height:6px;background:var(--card2);border-radius:3px;overflow:hidden;margin-bottom:6px}
+.session-card .sess-bar-fill{height:100%;background:linear-gradient(90deg,#06b6d4,#22c55e);transition:width .4s ease}
+.session-card .sess-actions{display:flex;gap:8px;margin-top:10px}
+.session-card button.sess-btn{padding:9px 16px;border-radius:6px;border:1px solid #06b6d4;background:#06b6d4;color:#0a0e14;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:.02em}
+.session-card button.sess-btn:hover{background:#0891b2;border-color:#0891b2}
+.session-card button.sess-btn.danger{background:transparent;color:#ef4444;border-color:#ef4444}
+.session-card button.sess-btn.danger:hover{background:#ef4444;color:#fff}
+.session-card .reports-list{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}
+.session-card .reports-list h4{font-size:11px;color:var(--label);letter-spacing:.4px;text-transform:uppercase;margin-bottom:6px;font-weight:700}
+.session-card .report-row{display:grid;grid-template-columns:auto 1fr auto auto auto;gap:10px;padding:6px 8px;background:var(--card2);border-radius:4px;font-size:11px;margin-bottom:4px;align-items:center;font-variant-numeric:tabular-nums}
+.session-card .report-row .badge{font-size:10px;padding:2px 6px;border-radius:3px;font-weight:700}
+.session-card .report-row .badge.win{background:rgba(34,197,94,.15);color:#22c55e}
+.session-card .report-row .badge.loss{background:rgba(239,68,68,.15);color:#ef4444}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
 .stats-empty{color:var(--dim);text-align:center;font-size:12px;padding:18px;font-style:italic}
 
 /* Trades-sida tabeller */
@@ -1435,6 +1461,11 @@ body.app-state-onboard .fc-panel{display:none !important}
       </div>
     </div>
 
+    <!-- Session Mode card -->
+    <div class="card session-card" id="session-card">
+      <div id="session-body"></div>
+    </div>
+
     <div class="card">
       <h3>🟢 Aktiva positioner <span id="pos-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span></h3>
       <div id="trade-positions-table"></div>
@@ -1687,8 +1718,41 @@ const STATE = {
   candleData:{},  // { "BTCUSDT|1h": [{time,open,high,low,close,volume}, ...] }
   livePrices:{},
   killActive:false,
-  agents:{}
+  agents:{},
+  // Session Mode — strukturerad träning, 5 trades per session
+  session:null,           // {sessionNum, totalSessions, tradeNum, totalTrades, wins, losses, scoreThreshold, startedAt, trades:[], skipped:0}
+  sessionReports:[]       // Historik över avslutade sessioner — träningsdata för agenterna
 };
+
+// Session Mode — defaults
+const SESSION_TARGET_TOTAL = 6;     // 6 sessioner
+const SESSION_TRADES = 5;            // 5 trades per session
+const SESSION_SCORE_THRESHOLD = 8;   // Bara A+ setups (score ≥8) under session
+const SESSION_TARGET_WINRATE = 0.75; // Mål: 75% winrate
+
+// Confluence-score generator: simulerar Tomas score 4-10 baserat på "marknadsläge"
+function generateConfluenceScore(){
+  // Bias mot mitten — extremer (4 eller 10) sällsynta, ~7 vanligast
+  const r = Math.random();
+  if(r < 0.05) return 4;
+  if(r < 0.15) return 5;
+  if(r < 0.30) return 6;
+  if(r < 0.55) return 7;
+  if(r < 0.80) return 8;
+  if(r < 0.95) return 9;
+  return 10;
+}
+
+// Score → winrate: ärlig modellering (strikare filter = bättre resultat)
+function scoreToWinrate(score){
+  if(score <= 4) return 0.40;
+  if(score === 5) return 0.50;
+  if(score === 6) return 0.58;
+  if(score === 7) return 0.65;
+  if(score === 8) return 0.75;
+  if(score === 9) return 0.82;
+  return 0.88; // score 10
+}
 
 /* ======================================================================
    CHART
@@ -3390,6 +3454,114 @@ function savePaperAccount(){
 }
 
 // Persistera ALL trade-data (positions, history, decisions) — sedan start
+// Session Mode — persist + lifecycle
+function saveSessionData(){
+  try {
+    localStorage.setItem("trading_session_active", JSON.stringify(STATE.session));
+    localStorage.setItem("trading_session_reports", JSON.stringify((STATE.sessionReports || []).slice(0, 50)));
+  } catch(_){}
+}
+function loadSessionData(){
+  try {
+    const s = localStorage.getItem("trading_session_active");
+    const r = localStorage.getItem("trading_session_reports");
+    if(s && s !== "null") STATE.session = JSON.parse(s);
+    if(r) STATE.sessionReports = JSON.parse(r);
+  } catch(_){}
+}
+
+function startSession(){
+  const completed = (STATE.sessionReports || []).length;
+  STATE.session = {
+    sessionNum: completed + 1,
+    totalSessions: SESSION_TARGET_TOTAL,
+    tradeNum: 0,
+    totalTrades: SESSION_TRADES,
+    wins: 0,
+    losses: 0,
+    scoreThreshold: SESSION_SCORE_THRESHOLD,
+    startedAt: Date.now(),
+    trades: [],
+    skipped: 0
+  };
+  saveSessionData();
+  renderTradesPage();
+  // Toast
+  pushInAppAlert(`🎯 Session ${STATE.session.sessionNum}/${SESSION_TARGET_TOTAL} startad — bara setups med score ≥${SESSION_SCORE_THRESHOLD} körs. Mål: ${SESSION_TARGET_WINRATE*100}% winrate på ${SESSION_TRADES} trades.`);
+}
+
+function abortSession(){
+  if(!confirm("Avbryta pågående session? Trades hittills sparas men sessionen markeras som avbruten.")) return;
+  if(STATE.session && STATE.session.trades.length > 0){
+    completeSession(true);
+  } else {
+    STATE.session = null;
+    saveSessionData();
+    renderTradesPage();
+  }
+}
+
+function recordSessionTrade(score, won, pnl, sym, side){
+  if(!STATE.session) return;
+  STATE.session.trades.push({score, won, pnl, sym, side, at: Date.now()});
+  if(won) STATE.session.wins++; else STATE.session.losses++;
+  STATE.session.tradeNum = STATE.session.trades.length;
+  if(STATE.session.tradeNum >= STATE.session.totalTrades){
+    completeSession(false);
+  } else {
+    saveSessionData();
+    renderTradesPage();
+  }
+}
+
+function completeSession(aborted){
+  const s = STATE.session;
+  if(!s) return;
+  const total = s.trades.length;
+  const winrate = total ? s.wins / total : 0;
+  const totalPnl = s.trades.reduce((sum,t)=>sum+t.pnl, 0);
+  const avgScore = total ? s.trades.reduce((sum,t)=>sum+t.score, 0)/total : 0;
+  const report = {
+    sessionNum: s.sessionNum,
+    startedAt: s.startedAt,
+    endedAt: Date.now(),
+    aborted: !!aborted,
+    totalTrades: total,
+    wins: s.wins, losses: s.losses,
+    winrate, totalPnl, avgScore,
+    skipped: s.skipped,
+    targetMet: winrate >= SESSION_TARGET_WINRATE,
+    trades: s.trades
+  };
+  STATE.sessionReports = STATE.sessionReports || [];
+  STATE.sessionReports.unshift(report);
+  STATE.session = null;
+  saveSessionData();
+  renderTradesPage();
+  // Visa rapport
+  const emoji = report.targetMet ? "🏆" : (winrate >= 0.6 ? "✓" : "⚠");
+  const status = report.targetMet ? "MÅL UPPFYLLT" : (aborted ? "AVBRUTEN" : "UNDER MÅL");
+  pushInAppAlert(`${emoji} Session ${s.sessionNum} klar — ${status}. ${s.wins}/${total} (${(winrate*100).toFixed(0)}%) · PnL ${totalPnl>=0?'+':''}$${totalPnl.toFixed(2)} · avg score ${avgScore.toFixed(1)}`, 8000);
+}
+
+// In-app push (toast — utöka senare med Telegram-bridge)
+function pushInAppAlert(msg, durationMs){
+  durationMs = durationMs || 5000;
+  let host = document.getElementById("alert-host");
+  if(!host){
+    host = document.createElement("div");
+    host.id = "alert-host";
+    host.style.cssText = "position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:400px";
+    document.body.appendChild(host);
+  }
+  const el = document.createElement("div");
+  el.style.cssText = "background:linear-gradient(135deg,#1a2332,#0f1520);border:1px solid #06b6d4;border-radius:8px;padding:12px 16px;color:#e2e8f0;font-size:13px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.4);animation:slideIn .25s ease";
+  el.textContent = msg;
+  host.appendChild(el);
+  setTimeout(()=>{ el.style.opacity="0"; el.style.transition="opacity .3s"; setTimeout(()=>el.remove(), 300); }, durationMs);
+  // TODO: Telegram-bridge — skickar samma msg via /api/telegram/notify när bot konfigurerad
+}
+
 function saveTradeData(){
   try {
     localStorage.setItem("trading_positions", JSON.stringify(STATE.tradePositions || []));
@@ -3498,6 +3670,24 @@ function simulateExecuteTrade(sym, side, amount, timeframeSec){
     log_warn(`Inte nog cash i paper-account: $${acc.cash.toFixed(2)} < $${amount}`);
     return null;
   }
+  // Confluence-score för denna setup (Tomas + Karin + Petra inputs simulerade)
+  const score = generateConfluenceScore();
+  // Session Mode — strikt filter: hoppa över setups under tröskel
+  if(STATE.session && score < STATE.session.scoreThreshold){
+    STATE.session.skipped = (STATE.session.skipped || 0) + 1;
+    saveSessionData();
+    pushInAppAlert(`⏸ Setup score ${score}/10 — under tröskel (${STATE.session.scoreThreshold}). Väntar på A+ setup. Trade hoppas över.`, 4000);
+    if(!STATE.tradeDecisions) STATE.tradeDecisions = [];
+    STATE.tradeDecisions.unshift({
+      timestamp: Date.now(),
+      action: "SKIP", sym, amount, score,
+      reasoning: `Setup score ${score}/10 < session-tröskel ${STATE.session.scoreThreshold}. Väntar på A+ setup.`,
+      source: "session-filter"
+    });
+    saveTradeData();
+    renderTradesPage();
+    return null;
+  }
   const tf = timeframeSec || SCALP_DEFAULT_SEC;
   const entry = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
   const qty = amount / entry;
@@ -3510,6 +3700,9 @@ function simulateExecuteTrade(sym, side, amount, timeframeSec){
     timeframeSec: tf,
     payoutMultiplier: payoutMult,
     payoutPct: Math.round((payoutMult - 1) * 100),
+    score,                                  // Confluence-score 4-10 (träningsdata)
+    inSession: !!STATE.session,
+    sessionNum: STATE.session?.sessionNum,
     status: "open",
     type: "scalp",
     source: "Hanna (chat)"
@@ -3538,7 +3731,9 @@ function simulateExecuteTrade(sym, side, amount, timeframeSec){
 // Demo-läge: använd DEMO_AGENT_SKILL (65%) istället för pure random walk,
 // simulerar agenter med edge. Pris-rörelsen anpassas till outcome för konsistens.
 function resolveScalpTrade(p){
-  const won = Math.random() < DEMO_AGENT_SKILL;
+  // Score-baserad winrate: högre confluence = bättre odds (ärlig modellering)
+  const winrate = p.score ? scoreToWinrate(p.score) : DEMO_AGENT_SKILL;
+  const won = Math.random() < winrate;
   // Sätt exit-pris så det matchar outcome (visuellt korrekt på chart)
   const moveAmount = 0.005 + Math.random() * 0.015; // 0.5-2% rörelse
   let cur;
@@ -3557,15 +3752,20 @@ function resolveScalpTrade(p){
   if(won) acc.winningTrades++; else acc.losingTrades++;
   if(!STATE.tradeHistory) STATE.tradeHistory = [];
   STATE.tradeHistory.unshift({...p, exit:cur, pnl, won, status:"closed", closedAt:Date.now()});
+  const scoreTag = p.score ? ` · score ${p.score}/10` : "";
   STATE.tradeDecisions.unshift({
     timestamp: Date.now(),
     action: won ? "WIN" : "LOSS",
-    sym: p.sym, amount: p.amount,
-    reasoning: `Scalp ${p.side === "BUY" ? "📈 LONG" : "📉 SHORT"} ${formatPrice(p.entry,p.sym)}→${formatPrice(cur,p.sym)} · PnL ${pnl>=0?'+':''}$${pnl.toFixed(2)}`,
+    sym: p.sym, amount: p.amount, score: p.score,
+    reasoning: `Scalp ${p.side === "BUY" ? "📈 LONG" : "📉 SHORT"} ${formatPrice(p.entry,p.sym)}→${formatPrice(cur,p.sym)} · PnL ${pnl>=0?'+':''}$${pnl.toFixed(2)}${scoreTag}`,
     source: "auto"
   });
   savePaperAccount();
   saveTradeData();
+  // Session-tracking: registrera resultat om trade tillhör pågående session
+  if(p.inSession && STATE.session && STATE.session.sessionNum === p.sessionNum){
+    recordSessionTrade(p.score || 0, won, pnl, p.sym, p.side);
+  }
 }
 
 // Tick-loop kallar denna för att auto-stänga utgångna trades
@@ -3697,7 +3897,99 @@ function renderLifetimeStats(){
 }
 
 // Render Trades-sidan (kallas vid trade-events + från tick för live PnL)
+function renderSession(){
+  const card = document.getElementById("session-card");
+  const body = document.getElementById("session-body");
+  if(!card || !body) return;
+  const s = STATE.session;
+  const reports = STATE.sessionReports || [];
+  const completed = reports.length;
+
+  if(!s){
+    // Inaktiv: visa start-knapp + tidigare sessioner
+    card.classList.remove("active","warning");
+    const reportsHtml = reports.length ? `
+      <div class="reports-list">
+        <h4>Tidigare sessioner (${reports.length})</h4>
+        ${reports.slice(0,10).map(r=>{
+          const wr = (r.winrate*100).toFixed(0);
+          const cls = r.targetMet ? "win" : (r.winrate >= 0.6 ? "" : "loss");
+          const status = r.aborted ? "AVBR" : (r.targetMet ? "✓" : "✗");
+          const d = new Date(r.endedAt).toLocaleString().slice(0,-3);
+          return `<div class="report-row">
+            <span class="badge ${cls}">${status}</span>
+            <span>Session ${r.sessionNum} · ${d}</span>
+            <span>${r.wins}/${r.totalTrades}</span>
+            <span class="${cls}" style="font-weight:700">${wr}%</span>
+            <span class="${r.totalPnl>=0?'':''}" style="color:${r.totalPnl>=0?'var(--green)':'var(--red)'};font-weight:700">${r.totalPnl>=0?'+':''}$${r.totalPnl.toFixed(0)}</span>
+          </div>`;
+        }).join("")}
+      </div>` : "";
+    const aggregated = reports.length ? (() => {
+      const totalT = reports.reduce((a,r)=>a+r.totalTrades, 0);
+      const totalW = reports.reduce((a,r)=>a+r.wins, 0);
+      const totalP = reports.reduce((a,r)=>a+r.totalPnl, 0);
+      const wr = totalT ? (totalW/totalT*100).toFixed(1) : "0";
+      return `<div class="sess-grid" style="margin-bottom:14px">
+        <div class="sess-cell"><div class="sl">Total Sessioner</div><div class="sv">${reports.length}/${SESSION_TARGET_TOTAL}</div></div>
+        <div class="sess-cell"><div class="sl">Total Trades</div><div class="sv">${totalT}</div></div>
+        <div class="sess-cell"><div class="sl">Win-rate Snitt</div><div class="sv ${parseFloat(wr)>=75?'up':'down'}">${wr}%</div></div>
+        <div class="sess-cell"><div class="sl">Total PnL</div><div class="sv ${totalP>=0?'up':'down'}">${totalP>=0?'+':''}$${totalP.toFixed(0)}</div></div>
+      </div>`;
+    })() : "";
+    body.innerHTML = `
+      <div class="sess-head">
+        <div style="font-size:22px">🎯</div>
+        <div>
+          <div class="sess-title">Träningssession ${completed >= SESSION_TARGET_TOTAL ? "— mål uppnått!" : (completed+1)+"/"+SESSION_TARGET_TOTAL+" redo att starta"}</div>
+          <div class="sess-sub">${SESSION_TRADES} trades · bara setups med score ≥${SESSION_SCORE_THRESHOLD} · mål ${SESSION_TARGET_WINRATE*100}% winrate</div>
+        </div>
+      </div>
+      ${aggregated}
+      <div class="sess-actions">
+        <button class="sess-btn" onclick="startSession()">▶ Starta Session ${completed+1}</button>
+      </div>
+      ${reportsHtml}
+    `;
+    return;
+  }
+
+  // Aktiv session
+  const tradeNum = s.tradeNum;
+  const total = s.totalTrades;
+  const winrate = tradeNum ? s.wins/tradeNum : 0;
+  const pct = (tradeNum/total) * 100;
+  const onTarget = tradeNum === 0 ? true : winrate >= SESSION_TARGET_WINRATE * 0.8; // 60%+ = ok
+  card.classList.toggle("active", onTarget);
+  card.classList.toggle("warning", !onTarget);
+  const totalPnl = (s.trades||[]).reduce((a,t)=>a+t.pnl, 0);
+
+  body.innerHTML = `
+    <div class="sess-head">
+      <div style="font-size:22px">${onTarget?'🎯':'⚠'}</div>
+      <div style="flex:1">
+        <div class="sess-title">Session ${s.sessionNum}/${s.totalSessions} pågår</div>
+        <div class="sess-sub">Tröskel: score ≥${s.scoreThreshold} · Mål: ${SESSION_TARGET_WINRATE*100}% winrate</div>
+      </div>
+      <button class="sess-btn danger" onclick="abortSession()">Avbryt</button>
+    </div>
+    <div class="sess-bar"><div class="sess-bar-fill" style="width:${pct}%"></div></div>
+    <div class="sess-grid">
+      <div class="sess-cell"><div class="sl">Trade</div><div class="sv">${tradeNum}/${total}</div></div>
+      <div class="sess-cell"><div class="sl">Wins / Losses</div><div class="sv"><span class="up">${s.wins}</span> / <span class="down">${s.losses}</span></div></div>
+      <div class="sess-cell"><div class="sl">Win-rate</div><div class="sv ${winrate>=SESSION_TARGET_WINRATE?'up':(winrate>=0.6?'':'down')}">${(winrate*100).toFixed(0)}%</div></div>
+      <div class="sess-cell"><div class="sl">PnL Session</div><div class="sv ${totalPnl>=0?'up':'down'}">${totalPnl>=0?'+':''}$${totalPnl.toFixed(2)}</div></div>
+      <div class="sess-cell"><div class="sl">Skippade</div><div class="sv">${s.skipped||0}</div></div>
+    </div>
+    <div class="sess-sub" style="font-size:11px;color:var(--dim)">
+      💡 Skriv "köp BTC $50" i chatten — Hanna filtrerar automatiskt på score ≥${s.scoreThreshold}.
+      Setups under tröskel hoppas över utan kostnad.
+    </div>
+  `;
+}
+
 function renderTradesPage(){
+  renderSession();
   renderLifetimeStats();
   const positions = STATE.tradePositions || [];
   const decisions = STATE.tradeDecisions || [];
@@ -4552,6 +4844,7 @@ async function saveKeysFromSettings(){
 
 function initApp(){
   loadTradeData(); // ladda persisterad trade-historik först
+  loadSessionData(); // ladda session-state + reports
   checkKeysSetup();
   loadKeysIntoSettings();
   document.getElementById("setup-banner-go")?.addEventListener("click", ()=>switchPage("settings"));
