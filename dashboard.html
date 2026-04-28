@@ -3008,12 +3008,21 @@ function simulateTeamResponse(instr){
   const isTest = CFG.mode !== "live";
   const testNote = isTest ? `\n\n_(TEST-läge — simulerad order, ingen riktig pengar.)_` : "";
 
-  // Plocka ut antal trades om specificerat ("4 trades")
-  const tradeCountMatch = i.match(/(\d+)\s*(st|stycken)?\s*trades?/);
+  // Plocka ut antal trades — flera mönster: "4 trades", "4 olika trades", "kör 4", "ha 4"
+  const tradeCountMatch =
+    i.match(/(\d+)\s*(?:st|stycken|olika|nya)?\s*(?:trades?|valuta|köp|order|positioner)/) ||
+    i.match(/(?:kör|ha|gör|ta|lägg)\s+(\d+)/) ||
+    i.match(/^(\d+)\s+/);
   const tradeCount = tradeCountMatch ? parseInt(tradeCountMatch[1],10) : 1;
-  // Plocka ut belopp (default 50)
-  const amtMatch = i.match(/\$?\s?(\d{2,5})/);
+  // Belopp: föredra $-prefixed (\$500), undvik procent-tal som "80-90%"
+  const amtMatch =
+    i.match(/\$\s?(\d{2,5})/) ||           // "$500" eller "$ 500"
+    i.match(/(\d{2,5})\s*(?:dollar|usd)/) || // "500 dollar"
+    i.match(/(?:per|för)\s+(\d{2,5})/) ||   // "per 500" / "för 500"
+    i.match(/(?<![-%\d])(\d{3,5})(?![-%])/); // 3+ siffror, ej i %-uttryck
   const amount = amtMatch ? parseInt(amtMatch[1],10) : 50;
+  // Forex-mode? Trigger på "valuta", "forex", eller specifika valutapar
+  const isForex = /valuta|forex|fx\b|eur|usd\/|gbp|jpy|chf|aud|cad/.test(i);
 
   // Konkreta ordrar i text (köp/sälj med belopp/symbol)
   const buyMatch = i.match(/(köp|buy)\s+([a-z]{3,5})/i);
@@ -3036,62 +3045,83 @@ function simulateTeamResponse(instr){
     return { text:`Hanna: Trailing stop justerad. Påverkar alla öppna positioner.\nRasmus: Bra — tightare stop minskar drawdown om det vänder.` };
   }
 
-  // Plocka ut timeframe (1m/5m/15m/etc) — default 5m
-  const tfMatch = i.match(/(\d+)\s*(min|m|sek|s|tim|h)\b/i);
+  // Plocka ut timeframe — fångar "1min", "1 min", "1minuts", "1minute", "30 sek", "1h"
+  const tfMatch = i.match(/(\d+)\s*(minute|minutes|minuts?|mins?|min\b|sek|sec|seconds?|tim|hour|hr|h\b|m\b)/i);
   let timeframeSec = SCALP_DEFAULT_SEC;
   if(tfMatch){
     const n = parseInt(tfMatch[1],10);
     const unit = tfMatch[2].toLowerCase();
     if(unit.startsWith("s")) timeframeSec = n;
     else if(unit.startsWith("h") || unit.startsWith("t")) timeframeSec = n * 3600;
-    else timeframeSec = n * 60; // default min
+    else timeframeSec = n * 60; // min är default
   }
   const tfLabel = timeframeSec < 60 ? `${timeframeSec}s` : timeframeSec < 3600 ? `${Math.round(timeframeSec/60)}m` : `${Math.round(timeframeSec/3600)}h`;
 
   // Frågor / utmaningar (prefix-matchning för böjda former)
-  if(/(välj|bestäm|plock|kör för mig|lägg)/.test(i)){
-    const symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT"];
+  if(/(välj|bestäm|plock|kör för mig|lägg|ta\s)/.test(i)){
+    // Välj symboluniversum baserat på user-intent (forex eller crypto)
+    const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT"];
+    const forexSyms = ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/GBP","EUR/JPY","GBP/JPY"];
+    const symbols = isForex ? forexSyms : cryptoSyms;
+
     const trades = [];
     const usedSyms = new Set();
-    // TA-signaler Hanna kan "läsa" (för smak — visar att teamet tittar på riktiga indikatorer)
-    const signalLibrary = [
-      "RSI {n} (oversold-rebound)",
-      "MACD bullish cross på 5m",
-      "Bryter över 50-EMA",
-      "Volym 2x snitt — momentum-bekräftelse",
-      "Bullish engulfing på 5m-candle",
-      "Test av support på {n}, håll-bias",
-      "RSI {n} (overbought) — mean reversion ner",
-      "MACD bearish divergence",
-      "Bear-flag breakdown",
-      "Bearish engulfing — säljpressure",
+    // Riktnings-specifika kommentarer som låter mänskliga
+    const longTalk = [
+      sym => `${sym} bryter precis 50-EMA på 5m, RSI 38 — klassisk oversold-rebound`,
+      sym => `Bullish engulfing på senaste candle, volym 2x snitt = köpare står på linjen`,
+      sym => `${sym} testar förra veckans support och håller — vi hänger på en bounce`,
+      sym => `MACD-cross på 5m + price action ovanför 21-EMA, momentum är åt vårt håll`,
+      sym => `Karin pekade på Q1-säsongs-edge för ${sym}, 64% historisk win-rate på måndagar`,
     ];
+    const shortTalk = [
+      sym => `${sym} har bear-flag breakdown, RSI 72 = overbought + svaghet`,
+      sym => `Bearish divergence MACD/pris — köpare orkar inte trots high`,
+      sym => `${sym} trillar genom 200-EMA på volym, trend-flip nedåt`,
+      sym => `Tomas flaggar säljvolym ovanligt hög, Albert ser sentiment-extremitet`,
+      sym => `Resistance håller hård, smart money fördelar — vi följer med ner`,
+    ];
+    const macroComments = [
+      "Markus säger Fed-sentiment risk-off ikväll, så jag tar tighter stops",
+      "Risk-on regim enligt Markus, men Albert flaggar FOMO-zon — håller sizing kontrollerad",
+      "Lars-research nämner CPI imorgon, så jag undviker EUR/USD just nu",
+      "Karin vol-regim medium = standard-sizing 1.0x, inget att tweaka",
+      "Rasmus heat 25%, har gott om utrymme för dessa trades",
+      "Albert i accumulation-fas, passar in att lägga long-bias här",
+    ];
+
     for(let n = 0; n < Math.min(tradeCount, 10); n++){
       let sym;
       do { sym = pick(symbols); } while(usedSyms.has(sym) && usedSyms.size < symbols.length);
       usedSyms.add(sym);
-      const isLong = Math.random() > 0.3; // 70% LONG (bullish bias)
+      const isLong = Math.random() > 0.3;
       const side = isLong ? "BUY" : "SELL";
-      // Plocka 2 signaler som motiverar riktning
-      const dirSignals = isLong ? signalLibrary.slice(0,5) : signalLibrary.slice(5);
-      const sig1 = pick(dirSignals).replace("{n}", String(Math.round(28+Math.random()*40)));
-      const sig2 = pick(dirSignals).replace("{n}", formatPrice((BASE_PRICES[sym]||100)*0.99, sym));
       const t = simulateExecuteTrade(sym, side, amount, timeframeSec);
-      if(t) t.signals = [sig1, sig2];
+      if(t){
+        t.reasoning = (isLong ? pick(longTalk) : pick(shortTalk))(sym);
+      }
       trades.push(t);
     }
     const validTrades = trades.filter(Boolean);
-    const tradeList = validTrades.map((t,idx)=>{
-      const dir = t.side === "BUY" ? "📈 **LONG** (CALL/UP)" : "📉 **SHORT** (PUT/DOWN)";
-      const expected = t.side === "BUY" ? "stiger" : "faller";
-      const win = (t.amount * (t.payoutMultiplier - 1)).toFixed(0);
-      return `  ${idx+1}. ${dir} **${t.sym}** $${t.amount} @ ${formatPrice(t.entry, t.sym)} · ${tfLabel}-scalp · payout ${t.payoutPct}% (+$${win})\n     Signal: ${t.signals[0]}, ${t.signals[1]}`;
-    }).join("\n");
     const longCount = validTrades.filter(t=>t.side==="BUY").length;
     const shortCount = validTrades.length - longCount;
     const totalPotential = validTrades.reduce((s,t)=>s+t.amount*(t.payoutMultiplier-1), 0).toFixed(0);
+    const macroComment = pick(macroComments);
+
+    // Mänsklig prosa istället för rapport-format
+    let openingLine;
+    if(validTrades.length === 1){
+      openingLine = `OK, jag tar **${validTrades.length} ${tfLabel}-${isForex?'forex':'krypto'}-scalp** åt dig på $${amount}.`;
+    } else {
+      openingLine = `OK, ${validTrades.length} ${tfLabel}-${isForex?'forex':'krypto'}-scalpar á $${amount}, ${longCount} long och ${shortCount} short. Här är mina val:`;
+    }
+    const tradeProse = validTrades.map((t,idx)=>{
+      const dir = t.side === "BUY" ? "long (call/up)" : "short (put/down)";
+      return `${idx+1}. **${t.sym}** ${dir} — ${t.reasoning}. Payout ${t.payoutPct}% = +$${(t.amount*(t.payoutMultiplier-1)).toFixed(0)} vid vinst.`;
+    }).join("\n");
+
     return {
-      text: `Hanna: ${validTrades.length} **${tfLabel}-scalp${validTrades.length>1?'s':''}** (${longCount} LONG, ${shortCount} SHORT):\n${tradeList}\n\n💰 Total potential vinst: +$${totalPotential} (60-90% marginal som valutatrading)\n⏱ Auto-resolve om ${tfLabel} — Trades-sidan visar live.\n\nGrund: Tomas TA + Karin vol + Rasmus risk + Albert blind-spots.${testNote}`,
+      text: `${openingLine}\n\n${tradeProse}\n\n${macroComment}.\n\nTotal potential om alla träffar: **+$${totalPotential}**. Auto-resolve om ${tfLabel} — du följer dem live på Trades-sidan.${testNote}`,
       executedTrades: validTrades
     };
   }
