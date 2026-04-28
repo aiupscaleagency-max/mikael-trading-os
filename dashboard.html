@@ -1838,6 +1838,7 @@ function tick(){
 
   // evaluate active positions
   evalPositions();
+  evalScalpTrades(); // auto-resolve scalp-trades efter timeframe
   updateTickerStrip();
   updatePnL();
   // Live PnL refresh på Trades-sidan om vi är där
@@ -3035,30 +3036,62 @@ function simulateTeamResponse(instr){
     return { text:`Hanna: Trailing stop justerad. Påverkar alla öppna positioner.\nRasmus: Bra — tightare stop minskar drawdown om det vänder.` };
   }
 
+  // Plocka ut timeframe (1m/5m/15m/etc) — default 5m
+  const tfMatch = i.match(/(\d+)\s*(min|m|sek|s|tim|h)\b/i);
+  let timeframeSec = SCALP_DEFAULT_SEC;
+  if(tfMatch){
+    const n = parseInt(tfMatch[1],10);
+    const unit = tfMatch[2].toLowerCase();
+    if(unit.startsWith("s")) timeframeSec = n;
+    else if(unit.startsWith("h") || unit.startsWith("t")) timeframeSec = n * 3600;
+    else timeframeSec = n * 60; // default min
+  }
+  const tfLabel = timeframeSec < 60 ? `${timeframeSec}s` : timeframeSec < 3600 ? `${Math.round(timeframeSec/60)}m` : `${Math.round(timeframeSec/3600)}h`;
+
   // Frågor / utmaningar (prefix-matchning för böjda former)
   if(/(välj|bestäm|plock|kör för mig|lägg)/.test(i)){
     const symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT"];
     const trades = [];
     const usedSyms = new Set();
+    // TA-signaler Hanna kan "läsa" (för smak — visar att teamet tittar på riktiga indikatorer)
+    const signalLibrary = [
+      "RSI {n} (oversold-rebound)",
+      "MACD bullish cross på 5m",
+      "Bryter över 50-EMA",
+      "Volym 2x snitt — momentum-bekräftelse",
+      "Bullish engulfing på 5m-candle",
+      "Test av support på {n}, håll-bias",
+      "RSI {n} (overbought) — mean reversion ner",
+      "MACD bearish divergence",
+      "Bear-flag breakdown",
+      "Bearish engulfing — säljpressure",
+    ];
     for(let n = 0; n < Math.min(tradeCount, 5); n++){
       let sym;
       do { sym = pick(symbols); } while(usedSyms.has(sym) && usedSyms.size < symbols.length);
       usedSyms.add(sym);
-      // Välj LONG eller SHORT baserat på "team-bias" (random i demo, bullish-tilt)
-      const isLong = Math.random() > 0.3; // 70% LONG, 30% SHORT
+      const isLong = Math.random() > 0.3; // 70% LONG (bullish bias)
       const side = isLong ? "BUY" : "SELL";
-      trades.push(simulateExecuteTrade(sym, side, amount));
+      // Plocka 2 signaler som motiverar riktning
+      const dirSignals = isLong ? signalLibrary.slice(0,5) : signalLibrary.slice(5);
+      const sig1 = pick(dirSignals).replace("{n}", String(Math.round(28+Math.random()*40)));
+      const sig2 = pick(dirSignals).replace("{n}", formatPrice((BASE_PRICES[sym]||100)*0.99, sym));
+      const t = simulateExecuteTrade(sym, side, amount, timeframeSec);
+      if(t) t.signals = [sig1, sig2];
+      trades.push(t);
     }
-    const tradeList = trades.map((t,idx)=>{
+    const validTrades = trades.filter(Boolean);
+    const tradeList = validTrades.map((t,idx)=>{
       const dir = t.side === "BUY" ? "📈 **LONG** (CALL/UP)" : "📉 **SHORT** (PUT/DOWN)";
       const expected = t.side === "BUY" ? "stiger" : "faller";
-      return `  ${idx+1}. ${dir} **${t.sym}** $${t.amount} @ ${formatPrice(t.entry, t.sym)}\n     → vi tjänar om priset ${expected}`;
+      return `  ${idx+1}. ${dir} **${t.sym}** $${t.amount} @ ${formatPrice(t.entry, t.sym)} · ${tfLabel}-scalp\n     Signal: ${t.signals[0]}, ${t.signals[1]}\n     → tjänar om priset ${expected} inom ${tfLabel}`;
     }).join("\n");
-    const longCount = trades.filter(t=>t.side==="BUY").length;
-    const shortCount = trades.length - longCount;
+    const longCount = validTrades.filter(t=>t.side==="BUY").length;
+    const shortCount = validTrades.length - longCount;
+    const possibleWin = (amount * (SCALP_PAYOUT - 1)).toFixed(0);
     return {
-      text: `Hanna: ${tradeCount === 1 ? 'Jag väljer' : `Jag väljer ${tradeCount} trades`} (${longCount} LONG, ${shortCount} SHORT):\n${tradeList}\n\nGrund: Tomas top-picks med score +${(2+Math.random()*2).toFixed(1)}, Karin OK på vol, Rasmus inom risk.\nAlbert flaggar inga blind spots.\n\n✓ ${trades.length} ${trades.length===1?'order':'ordrar'} placerade — se Trades-sidan för live PnL.${testNote}`,
-      executedTrades: trades
+      text: `Hanna: ${validTrades.length} **${tfLabel}-scalp${validTrades.length>1?'s':''}** (${longCount} LONG, ${shortCount} SHORT):\n${tradeList}\n\n💰 Payout: 1.85x — \$${amount} stake → \$${(amount*SCALP_PAYOUT).toFixed(0)} vid vinst (+\$${possibleWin})\n⏱ Auto-resolve om ${tfLabel} — du ser resultatet på Trades-sidan.\n\nGrund: Tomas TA + Karin vol-läge + Rasmus risk-OK + Albert: inga blind spots.${testNote}`,
+      executedTrades: validTrades
     };
   }
   if(/(varför|säker|men |istället|fel|verkligen)/.test(i)){
@@ -3141,21 +3174,29 @@ function calcTotalEquity(){
   return acc.cash + (STATE.tradePositions||[]).reduce((s,p)=>s+p.amount, 0) + calcUnrealizedPnl();
 }
 
-// Simulera exekvering av en trade — drar från test-konto
-function simulateExecuteTrade(sym, side, amount){
+// Default scalping-config — payout som valutatrading (Mikes erfarenhet: 90% marginal)
+const SCALP_PAYOUT = 1.90;       // 1.90x = $500 → $950 vid vinst (förlust = -100% av stake)
+const SCALP_DEFAULT_SEC = 300;   // 5 min default — anpassat för 1-5 min scalping
+
+// Simulera exekvering av en scalp-trade — drar från test-konto + auto-resolve efter timeframe
+function simulateExecuteTrade(sym, side, amount, timeframeSec){
   const acc = loadPaperAccount();
   if(amount > acc.cash){
     log_warn(`Inte nog cash i paper-account: $${acc.cash.toFixed(2)} < $${amount}`);
     return null;
   }
+  const tf = timeframeSec || SCALP_DEFAULT_SEC;
   const entry = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
   const qty = amount / entry;
   const trade = {
     id: "trade-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
     sym, side, amount, entry, qty,
     openedAt: Date.now(),
+    expiresAt: Date.now() + tf * 1000,
+    timeframeSec: tf,
+    payoutMultiplier: SCALP_PAYOUT,
     status: "open",
-    stopLossPct: 2,
+    type: "scalp",
     source: "Hanna (chat)"
   };
   if(!STATE.tradePositions) STATE.tradePositions = [];
@@ -3164,6 +3205,7 @@ function simulateExecuteTrade(sym, side, amount){
   STATE.tradeDecisions.unshift({
     timestamp: Date.now(),
     action: side, sym, amount,
+    timeframeSec: tf,
     reasoning: "Vald av Hanna efter team-analys via chat",
     source: "chat"
   });
@@ -3174,6 +3216,49 @@ function simulateExecuteTrade(sym, side, amount){
   renderTradesPage();
   renderPaperBadge();
   return trade;
+}
+
+// Resolve scalp-trade: WIN → +85% av amount, LOSS → -100% av amount
+function resolveScalpTrade(p){
+  const cur = STATE.livePrices[p.sym] ?? p.entry;
+  const wonLong = p.side === "BUY" && cur > p.entry;
+  const wonShort = p.side === "SELL" && cur < p.entry;
+  const won = wonLong || wonShort;
+  const pnl = won ? p.amount * (p.payoutMultiplier - 1) : -p.amount;
+  const acc = loadPaperAccount();
+  // Stake redan dragen vid open. Returnera stake + pnl
+  acc.cash += p.amount + pnl;
+  acc.realizedPnl += pnl;
+  if(won) acc.winningTrades++; else acc.losingTrades++;
+  if(!STATE.tradeHistory) STATE.tradeHistory = [];
+  STATE.tradeHistory.unshift({...p, exit:cur, pnl, won, status:"closed", closedAt:Date.now()});
+  STATE.tradeDecisions.unshift({
+    timestamp: Date.now(),
+    action: won ? "WIN" : "LOSS",
+    sym: p.sym, amount: p.amount,
+    reasoning: `Scalp ${p.side === "BUY" ? "📈 LONG" : "📉 SHORT"} ${formatPrice(p.entry,p.sym)}→${formatPrice(cur,p.sym)} · PnL ${pnl>=0?'+':''}$${pnl.toFixed(2)}`,
+    source: "auto"
+  });
+  savePaperAccount();
+}
+
+// Tick-loop kallar denna för att auto-stänga utgångna trades
+function evalScalpTrades(){
+  if(!STATE.tradePositions || !STATE.tradePositions.length) return;
+  const now = Date.now();
+  const remaining = [];
+  for(const p of STATE.tradePositions){
+    if(p.type === "scalp" && p.expiresAt && now >= p.expiresAt){
+      resolveScalpTrade(p);
+    } else {
+      remaining.push(p);
+    }
+  }
+  if(remaining.length !== STATE.tradePositions.length){
+    STATE.tradePositions = remaining;
+    renderTradesPage();
+    renderPaperBadge();
+  }
 }
 
 function log_warn(msg){ console.warn("[PaperAcct]", msg); }
@@ -3224,20 +3309,39 @@ function renderTradesPage(){
     } else {
       posTbl.innerHTML = `<div class="tt-tbl">${positions.map(p=>{
         const cur = STATE.livePrices[p.sym] ?? p.entry;
-        const pnl = (cur - p.entry) * p.qty * (p.side === "BUY" ? 1 : -1);
-        const pnlPct = ((cur - p.entry) / p.entry) * 100 * (p.side === "BUY" ? 1 : -1);
+        const isScalp = p.type === "scalp";
+        const winning = isScalp ? ((p.side === "BUY" && cur > p.entry) || (p.side === "SELL" && cur < p.entry)) : null;
+        // Visa potentiell payout för scalp, faktisk PnL för spot
+        const potPayout = isScalp ? p.amount * (p.payoutMultiplier - 1) : null;
+        const pnl = isScalp
+          ? (winning ? potPayout : -p.amount)  // visa förmodad PnL baserat på nuvarande riktning
+          : (cur - p.entry) * p.qty * (p.side === "BUY" ? 1 : -1);
+        const pnlPct = isScalp
+          ? (winning ? (p.payoutMultiplier - 1) * 100 : -100)
+          : ((cur - p.entry) / p.entry) * 100 * (p.side === "BUY" ? 1 : -1);
         const t = new Date(p.openedAt).toLocaleTimeString();
         const sideLabel = p.side === "BUY" ? "📈 LONG" : "📉 SHORT";
+        // Countdown för scalp
+        let countdown = "";
+        if(isScalp && p.expiresAt){
+          const remainSec = Math.max(0, Math.ceil((p.expiresAt - Date.now())/1000));
+          const mm = Math.floor(remainSec/60);
+          const ss = remainSec%60;
+          countdown = `<div class="tt-meta" style="font-weight:700;color:${winning?'var(--green)':'var(--red)'};font-family:'SF Mono',monospace">⏱ ${String(mm).padStart(2,"0")}:${String(ss).padStart(2,"0")}</div>`;
+        }
         return `<div class="tt-row ${p.side==='BUY'?'long':'short'}" data-id="${p.id}">
           <span class="tt-side ${p.side==='BUY'?'buy':'sell'}">${sideLabel}</span>
           <div>
-            <div class="tt-sym">${p.sym}</div>
-            <div class="tt-meta">${p.qty.toFixed(6)} @ ${formatPrice(p.entry, p.sym)} · $${p.amount}</div>
+            <div class="tt-sym">${p.sym}${isScalp?` <span style="font-size:9px;background:var(--card);color:var(--cyan);padding:1px 5px;border-radius:3px;font-weight:600">SCALP ${Math.round(p.timeframeSec/60)}m</span>`:''}</div>
+            <div class="tt-meta">${formatPrice(p.entry, p.sym)} · stake $${p.amount}${isScalp?` · payout ${p.payoutMultiplier}x`:''}</div>
           </div>
           <div class="tt-meta">→ ${formatPrice(cur, p.sym)}</div>
-          <div class="tt-pnl ${pnl>=0?'up':'down'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}<br><span style="font-size:10px;font-weight:500">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%</span></div>
+          <div class="tt-pnl ${winning===null ? (pnl>=0?'up':'down') : (winning?'up':'down')}">
+            ${isScalp ? (winning?`+$${potPayout.toFixed(2)} (vinst-bana)`:`-$${p.amount} (förlust-bana)`) : `${pnl>=0?'+':''}$${pnl.toFixed(2)}<br><span style="font-size:10px;font-weight:500">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%</span>`}
+          </div>
           <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
             <span class="tt-time">${t}</span>
+            ${countdown}
             <button class="tt-act" data-close="${p.id}">Stäng</button>
           </div>
         </div>`;
