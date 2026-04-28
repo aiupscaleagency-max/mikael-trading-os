@@ -8,6 +8,7 @@ import { computeIndicators } from "../indicators/ta.js";
 import { log } from "../logger.js";
 import { config } from "../config.js";
 import { getCostSummary } from "../cost/tracker.js";
+import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
@@ -446,6 +447,101 @@ export function startServer(
         return;
       }
 
+      // ── Telegram webhook ──
+      if (url.pathname === "/api/telegram/webhook" && method === "POST") {
+        const body = await readBody(req);
+        try {
+          const update = JSON.parse(body);
+          // Helper för att fråga agent (Hanna m.fl.)
+          const askAgent = async (agentKey: string, question: string): Promise<string> => {
+            if (!anthropicApiKey) return "❌ Anthropic API-nyckel ej konfigurerad i backend.";
+            const profile = AGENT_PROMPTS[agentKey === "hanna" ? "head_trader" : (agentKey === "tomas" ? "technical" : (agentKey === "karin" ? "quant" : (agentKey === "rasmus" ? "risk" : (agentKey === "markus" ? "macro" : (agentKey === "petra" ? "portfolio" : (agentKey === "sara" ? "sentiment" : (agentKey === "lars" ? "macro" : (agentKey === "emma" ? "execution" : (agentKey === "albert" ? "advisor" : agentKey)))))))))];
+            if (!profile) return `❌ Okänd agent: ${agentKey}`;
+            const client = new Anthropic({ apiKey: anthropicApiKey });
+            const resp = await client.messages.create({
+              model: profile.model,
+              max_tokens: 600,
+              system: profile.system,
+              messages: [{ role: "user", content: question }],
+            });
+            const txt = resp.content.find((b) => b.type === "text");
+            return txt && "text" in txt ? txt.text : "(inget svar)";
+          };
+          const getStatus = async (): Promise<string> => {
+            const state = await loadState();
+            const decisions = await loadRecentDecisions(3);
+            const lines = [
+              "<b>📊 Status — Mikael Trading OS</b>",
+              `Kill-switch: ${state.killSwitchActive ? "🔴 AKTIV" : "🟢 inaktiv"}`,
+              `Aktiv broker: ${activeBrokerName ?? "(default)"}`,
+              `Senaste beslut:`,
+              ...decisions.slice(0, 3).map((d: { symbol?: string; action?: string; amount?: number }) => `• ${d.symbol || "?"} ${d.action || ""} ${d.amount ? `$${d.amount}` : ""}`),
+            ];
+            return lines.join("\n");
+          };
+          // Asynkront — svara 200 direkt så Telegram inte retry:ar
+          handleTelegramUpdate(update, { askAgent, getStatus }).catch((err) => {
+            log.error(`Telegram-handler-fel: ${err instanceof Error ? err.message : String(err)}`);
+          });
+          json(res, { ok: true });
+        } catch (err) {
+          log.error(`Telegram webhook parse-fel: ${err instanceof Error ? err.message : String(err)}`);
+          json(res, { ok: false });
+        }
+        return;
+      }
+
+      // ── Binance public prices (för PROPOSE-mode — riktiga marknadspriser, ingen auth) ──
+      if (url.pathname === "/api/binance/prices" && method === "GET") {
+        const symbolsParam = url.searchParams.get("symbols") || "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,MATICUSDT";
+        const symbols = symbolsParam.split(",").map((s) => s.trim());
+        try {
+          const url2 = "https://api.binance.com/api/v3/ticker/price";
+          const r = await fetch(url2);
+          if (!r.ok) {
+            json(res, { error: `Binance svarade ${r.status}`, prices: {} });
+            return;
+          }
+          const all = (await r.json()) as Array<{ symbol: string; price: string }>;
+          const result: Record<string, number> = {};
+          for (const s of symbols) {
+            const found = all.find((x) => x.symbol === s);
+            if (found) result[s] = parseFloat(found.price);
+          }
+          json(res, { prices: result, source: "binance-public", at: Date.now() });
+        } catch (err) {
+          json(res, { error: err instanceof Error ? err.message : String(err), prices: {} });
+        }
+        return;
+      }
+
+      // ── Binance public klines (riktiga candlesticks) ──
+      if (url.pathname === "/api/binance/klines" && method === "GET") {
+        const symbol = url.searchParams.get("symbol") || "BTCUSDT";
+        const interval = url.searchParams.get("interval") || "1h";
+        const limit = url.searchParams.get("limit") || "100";
+        try {
+          const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+          if (!r.ok) {
+            json(res, { error: `Binance svarade ${r.status}`, candles: [] });
+            return;
+          }
+          const raw = (await r.json()) as Array<Array<string | number>>;
+          const candles = raw.map((k) => ({
+            time: Math.floor((k[0] as number) / 1000),
+            open: parseFloat(k[1] as string),
+            high: parseFloat(k[2] as string),
+            low: parseFloat(k[3] as string),
+            close: parseFloat(k[4] as string),
+            volume: parseFloat(k[5] as string),
+          }));
+          json(res, { symbol, interval, candles, source: "binance-public", at: Date.now() });
+        } catch (err) {
+          json(res, { error: err instanceof Error ? err.message : String(err), candles: [] });
+        }
+        return;
+      }
+
       // ── 404 ──
       res.writeHead(404);
       res.end("Not found");
@@ -458,6 +554,13 @@ export function startServer(
 
   server.listen(port, () => {
     log.ok(`Dashboard: http://localhost:${port}`);
+    // Sätt upp Telegram-webhook om token finns
+    const publicUrl = process.env.PUBLIC_URL || "https://trading.aiupscale.agency";
+    if (process.env.TELEGRAM_BOT_TOKEN && publicUrl.startsWith("https://")) {
+      setupTelegramWebhook(publicUrl).catch((err) => {
+        log.error(`Telegram-webhook setup-fel: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
   });
 
   return server;
