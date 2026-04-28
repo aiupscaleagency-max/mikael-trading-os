@@ -1554,6 +1554,28 @@ body.app-state-onboard .fc-panel{display:none !important}
     <button class="run-btn" id="save-keys-btn" style="margin-top:8px">Spara nycklar</button>
     <span id="save-keys-status" style="margin-left:12px;font-size:11px"></span>
 
+    <h4 style="margin-top:18px">📱 Telegram-notiser</h4>
+    <p style="font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:8px">Få push när session startar/slutar, A+ setup hittas, eller mål uppnått. Skapa bot via <a href="https://t.me/BotFather" target="_blank" style="color:var(--cyan)">@BotFather</a> → /newbot → kopiera token. Hämta chat-id via <a href="https://t.me/userinfobot" target="_blank" style="color:var(--cyan)">@userinfobot</a>.</p>
+    <div class="key-grid">
+      <div>
+        <label>🤖 Bot Token <span style="color:var(--dim);font-size:9px">FRÅN BOTFATHER</span></label>
+        <input type="password" id="set-tg-token" placeholder="123456:ABC-DEF..." />
+      </div>
+      <div>
+        <label>💬 Chat ID <span style="color:var(--dim);font-size:9px">FRÅN USERINFOBOT</span></label>
+        <input type="text" id="set-tg-chat" placeholder="123456789" />
+      </div>
+    </div>
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+        <input type="checkbox" id="set-tg-enabled" style="margin:0" />
+        <span>Aktivera Telegram-push</span>
+      </label>
+      <button class="run-btn" id="save-tg-btn">Spara</button>
+      <button class="run-btn" id="test-tg-btn" style="background:var(--card2);border:1px solid var(--border)">📨 Skicka test</button>
+      <span id="tg-status" style="font-size:11px"></span>
+    </div>
+
     <h4 style="margin-top:18px">Risk &amp; Position-sizing</h4>
     <p style="font-size:11px;color:var(--dim);line-height:1.5">Sätts i <code style="background:var(--bg);padding:1px 4px;border-radius:2px">.env</code>-filen på VPS:en (DEFAULT/MIN/MAX_POSITION_USD, MAX_DAILY_SPEND_USD osv). Editor i appen byggs i Fas 2.</p>
   </div>
@@ -1752,6 +1774,76 @@ function scoreToWinrate(score){
   if(score === 8) return 0.75;
   if(score === 9) return 0.82;
   return 0.88; // score 10
+}
+
+// Setup-typer — strategimallar agenterna känner igen
+const SETUP_TYPES = {
+  "ema-cross":   { label: "EMA-cross",      icon: "📈", desc: "EMA9/EMA21 korsning + trend-confirm" },
+  "sr-bounce":   { label: "S/R-bounce",     icon: "🎯", desc: "Pris studsar på support/resistance + volume" },
+  "range-scalp": { label: "Range-scalp",    icon: "⇄",  desc: "Mean-reversion i sidledsmarknad" },
+  "breakout":    { label: "Breakout",       icon: "🚀", desc: "Brott av nyckel-level + volume-spike" },
+  "liq-sweep":   { label: "Liquidity sweep",icon: "🌊", desc: "Stop-hunt + reversal" }
+};
+
+// Setup-typ-generator — högre score gynnar mer tillförlitliga setups
+function generateSetupType(score){
+  // Lågt score: mer chansartad blandning. Högt score: bättre setups oftare.
+  const r = Math.random();
+  if(score >= 9){
+    if(r < 0.40) return "sr-bounce";
+    if(r < 0.65) return "ema-cross";
+    if(r < 0.85) return "breakout";
+    if(r < 0.95) return "liq-sweep";
+    return "range-scalp";
+  }
+  if(score >= 7){
+    if(r < 0.30) return "ema-cross";
+    if(r < 0.55) return "sr-bounce";
+    if(r < 0.75) return "breakout";
+    if(r < 0.90) return "range-scalp";
+    return "liq-sweep";
+  }
+  // Låga scores — sämre setups oftare
+  if(r < 0.35) return "range-scalp";
+  if(r < 0.60) return "breakout";
+  if(r < 0.80) return "ema-cross";
+  if(r < 0.92) return "sr-bounce";
+  return "liq-sweep";
+}
+
+// ─── Telegram-bridge ───
+function loadTelegramConfig(){
+  try {
+    return {
+      enabled: localStorage.getItem("tg_enabled") === "1",
+      token: localStorage.getItem("tg_bot_token") || "",
+      chatId: localStorage.getItem("tg_chat_id") || ""
+    };
+  } catch(_){ return {enabled:false, token:"", chatId:""}; }
+}
+function saveTelegramConfig(token, chatId, enabled){
+  localStorage.setItem("tg_bot_token", token || "");
+  localStorage.setItem("tg_chat_id", chatId || "");
+  localStorage.setItem("tg_enabled", enabled ? "1" : "0");
+}
+async function sendTelegramMessage(text){
+  const cfg = loadTelegramConfig();
+  if(!cfg.enabled || !cfg.token || !cfg.chatId) return false;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${cfg.token}/sendMessage`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        chat_id: cfg.chatId,
+        text: text,
+        parse_mode: "HTML"
+      })
+    });
+    return res.ok;
+  } catch(e){
+    console.warn("Telegram-fel:", e);
+    return false;
+  }
 }
 
 /* ======================================================================
@@ -3544,9 +3636,10 @@ function completeSession(aborted){
   pushInAppAlert(`${emoji} Session ${s.sessionNum} klar — ${status}. ${s.wins}/${total} (${(winrate*100).toFixed(0)}%) · PnL ${totalPnl>=0?'+':''}$${totalPnl.toFixed(2)} · avg score ${avgScore.toFixed(1)}`, 8000);
 }
 
-// In-app push (toast — utöka senare med Telegram-bridge)
-function pushInAppAlert(msg, durationMs){
+// In-app push (toast) + parallell Telegram-push om configurerad
+function pushInAppAlert(msg, durationMs, opts){
   durationMs = durationMs || 5000;
+  opts = opts || {};
   let host = document.getElementById("alert-host");
   if(!host){
     host = document.createElement("div");
@@ -3559,7 +3652,10 @@ function pushInAppAlert(msg, durationMs){
   el.textContent = msg;
   host.appendChild(el);
   setTimeout(()=>{ el.style.opacity="0"; el.style.transition="opacity .3s"; setTimeout(()=>el.remove(), 300); }, durationMs);
-  // TODO: Telegram-bridge — skickar samma msg via /api/telegram/notify när bot konfigurerad
+  // Parallell Telegram-push (skip för rena debug-toasts om opts.telegram===false)
+  if(opts.telegram !== false){
+    sendTelegramMessage(msg).catch(()=>{});
+  }
 }
 
 function saveTradeData(){
@@ -3591,6 +3687,8 @@ function calcLifetimeStats(){
   let avgWin = 0, avgLoss = 0;
   const bySym = {}; // {symbol: {wins, losses, pnl}}
   const bySide = { BUY: {wins:0, losses:0, pnl:0}, SELL: {wins:0, losses:0, pnl:0} };
+  const bySetup = {}; // {setupType: {wins, losses, pnl}}
+  const byScore = {}; // {score: {wins, losses, pnl}}
   for(const h of history){
     const won = (h.pnl || 0) > 0;
     if(won){ wins++; avgWin += h.pnl; }
@@ -3605,6 +3703,18 @@ function calcLifetimeStats(){
       bySide[h.side].pnl += (h.pnl || 0);
       if(won) bySide[h.side].wins++; else bySide[h.side].losses++;
     }
+    // Setup-typ-breakdown (träningsdata)
+    if(h.setupType){
+      if(!bySetup[h.setupType]) bySetup[h.setupType] = {wins:0, losses:0, pnl:0};
+      bySetup[h.setupType].pnl += (h.pnl || 0);
+      if(won) bySetup[h.setupType].wins++; else bySetup[h.setupType].losses++;
+    }
+    // Score-breakdown
+    if(h.score){
+      if(!byScore[h.score]) byScore[h.score] = {wins:0, losses:0, pnl:0};
+      byScore[h.score].pnl += (h.pnl || 0);
+      if(won) byScore[h.score].wins++; else byScore[h.score].losses++;
+    }
   }
   return {
     totalTrades: history.length,
@@ -3618,6 +3728,8 @@ function calcLifetimeStats(){
     profitFactor: avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : 0,
     bySym,
     bySide,
+    bySetup,
+    byScore,
     firstTrade: history[history.length-1]?.openedAt,
     lastTrade: history[0]?.closedAt,
   };
@@ -3672,16 +3784,18 @@ function simulateExecuteTrade(sym, side, amount, timeframeSec){
   }
   // Confluence-score för denna setup (Tomas + Karin + Petra inputs simulerade)
   const score = generateConfluenceScore();
+  const setupType = generateSetupType(score);
+  const setupMeta = SETUP_TYPES[setupType] || {label:setupType, icon:"•"};
   // Session Mode — strikt filter: hoppa över setups under tröskel
   if(STATE.session && score < STATE.session.scoreThreshold){
     STATE.session.skipped = (STATE.session.skipped || 0) + 1;
     saveSessionData();
-    pushInAppAlert(`⏸ Setup score ${score}/10 — under tröskel (${STATE.session.scoreThreshold}). Väntar på A+ setup. Trade hoppas över.`, 4000);
+    pushInAppAlert(`⏸ Setup score ${score}/10 (${setupMeta.label}) — under tröskel (${STATE.session.scoreThreshold}). Väntar på A+ setup.`, 4000);
     if(!STATE.tradeDecisions) STATE.tradeDecisions = [];
     STATE.tradeDecisions.unshift({
       timestamp: Date.now(),
-      action: "SKIP", sym, amount, score,
-      reasoning: `Setup score ${score}/10 < session-tröskel ${STATE.session.scoreThreshold}. Väntar på A+ setup.`,
+      action: "SKIP", sym, amount, score, setupType,
+      reasoning: `Setup ${setupMeta.label} score ${score}/10 < session-tröskel ${STATE.session.scoreThreshold}. Väntar på A+ setup.`,
       source: "session-filter"
     });
     saveTradeData();
@@ -3701,6 +3815,8 @@ function simulateExecuteTrade(sym, side, amount, timeframeSec){
     payoutMultiplier: payoutMult,
     payoutPct: Math.round((payoutMult - 1) * 100),
     score,                                  // Confluence-score 4-10 (träningsdata)
+    setupType,                              // Setup-typ-tag (träningsdata)
+    setupLabel: setupMeta.label,
     inSession: !!STATE.session,
     sessionNum: STATE.session?.sessionNum,
     status: "open",
@@ -3753,11 +3869,12 @@ function resolveScalpTrade(p){
   if(!STATE.tradeHistory) STATE.tradeHistory = [];
   STATE.tradeHistory.unshift({...p, exit:cur, pnl, won, status:"closed", closedAt:Date.now()});
   const scoreTag = p.score ? ` · score ${p.score}/10` : "";
+  const setupTag = p.setupLabel ? ` · ${p.setupLabel}` : "";
   STATE.tradeDecisions.unshift({
     timestamp: Date.now(),
     action: won ? "WIN" : "LOSS",
-    sym: p.sym, amount: p.amount, score: p.score,
-    reasoning: `Scalp ${p.side === "BUY" ? "📈 LONG" : "📉 SHORT"} ${formatPrice(p.entry,p.sym)}→${formatPrice(cur,p.sym)} · PnL ${pnl>=0?'+':''}$${pnl.toFixed(2)}${scoreTag}`,
+    sym: p.sym, amount: p.amount, score: p.score, setupType: p.setupType,
+    reasoning: `Scalp ${p.side === "BUY" ? "📈 LONG" : "📉 SHORT"} ${formatPrice(p.entry,p.sym)}→${formatPrice(cur,p.sym)} · PnL ${pnl>=0?'+':''}$${pnl.toFixed(2)}${scoreTag}${setupTag}`,
     source: "auto"
   });
   savePaperAccount();
@@ -3891,6 +4008,36 @@ function renderLifetimeStats(){
           const wr = total ? (b.wins/total)*100 : 0;
           return `<div class="row"><span class="lbl">${sym}</span><span>${b.wins}/${total} (${pct(wr)}) <span class="val ${b.pnl>=0?'up':'down'}">${b.pnl>=0?'+':''}${fmt(b.pnl)}</span></span></div>`;
         }).join("") || `<div class="row" style="color:var(--dim)">Ingen data än</div>`}
+      </div>
+    </div>
+
+    <div class="breakdown" style="margin-top:14px">
+      <div>
+        <h4>Per setup-typ (träningsdata)</h4>
+        ${(() => {
+          const entries = Object.entries(stats.bySetup || {}).sort((a,b)=>b[1].pnl - a[1].pnl);
+          if(!entries.length) return `<div class="row" style="color:var(--dim)">Setup-tagging börjar nu — kör trades för att fylla.</div>`;
+          return entries.map(([type, b])=>{
+            const meta = SETUP_TYPES[type] || {label:type, icon:"•"};
+            const total = b.wins + b.losses;
+            const wr = total ? (b.wins/total)*100 : 0;
+            const wrClass = wr >= 75 ? 'up' : (wr < 50 ? 'down' : '');
+            return `<div class="row"><span class="lbl">${meta.icon} ${meta.label}</span><span>${b.wins}/${total} <span class="val ${wrClass}">${pct(wr)}</span> <span class="val ${b.pnl>=0?'up':'down'}">${b.pnl>=0?'+':''}${fmt(b.pnl)}</span></span></div>`;
+          }).join("");
+        })()}
+      </div>
+      <div>
+        <h4>Per confluence-score</h4>
+        ${(() => {
+          const entries = Object.entries(stats.byScore || {}).sort((a,b)=>parseInt(b[0])-parseInt(a[0]));
+          if(!entries.length) return `<div class="row" style="color:var(--dim)">Score-data byggs upp från och med nu.</div>`;
+          return entries.map(([score, b])=>{
+            const total = b.wins + b.losses;
+            const wr = total ? (b.wins/total)*100 : 0;
+            const wrClass = wr >= 75 ? 'up' : (wr < 50 ? 'down' : '');
+            return `<div class="row"><span class="lbl">Score ${score}/10</span><span>${b.wins}/${total} <span class="val ${wrClass}">${pct(wr)}</span> <span class="val ${b.pnl>=0?'up':'down'}">${b.pnl>=0?'+':''}${fmt(b.pnl)}</span></span></div>`;
+          }).join("");
+        })()}
       </div>
     </div>
   `;
@@ -4842,11 +4989,73 @@ async function saveKeysFromSettings(){
   checkKeysSetup();
 }
 
+// Wire Telegram-config UI
+function loadTelegramIntoSettings(){
+  const cfg = loadTelegramConfig();
+  const t = document.getElementById("set-tg-token");
+  const c = document.getElementById("set-tg-chat");
+  const e = document.getElementById("set-tg-enabled");
+  if(t) t.value = cfg.token;
+  if(c) c.value = cfg.chatId;
+  if(e) e.checked = cfg.enabled;
+}
+function wireTelegramSettings(){
+  const saveBtn = document.getElementById("save-tg-btn");
+  const testBtn = document.getElementById("test-tg-btn");
+  const statusEl = document.getElementById("tg-status");
+  saveBtn?.addEventListener("click", ()=>{
+    const token = document.getElementById("set-tg-token")?.value?.trim() || "";
+    const chatId = document.getElementById("set-tg-chat")?.value?.trim() || "";
+    const enabled = document.getElementById("set-tg-enabled")?.checked || false;
+    saveTelegramConfig(token, chatId, enabled);
+    if(statusEl){
+      statusEl.textContent = enabled ? "✓ Sparat — push aktiv" : "✓ Sparat (inaktiverad)";
+      statusEl.style.color = "var(--green)";
+      setTimeout(()=>{ statusEl.textContent = ""; }, 3000);
+    }
+  });
+  testBtn?.addEventListener("click", async ()=>{
+    if(statusEl){ statusEl.textContent = "Skickar..."; statusEl.style.color = "var(--label)"; }
+    // Använd direkta config-värden från UI (sparar inte automatiskt)
+    const token = document.getElementById("set-tg-token")?.value?.trim() || "";
+    const chatId = document.getElementById("set-tg-chat")?.value?.trim() || "";
+    if(!token || !chatId){
+      if(statusEl){ statusEl.textContent = "❌ Token + Chat ID krävs"; statusEl.style.color = "var(--red)"; }
+      return;
+    }
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: "🎯 <b>Mikael Trading OS</b>\nTest-meddelande från dashboard. Telegram-bridge fungerar!",
+          parse_mode: "HTML"
+        })
+      });
+      if(statusEl){
+        if(res.ok){
+          statusEl.textContent = "✓ Skickat — kolla Telegram";
+          statusEl.style.color = "var(--green)";
+        } else {
+          const errText = await res.text();
+          statusEl.textContent = `❌ ${res.status}: ${errText.slice(0,80)}`;
+          statusEl.style.color = "var(--red)";
+        }
+      }
+    } catch(e){
+      if(statusEl){ statusEl.textContent = "❌ " + e.message; statusEl.style.color = "var(--red)"; }
+    }
+  });
+}
+
 function initApp(){
   loadTradeData(); // ladda persisterad trade-historik först
   loadSessionData(); // ladda session-state + reports
   checkKeysSetup();
   loadKeysIntoSettings();
+  loadTelegramIntoSettings();
+  wireTelegramSettings();
   document.getElementById("setup-banner-go")?.addEventListener("click", ()=>switchPage("settings"));
   document.getElementById("save-keys-btn")?.addEventListener("click", saveKeysFromSettings);
   fillSymbols();
