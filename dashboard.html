@@ -3066,7 +3066,7 @@ function simulateTeamResponse(instr){
       "Bear-flag breakdown",
       "Bearish engulfing — säljpressure",
     ];
-    for(let n = 0; n < Math.min(tradeCount, 5); n++){
+    for(let n = 0; n < Math.min(tradeCount, 10); n++){
       let sym;
       do { sym = pick(symbols); } while(usedSyms.has(sym) && usedSyms.size < symbols.length);
       usedSyms.add(sym);
@@ -3084,13 +3084,14 @@ function simulateTeamResponse(instr){
     const tradeList = validTrades.map((t,idx)=>{
       const dir = t.side === "BUY" ? "📈 **LONG** (CALL/UP)" : "📉 **SHORT** (PUT/DOWN)";
       const expected = t.side === "BUY" ? "stiger" : "faller";
-      return `  ${idx+1}. ${dir} **${t.sym}** $${t.amount} @ ${formatPrice(t.entry, t.sym)} · ${tfLabel}-scalp\n     Signal: ${t.signals[0]}, ${t.signals[1]}\n     → tjänar om priset ${expected} inom ${tfLabel}`;
+      const win = (t.amount * (t.payoutMultiplier - 1)).toFixed(0);
+      return `  ${idx+1}. ${dir} **${t.sym}** $${t.amount} @ ${formatPrice(t.entry, t.sym)} · ${tfLabel}-scalp · payout ${t.payoutPct}% (+$${win})\n     Signal: ${t.signals[0]}, ${t.signals[1]}`;
     }).join("\n");
     const longCount = validTrades.filter(t=>t.side==="BUY").length;
     const shortCount = validTrades.length - longCount;
-    const possibleWin = (amount * (SCALP_PAYOUT - 1)).toFixed(0);
+    const totalPotential = validTrades.reduce((s,t)=>s+t.amount*(t.payoutMultiplier-1), 0).toFixed(0);
     return {
-      text: `Hanna: ${validTrades.length} **${tfLabel}-scalp${validTrades.length>1?'s':''}** (${longCount} LONG, ${shortCount} SHORT):\n${tradeList}\n\n💰 Payout: 1.85x — \$${amount} stake → \$${(amount*SCALP_PAYOUT).toFixed(0)} vid vinst (+\$${possibleWin})\n⏱ Auto-resolve om ${tfLabel} — du ser resultatet på Trades-sidan.\n\nGrund: Tomas TA + Karin vol-läge + Rasmus risk-OK + Albert: inga blind spots.${testNote}`,
+      text: `Hanna: ${validTrades.length} **${tfLabel}-scalp${validTrades.length>1?'s':''}** (${longCount} LONG, ${shortCount} SHORT):\n${tradeList}\n\n💰 Total potential vinst: +$${totalPotential} (60-90% marginal som valutatrading)\n⏱ Auto-resolve om ${tfLabel} — Trades-sidan visar live.\n\nGrund: Tomas TA + Karin vol + Rasmus risk + Albert blind-spots.${testNote}`,
       executedTrades: validTrades
     };
   }
@@ -3174,9 +3175,12 @@ function calcTotalEquity(){
   return acc.cash + (STATE.tradePositions||[]).reduce((s,p)=>s+p.amount, 0) + calcUnrealizedPnl();
 }
 
-// Default scalping-config — payout som valutatrading (Mikes erfarenhet: 90% marginal)
-const SCALP_PAYOUT = 1.90;       // 1.90x = $500 → $950 vid vinst (förlust = -100% av stake)
-const SCALP_DEFAULT_SEC = 300;   // 5 min default — anpassat för 1-5 min scalping
+// Default scalping-config — payout som valutatrading (Mikes erfarenhet: 60-90% marginal)
+const SCALP_PAYOUT_MIN = 1.60;   // 60% marginal = $500 → $800
+const SCALP_PAYOUT_MAX = 1.90;   // 90% marginal = $500 → $950
+const SCALP_DEFAULT_SEC = 60;    // 1 min default — snabb testning + scalping
+const DEMO_AGENT_SKILL = 0.65;   // 65% win-rate i demo (simulerar agenter med edge)
+function randomPayout(){ return SCALP_PAYOUT_MIN + Math.random() * (SCALP_PAYOUT_MAX - SCALP_PAYOUT_MIN); }
 
 // Simulera exekvering av en scalp-trade — drar från test-konto + auto-resolve efter timeframe
 function simulateExecuteTrade(sym, side, amount, timeframeSec){
@@ -3188,13 +3192,15 @@ function simulateExecuteTrade(sym, side, amount, timeframeSec){
   const tf = timeframeSec || SCALP_DEFAULT_SEC;
   const entry = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
   const qty = amount / entry;
+  const payoutMult = randomPayout();
   const trade = {
     id: "trade-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
     sym, side, amount, entry, qty,
     openedAt: Date.now(),
     expiresAt: Date.now() + tf * 1000,
     timeframeSec: tf,
-    payoutMultiplier: SCALP_PAYOUT,
+    payoutMultiplier: payoutMult,
+    payoutPct: Math.round((payoutMult - 1) * 100),
     status: "open",
     type: "scalp",
     source: "Hanna (chat)"
@@ -3218,12 +3224,21 @@ function simulateExecuteTrade(sym, side, amount, timeframeSec){
   return trade;
 }
 
-// Resolve scalp-trade: WIN → +85% av amount, LOSS → -100% av amount
+// Resolve scalp-trade: WIN → +90% av amount, LOSS → -100% av amount
+// Demo-läge: använd DEMO_AGENT_SKILL (65%) istället för pure random walk,
+// simulerar agenter med edge. Pris-rörelsen anpassas till outcome för konsistens.
 function resolveScalpTrade(p){
-  const cur = STATE.livePrices[p.sym] ?? p.entry;
-  const wonLong = p.side === "BUY" && cur > p.entry;
-  const wonShort = p.side === "SELL" && cur < p.entry;
-  const won = wonLong || wonShort;
+  const won = Math.random() < DEMO_AGENT_SKILL;
+  // Sätt exit-pris så det matchar outcome (visuellt korrekt på chart)
+  const moveAmount = 0.005 + Math.random() * 0.015; // 0.5-2% rörelse
+  let cur;
+  if(won){
+    cur = p.side === "BUY" ? p.entry * (1 + moveAmount) : p.entry * (1 - moveAmount);
+  } else {
+    cur = p.side === "BUY" ? p.entry * (1 - moveAmount) : p.entry * (1 + moveAmount);
+  }
+  // Uppdatera live-pris så chart matchar
+  STATE.livePrices[p.sym] = cur;
   const pnl = won ? p.amount * (p.payoutMultiplier - 1) : -p.amount;
   const acc = loadPaperAccount();
   // Stake redan dragen vid open. Returnera stake + pnl
