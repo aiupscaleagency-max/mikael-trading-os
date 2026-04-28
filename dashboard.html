@@ -267,6 +267,28 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .session-card .report-row .badge.win{background:rgba(34,197,94,.15);color:#22c55e}
 .session-card .report-row .badge.loss{background:rgba(239,68,68,.15);color:#ef4444}
 @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,.5)}50%{box-shadow:0 0 0 8px rgba(34,197,94,0)}}
+/* Watch + Confirm */
+.watch-card{border-left:3px solid var(--cyan)}
+.watch-row{display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;padding:10px 12px;background:var(--card2);border-radius:6px;margin-bottom:6px;align-items:center;font-size:12px}
+.watch-row .w-sym{font-weight:800;color:#fff;font-size:13px}
+.watch-row .w-meta{font-size:11px;color:var(--dim)}
+.watch-row .w-score{font-family:'SF Mono',monospace;font-weight:700;color:var(--label)}
+.watch-row .w-time{font-size:10px;color:var(--dim);font-family:'SF Mono',monospace}
+.watch-row button.w-cancel{padding:5px 9px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--red);font-size:10px;cursor:pointer;font-weight:600}
+.watch-row button.w-cancel:hover{background:var(--red);color:#fff}
+.confirm-card{border-left:3px solid #22c55e;animation:pulse 2s infinite}
+.confirm-row{display:grid;grid-template-columns:1fr auto;gap:14px;padding:14px;background:linear-gradient(135deg,rgba(34,197,94,.05),transparent);border:1px solid rgba(34,197,94,.3);border-radius:8px;margin-bottom:8px;align-items:center}
+.confirm-row .c-info .c-head{font-size:14px;font-weight:800;color:#fff;margin-bottom:4px}
+.confirm-row .c-info .c-line{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;margin-bottom:2px}
+.confirm-row .c-info .c-line strong{color:var(--text)}
+.confirm-row .c-actions{display:flex;flex-direction:column;gap:6px}
+.confirm-row .c-actions button{padding:8px 16px;border-radius:5px;border:none;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:.02em}
+.confirm-row .c-actions .c-yes{background:#22c55e;color:#0a0e14}
+.confirm-row .c-actions .c-yes:hover{background:#16a34a}
+.confirm-row .c-actions .c-no{background:transparent;color:#ef4444;border:1px solid #ef4444}
+.confirm-row .c-actions .c-no:hover{background:#ef4444;color:#fff}
+.confirm-row .c-timer{font-size:10px;color:#f59e0b;text-align:center;font-family:'SF Mono',monospace;font-weight:700}
 .stats-empty{color:var(--dim);text-align:center;font-size:12px;padding:18px;font-style:italic}
 
 /* Trades-sida tabeller */
@@ -1466,6 +1488,18 @@ body.app-state-onboard .fc-panel{display:none !important}
       <div id="session-body"></div>
     </div>
 
+    <!-- Pending confirmations (A+ setups som väntar på OK) -->
+    <div class="card confirm-card" id="confirm-card" style="display:none">
+      <h3>🎯 A+ Setup väntar på bekräftelse <span id="confirm-count" class="tag" style="margin-left:auto;color:#22c55e">0</span></h3>
+      <div id="confirms-list"></div>
+    </div>
+
+    <!-- Pending watches (söker A+ setup) -->
+    <div class="card watch-card" id="watch-card" style="display:none">
+      <h3>🔍 Pågående bevakningar <span id="watch-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span></h3>
+      <div id="watches-list"></div>
+    </div>
+
     <div class="card">
       <h3>🟢 Aktiva positioner <span id="pos-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span></h3>
       <div id="trade-positions-table"></div>
@@ -1846,6 +1880,208 @@ async function sendTelegramMessage(text){
   }
 }
 
+// ─── Watch-mode: bevakar marknaden tills A+ setup hittas ───
+// Konfiguration
+const WATCH_INTERVAL_MS = 30000;       // Skanna var 30s
+const WATCH_MAX_DURATION_MS = 15*60*1000; // Max 15 min watch
+const CONFIRM_TIMEOUT_MS = 5*60*1000;     // 5 min att bekräfta efter A+ hit
+
+function ensureWatchState(){
+  if(!STATE.pendingWatches) STATE.pendingWatches = [];
+  if(!STATE.pendingConfirms) STATE.pendingConfirms = [];
+}
+function saveWatchState(){
+  try {
+    localStorage.setItem("trading_watches", JSON.stringify(STATE.pendingWatches || []));
+    localStorage.setItem("trading_confirms", JSON.stringify(STATE.pendingConfirms || []));
+  } catch(_){}
+}
+function loadWatchState(){
+  try {
+    const w = localStorage.getItem("trading_watches");
+    const c = localStorage.getItem("trading_confirms");
+    if(w) STATE.pendingWatches = JSON.parse(w);
+    if(c) STATE.pendingConfirms = JSON.parse(c);
+  } catch(_){}
+  ensureWatchState();
+}
+
+// Skapa watch — kallas istället för direkt execute under session
+function createWatch(sym, side, amount, timeframeSec){
+  ensureWatchState();
+  const watch = {
+    id: "watch-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
+    sym, side, amount, timeframeSec: timeframeSec || SCALP_DEFAULT_SEC,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + WATCH_MAX_DURATION_MS,
+    attempts: 0,
+    lastScore: null,
+    lastCheck: null,
+    sessionNum: STATE.session?.sessionNum || null,
+    threshold: STATE.session?.scoreThreshold || SESSION_SCORE_THRESHOLD
+  };
+  STATE.pendingWatches.push(watch);
+  saveWatchState();
+  pushInAppAlert(`🔍 Bevakning startad: ${sym} ${side==='BUY'?'LONG':'SHORT'} $${amount}. Söker score ≥${watch.threshold} (max 15 min).`, 5000);
+  renderTradesPage();
+  return watch;
+}
+
+// Skanna alla aktiva watches — kallas av tick-loop
+function scanWatches(){
+  ensureWatchState();
+  if(!STATE.pendingWatches.length) return;
+  const now = Date.now();
+  const remaining = [];
+  for(const w of STATE.pendingWatches){
+    // Expire watch?
+    if(now >= w.expiresAt){
+      pushInAppAlert(`⏱ Bevakning avslutad: ${w.sym} ${w.side==='BUY'?'LONG':'SHORT'} — ingen A+ setup hittad på 15 min.`, 6000);
+      continue;
+    }
+    // Throttle: scan max var 30s per watch
+    if(w.lastCheck && (now - w.lastCheck) < WATCH_INTERVAL_MS){
+      remaining.push(w);
+      continue;
+    }
+    // Generera nytt score-försök
+    w.attempts++;
+    w.lastCheck = now;
+    const score = generateConfluenceScore();
+    w.lastScore = score;
+    if(score >= w.threshold){
+      // A+ träff! Flytta till pendingConfirms
+      const setupType = generateSetupType(score);
+      const setupMeta = SETUP_TYPES[setupType] || {label:setupType, icon:"•"};
+      const entry = STATE.livePrices[w.sym] ?? BASE_PRICES[w.sym] ?? 100;
+      const confirm = {
+        id: "conf-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
+        watchId: w.id,
+        sym: w.sym, side: w.side, amount: w.amount, timeframeSec: w.timeframeSec,
+        score, setupType, setupLabel: setupMeta.label,
+        entry,
+        suggestedSL: w.side==='BUY' ? entry * 0.988 : entry * 1.012,  // 1.2% SL
+        suggestedTP: w.side==='BUY' ? entry * 1.024 : entry * 0.976,  // 2.4% TP
+        attemptCount: w.attempts,
+        createdAt: now,
+        expiresAt: now + CONFIRM_TIMEOUT_MS,
+        sessionNum: w.sessionNum
+      };
+      STATE.pendingConfirms.push(confirm);
+      const sideLabel = w.side==='BUY' ? '📈 LONG' : '📉 SHORT';
+      const msg = `🎯 <b>A+ Setup hittad!</b>\n${w.sym} ${sideLabel} $${w.amount}\nScore: <b>${score}/10</b> · ${setupMeta.label}\nEntry: ${formatPrice(entry, w.sym)}\nSL: ${formatPrice(confirm.suggestedSL, w.sym)} (-1.2%)\nTP: ${formatPrice(confirm.suggestedTP, w.sym)} (+2.4%)\n⏱ Bekräfta inom 5 min på dashboard`;
+      pushInAppAlert(`🎯 A+ Setup! ${w.sym} ${sideLabel} score ${score}/10 (${setupMeta.label}). Bekräfta inom 5 min.`, 12000);
+      sendTelegramMessage(msg).catch(()=>{});
+    } else {
+      // Inte A+, fortsätt bevaka
+      remaining.push(w);
+    }
+  }
+  STATE.pendingWatches = remaining;
+  scanConfirms();
+  saveWatchState();
+  renderTradesPage();
+}
+
+// Auto-expire pending confirms efter 5 min
+function scanConfirms(){
+  ensureWatchState();
+  if(!STATE.pendingConfirms.length) return;
+  const now = Date.now();
+  const remaining = [];
+  for(const c of STATE.pendingConfirms){
+    if(now >= c.expiresAt){
+      pushInAppAlert(`⏱ Setup expirerade: ${c.sym} score ${c.score}/10 — du svarade inte i tid.`, 6000);
+      continue;
+    }
+    remaining.push(c);
+  }
+  STATE.pendingConfirms = remaining;
+}
+
+// Användaren bekräftar setup → execute
+function confirmSetup(confirmId){
+  ensureWatchState();
+  const idx = STATE.pendingConfirms.findIndex(c => c.id === confirmId);
+  if(idx === -1) return;
+  const c = STATE.pendingConfirms[idx];
+  STATE.pendingConfirms.splice(idx, 1);
+  saveWatchState();
+  // Execute med pre-filled score + setupType (skip filter = inte hoppas över)
+  executeConfirmedTrade(c);
+}
+
+function rejectSetup(confirmId){
+  ensureWatchState();
+  const idx = STATE.pendingConfirms.findIndex(c => c.id === confirmId);
+  if(idx === -1) return;
+  const c = STATE.pendingConfirms[idx];
+  STATE.pendingConfirms.splice(idx, 1);
+  saveWatchState();
+  pushInAppAlert(`✗ Setup avbruten: ${c.sym} score ${c.score}/10`, 4000);
+  renderTradesPage();
+}
+
+// Execute pre-confirmed trade — bypass session-filter (vi vet redan score är ≥ threshold)
+function executeConfirmedTrade(c){
+  const acc = loadPaperAccount();
+  if(c.amount > acc.cash){
+    pushInAppAlert(`❌ Inte nog cash: $${acc.cash.toFixed(2)} < $${c.amount}`, 5000);
+    return;
+  }
+  const tf = c.timeframeSec || SCALP_DEFAULT_SEC;
+  const payoutMult = randomPayout();
+  const trade = {
+    id: "trade-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
+    sym: c.sym, side: c.side, amount: c.amount, entry: c.entry,
+    qty: c.amount / c.entry,
+    openedAt: Date.now(),
+    expiresAt: Date.now() + tf * 1000,
+    timeframeSec: tf,
+    payoutMultiplier: payoutMult,
+    payoutPct: Math.round((payoutMult - 1) * 100),
+    score: c.score,
+    setupType: c.setupType,
+    setupLabel: c.setupLabel,
+    suggestedSL: c.suggestedSL,
+    suggestedTP: c.suggestedTP,
+    inSession: !!STATE.session,
+    sessionNum: STATE.session?.sessionNum,
+    confirmed: true,
+    status: "open",
+    type: "scalp",
+    source: "Watch-confirm"
+  };
+  if(!STATE.tradePositions) STATE.tradePositions = [];
+  if(!STATE.tradeDecisions) STATE.tradeDecisions = [];
+  STATE.tradePositions.push(trade);
+  STATE.tradeDecisions.unshift({
+    timestamp: Date.now(),
+    action: c.side, sym: c.sym, amount: c.amount,
+    score: c.score, setupType: c.setupType,
+    timeframeSec: tf,
+    reasoning: `Bekräftad A+ setup · ${c.setupLabel} · score ${c.score}/10`,
+    source: "watch-confirm"
+  });
+  acc.cash -= c.amount;
+  acc.totalTrades++;
+  savePaperAccount();
+  saveTradeData();
+  renderTradesPage();
+  renderPaperBadge();
+  pushInAppAlert(`✓ Order placerad: ${c.sym} ${c.side==='BUY'?'LONG':'SHORT'} $${c.amount} · score ${c.score}/10`, 5000);
+}
+
+// Smart trade-router — väljer watch eller direkt-execute beroende på session
+function requestTradeExecution(sym, side, amount, timeframeSec){
+  // Session aktiv → använd watch-mode (bevakning + bekräftelse)
+  if(STATE.session){
+    return createWatch(sym, side, amount, timeframeSec);
+  }
+  // Ingen session → direkt execute som tidigare
+  return simulateExecuteTrade(sym, side, amount, timeframeSec);
+}
+
 /* ======================================================================
    CHART
    ====================================================================== */
@@ -2119,6 +2355,7 @@ function tick(){
   // evaluate active positions
   evalPositions();
   evalScalpTrades(); // auto-resolve scalp-trades efter timeframe
+  scanWatches();     // bevaka pending watches + auto-expire confirms
   updateTickerStrip();
   updatePnL();
   // Live PnL refresh på Trades-sidan om vi är där
@@ -3400,10 +3637,16 @@ function simulateTeamResponse(instr){
   const buyMatch = i.match(/(köp|buy)\s+([a-z]{3,5})/i);
   if(buyMatch){
     const sym = buyMatch[2].toUpperCase()+(buyMatch[2].endsWith("usdt")?"":"USDT");
-    const trade = simulateExecuteTrade(sym, "BUY", amount);
+    const result = requestTradeExecution(sym, "BUY", amount);
+    if(STATE.session){
+      return {
+        text: `Hanna: 🔍 Bevakning startad — ${sym} LONG $${amount}.\nTomas: Söker A+ setup (score ≥${STATE.session.scoreThreshold}). Skannar var 30s i upp till 15 min.\nKarin: Inga trades körs förrän confluence är hög nog.\n\n→ Du får push så fort A+ setup hittas. Bekräfta inom 5 min så executas trade.`,
+        executedTrades: []
+      };
+    }
     return {
       text: `Hanna: OK, köper **${sym}** för $${amount}.\nRasmus: Inom risk-ramen, godkänner.\nKarin: Vol-regim medium.\nAlbert: Cykel-fas ${pick(["accumulation","early-markup"])} — passar in.\n\n✓ Order placerad — se Trades-sidan.${testNote}`,
-      executedTrades: [trade]
+      executedTrades: [result]
     };
   }
   if(/(sälj|sell|stäng|close)/.test(i)){
@@ -4135,8 +4378,76 @@ function renderSession(){
   `;
 }
 
+function renderWatchesAndConfirms(){
+  ensureWatchState();
+  // CONFIRMS
+  const confCard = document.getElementById("confirm-card");
+  const confList = document.getElementById("confirms-list");
+  const confCount = document.getElementById("confirm-count");
+  const confirms = STATE.pendingConfirms || [];
+  if(confCard) confCard.style.display = confirms.length ? "" : "none";
+  if(confCount) confCount.textContent = confirms.length;
+  if(confList){
+    confList.innerHTML = confirms.map(c=>{
+      const timeLeft = Math.max(0, Math.ceil((c.expiresAt - Date.now())/1000));
+      const mm = Math.floor(timeLeft/60), ss = timeLeft%60;
+      const sideLabel = c.side==='BUY' ? '📈 LONG' : '📉 SHORT';
+      const meta = SETUP_TYPES[c.setupType] || {label:c.setupLabel, icon:"•"};
+      return `<div class="confirm-row">
+        <div class="c-info">
+          <div class="c-head">${c.sym} ${sideLabel} · score <strong style="color:#22c55e">${c.score}/10</strong></div>
+          <div class="c-line">${meta.icon} ${meta.label} · stake $${c.amount} · ${c.attemptCount} skanningar</div>
+          <div class="c-line">Entry <strong>${formatPrice(c.entry, c.sym)}</strong> · SL <strong style="color:var(--red)">${formatPrice(c.suggestedSL, c.sym)}</strong> · TP <strong style="color:var(--green)">${formatPrice(c.suggestedTP, c.sym)}</strong></div>
+          <div class="c-line">R:R 1:2 · timeframe ${Math.round(c.timeframeSec/60)} min</div>
+        </div>
+        <div class="c-actions">
+          <button class="c-yes" onclick="confirmSetup('${c.id}')">✓ JA — kör</button>
+          <button class="c-no" onclick="rejectSetup('${c.id}')">✗ Avbryt</button>
+          <div class="c-timer">⏱ ${String(mm).padStart(2,"0")}:${String(ss).padStart(2,"0")}</div>
+        </div>
+      </div>`;
+    }).join("");
+  }
+  // WATCHES
+  const watchCard = document.getElementById("watch-card");
+  const watchList = document.getElementById("watches-list");
+  const watchCount = document.getElementById("watch-count");
+  const watches = STATE.pendingWatches || [];
+  if(watchCard) watchCard.style.display = watches.length ? "" : "none";
+  if(watchCount) watchCount.textContent = watches.length;
+  if(watchList){
+    watchList.innerHTML = watches.map(w=>{
+      const timeLeft = Math.max(0, Math.ceil((w.expiresAt - Date.now())/1000));
+      const mm = Math.floor(timeLeft/60), ss = timeLeft%60;
+      const sideLabel = w.side==='BUY' ? '📈 LONG' : '📉 SHORT';
+      const lastScore = w.lastScore !== null ? `score ${w.lastScore}/10` : "skannar...";
+      return `<div class="watch-row">
+        <span style="font-size:18px">🔍</span>
+        <div>
+          <div class="w-sym">${w.sym} ${sideLabel} · $${w.amount}</div>
+          <div class="w-meta">Söker score ≥${w.threshold} · försök ${w.attempts} · senast: ${lastScore}</div>
+        </div>
+        <span class="w-time">⏱ ${String(mm).padStart(2,"0")}:${String(ss).padStart(2,"0")}</span>
+        <button class="w-cancel" onclick="cancelWatch('${w.id}')">Avbryt</button>
+      </div>`;
+    }).join("");
+  }
+}
+
+function cancelWatch(watchId){
+  ensureWatchState();
+  const idx = STATE.pendingWatches.findIndex(w => w.id === watchId);
+  if(idx === -1) return;
+  const w = STATE.pendingWatches[idx];
+  STATE.pendingWatches.splice(idx, 1);
+  saveWatchState();
+  pushInAppAlert(`✗ Bevakning avbruten: ${w.sym} ${w.side==='BUY'?'LONG':'SHORT'}`, 4000);
+  renderTradesPage();
+}
+
 function renderTradesPage(){
   renderSession();
+  renderWatchesAndConfirms();
   renderLifetimeStats();
   const positions = STATE.tradePositions || [];
   const decisions = STATE.tradeDecisions || [];
@@ -5052,6 +5363,7 @@ function wireTelegramSettings(){
 function initApp(){
   loadTradeData(); // ladda persisterad trade-historik först
   loadSessionData(); // ladda session-state + reports
+  loadWatchState();  // ladda pågående watches + confirms
   checkKeysSetup();
   loadKeysIntoSettings();
   loadTelegramIntoSettings();
