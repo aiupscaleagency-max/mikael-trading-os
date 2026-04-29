@@ -1537,9 +1537,15 @@ body.app-state-onboard .fc-panel{display:none !important}
       <div id="trade-positions-table"></div>
     </div>
 
-    <div class="card">
-      <h3>🤖 Hannas beslut (senaste)</h3>
-      <div id="trade-decisions-table"></div>
+    <div class="card collapsible" id="decisions-card">
+      <h3 onclick="toggleCollapse('decisions-card')" style="cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px">
+        <span class="collapse-arrow" id="decisions-arrow">▶</span>
+        🤖 Hannas beslut (senaste)
+        <span id="decisions-count" class="tag" style="margin-left:auto;color:var(--label);font-weight:500;font-size:10px">klicka för att visa</span>
+      </h3>
+      <div id="decisions-body" style="display:none">
+        <div id="trade-decisions-table"></div>
+      </div>
     </div>
 
     <!-- Statistik sedan start -->
@@ -5237,6 +5243,35 @@ async function runHealthCheck(){
 // Global random-pick helper (används i flera scopes)
 function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 
+// Collapse/expand-toggle för cards (Hannas beslut etc)
+function toggleCollapse(cardId){
+  const card = document.getElementById(cardId);
+  if(!card) return;
+  const bodyId = cardId.replace("-card", "-body");
+  const arrowId = cardId.replace("-card", "-arrow");
+  const body = document.getElementById(bodyId);
+  const arrow = document.getElementById(arrowId);
+  if(!body) return;
+  const isOpen = body.style.display !== "none";
+  body.style.display = isOpen ? "none" : "";
+  if(arrow) arrow.textContent = isOpen ? "▶" : "▼";
+  // Spara state
+  try { localStorage.setItem("collapse_" + cardId, isOpen ? "0" : "1"); } catch(_){}
+}
+
+// Återställ collapse-state vid load
+function restoreCollapseStates(){
+  ["decisions-card"].forEach(id => {
+    const wasOpen = localStorage.getItem("collapse_" + id) === "1";
+    if(wasOpen){
+      const body = document.getElementById(id.replace("-card","-body"));
+      const arrow = document.getElementById(id.replace("-card","-arrow"));
+      if(body) body.style.display = "";
+      if(arrow) arrow.textContent = "▼";
+    }
+  });
+}
+
 // Human-readable timeframe (60 → "1m", 47 → "47s", 270 → "4m 30s")
 function formatTfHuman(sec){
   if(sec < 60) return sec + "s";
@@ -5844,7 +5879,9 @@ function renderTradesPage(){
     }
   }
 
-  // Decisions-log
+  // Decisions-log + count i header
+  const decCount = document.getElementById("decisions-count");
+  if(decCount) decCount.textContent = decisions.length ? `${decisions.length} st · klicka för att visa` : "inga än";
   const decTbl = document.getElementById("trade-decisions-table");
   if(decTbl){
     if(!decisions.length){
@@ -6863,6 +6900,7 @@ function initApp(){
   loadTradeData(); // ladda persisterad trade-historik först (cache)
   loadSessionData(); // ladda session-state + reports (cache)
   loadWatchState();  // ladda pågående watches + confirms (cache)
+  restoreCollapseStates(); // återställ kollapsade cards
   startBackendSync(); // PRIMÄR: backend som single source of truth
   // Legacy sync DISABLED — undviker konflikt med backend-sync (orsak till "flippa ut")
   // startSyncSubscription();
