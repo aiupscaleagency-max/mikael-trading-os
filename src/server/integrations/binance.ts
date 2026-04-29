@@ -164,26 +164,37 @@ export class BinanceClient {
 
   // ─── Härledda metoder ───
 
-  // Total USDT-värde av kontot (cash + öppna positioner värderade till nuvarande pris)
+  // Total USDT-värde av kontot — använder BATCH-fetch (1 request för alla priser)
   async getTotalEquity(): Promise<{ cashUsdt: number; positions: Array<{ asset: string; qty: number; valueUsdt: number }>; totalUsdt: number }> {
     const account = await this.getAccount();
     const nonZero = account.balances.filter((b) => parseFloat(b.free) + parseFloat(b.locked) > 0);
     const usdt = nonZero.find((b) => b.asset === "USDT");
     const cashUsdt = usdt ? parseFloat(usdt.free) + parseFloat(usdt.locked) : 0;
+    // Hämta ALLA priser i ETT anrop (snabbare än per-token)
+    let allPrices: Map<string, number> = new Map();
+    try {
+      const r = await fetch(`${this.baseUrl}/api/v3/ticker/price`);
+      if (r.ok) {
+        const arr = (await r.json()) as Array<{ symbol: string; price: string }>;
+        for (const p of arr) allPrices.set(p.symbol, parseFloat(p.price));
+      }
+    } catch {
+      // fall through — utan priser blir totalUsdt = cashUsdt
+    }
     const positions: Array<{ asset: string; qty: number; valueUsdt: number }> = [];
     let totalUsdt = cashUsdt;
     for (const b of nonZero) {
-      if (b.asset === "USDT" || b.asset === "BUSD" || b.asset === "USDC") continue;
+      if (b.asset === "USDT" || b.asset === "BUSD" || b.asset === "USDC" || b.asset === "FDUSD") continue;
       const qty = parseFloat(b.free) + parseFloat(b.locked);
-      try {
-        const price = await this.getPrice(`${b.asset}USDT`);
+      const price = allPrices.get(`${b.asset}USDT`);
+      if (price && price > 0) {
         const valueUsdt = qty * price;
         positions.push({ asset: b.asset, qty, valueUsdt });
         totalUsdt += valueUsdt;
-      } catch {
-        // hopp över tokens utan USDT-pair
       }
     }
+    // Sortera positioner efter värde (störst först)
+    positions.sort((a, b) => b.valueUsdt - a.valueUsdt);
     return { cashUsdt, positions, totalUsdt };
   }
 
