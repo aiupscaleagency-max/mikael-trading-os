@@ -1885,6 +1885,157 @@ function patternBoost(side, patterns){
   return Math.max(-2, Math.min(2, boost)); // cap ±2
 }
 
+// ─── Riktig S/R-detection ───
+// Skannar senaste candles, hittar pris-zoner som testats 3+ gånger
+// Returnerar: { supports: [{price, touches, lastTouch}], resistances: [...] }
+function detectSRLevels(candles, opts){
+  if(!candles || candles.length < 30) return {supports:[], resistances:[]};
+  opts = opts || {};
+  const tolerance = opts.tolerance || 0.003; // 0.3% pris-zon
+  const minTouches = opts.minTouches || 3;
+  const lookback = Math.min(opts.lookback || 200, candles.length);
+  const slice = candles.slice(-lookback);
+
+  // 1. Hitta swing-highs och swing-lows (lokala extrempunkter)
+  const swingHighs = []; // pris-toppar
+  const swingLows = [];  // pris-bottnar
+  const swing = 3; // pivot-fönster (3 candles på var sida)
+  for(let i = swing; i < slice.length - swing; i++){
+    const c = slice[i];
+    let isHigh = true, isLow = true;
+    for(let j = 1; j <= swing; j++){
+      if(slice[i-j].high >= c.high) isHigh = false;
+      if(slice[i+j].high >= c.high) isHigh = false;
+      if(slice[i-j].low <= c.low) isLow = false;
+      if(slice[i+j].low <= c.low) isLow = false;
+    }
+    if(isHigh) swingHighs.push({price: c.high, time: c.time});
+    if(isLow) swingLows.push({price: c.low, time: c.time});
+  }
+
+  // 2. Klustra närliggande swing-points till levels
+  function clusterLevels(points){
+    const sorted = points.slice().sort((a,b)=>a.price-b.price);
+    const clusters = [];
+    for(const p of sorted){
+      const last = clusters[clusters.length-1];
+      if(last && Math.abs(p.price - last.avgPrice) / last.avgPrice <= tolerance){
+        last.touches++;
+        last.totalPrice += p.price;
+        last.avgPrice = last.totalPrice / last.touches;
+        last.lastTouch = Math.max(last.lastTouch, p.time);
+      } else {
+        clusters.push({avgPrice: p.price, totalPrice: p.price, touches: 1, lastTouch: p.time});
+      }
+    }
+    return clusters.filter(c => c.touches >= minTouches).map(c => ({
+      price: c.avgPrice,
+      touches: c.touches,
+      lastTouch: c.lastTouch,
+      strength: Math.min(5, c.touches) // 3=svag, 5+=stark
+    }));
+  }
+
+  return {
+    supports: clusterLevels(swingLows),
+    resistances: clusterLevels(swingHighs)
+  };
+}
+
+// Avstånd till närmaste S/R-level (som % av pris)
+function nearestSRDistance(price, side, levels){
+  if(!levels || (!levels.supports?.length && !levels.resistances?.length)) return null;
+  const candidates = side === "BUY" ? levels.supports : levels.resistances;
+  if(!candidates.length) return null;
+  let closest = null;
+  for(const lv of candidates){
+    const dist = Math.abs(price - lv.price) / price;
+    if(!closest || dist < closest.dist){
+      closest = {dist, level: lv};
+    }
+  }
+  return closest;
+}
+
+// ─── Trailing Stop + Laddered DCA ───
+// Auto-management av öppna positioner
+const TRAIL_ACTIVATE_PCT = 0.10;  // Aktivera vid +10% vinst
+const TRAIL_OFFSET_PCT = 0.05;    // Stop sätts 5% under aktuell topp
+const DCA_LADDERS = [              // Ladder för auto-DCA vid drawdown
+  { drawdown: 0.15, sizeMultiplier: 0.25 }, // -15% → +25% av initial
+  { drawdown: 0.20, sizeMultiplier: 0.25 }, // -20% → +25%
+  { drawdown: 0.30, sizeMultiplier: 0.50 }, // -30% → +50% (sänker GAV mest)
+];
+
+function evaluateTrailingStops(){
+  if(!STATE.tradePositions || !STATE.tradePositions.length) return;
+  for(const p of STATE.tradePositions){
+    if(p.type !== "spot" && p.type !== "swing") continue; // Trailing bara för spot/swing, inte scalp
+    const cur = STATE.livePrices[p.sym] ?? p.entry;
+    const profitPct = (cur - p.entry) / p.entry * (p.side === "BUY" ? 1 : -1);
+    // Initiera trailing när +10% vinst nåtts
+    if(profitPct >= TRAIL_ACTIVATE_PCT && !p.trailingActive){
+      p.trailingActive = true;
+      p.trailingHigh = cur;
+      p.trailingStop = p.side === "BUY" ? cur * (1 - TRAIL_OFFSET_PCT) : cur * (1 + TRAIL_OFFSET_PCT);
+      pushInAppAlert(`📈 Trailing stop AKTIV: ${p.sym} +${(profitPct*100).toFixed(1)}% — stop @ ${formatPrice(p.trailingStop, p.sym)}`, 5000);
+    }
+    // Uppdatera trailing om priset gör ny topp
+    if(p.trailingActive){
+      const newHigh = p.side === "BUY" ? Math.max(p.trailingHigh, cur) : Math.min(p.trailingHigh, cur);
+      if(newHigh !== p.trailingHigh){
+        p.trailingHigh = newHigh;
+        const newStop = p.side === "BUY" ? newHigh * (1 - TRAIL_OFFSET_PCT) : newHigh * (1 + TRAIL_OFFSET_PCT);
+        // Trailing-stop får bara röra sig i vinst-riktning
+        if((p.side === "BUY" && newStop > p.trailingStop) || (p.side === "SELL" && newStop < p.trailingStop)){
+          p.trailingStop = newStop;
+        }
+      }
+      // Triggrad?
+      const triggered = p.side === "BUY" ? cur <= p.trailingStop : cur >= p.trailingStop;
+      if(triggered){
+        const finalProfit = (cur - p.entry) / p.entry * (p.side === "BUY" ? 1 : -1);
+        pushInAppAlert(`🎯 Trailing stop TRIGGRAD: ${p.sym} stängd vid ${formatPrice(cur, p.sym)} (+${(finalProfit*100).toFixed(1)}% vinst låst)`, 6000);
+        closePosition(p.id, "trailing-stop");
+      }
+    }
+  }
+}
+
+function evaluateDCALadders(){
+  if(!STATE.tradePositions || !STATE.tradePositions.length) return;
+  for(const p of STATE.tradePositions){
+    if(p.type !== "spot" && p.type !== "swing") continue;
+    if(p.trailingActive) continue; // Skip om vi redan är i vinst (DCA är för drawdown-rescue)
+    const cur = STATE.livePrices[p.sym] ?? p.entry;
+    const drawdown = (p.entry - cur) / p.entry * (p.side === "BUY" ? 1 : -1);
+    if(drawdown < 0.15) continue; // bara om -15% eller värre
+    p.dcaLevels = p.dcaLevels || [];
+    for(const ladder of DCA_LADDERS){
+      const alreadyDone = p.dcaLevels.includes(ladder.drawdown);
+      if(!alreadyDone && drawdown >= ladder.drawdown){
+        const acc = loadPaperAccount();
+        const dcaAmount = p.amount * ladder.sizeMultiplier;
+        if(acc.cash >= dcaAmount){
+          p.dcaLevels.push(ladder.drawdown);
+          // Räkna ny GAV
+          const totalCost = (p.amount * p.entry) + (dcaAmount * cur);
+          const totalSize = p.amount + dcaAmount;
+          p.entry = totalCost / totalSize; // ny GAV
+          p.amount = totalSize;
+          p.qty = totalSize / p.entry;
+          acc.cash -= dcaAmount;
+          savePaperAccount();
+          saveTradeData();
+          pushInAppAlert(`🪜 DCA-ladder ${(ladder.drawdown*100).toFixed(0)}% triggrad: ${p.sym} +$${dcaAmount.toFixed(0)} köpt @ ${formatPrice(cur, p.sym)} · ny GAV ${formatPrice(p.entry, p.sym)}`, 7000);
+        } else {
+          pushInAppAlert(`⚠ DCA-ladder ${(ladder.drawdown*100).toFixed(0)}% kunde inte triggras: cash $${acc.cash.toFixed(0)} < $${dcaAmount.toFixed(0)}`, 5000, {telegram:false});
+        }
+      }
+    }
+  }
+}
+
 // Confluence-score generator MED transparent breakdown
 // Returnerar både totalscore (4-10) och de faktorer som drev det
 function generateConfluenceAnalysis(side, sym){
@@ -1940,16 +2091,45 @@ function generateConfluenceAnalysis(side, sym){
     factors.push({label:`Volume ${volRatio}x snitt`, points:0, detail:"Normal volym", positive:null});
   }
 
-  // 4. S/R-LEVEL närhet — max 2p
-  const srProx = Math.random();
-  if(srProx > 0.7){
-    factors.push({label:"Vid stark S/R-level", points:2, detail:`${side==='BUY'?'Support':'Resistance'} testat 3+ gånger`, positive:true});
-    total += 2;
-  } else if(srProx > 0.4){
-    factors.push({label:"Nära S/R-zon", points:1, detail:"Inom 1% av key-level", positive:true});
-    total += 1;
-  } else {
-    factors.push({label:"Mid-range", points:0, detail:"Inget tydligt level nära", positive:null});
+  // 4. S/R-LEVEL närhet — RIKTIG detection om PROPOSE + candles, annars simulerad
+  let srEval = null;
+  if(currentUiMode === "propose" && sym){
+    const key = sym + "|1m";
+    const candles = STATE.candleData[key];
+    const price = STATE.livePrices[sym];
+    if(candles && candles.length >= 30 && price){
+      const levels = detectSRLevels(candles);
+      const nearest = nearestSRDistance(price, side, levels);
+      if(nearest){
+        const distPct = nearest.dist;
+        const strength = nearest.level.strength;
+        if(distPct < 0.005 && strength >= 4){
+          factors.push({label:"Vid stark S/R-level", points:2, detail:`${side==='BUY'?'Support':'Resistance'} testat ${nearest.level.touches}x · avstånd ${(distPct*100).toFixed(2)}%`, positive:true});
+          total += 2;
+          srEval = "strong";
+        } else if(distPct < 0.01 && strength >= 3){
+          factors.push({label:"Nära S/R-zon", points:1, detail:`${nearest.level.touches}x testat · avstånd ${(distPct*100).toFixed(2)}%`, positive:true});
+          total += 1;
+          srEval = "near";
+        } else {
+          factors.push({label:"Mid-range", points:0, detail:`Närmaste ${side==='BUY'?'support':'resistance'} ${(distPct*100).toFixed(1)}% bort`, positive:null});
+          srEval = "mid";
+        }
+      }
+    }
+  }
+  if(!srEval){
+    // Fallback: simulerad om ingen riktig data
+    const srProx = Math.random();
+    if(srProx > 0.7){
+      factors.push({label:"Vid stark S/R-level (sim)", points:2, detail:`${side==='BUY'?'Support':'Resistance'} testat 3+ gånger`, positive:true});
+      total += 2;
+    } else if(srProx > 0.4){
+      factors.push({label:"Nära S/R-zon (sim)", points:1, detail:"Inom 1% av key-level", positive:true});
+      total += 1;
+    } else {
+      factors.push({label:"Mid-range (sim)", points:0, detail:"Inget tydligt level nära", positive:null});
+    }
   }
 
   // 5. CANDLESTICK-PATTERN — max 2p (riktig data i PROPOSE)
@@ -2613,8 +2793,10 @@ function tick(){
 
   // evaluate active positions
   evalPositions();
-  evalScalpTrades(); // auto-resolve scalp-trades efter timeframe
-  scanWatches();     // bevaka pending watches + auto-expire confirms
+  evalScalpTrades();        // auto-resolve scalp-trades efter timeframe
+  evaluateTrailingStops();  // trailing stop +10% activate, 5% follow
+  evaluateDCALadders();     // laddered DCA -15% / -20% / -30%
+  scanWatches();            // bevaka pending watches + auto-expire confirms
   updateTickerStrip();
   updatePnL();
   // Live PnL refresh på Trades-sidan om vi är där
