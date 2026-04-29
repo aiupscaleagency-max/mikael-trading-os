@@ -4315,6 +4315,9 @@ function recordSessionTrade(score, won, pnl, sym, side){
     saveSessionData();
     renderTradesPage();
   }
+  // Omedelbar push så mobil/dator ser samma session-status direkt
+  localLastChangeAt = Date.now();
+  pushSyncToServer().catch(()=>{});
 }
 
 function completeSession(aborted){
@@ -4505,10 +4508,12 @@ function getSymbolType(sym){
 // ─── Cross-device sync ───
 // Speglar trade-state mellan dator och mobil via VPS-backend
 const SYNC_CLIENT_ID = "mike-private"; // Single-user just nu — multi-tenant senare via Supabase user-id
-const SYNC_DEBOUNCE_MS = 2000;          // Spara max var 2s (debounced)
+const SYNC_DEBOUNCE_MS = 500;           // Snabb push (500ms) för att undvika race med pull-loop
 let syncSaveTimer = null;
 let syncLastSavedAt = 0;
 let syncLastReceivedAt = 0;
+let isApplyingSync = false;             // Guard mot loop: pull → apply → save → push (gamla data)
+let localLastChangeAt = 0;              // Sätts när lokal förändring sker (skydd mot stale pull)
 
 // Vilka delar av STATE syncas mellan devices
 function buildSyncPayload(){
@@ -4527,22 +4532,33 @@ function buildSyncPayload(){
 
 function applySyncPayload(payload){
   if(!payload) return;
-  if(payload.tradePositions) STATE.tradePositions = payload.tradePositions;
-  if(payload.tradeHistory) STATE.tradeHistory = payload.tradeHistory;
-  if(payload.tradeDecisions) STATE.tradeDecisions = payload.tradeDecisions;
-  if(payload.session !== undefined) STATE.session = payload.session;
-  if(payload.sessionReports) STATE.sessionReports = payload.sessionReports;
-  if(payload.pendingWatches) STATE.pendingWatches = payload.pendingWatches;
-  if(payload.pendingConfirms) STATE.pendingConfirms = payload.pendingConfirms;
-  if(payload.paperAccount) STATE.paperAccount = payload.paperAccount;
-  syncLastReceivedAt = payload.syncedAt || Date.now();
-  // Persistera lokalt också
-  saveTradeData();
-  saveSessionData();
-  saveWatchState();
-  if(STATE.paperAccount) savePaperAccount();
-  renderTradesPage();
-  renderPaperBadge();
+  // KRITISKT: skydd mot race där pull skriver över nyare lokal data
+  // Om lokal förändring skedde efter payload.syncedAt → skip apply
+  if(localLastChangeAt && payload.syncedAt && localLastChangeAt > payload.syncedAt){
+    console.log(`[sync] Skip apply — lokal data nyare (${localLastChangeAt} > ${payload.syncedAt})`);
+    return;
+  }
+  isApplyingSync = true;
+  try {
+    if(payload.tradePositions) STATE.tradePositions = payload.tradePositions;
+    if(payload.tradeHistory) STATE.tradeHistory = payload.tradeHistory;
+    if(payload.tradeDecisions) STATE.tradeDecisions = payload.tradeDecisions;
+    if(payload.session !== undefined) STATE.session = payload.session;
+    if(payload.sessionReports) STATE.sessionReports = payload.sessionReports;
+    if(payload.pendingWatches) STATE.pendingWatches = payload.pendingWatches;
+    if(payload.pendingConfirms) STATE.pendingConfirms = payload.pendingConfirms;
+    if(payload.paperAccount) STATE.paperAccount = payload.paperAccount;
+    syncLastReceivedAt = payload.syncedAt || Date.now();
+    // Persistera lokalt också (utan att trigga ny sync-push)
+    saveTradeData();
+    saveSessionData();
+    saveWatchState();
+    if(STATE.paperAccount) savePaperAccount();
+    renderTradesPage();
+    renderPaperBadge();
+  } finally {
+    isApplyingSync = false;
+  }
 }
 
 async function pullSyncFromServer(){
@@ -4587,6 +4603,10 @@ async function pushSyncToServer(){
 
 // Debounced save — kallas efter varje state-ändring
 function syncDebounced(){
+  // Skip om vi just laddade från server (annars cirkulär push av samma data)
+  if(isApplyingSync) return;
+  // Markera lokal förändring — skyddar mot pull som skriver över nyare data
+  localLastChangeAt = Date.now();
   if(syncSaveTimer) clearTimeout(syncSaveTimer);
   syncSaveTimer = setTimeout(()=>{
     pushSyncToServer();
@@ -4739,6 +4759,10 @@ function resolveScalpTrade(p){
   if(p.inSession && STATE.session && STATE.session.sessionNum === p.sessionNum){
     recordSessionTrade(p.score || 0, won, pnl, p.sym, p.side);
   }
+  // KRITISKT: Push omedelbart till sync-server (inte vänta på debounce)
+  // Detta säkerställer att andra devices får uppdaterad balance utan delay
+  localLastChangeAt = Date.now();
+  pushSyncToServer().catch(()=>{});
 }
 
 // Tick-loop kallar denna för att auto-stänga utgångna trades
