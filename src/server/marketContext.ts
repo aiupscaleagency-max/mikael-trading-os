@@ -1,5 +1,6 @@
 import { computeIndicators } from "../indicators/ta.js";
 import { log } from "../logger.js";
+import { detectAllPatterns, type DetectedPattern } from "./patternDetection.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Market Context — ger agenterna ÖGONEN på marknaden
@@ -36,6 +37,8 @@ interface SymbolSnapshot {
   trend: string; // "bullish" | "bearish" | "neutral"
   nearResistance: boolean;
   nearSupport: boolean;
+  patterns: DetectedPattern[];
+  obv: number | null;
 }
 
 let cache: MarketSnapshot | null = null;
@@ -91,12 +94,20 @@ export async function getMarketSnapshot(): Promise<MarketSnapshot | null> {
         const low24 = parseFloat(ticker.lowPrice);
         const nearResistance = price > high24 * 0.995;
         const nearSupport = price < low24 * 1.005;
+        // Detektera alla mönster (candlestick + reversal + continuation)
+        const patternsRaw = detectAllPatterns(klines.map((k, i) => ({
+          time: i,
+          open: 0, // ej tillgänglig från ind-input, men candlestick-detection behöver det
+          high: k.high,
+          low: k.low,
+          close: k.close,
+        })));
 
         symbolSnapshots.push({
           symbol: sym,
           price,
           changePct24h: parseFloat(ticker.priceChangePercent),
-          volume24h: parseFloat(ticker.quoteVolume), // USD-volume
+          volume24h: parseFloat(ticker.quoteVolume),
           high24h: high24,
           low24h: low24,
           rsi14: ind.rsi14,
@@ -105,9 +116,11 @@ export async function getMarketSnapshot(): Promise<MarketSnapshot | null> {
           ema20: ind.ema20,
           macd: ind.macd,
           atr14: ind.atr14,
+          obv: ind.obv,
           trend,
           nearResistance,
           nearSupport,
+          patterns: patternsRaw.slice(0, 3), // top 3 senaste patterns
         });
       } catch (err) {
         log.warn(`Klines-fel för ${sym}: ${err instanceof Error ? err.message : String(err)}`);
@@ -153,8 +166,23 @@ export function formatSnapshotForPrompt(snap: MarketSnapshot): string {
     if (s.nearSupport) notes.push("🔽 nära 24h-low");
     if (s.rsi14 != null && s.rsi14 > 70) notes.push("överköpt");
     if (s.rsi14 != null && s.rsi14 < 30) notes.push("översålt");
+    // Lägg till detekterade patterns som notes
+    for (const p of s.patterns.slice(0, 2)) {
+      const arrow = p.bullish === true ? "📈" : p.bullish === false ? "📉" : "⚠";
+      notes.push(`${arrow} ${p.type.replace(/_/g, " ")} (${p.strength}/5)`);
+    }
     const note = notes.join(", ") || "–";
     lines.push(`| ${s.symbol} | $${s.price.toFixed(s.price > 100 ? 2 : 4)} | ${s.changePct24h >= 0 ? "+" : ""}${s.changePct24h.toFixed(2)}% | ${rsiStr} | ${s.trend} | $${sma20} | $${sma50} | ${hist} | ${note} |`);
+  }
+  // Lägg till en sektion med alla detekterade patterns
+  const allPatterns = snap.symbols.flatMap((s) => s.patterns.map((p) => ({ symbol: s.symbol, ...p })));
+  if (allPatterns.length > 0) {
+    lines.push("");
+    lines.push("## 🔍 Detekterade chart-mönster");
+    for (const p of allPatterns.slice(0, 8)) {
+      const dir = p.bullish === true ? "BULLISH" : p.bullish === false ? "BEARISH" : "NEUTRAL";
+      lines.push(`- **${p.symbol}**: ${p.type.replace(/_/g, " ")} (${dir}, styrka ${p.strength}/5) — ${p.description}`);
+    }
   }
   lines.push(``);
   lines.push(`*Källa: Binance public API · Cache 60s*`);

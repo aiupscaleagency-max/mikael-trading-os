@@ -120,17 +120,32 @@ export interface IndicatorSummary {
   rsi14: number | null;
   atr14: number | null;
   macd: MacdResult | null;
+  obv: number | null;
   changePct24: number | null;
+}
+
+// On-Balance Volume — momentum-indikator (pris + volym)
+// Stigande OBV = ackumulering, fallande = distribution
+export function obv(closes: number[], volumes: number[]): number | null {
+  if (closes.length < 2 || closes.length !== volumes.length) return null;
+  let total = 0;
+  for (let i = 1; i < closes.length; i++) {
+    if (closes[i]! > closes[i - 1]!) total += volumes[i]!;
+    else if (closes[i]! < closes[i - 1]!) total -= volumes[i]!;
+  }
+  return total;
 }
 
 export function computeIndicators(klines: {
   high: number;
   low: number;
   close: number;
+  volume?: number;
 }[]): IndicatorSummary {
   const closes = klines.map((k) => k.close);
   const highs = klines.map((k) => k.high);
   const lows = klines.map((k) => k.low);
+  const volumes = klines.map((k) => k.volume ?? 0);
   const lastClose = closes[closes.length - 1] ?? 0;
   const first24h = closes.length >= 24 ? closes[closes.length - 24]! : closes[0]!;
   const changePct24 = first24h > 0 ? ((lastClose - first24h) / first24h) * 100 : null;
@@ -142,6 +157,7 @@ export function computeIndicators(klines: {
     rsi14: rsi(closes, 14),
     atr14: atr(highs, lows, closes, 14),
     macd: macd(closes),
+    obv: obv(closes, volumes),
     changePct24,
   };
 }
