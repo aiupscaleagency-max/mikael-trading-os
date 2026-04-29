@@ -1481,8 +1481,8 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <div style="display:grid;grid-template-columns:1fr;gap:10px;margin:0 10px">
-    <!-- Test-konto hero-card -->
-    <div class="paper-card" id="paper-card">
+    <!-- Test-konto hero-card (gömd — speglas nu via Binance Live Sync nedan) -->
+    <div class="paper-card" id="paper-card" style="display:none">
       <div class="pc-row">
         <div class="pc-col">
           <div class="pc-lbl">📊 TEST-KONTO SALDO</div>
@@ -2687,27 +2687,17 @@ async function executeBinanceOrder(sym, side, amount, mode){
 }
 
 function requestTradeExecution(sym, side, amount, timeframeSec){
-  // Routing baserat på header-mode (currentUiMode: paper/propose/live)
-  // - paper / TEST: lokal simulering (gamla flödet)
-  // - propose / TESTNET: riktiga ordrar mot Binance Testnet
-  // - live: riktiga ordrar mot Binance Mainnet (RIKTIGA pengar, max $5/trade)
-  if(currentUiMode === "live"){
-    if(amount > 5){
-      pushInAppAlert(`🛡 LIVE-säkerhetslås: max $5/trade. Sänk beloppet eller kör i TEST-mode.`, 6000);
-      return null;
-    }
-    executeBinanceOrder(sym, side, amount, "live");
-    return { id: "live-pending-"+Date.now(), sym, side, amount, mode: "live" };
+  // Mikes regel: ALLT går till Binance API (testnet eller live)
+  // Ingen lokal paper-simulering — saldo speglas alltid från Binance
+  // - TEST/paper + PROPOSE = Binance Testnet (gratis demo USDT)
+  // - LIVE = Binance Mainnet (riktiga pengar, max $5/trade)
+  const mode = currentUiMode === "live" ? "live" : "testnet";
+  if(mode === "live" && amount > 5){
+    pushInAppAlert(`🛡 LIVE-säkerhetslås: max $5/trade. Sänk beloppet eller byt till TEST/PROPOSE.`, 6000);
+    return null;
   }
-  if(currentUiMode === "propose"){
-    executeBinanceOrder(sym, side, amount, "testnet");
-    return { id: "testnet-pending-"+Date.now(), sym, side, amount, mode: "testnet" };
-  }
-  // TEST-mode: lokal simulering som förut
-  if(STATE.session){
-    return createWatch(sym, side, amount, timeframeSec);
-  }
-  return simulateExecuteTrade(sym, side, amount, timeframeSec);
+  executeBinanceOrder(sym, side, amount, mode);
+  return { id: mode+"-pending-"+Date.now(), sym, side, amount, mode };
 }
 
 /* ======================================================================
@@ -4215,7 +4205,7 @@ function simulateTeamResponse(instr){
   const i = (instr||"").toLowerCase();
   const pick = a => a[Math.floor(Math.random()*a.length)];
   const isTest = CFG.mode !== "live";
-  const testNote = isTest ? `\n\n_(TEST-läge — simulerad order, ingen riktig pengar.)_` : "";
+  const testNote = isTest ? `\n\n_(${currentUiMode === "live" ? "💚 LIVE — RIKTIGA PENGAR via Binance Mainnet" : "🧪 TESTNET — riktig API mot Binance Testnet, demo-pengar"})_` : "";
 
   // Klassa intent — för att kunna respondera mänskligt
   const { intent, contextual, lastTeamMsg } = classifyIntent(instr);
@@ -6582,13 +6572,26 @@ async function refreshBinanceSync(){
       const tnOk = data.testnet?.configured;
       const liveOk = data.live?.configured;
       modeTag.textContent = (tnOk && liveOk) ? "DUAL-MODE" : (liveOk ? "LIVE" : (tnOk ? "TESTNET" : "EJ ANSLUTET"));
-      modeTag.style.color = liveOk ? "#22c55e" : "#f0b90b"; // GRÖN för live (Mikes preferens)
+      modeTag.style.color = liveOk ? "#22c55e" : "#f0b90b";
     }
-    // Uppdatera header live-balance med riktiga Binance-pengar
+    // Header LIVE-balance (mainnet, riktiga pengar)
     const lbEq = document.getElementById("lb-equity");
     if(lbEq && data.live?.cashUsdt !== undefined){
       const total = data.live.totalUsdt || data.live.cashUsdt;
       lbEq.textContent = "$" + total.toFixed(2);
+    }
+    // Header TEST-balance (= testnet-saldo, INTE paper-simulering längre)
+    // Mike's regel: TEST-knappen ska speglas från Binance Testnet
+    const pbEq = document.getElementById("pb-equity");
+    const pbPnl = document.getElementById("pb-pnl");
+    if(pbEq && data.testnet?.cashUsdt !== undefined){
+      const tnTotal = data.testnet.totalUsdt || data.testnet.cashUsdt;
+      pbEq.textContent = "$" + tnTotal.toFixed(2);
+    }
+    if(pbPnl){
+      // Räkna PnL från testnet-trades (24h fill-history)
+      pbPnl.textContent = "TESTNET";
+      pbPnl.className = "";
     }
     if(timeTag) timeTag.textContent = "uppdaterat " + new Date().toLocaleTimeString().slice(0,8);
     const safetyHtml = `
