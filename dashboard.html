@@ -2330,6 +2330,51 @@ const WATCH_INTERVAL_MS = 30000;       // Skanna var 30s
 const WATCH_MAX_DURATION_MS = 15*60*1000; // Max 15 min watch
 const CONFIRM_TIMEOUT_MS = 5*60*1000;     // 5 min att bekräfta efter A+ hit
 
+// ─── Säkerhetsregler för auto-confirm (sessions) ───
+const SAFETY_DAILY_LOSS_CAP_PCT = 0.05;   // Max 5% förlust av equity per dag → STOPP
+const SAFETY_MAX_OPEN_POSITIONS = 8;       // Max 8 samtidiga öppna positioner
+const SAFETY_MAX_STAKE_PCT = 0.05;         // Max 5% av equity per enskild trade (hård cap)
+const SAFETY_MAX_DAILY_TRADES = 30;        // Max 30 trades per dag
+
+// Räkna förlust dagens hittills (sedan kl 00:00 lokalt)
+function calcDailyLoss(){
+  const startOfDay = new Date();
+  startOfDay.setHours(0,0,0,0);
+  const todayHistory = (STATE.tradeHistory || []).filter(h => h.closedAt >= startOfDay.getTime());
+  return todayHistory.reduce((sum, h) => sum + (h.pnl || 0), 0); // negativt = förlust
+}
+function calcDailyTradeCount(){
+  const startOfDay = new Date();
+  startOfDay.setHours(0,0,0,0);
+  return (STATE.tradeHistory || []).filter(h => h.closedAt >= startOfDay.getTime()).length;
+}
+
+// Kolla om säkerhetsreglerna tillåter en ny trade — returnerar {ok, reason}
+function checkSafetyGates(stake){
+  const equity = calcTotalEquity();
+  // 1. Daglig förlust-cap
+  const dailyLoss = calcDailyLoss();
+  const lossCap = -equity * SAFETY_DAILY_LOSS_CAP_PCT;
+  if(dailyLoss < lossCap){
+    return {ok:false, reason:`Daglig loss-cap uppnådd: ${dailyLoss.toFixed(0)} < ${lossCap.toFixed(0)} (5% av equity). Trading stoppad till imorgon.`};
+  }
+  // 2. Max stake
+  if(stake > equity * SAFETY_MAX_STAKE_PCT){
+    return {ok:false, reason:`Stake $${stake} överstiger 5% av equity ($${(equity*SAFETY_MAX_STAKE_PCT).toFixed(0)}). Sänk beloppet.`};
+  }
+  // 3. Max öppna positioner
+  const openCount = (STATE.tradePositions || []).length;
+  if(openCount >= SAFETY_MAX_OPEN_POSITIONS){
+    return {ok:false, reason:`Max ${SAFETY_MAX_OPEN_POSITIONS} samtidiga positioner nådda. Stäng några innan nya öppnas.`};
+  }
+  // 4. Max trades per dag
+  const dailyTrades = calcDailyTradeCount();
+  if(dailyTrades >= SAFETY_MAX_DAILY_TRADES){
+    return {ok:false, reason:`Max ${SAFETY_MAX_DAILY_TRADES} trades per dag nådda. Vänta tills imorgon.`};
+  }
+  return {ok:true};
+}
+
 function ensureWatchState(){
   if(!STATE.pendingWatches) STATE.pendingWatches = [];
   if(!STATE.pendingConfirms) STATE.pendingConfirms = [];
@@ -2418,11 +2463,34 @@ function scanWatches(){
         expiresAt: now + CONFIRM_TIMEOUT_MS,
         sessionNum: w.sessionNum
       };
-      STATE.pendingConfirms.push(confirm);
       const sideLabel = w.side==='BUY' ? '📈 LONG' : '📉 SHORT';
-      const msg = `🎯 <b>A+ Setup hittad!</b>\n${w.sym} ${sideLabel} $${w.amount}\nScore: <b>${score}/10</b> · ${setupMeta.label}\nEntry: ${formatPrice(entry, w.sym)}\nSL: ${formatPrice(confirm.suggestedSL, w.sym)} (-1.2%)\nTP: ${formatPrice(confirm.suggestedTP, w.sym)} (+2.4%)\n⏱ Bekräfta inom 5 min på dashboard`;
-      pushInAppAlert(`🎯 A+ Setup! ${w.sym} ${sideLabel} score ${score}/10 (${setupMeta.label}). Bekräfta inom 5 min.`, 12000);
-      sendTelegramMessage(msg).catch(()=>{});
+      // AUTO-CONFIRM: om watch är från auto-fill och session har autoConfirm-flagga
+      // → exekvera direkt utan att vänta på Mike
+      const autoConfirm = w.fromAutoFill && STATE.session?.autoConfirm;
+      if(autoConfirm){
+        // Säkerhetsnät INNAN auto-execute
+        const safety = checkSafetyGates(w.amount);
+        if(!safety.ok){
+          // STOPP — flytta till pending så Mike kan se varning
+          STATE.pendingConfirms.push(confirm);
+          const stopMsg = `🛡 <b>SÄKERHETSREGEL TRIGGRAD</b>\n${safety.reason}\n\nSetup väntar i bekräftelse — du måste manuellt godkänna eller avbryta.`;
+          pushInAppAlert(`🛡 Säkerhetsstopp: ${safety.reason}`, 10000);
+          sendTelegramMessage(stopMsg).catch(()=>{});
+        } else {
+          // Auto-execute direkt
+          const successMsg = `⚡ <b>AUTO-EXECUTED</b> · ${w.sym} ${sideLabel} $${w.amount}\nScore: <b>${score}/10</b> · ${setupMeta.label}\nEntry: ${formatPrice(entry, w.sym)} · SL ${formatPrice(confirm.suggestedSL, w.sym)} · TP ${formatPrice(confirm.suggestedTP, w.sym)}`;
+          pushInAppAlert(`⚡ Auto: ${w.sym} ${sideLabel} score ${score}/10 (${setupMeta.label})`, 5000);
+          sendTelegramMessage(successMsg).catch(()=>{});
+          executeConfirmedTrade(confirm);
+          continue; // skip normal pending-confirm flow
+        }
+      } else {
+        // Manuell flow: lägg till pending för bekräftelse
+        STATE.pendingConfirms.push(confirm);
+        const msg = `🎯 <b>A+ Setup hittad!</b>\n${w.sym} ${sideLabel} $${w.amount}\nScore: <b>${score}/10</b> · ${setupMeta.label}\nEntry: ${formatPrice(entry, w.sym)}\nSL: ${formatPrice(confirm.suggestedSL, w.sym)} (-1.2%)\nTP: ${formatPrice(confirm.suggestedTP, w.sym)} (+2.4%)\n⏱ Bekräfta inom 5 min på dashboard`;
+        pushInAppAlert(`🎯 A+ Setup! ${w.sym} ${sideLabel} score ${score}/10 (${setupMeta.label}). Bekräfta inom 5 min.`, 12000);
+        sendTelegramMessage(msg).catch(()=>{});
+      }
     } else {
       // Inte A+, fortsätt bevaka
       remaining.push(w);
@@ -4189,9 +4257,11 @@ function simulateTeamResponse(instr){
       usedSyms.add(sym);
       const isLong = Math.random() > 0.3;
       const side = isLong ? "BUY" : "SELL";
-      const t = simulateExecuteTrade(sym, side, amount, timeframeSec);
+      // Använd requestTradeExecution så session-mode → bevakning, ej direct execute
+      // (fixar bug: "lägg 5 trades" → bara 1 lades pga score-filter på simulateExecuteTrade)
+      const t = requestTradeExecution(sym, side, amount, timeframeSec);
       if(t){
-        t.reasoning = (isLong ? pick(longTalk) : pick(shortTalk))(sym);
+        if(t.reasoning !== undefined) t.reasoning = (isLong ? pick(longTalk) : pick(shortTalk))(sym);
       }
       trades.push(t);
     }
@@ -4306,38 +4376,49 @@ function startSession(){
 }
 
 // Auto-fyll session: skapa watches för alla återstående trades automatiskt
+// Auto-confirm = trades exekveras direkt utan bekräftelse (men med säkerhetsregler)
 function autoFillSession(){
   if(!STATE.session) { alert("Ingen aktiv session"); return; }
   const remaining = STATE.session.totalTrades - STATE.session.tradeNum;
   if(remaining <= 0){ alert("Sessionen är redan full"); return; }
 
-  // Förslag: dela upp i blandning crypto + forex
+  // Säkerhetsnät innan auto-fyll
+  const stake = calcAutoPositionSize(); // 2% av equity
+  const safety = checkSafetyGates(stake);
+  if(!safety.ok){
+    alert(`🛡 Säkerhetsregel triggrad:\n\n${safety.reason}`);
+    return;
+  }
+
   const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","AVAXUSDT","DOGEUSDT","BNBUSDT","ADAUSDT"];
   const forexSyms = ["EUR/USD","GBP/USD","USD/JPY","AUD/USD","USD/CHF"];
-
-  // Standard: 70% crypto, 30% forex (matchar dagens marknad)
-  const stake = calcAutoPositionSize(); // 2% av equity
   const tf = STATE.betTf || SCALP_DEFAULT_SEC;
 
-  // Confirm med Mike
-  const confirmMsg = `Auto-fyll Session ${STATE.session.sessionNum}: ${remaining} watches startar med stake $${stake} · ${formatTfHuman(tf)} per scalp.\n\nSök A+ setup i: ${cryptoSyms.slice(0,4).join(", ")} + ${forexSyms.slice(0,2).join(", ")}.\n\nFortsätta?`;
+  // Confirm med Mike (förklara säkerhetsreglerna)
+  const eq = calcTotalEquity();
+  const lossCap = (eq * SAFETY_DAILY_LOSS_CAP_PCT).toFixed(0);
+  const confirmMsg = `⚡ AUTO-FYLL Session ${STATE.session.sessionNum}\n\n${remaining} watches startar:\n• Stake: $${stake} (2% av equity)\n• Tid: ${formatTfHuman(tf)} per scalp\n• Mix: 70% crypto + 30% forex\n• A+ tröskel: score ≥${STATE.session.scoreThreshold}\n\n🛡 SÄKERHETSREGLER (auto-stopp):\n• Daglig loss-cap: -$${lossCap} (5% av equity)\n• Max ${SAFETY_MAX_OPEN_POSITIONS} samtidiga positioner\n• Max ${SAFETY_MAX_DAILY_TRADES} trades/dag\n• A+ setups exekveras AUTOMATISKT (ingen bekräftelse behövs)\n\nFortsätta?`;
   if(!confirm(confirmMsg)) return;
 
-  // Sätt upp watches
+  // Aktivera auto-confirm för session
+  STATE.session.autoConfirm = true;
+  saveSessionData();
+
+  // Sätt upp watches med autoFill-flagga
   let placed = 0;
   for(let i = 0; i < remaining; i++){
-    // Mixa crypto och forex
     const useForex = (i % 3 === 2); // var 3:e = forex
     const pool = useForex ? forexSyms : cryptoSyms;
     const sym = pool[i % pool.length];
     const side = Math.random() > 0.4 ? "BUY" : "SELL"; // 60% long bias
-    if(STATE.session.scoreThreshold){
-      // Skapa watch (även om vi inte är i confirmed-watch flow ännu)
-      createWatch(sym, side, stake, tf);
+    const w = createWatch(sym, side, stake, tf);
+    if(w){
+      w.fromAutoFill = true; // Flagga: auto-confirm gäller för denna watch
       placed++;
     }
   }
-  pushInAppAlert(`⚡ Auto-fyll: ${placed} watches startade · söker A+ setups · stake $${stake} · max 15 min per`, 6000);
+  saveWatchState();
+  pushInAppAlert(`⚡ Auto-fyll: ${placed} watches startade · stake $${stake} · A+ exekveras direkt · säkerhetsregler aktiva`, 7000);
   renderTradesPage();
 }
 
