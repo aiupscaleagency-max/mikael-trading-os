@@ -1300,7 +1300,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         <span class="cur-price" id="cur-price">--</span>
         <span id="cur-chg" class="ch">--</span>
         <span id="data-source-indicator" style="margin-left:auto;font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px"><span style="color:var(--label)">○</span> Demo (simulerade priser)</span>
-        <span id="sync-indicator" title="Cross-device sync mellan dator + mobil" style="font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px;margin-left:10px"><span style="color:var(--label)">○</span> Sync init...</span>
+        <span id="sync-indicator" title="Cross-device sync mellan dator + mobil — klicka för tvinga refresh från server" onclick="forceSyncFromServer()" style="font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px;margin-left:10px;cursor:pointer;user-select:none"><span style="color:var(--label)">○</span> Sync init...</span>
         <div class="tf-group" id="tf-group">
           <button data-tf="1m">1m</button>
           <button data-tf="5m">5m</button>
@@ -4661,12 +4661,15 @@ function buildSyncPayload(){
 
 function applySyncPayload(payload){
   if(!payload) return;
-  // KRITISKT: skydd mot race där pull skriver över nyare lokal data
-  // Om lokal förändring skedde efter payload.syncedAt → skip apply
-  if(localLastChangeAt && payload.syncedAt && localLastChangeAt > payload.syncedAt){
-    console.log(`[sync] Skip apply — lokal data nyare (${localLastChangeAt} > ${payload.syncedAt})`);
+  // SKYDD: Om vi AKTIVT skriver lokalt (senaste 30s), behåll lokal state
+  // Annars: server är ALLTID source of truth (löser stale-tab problem)
+  const ACTIVE_WRITE_WINDOW_MS = 30000; // 30s = aktiv användare
+  const isActivelyWriting = localLastChangeAt && (Date.now() - localLastChangeAt) < ACTIVE_WRITE_WINDOW_MS;
+  if(isActivelyWriting && payload.syncedAt && localLastChangeAt > payload.syncedAt){
+    console.log(`[sync] Skip apply — aktiv lokal användare nyare än server`);
     return;
   }
+  // Om server har nyare data ELLER vi inte aktivt skriver → server vinner
   isApplyingSync = true;
   try {
     if(payload.tradePositions) STATE.tradePositions = payload.tradePositions;
@@ -4743,12 +4746,12 @@ function syncDebounced(){
   }, SYNC_DEBOUNCE_MS);
 }
 
-// Subscribe på SSE för realtidssync från andra devices
+// Subscribe på SSE för realtidssync från andra devices/tabs
 function startSyncSubscription(){
-  // Initial pull
+  // Initial pull (och vänta innan vi renderar — server är source of truth)
   pullSyncFromServer();
-  // Pull var 5s som backup om SSE ej fungerar
-  setInterval(pullSyncFromServer, 5000);
+  // Pull var 3s som backup om SSE ej fungerar (snabbare än tidigare 5s)
+  setInterval(pullSyncFromServer, 3000);
   // SSE-subscription
   try {
     const es = new EventSource("/api/events");
@@ -4762,6 +4765,45 @@ function startSyncSubscription(){
       } catch(_){}
     });
   } catch(_){}
+
+  // Cross-tab sync via localStorage 'storage' event
+  // När flik 1 skriver → flik 2 (samma origin) får event direkt
+  window.addEventListener("storage", (e)=>{
+    if(!e.key) return;
+    if(e.key.startsWith("trading_")){
+      console.log(`[storage-event] ${e.key} ändrad i annan flik — pull från server`);
+      // Pull från server som single source of truth
+      pullSyncFromServer();
+    }
+  });
+
+  // När flik blir synlig igen → pull färsk state (annan flik kan ha ändrat)
+  document.addEventListener("visibilitychange", ()=>{
+    if(document.visibilityState === "visible"){
+      console.log(`[visibility] Flik aktiverad — pull från server`);
+      pullSyncFromServer();
+    }
+  });
+
+  // Innan flik stängs → push lokala ändringar
+  window.addEventListener("beforeunload", ()=>{
+    if(syncSaveTimer){
+      clearTimeout(syncSaveTimer);
+      // Synkron push (sendBeacon för att garantera leverans även vid close)
+      try {
+        const payload = buildSyncPayload();
+        const blob = new Blob([JSON.stringify({clientId: SYNC_CLIENT_ID, state: payload})], {type:"application/json"});
+        navigator.sendBeacon("/api/sync/save", blob);
+      } catch(_){}
+    }
+  });
+}
+
+// Manuell "tvinga sync från server" — bryggar gap om något fastnar
+function forceSyncFromServer(){
+  localLastChangeAt = 0; // resetta lokal-skyddet
+  pullSyncFromServer();
+  pushInAppAlert(`🔄 Tvingad sync från server — alla flikar uppdateras`, 3000, {telegram:false});
 }
 
 // Global random-pick helper (används i flera scopes)
