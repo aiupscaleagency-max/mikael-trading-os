@@ -341,6 +341,16 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 
 /* BET PANEL */
 .bet-panel select,.bet-panel input{width:100%;margin-bottom:8px}
+/* Custom-tid input — säkerställ klickbar på mobil/surfplatta */
+#bet-tf-custom{margin-bottom:0 !important;-webkit-user-select:text !important;user-select:text !important;pointer-events:auto !important;touch-action:manipulation;cursor:text}
+#bet-tf-unit{margin-bottom:0 !important;pointer-events:auto !important;cursor:pointer}
+#bet-tf-apply{margin-bottom:0 !important;pointer-events:auto !important;touch-action:manipulation;cursor:pointer;-webkit-tap-highlight-color:transparent}
+#bet-tf-apply:active{transform:scale(0.96)}
+@media(max-width:480px){
+  #bet-tf-custom{font-size:16px !important;padding:10px !important} /* iOS: undvik zoom på fokus */
+  #bet-tf-unit{font-size:13px !important;padding:10px 6px !important}
+  #bet-tf-apply{font-size:12px !important;padding:10px !important;min-height:42px}
+}
 .bet-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
 .bet-tf{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px}
 .bet-tf button{flex:1;min-width:48px;padding:6px;background:var(--card2);border:1px solid var(--border);border-radius:3px;color:var(--dim);font-size:11px}
@@ -1352,17 +1362,18 @@ body.app-state-onboard .fc-panel{display:none !important}
         <button data-tf="14400">4h</button>
         <button data-tf="86400">1d</button>
       </div>
-      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;font-size:10px">
-        <label style="color:var(--dim);min-width:78px">Egen tid:</label>
-        <input type="number" id="bet-tf-custom" placeholder="30" min="1" max="86400" step="1" style="flex:1;padding:6px;background:var(--card2);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:12px;font-weight:700;font-family:'SF Mono',monospace" />
-        <select id="bet-tf-unit" style="padding:6px;background:var(--card2);border:1px solid var(--cyan);border-radius:3px;color:var(--cyan);font-size:11px;font-weight:700">
+      <div style="margin-bottom:6px;font-size:10px;color:var(--dim);font-weight:700;letter-spacing:.4px;text-transform:uppercase">⏱ Egen tid</div>
+      <div style="display:grid;grid-template-columns:1fr 70px 56px;gap:6px;align-items:stretch;margin-bottom:4px">
+        <input type="text" id="bet-tf-custom" placeholder="30" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+               style="padding:8px 10px;background:var(--card2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:14px;font-weight:700;font-family:'SF Mono',monospace;width:100%;box-sizing:border-box;outline:none;-webkit-user-select:text;user-select:text" />
+        <select id="bet-tf-unit" style="padding:8px 6px;background:var(--card2);border:1px solid var(--cyan);border-radius:4px;color:var(--cyan);font-size:12px;font-weight:700;cursor:pointer;-webkit-appearance:menulist;appearance:menulist">
           <option value="1" selected>sek</option>
           <option value="60">min</option>
           <option value="3600">tim</option>
         </select>
-        <button id="bet-tf-apply" style="padding:6px 12px;background:var(--cyan);color:#000;border:none;border-radius:3px;font-weight:700;font-size:10px;cursor:pointer">SET</button>
+        <button type="button" id="bet-tf-apply" style="padding:8px;background:var(--cyan);color:#000;border:none;border-radius:4px;font-weight:800;font-size:11px;cursor:pointer;letter-spacing:.5px">SET</button>
       </div>
-      <div style="font-size:9px;color:var(--dim);margin-bottom:10px">💡 Skriv t.ex. <b>30 sek</b>, <b>2 min</b>, <b>1 tim</b> · Aktuell: <span id="bet-tf-current" style="color:var(--cyan);font-weight:700">5m</span></div>
+      <div style="font-size:10px;color:var(--dim);margin-bottom:10px;line-height:1.5">💡 Skriv t.ex. <b style="color:var(--text)">30</b> + dropdown <b style="color:var(--cyan)">sek</b> + <b>SET</b> · Aktuell: <span id="bet-tf-current" style="color:var(--cyan);font-weight:700">5m</span></div>
       <label style="font-size:10px;color:var(--dim)">Belopp (USD)</label>
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
         <input type="number" id="bet-amt" value="10" min="1" step="1" style="flex:1" />
@@ -5780,9 +5791,14 @@ function wire(){
   // Custom-tid input: "30 sek" / "8 min" / "1 tim" osv
   function applyCustomTf(){
     const inp = document.getElementById("bet-tf-custom");
-    const val = parseFloat(inp.value);
+    if(!inp){ console.warn("bet-tf-custom input saknas"); return; }
+    // Tillåt input som "30s", "30 sek", "2min" — extrahera siffran
+    const raw = (inp.value || "").toString().trim();
+    const numMatch = raw.match(/(\d+(?:[.,]\d+)?)/);
+    if(!numMatch){ alert("Ange ett tal (t.ex. 30)"); inp.focus(); return; }
+    const val = parseFloat(numMatch[1].replace(",","."));
     const unit = parseFloat(document.getElementById("bet-tf-unit").value);
-    if(!val || val < 1){ alert("Ange ett positivt tal"); return; }
+    if(!val || val < 1){ alert("Ange ett positivt tal"); inp.focus(); return; }
     const seconds = Math.round(val * unit);
     if(seconds < 5){ alert("Minst 5 sekunder"); return; }
     if(seconds > 86400*7){ alert("Max 7 dagar"); return; }
@@ -5793,11 +5809,22 @@ function wire(){
     log_ok(`Custom tid satt: ${formatTfHuman(seconds)} (${seconds}s)`);
     pushInAppAlert(`⏱ Tidshorisont satt: ${formatTfHuman(seconds)}`, 2500, {telegram:false});
   }
-  document.getElementById("bet-tf-apply")?.addEventListener("click", applyCustomTf);
+  // SET-knapp (touch + click för mobil)
+  const setBtn = document.getElementById("bet-tf-apply");
+  if(setBtn){
+    setBtn.addEventListener("click", (e)=>{ e.preventDefault(); applyCustomTf(); });
+    setBtn.addEventListener("touchend", (e)=>{ e.preventDefault(); applyCustomTf(); }, {passive:false});
+  }
   // Tillåt Enter i input → trigger SET
-  document.getElementById("bet-tf-custom")?.addEventListener("keypress", e=>{
-    if(e.key === "Enter"){ e.preventDefault(); applyCustomTf(); }
-  });
+  const tfInput = document.getElementById("bet-tf-custom");
+  if(tfInput){
+    tfInput.addEventListener("keypress", e=>{
+      if(e.key === "Enter"){ e.preventDefault(); applyCustomTf(); }
+    });
+    // Säkerställ att input är klickbart (mobil-fix)
+    tfInput.addEventListener("focus", ()=>{ tfInput.style.borderColor = "var(--cyan)"; });
+    tfInput.addEventListener("blur", ()=>{ tfInput.style.borderColor = "var(--border)"; });
+  }
   // Uppdatera "Aktuell"-visning när tf-button klickas
   document.getElementById("bet-tf").addEventListener("click", e=>{
     if(!e.target.dataset.tf) return;
