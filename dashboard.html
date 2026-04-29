@@ -1818,8 +1818,8 @@ const STATE = {
 // Session Mode — defaults
 const SESSION_TARGET_TOTAL = 6;     // 6 sessioner
 const SESSION_TRADES = 5;            // 5 trades per session
-const SESSION_SCORE_THRESHOLD = 8;   // Bara A+ setups (score ≥8) under session
-const SESSION_TARGET_WINRATE = 0.75; // Mål: 75% winrate
+const SESSION_SCORE_THRESHOLD = 9;   // Bara A+ setups (score ≥9 = 82% förväntat)
+const SESSION_TARGET_WINRATE = 0.80; // Mikes nya krav: minst 80% winrate
 
 // ─── Candlestick pattern-detection ───
 // Läser senaste candles och letar efter klassiska pattern (Tomas-simulering på riktig data)
@@ -4243,10 +4243,14 @@ function simulateTeamResponse(instr){
 
   // Frågor / utmaningar (prefix-matchning för böjda former)
   if(/(välj|bestäm|plock|kör för mig|lägg|ta\s)/.test(i)){
-    // Välj symboluniversum baserat på user-intent (forex eller crypto)
+    // Välj symboluniversum baserat på user-intent
     const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT"];
     const forexSyms = ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/GBP","EUR/JPY","GBP/JPY"];
-    const symbols = isForex ? forexSyms : cryptoSyms;
+    // Bara forex om användaren explicit bad om det
+    // Bara crypto om användaren explicit bad om det
+    // ANNARS: Mikes regel — kombinera 50/50 forex + crypto
+    const explicitCrypto = /\b(crypto|krypto|btc|eth|sol)\b/.test(i) && !isForex;
+    const symbols = isForex ? forexSyms : (explicitCrypto ? cryptoSyms : [...cryptoSyms, ...forexSyms]);
 
     const trades = [];
     const usedSyms = new Set();
@@ -4411,17 +4415,17 @@ function autoFillSession(){
   // Confirm med Mike (förklara säkerhetsreglerna)
   const eq = calcTotalEquity();
   const lossCap = (eq * SAFETY_DAILY_LOSS_CAP_PCT).toFixed(0);
-  const confirmMsg = `⚡ AUTO-FYLL Session ${STATE.session.sessionNum}\n\n${remaining} watches startar:\n• Stake: $${stake} (2% av equity)\n• Tid: ${formatTfHuman(tf)} per scalp\n• Mix: 70% crypto + 30% forex\n• A+ tröskel: score ≥${STATE.session.scoreThreshold}\n\n🛡 SÄKERHETSREGLER (auto-stopp):\n• Daglig loss-cap: -$${lossCap} (5% av equity)\n• Max ${SAFETY_MAX_OPEN_POSITIONS} samtidiga positioner\n• Max ${SAFETY_MAX_DAILY_TRADES} trades/dag\n• A+ setups exekveras AUTOMATISKT (ingen bekräftelse behövs)\n\nFortsätta?`;
+  const confirmMsg = `⚡ AUTO-FYLL Session ${STATE.session.sessionNum}\n\n${remaining} watches startar:\n• Stake: $${stake} (2% av equity)\n• Tid: ${formatTfHuman(tf)} per scalp\n• Mix: 50/50 crypto + forex (Mikes regel)\n• A+ tröskel: score ≥${STATE.session.scoreThreshold} (= ${Math.round(scoreToWinrate(STATE.session.scoreThreshold)*100)}% förväntat winrate)\n• Mål: ${SESSION_TARGET_WINRATE*100}% session-winrate\n• Vinstmarginal: minst 65% per trade (payout 1.65-1.90x)\n\n🛡 SÄKERHETSREGLER (auto-stopp):\n• Daglig loss-cap: -$${lossCap} (5% av equity)\n• Max ${SAFETY_MAX_OPEN_POSITIONS} samtidiga positioner\n• Max ${SAFETY_MAX_DAILY_TRADES} trades/dag\n• A+ setups exekveras AUTOMATISKT (ingen bekräftelse behövs)\n\nFortsätta?`;
   if(!confirm(confirmMsg)) return;
 
   // Aktivera auto-confirm för session
   STATE.session.autoConfirm = true;
   saveSessionData();
 
-  // Sätt upp watches med autoFill-flagga
+  // Sätt upp watches med autoFill-flagga — 50/50 forex/crypto-mix (Mikes regel)
   let placed = 0;
   for(let i = 0; i < remaining; i++){
-    const useForex = (i % 3 === 2); // var 3:e = forex
+    const useForex = (i % 2 === 1); // varannan = forex (50/50 mix)
     const pool = useForex ? forexSyms : cryptoSyms;
     const sym = pool[i % pool.length];
     const side = Math.random() > 0.4 ? "BUY" : "SELL"; // 60% long bias
@@ -4617,11 +4621,11 @@ function calcTotalEquity(){
   return acc.cash + (STATE.tradePositions||[]).reduce((s,p)=>s+p.amount, 0) + calcUnrealizedPnl();
 }
 
-// Default scalping-config — payout som valutatrading (Mikes erfarenhet: 60-90% marginal)
-const SCALP_PAYOUT_MIN = 1.60;   // 60% marginal = $500 → $800
+// Default scalping-config — Mikes krav: minst 65% vinstmarginal per trade
+const SCALP_PAYOUT_MIN = 1.65;   // 65% marginal = $500 → $825 (Mikes nya minimum)
 const SCALP_PAYOUT_MAX = 1.90;   // 90% marginal = $500 → $950
 const SCALP_DEFAULT_SEC = 60;    // 1 min default — snabb testning + scalping
-const DEMO_AGENT_SKILL = 0.65;   // 65% win-rate i demo (simulerar agenter med edge)
+const DEMO_AGENT_SKILL = 0.80;   // 80% win-rate baseline (simulerar agent-edge)
 function randomPayout(){ return SCALP_PAYOUT_MIN + Math.random() * (SCALP_PAYOUT_MAX - SCALP_PAYOUT_MIN); }
 
 // Risk per trade — 2% av total equity (paper + öppna positioner + unrealized PnL)
