@@ -24,7 +24,7 @@ export interface TradePosition {
   id: string;
   sym: string;
   side: "BUY" | "SELL";
-  amount: number;          // stake i USD
+  amount: number;          // stake/notional i USD
   entry: number;
   qty: number;
   openedAt: number;
@@ -32,6 +32,15 @@ export interface TradePosition {
   timeframeSec: number;
   payoutMultiplier: number;
   payoutPct: number;
+  // Trade-modell:
+  // "binary" = scalp/options-style (vinst = stake × (payout-1), förlust = -stake)
+  //   → Funkar för Blofin scalping, Polymarket, demo-mode
+  // "spot"   = riktig spot-trading (PnL = (exit-entry) × qty - fees)
+  //   → Funkar för Binance spot, Oanda forex, riktig handel
+  tradeMode?: "binary" | "spot";
+  feeRate?: number;        // för spot: 0.001 = 0.1% taker (Binance default)
+  stopLoss?: number;       // för spot: pris som triggar SL
+  takeProfit?: number;     // för spot: pris som triggar TP
   score?: number;
   setupType?: string;
   setupLabel?: string;
@@ -251,6 +260,10 @@ export interface OpenTradeParams {
   inSession?: boolean;
   confirmed?: boolean;
   reasoning?: string;
+  tradeMode?: "binary" | "spot";  // default "binary" för bakåtkompat
+  feeRate?: number;                // för spot
+  stopLoss?: number;
+  takeProfit?: number;
 }
 
 export async function openTrade(clientId: string, params: OpenTradeParams): Promise<{ ok: boolean; trade?: TradePosition; state: FullTradeState; error?: string }> {
@@ -282,18 +295,24 @@ export async function openTrade(clientId: string, params: OpenTradeParams): Prom
     }
     const tf = params.timeframeSec || SCALP_DEFAULT_SEC;
     const payoutMult = randomPayout();
+    // Default: spot-mode för Binance/Oanda/Blofin (riktig PnL), binary för paper/demo
+    const tradeMode: "binary" | "spot" = params.tradeMode || (executor.mode === "paper" ? "binary" : "spot");
     const trade: TradePosition = {
-      id: executorResult.orderId, // använd executor-id (paper: paper-xxx, binance: orderId)
+      id: executorResult.orderId,
       sym: params.sym,
       side: params.side,
       amount: params.amount,
-      entry: executorResult.entryPrice, // FAKTISK fill-pris från executor
+      entry: executorResult.entryPrice,
       qty: executorResult.filledQuantity,
       openedAt: executorResult.timestamp,
       expiresAt: Date.now() + tf * 1000,
       timeframeSec: tf,
       payoutMultiplier: payoutMult,
       payoutPct: Math.round((payoutMult - 1) * 100),
+      tradeMode,
+      feeRate: params.feeRate ?? (tradeMode === "spot" ? 0.001 : 0), // 0.1% spot, 0% binary
+      stopLoss: params.stopLoss,
+      takeProfit: params.takeProfit,
       score: params.score,
       setupType: params.setupType,
       setupLabel: params.setupLabel,
@@ -464,21 +483,37 @@ export async function resolveTradeAgainstRealPrice(
   // Symbol-baserad routing: crypto → Binance/Paper, forex → Oanda
   const executor = getExecutorForSymbol(trade.sym);
   try {
-    const result = await executor.resolveOrder(tradeId, {
-      entryPrice: trade.entry,
-      symbol: trade.sym,
-      side: trade.side,
-      quoteAmount: trade.amount,
-      payoutMultiplier: trade.payoutMultiplier,
-    });
-    log.info(`[${executor.mode}] Resolved ${trade.sym} ${trade.side} → ${result.won ? "WIN" : "LOSS"} pnl ${result.pnl.toFixed(2)} @ ${result.exitPrice.toFixed(4)}`);
+    // Hämta exit-pris (bara pris, ingen riktig stäng-order för paper-spot)
+    const exitPrice = await executor.getPrice(trade.sym);
+
+    let pnl: number;
+    let won: boolean;
+
+    if (trade.tradeMode === "spot") {
+      // SPOT-MODELL: faktisk pris-skillnad × kvantitet - fees
+      // Identisk formel som riktig Binance/Oanda spot-trading
+      const grossPnl = trade.side === "BUY"
+        ? (exitPrice - trade.entry) * trade.qty
+        : (trade.entry - exitPrice) * trade.qty;
+      const feeRate = trade.feeRate || 0.001;
+      const fees = trade.amount * feeRate * 2; // 0.1% open + 0.1% close
+      pnl = grossPnl - fees;
+      won = pnl > 0;
+      log.info(`[${executor.mode}] SPOT-resolve ${trade.sym} ${trade.side}: entry $${trade.entry.toFixed(4)} → exit $${exitPrice.toFixed(4)} = gross ${grossPnl.toFixed(2)} - fees ${fees.toFixed(2)} = ${pnl.toFixed(2)}`);
+    } else {
+      // BINARY-MODELL: stake × (payout-1) eller -stake (Blofin/Polymarket-style)
+      won = trade.side === "BUY" ? exitPrice > trade.entry : exitPrice < trade.entry;
+      pnl = won ? trade.amount * (trade.payoutMultiplier - 1) : -trade.amount;
+      log.info(`[${executor.mode}] BINARY-resolve ${trade.sym} ${trade.side} → ${won ? "WIN" : "LOSS"} pnl ${pnl.toFixed(2)}`);
+    }
+
     const updated = await resolveTrade(clientId, {
       tradeId,
-      exit: result.exitPrice,
-      won: result.won,
-      pnl: result.pnl,
+      exit: exitPrice,
+      won,
+      pnl,
     });
-    return { ...updated, pnl: result.pnl, won: result.won, exit: result.exitPrice };
+    return { ...updated, pnl, won, exit: exitPrice };
   } catch (err) {
     log.warn(`[${executor.mode}] Resolve-fel ${trade.sym}: ${err instanceof Error ? err.message : String(err)}`);
     return {

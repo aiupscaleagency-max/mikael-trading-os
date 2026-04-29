@@ -11,7 +11,7 @@ import { getCostSummary } from "../cost/tracker.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
 import * as tradeState from "./tradeState.js";
-import { switchMode as switchExecutorMode, getCurrentMode as getExecutorMode, getActiveExecutor, setupOanda, hasForexExecutor } from "./executors/registry.js";
+import { switchMode as switchExecutorMode, getCurrentMode as getExecutorMode, getActiveExecutor, setupOanda, setupBlofin, hasForexExecutor } from "./executors/registry.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
@@ -487,6 +487,15 @@ export function startServer(
       }
       if (url.pathname === "/api/executor/oanda/status" && method === "GET") {
         json(res, { configured: hasForexExecutor() });
+        return;
+      }
+      // Blofin-setup (alternativ broker till Binance)
+      if (url.pathname === "/api/executor/blofin" && method === "POST") {
+        const body = await readBody(req);
+        const params = JSON.parse(body) as { apiKey: string; apiSecret: string; passphrase: string; testnet?: boolean };
+        const result = await setupBlofin(params);
+        if (result.ok) broadcastEvent("executor-mode-changed", { mode: "blofin" });
+        json(res, result);
         return;
       }
 

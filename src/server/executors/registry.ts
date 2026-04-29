@@ -3,6 +3,7 @@ import type { TradeExecutor, ExecutorMode } from "./types.js";
 import { PaperExecutor } from "./paperExecutor.js";
 import { BinanceExecutor } from "./binanceExecutor.js";
 import { OandaExecutor } from "./oandaExecutor.js";
+import { BlofinExecutor } from "./blofinExecutor.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Executor Registry — hanterar nuvarande aktiv executor + symbol-routing
@@ -74,6 +75,27 @@ export async function switchMode(mode: ExecutorMode, opts?: { binanceApiKey?: st
       return { ok: true, details: hc.details };
     }
     return { ok: false, details: `Okänt mode: ${mode}` };
+  } catch (err) {
+    return { ok: false, details: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Konfigurera Blofin-executor (alternativ till Binance för crypto/futures)
+export async function setupBlofin(opts: { apiKey: string; apiSecret: string; passphrase: string; testnet?: boolean }): Promise<{ ok: boolean; details: string }> {
+  try {
+    if (!opts.apiKey || !opts.apiSecret || !opts.passphrase) {
+      return { ok: false, details: "Blofin kräver apiKey + apiSecret + passphrase" };
+    }
+    const executor = new BlofinExecutor({
+      apiKey: opts.apiKey,
+      apiSecret: opts.apiSecret,
+      passphrase: opts.passphrase,
+      testnet: !!opts.testnet,
+    });
+    const hc = await executor.healthCheck();
+    if (!hc.ok) return { ok: false, details: hc.details };
+    setActiveExecutor(executor);
+    return { ok: true, details: hc.details };
   } catch (err) {
     return { ok: false, details: err instanceof Error ? err.message : String(err) };
   }
