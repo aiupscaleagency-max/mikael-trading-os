@@ -4647,6 +4647,9 @@ function startSyncSubscription(){
   } catch(_){}
 }
 
+// Global random-pick helper (används i flera scopes)
+function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+
 // Human-readable timeframe (60 → "1m", 47 → "47s", 270 → "4m 30s")
 function formatTfHuman(sec){
   if(sec < 60) return sec + "s";
