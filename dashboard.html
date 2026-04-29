@@ -1644,6 +1644,57 @@ body.app-state-onboard .fc-panel{display:none !important}
       <span id="tg-status" style="font-size:11px"></span>
     </div>
 
+    <h4 style="margin-top:18px">🔗 Live Broker-integrationer</h4>
+    <p style="font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:8px">Koppla riktiga API-keys så saldo/positioner/trades hämtas direkt från Binance + Oanda. Samma kod-väg för Testnet och Mainnet.</p>
+
+    <div style="background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:10px">
+      <div style="font-size:13px;font-weight:700;color:#f0b90b;margin-bottom:8px">🪙 Binance (crypto + EUR/GBP/AUDUSDT)</div>
+      <div class="key-grid">
+        <div>
+          <label>API Key (testnet eller live)</label>
+          <input type="password" id="bnc-api-key" placeholder="från testnet.binance.vision eller binance.com" />
+        </div>
+        <div>
+          <label>API Secret</label>
+          <input type="password" id="bnc-api-secret" placeholder="64 tecken" />
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="bnc-testnet" checked style="margin:0" />
+          <span>Testnet-läge (gratis demo USDT)</span>
+        </label>
+        <button class="run-btn" id="bnc-connect-btn" style="background:#f0b90b;color:#000">🔗 Anslut Binance</button>
+        <button class="run-btn" id="bnc-fetch-btn" style="background:var(--card2);border:1px solid var(--border)">🔄 Hämta saldo</button>
+        <span id="bnc-status" style="font-size:11px"></span>
+      </div>
+      <div id="bnc-account-display" style="margin-top:10px;font-size:11px;color:var(--dim);font-family:'SF Mono',monospace"></div>
+    </div>
+
+    <div style="background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:10px">
+      <div style="font-size:13px;font-weight:700;color:#22c55e;margin-bottom:8px">💱 Oanda (forex — alla pairs)</div>
+      <div class="key-grid">
+        <div>
+          <label>API Token</label>
+          <input type="password" id="oanda-token-2" placeholder="från oanda.com → Manage API Access" />
+        </div>
+        <div>
+          <label>Account ID</label>
+          <input type="text" id="oanda-account-2" placeholder="001-004-XXXXXXX-001" />
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="oanda-practice" checked style="margin:0" />
+          <span>Practice-läge (demo, gratis)</span>
+        </label>
+        <button class="run-btn" id="oanda-connect-btn" style="background:#22c55e;color:#000">🔗 Anslut Oanda</button>
+        <button class="run-btn" id="oanda-fetch-btn" style="background:var(--card2);border:1px solid var(--border)">🔄 Hämta saldo</button>
+        <span id="oanda-status" style="font-size:11px"></span>
+      </div>
+      <div id="oanda-account-display" style="margin-top:10px;font-size:11px;color:var(--dim);font-family:'SF Mono',monospace"></div>
+    </div>
+
     <h4 style="margin-top:18px">Risk &amp; Position-sizing</h4>
     <p style="font-size:11px;color:var(--dim);line-height:1.5">Sätts i <code style="background:var(--bg);padding:1px 4px;border-radius:2px">.env</code>-filen på VPS:en (DEFAULT/MIN/MAX_POSITION_USD, MAX_DAILY_SPEND_USD osv). Editor i appen byggs i Fas 2.</p>
   </div>
@@ -6334,6 +6385,103 @@ function loadTelegramIntoSettings(){
   if(c) c.value = cfg.chatId;
   if(e) e.checked = cfg.enabled;
 }
+// ─── Live Broker-integrations (Binance + Oanda) ───
+async function bncConnect(){
+  const apiKey = document.getElementById("bnc-api-key")?.value?.trim();
+  const apiSecret = document.getElementById("bnc-api-secret")?.value?.trim();
+  const testnet = document.getElementById("bnc-testnet")?.checked;
+  const status = document.getElementById("bnc-status");
+  if(!apiKey || !apiSecret){ if(status){status.textContent="❌ Fyll i båda fält"; status.style.color="var(--red)";} return; }
+  if(status){status.textContent="Ansluter..."; status.style.color="var(--label)";}
+  try {
+    const r = await fetch("/api/binance/setup", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({apiKey, apiSecret, testnet})
+    });
+    const data = await r.json();
+    if(data.ok){
+      if(status){status.textContent="✓ "+data.details; status.style.color="var(--green)";}
+      bncFetchAccount(); // hämta saldo direkt
+    } else {
+      if(status){status.textContent="❌ "+data.error; status.style.color="var(--red)";}
+    }
+  } catch(e){ if(status){status.textContent="❌ "+e.message; status.style.color="var(--red)";} }
+}
+
+async function bncFetchAccount(){
+  const display = document.getElementById("bnc-account-display");
+  if(display) display.innerHTML = "Hämtar saldo...";
+  try {
+    const r = await fetch("/api/binance/account");
+    const data = await r.json();
+    if(!data.ok){
+      if(display) display.innerHTML = `<span style="color:var(--red)">❌ ${data.error}</span>`;
+      return;
+    }
+    const positions = (data.positions || []).slice(0, 5);
+    const posLines = positions.map(p => `  ${p.asset}: ${p.qty.toFixed(6)} ≈ $${p.valueUsdt.toFixed(2)}`).join("\n");
+    if(display){
+      display.innerHTML = `<span style="color:var(--green)">●</span> <b>${data.mode.toUpperCase()}</b> · cash USDT $${data.cashUsdt.toFixed(2)} · total equity $${data.totalUsdt.toFixed(2)}` +
+        (positions.length ? `\n<b>Positioner:</b>\n${posLines}` : "");
+      display.style.whiteSpace = "pre-line";
+    }
+  } catch(e){ if(display) display.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`; }
+}
+
+async function oandaConnect(){
+  const apiToken = document.getElementById("oanda-token-2")?.value?.trim();
+  const accountId = document.getElementById("oanda-account-2")?.value?.trim();
+  const practice = document.getElementById("oanda-practice")?.checked;
+  const status = document.getElementById("oanda-status");
+  if(!apiToken || !accountId){ if(status){status.textContent="❌ Fyll i båda fält"; status.style.color="var(--red)";} return; }
+  if(status){status.textContent="Ansluter..."; status.style.color="var(--label)";}
+  try {
+    const r = await fetch("/api/oanda/setup", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({apiToken, accountId, practice})
+    });
+    const data = await r.json();
+    if(data.ok){
+      if(status){status.textContent="✓ "+data.details; status.style.color="var(--green)";}
+      oandaFetchAccount();
+    } else {
+      if(status){status.textContent="❌ "+data.error; status.style.color="var(--red)";}
+    }
+  } catch(e){ if(status){status.textContent="❌ "+e.message; status.style.color="var(--red)";} }
+}
+
+async function oandaFetchAccount(){
+  const display = document.getElementById("oanda-account-display");
+  if(display) display.innerHTML = "Hämtar saldo...";
+  try {
+    const r = await fetch("/api/oanda/account");
+    const data = await r.json();
+    if(!data.ok){
+      if(display) display.innerHTML = `<span style="color:var(--red)">❌ ${data.error}</span>`;
+      return;
+    }
+    const s = data.summary;
+    const posLines = (data.positions || []).map(p => `  ${p.instrument}: ${p.long > 0 ? `+${p.long}` : p.short} units · uPnL ${p.unrealizedPL.toFixed(2)}`).join("\n");
+    if(display){
+      display.innerHTML = `<span style="color:var(--green)">●</span> <b>${data.mode.toUpperCase()}</b> · balance ${s.balance.toFixed(2)} ${s.currency} · NAV ${s.NAV.toFixed(2)} · ${s.openTradeCount} öppna trades` +
+        ((data.positions||[]).length ? `\n<b>Positioner:</b>\n${posLines}` : "");
+      display.style.whiteSpace = "pre-line";
+    }
+  } catch(e){ if(display) display.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`; }
+}
+
+function wireBrokerIntegrations(){
+  document.getElementById("bnc-connect-btn")?.addEventListener("click", bncConnect);
+  document.getElementById("bnc-fetch-btn")?.addEventListener("click", bncFetchAccount);
+  document.getElementById("oanda-connect-btn")?.addEventListener("click", oandaConnect);
+  document.getElementById("oanda-fetch-btn")?.addEventListener("click", oandaFetchAccount);
+  // Hämta status vid load
+  fetch("/api/integrations/status").then(r=>r.json()).then(data=>{
+    if(data.binance?.configured) bncFetchAccount();
+    if(data.oanda?.configured) oandaFetchAccount();
+  }).catch(()=>{});
+}
+
 function wireTelegramSettings(){
   const saveBtn = document.getElementById("save-tg-btn");
   const testBtn = document.getElementById("test-tg-btn");
@@ -6393,6 +6541,7 @@ function initApp(){
   loadKeysIntoSettings();
   loadTelegramIntoSettings();
   wireTelegramSettings();
+  wireBrokerIntegrations();
   document.getElementById("setup-banner-go")?.addEventListener("click", ()=>switchPage("settings"));
   document.getElementById("save-keys-btn")?.addEventListener("click", saveKeysFromSettings);
   fillSymbols();

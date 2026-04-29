@@ -10,6 +10,12 @@ import { config } from "../config.js";
 import { getCostSummary } from "../cost/tracker.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
+import { BinanceClient, type BinanceCredentials } from "./integrations/binance.js";
+import { OandaClient, type OandaCredentials } from "./integrations/oanda.js";
+
+// In-memory keys (per server-instans). I produktion: kryptera + Supabase.
+let binanceCreds: BinanceCredentials | null = null;
+let oandaCreds: OandaCredentials | null = null;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
@@ -621,6 +627,113 @@ export function startServer(
         } catch (err) {
           json(res, { error: err instanceof Error ? err.message : String(err), candles: [] });
         }
+        return;
+      }
+
+      // ═══════ BINANCE INTEGRATION (Testnet + Live samma kod) ═══════
+      // POST /api/binance/setup — konfigurera API keys (testnet eller mainnet)
+      if (url.pathname === "/api/binance/setup" && method === "POST") {
+        const body = await readBody(req);
+        const { apiKey, apiSecret, testnet } = JSON.parse(body) as { apiKey: string; apiSecret: string; testnet: boolean };
+        if (!apiKey || !apiSecret) { res.writeHead(400); json(res, { error: "apiKey + apiSecret krävs" }); return; }
+        try {
+          const client = new BinanceClient({ apiKey, apiSecret, testnet: !!testnet });
+          const hc = await client.healthCheck();
+          if (!hc.ok) { json(res, { ok: false, error: hc.details }); return; }
+          binanceCreds = { apiKey, apiSecret, testnet: !!testnet };
+          json(res, { ok: true, mode: hc.canTrade ? "trading" : "read-only", details: hc.details });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      // GET /api/binance/account — riktig balans + positions från Binance API
+      if (url.pathname === "/api/binance/account" && method === "GET") {
+        if (!binanceCreds) { json(res, { error: "Binance ej konfigurerat — POSTa /api/binance/setup först" }); return; }
+        try {
+          const client = new BinanceClient(binanceCreds);
+          const equity = await client.getTotalEquity();
+          json(res, { ok: true, mode: binanceCreds.testnet ? "testnet" : "live", ...equity });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      // POST /api/binance/order — lägg riktig MARKET-order
+      if (url.pathname === "/api/binance/order" && method === "POST") {
+        if (!binanceCreds) { res.writeHead(400); json(res, { error: "Binance ej konfigurerat" }); return; }
+        const body = await readBody(req);
+        const { symbol, side, quoteOrderQty, clientOrderId } = JSON.parse(body) as { symbol: string; side: "BUY" | "SELL"; quoteOrderQty: number; clientOrderId?: string };
+        try {
+          const client = new BinanceClient(binanceCreds);
+          const order = await client.placeMarketOrder({ symbol, side, quoteOrderQty, clientOrderId });
+          json(res, { ok: true, order });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      // GET /api/binance/trades?symbol=BTCUSDT — riktig trade-historik
+      if (url.pathname === "/api/binance/trades" && method === "GET") {
+        if (!binanceCreds) { json(res, { error: "Binance ej konfigurerat" }); return; }
+        const symbol = url.searchParams.get("symbol") || "BTCUSDT";
+        try {
+          const client = new BinanceClient(binanceCreds);
+          const trades = await client.getMyTrades(symbol, 50);
+          json(res, { ok: true, trades });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+
+      // ═══════ OANDA INTEGRATION (forex demo + live) ═══════
+      if (url.pathname === "/api/oanda/setup" && method === "POST") {
+        const body = await readBody(req);
+        const { apiToken, accountId, practice } = JSON.parse(body) as { apiToken: string; accountId: string; practice: boolean };
+        if (!apiToken || !accountId) { res.writeHead(400); json(res, { error: "apiToken + accountId krävs" }); return; }
+        try {
+          const client = new OandaClient({ apiToken, accountId, practice: practice !== false });
+          const hc = await client.healthCheck();
+          if (!hc.ok) { json(res, { ok: false, error: hc.details }); return; }
+          oandaCreds = { apiToken, accountId, practice: practice !== false };
+          json(res, { ok: true, details: hc.details });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      if (url.pathname === "/api/oanda/account" && method === "GET") {
+        if (!oandaCreds) { json(res, { error: "Oanda ej konfigurerat" }); return; }
+        try {
+          const client = new OandaClient(oandaCreds);
+          const summary = await client.getAccountSummary();
+          const positions = await client.getOpenPositions();
+          json(res, { ok: true, mode: oandaCreds.practice ? "practice" : "live", summary, positions });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      if (url.pathname === "/api/oanda/order" && method === "POST") {
+        if (!oandaCreds) { res.writeHead(400); json(res, { error: "Oanda ej konfigurerat" }); return; }
+        const body = await readBody(req);
+        const { symbol, side, units, clientOrderId } = JSON.parse(body) as { symbol: string; side: "BUY" | "SELL"; units: number; clientOrderId?: string };
+        try {
+          const client = new OandaClient(oandaCreds);
+          const order = await client.placeMarketOrder({ symbol, side, units, clientOrderId });
+          json(res, { ok: true, order });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      // Status båda integrationer (för UI)
+      if (url.pathname === "/api/integrations/status" && method === "GET") {
+        json(res, {
+          binance: binanceCreds ? { configured: true, mode: binanceCreds.testnet ? "testnet" : "live" } : { configured: false },
+          oanda: oandaCreds ? { configured: true, mode: oandaCreds.practice ? "practice" : "live" } : { configured: false },
+        });
         return;
       }
 
