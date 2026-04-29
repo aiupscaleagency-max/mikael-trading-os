@@ -1511,6 +1511,18 @@ body.app-state-onboard .fc-panel{display:none !important}
       </div>
     </div>
 
+    <!-- BINANCE LIVE SYNC — jämför med testnet.binance.vision i annan flik -->
+    <div class="card" id="binance-sync-card" style="border-left:3px solid #f0b90b">
+      <h3 style="display:flex;align-items:center;gap:8px">
+        🟡 Binance Live Sync
+        <span id="binance-sync-mode" class="tag" style="font-size:10px;color:#f0b90b">init...</span>
+        <span id="binance-sync-time" style="margin-left:auto;font-size:10px;color:var(--dim);font-family:'SF Mono',monospace"></span>
+      </h3>
+      <div id="binance-sync-body" style="font-size:12px">
+        <div style="color:var(--dim)">Hämtar från Binance...</div>
+      </div>
+    </div>
+
     <!-- Session Mode card -->
     <div class="card session-card" id="session-card">
       <div id="session-body"></div>
@@ -6470,6 +6482,66 @@ async function oandaFetchAccount(){
   } catch(e){ if(display) display.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`; }
 }
 
+// Binance Live Sync — pollar var 3s, visar EXAKT vad Binance.com har
+let binanceSyncInterval = null;
+async function refreshBinanceSync(){
+  const body = document.getElementById("binance-sync-body");
+  const modeTag = document.getElementById("binance-sync-mode");
+  const timeTag = document.getElementById("binance-sync-time");
+  if(!body) return;
+  try {
+    const r = await fetch("/api/binance/account");
+    const data = await r.json();
+    if(!data.ok){
+      body.innerHTML = `<div style="color:var(--red);padding:8px;background:rgba(239,68,68,.08);border-radius:4px">⚠ ${data.error}<br><span style="font-size:11px;color:var(--dim)">Be Mike skapa Testnet-keys på testnet.binance.vision</span></div>`;
+      if(modeTag){ modeTag.textContent = "EJ ANSLUTET"; modeTag.style.color = "var(--red)"; }
+      return;
+    }
+    if(modeTag){
+      modeTag.textContent = data.mode.toUpperCase();
+      modeTag.style.color = data.mode === "live" ? "var(--red)" : "#f0b90b";
+    }
+    if(timeTag) timeTag.textContent = "uppdaterat " + new Date().toLocaleTimeString().slice(0,8);
+    const positions = (data.positions || []).filter(p => p.valueUsdt > 1).slice(0, 8);
+    const posHtml = positions.length ? positions.map(p =>
+      `<div style="display:grid;grid-template-columns:60px 1fr auto;gap:8px;padding:5px 8px;background:var(--card2);border-radius:4px;margin-bottom:3px;font-size:11px;font-variant-numeric:tabular-nums">
+        <span style="font-weight:700;color:#f0b90b">${p.asset}</span>
+        <span style="color:var(--dim)">${p.qty.toFixed(6)}</span>
+        <span style="font-weight:700">$${p.valueUsdt.toFixed(2)}</span>
+      </div>`
+    ).join("") : `<div style="color:var(--dim);font-size:11px;padding:6px">Inga öppna positioner</div>`;
+    body.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px">
+        <div style="background:var(--card2);padding:10px 12px;border-radius:5px;border:1px solid var(--border)">
+          <div style="font-size:9px;color:var(--label);font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:3px">USDT Cash</div>
+          <div style="font-size:18px;font-weight:800;font-family:'SF Mono',monospace">$${data.cashUsdt.toFixed(2)}</div>
+        </div>
+        <div style="background:var(--card2);padding:10px 12px;border-radius:5px;border:1px solid var(--border)">
+          <div style="font-size:9px;color:var(--label);font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:3px">Total Equity</div>
+          <div style="font-size:18px;font-weight:800;font-family:'SF Mono',monospace;color:var(--green)">$${data.totalUsdt.toFixed(2)}</div>
+        </div>
+        <div style="background:var(--card2);padding:10px 12px;border-radius:5px;border:1px solid var(--border)">
+          <div style="font-size:9px;color:var(--label);font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:3px">Positioner</div>
+          <div style="font-size:18px;font-weight:800;font-family:'SF Mono',monospace">${positions.length}</div>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--label);letter-spacing:.4px;text-transform:uppercase;font-weight:700;margin-bottom:6px">Tillgångar (>$1)</div>
+      ${posHtml}
+      <div style="margin-top:10px;font-size:10px;color:var(--dim);text-align:center">
+        Jämför öppet på <a href="https://${data.mode === "testnet" ? "testnet.binance.vision" : "www.binance.com"}/en/trade/BTC_USDT" target="_blank" style="color:#f0b90b">${data.mode === "testnet" ? "testnet.binance.vision" : "binance.com"}</a> i annan flik
+      </div>
+    `;
+  } catch(e){
+    body.innerHTML = `<div style="color:var(--red)">⚠ ${e.message}</div>`;
+  }
+}
+
+function startBinanceSync(){
+  if(binanceSyncInterval) return;
+  refreshBinanceSync();
+  binanceSyncInterval = setInterval(refreshBinanceSync, 3000); // var 3s
+}
+
 function wireBrokerIntegrations(){
   document.getElementById("bnc-connect-btn")?.addEventListener("click", bncConnect);
   document.getElementById("bnc-fetch-btn")?.addEventListener("click", bncFetchAccount);
@@ -6542,6 +6614,7 @@ function initApp(){
   loadTelegramIntoSettings();
   wireTelegramSettings();
   wireBrokerIntegrations();
+  startBinanceSync(); // pollar Binance var 3s, visar i Binance Live Sync card
   document.getElementById("setup-banner-go")?.addEventListener("click", ()=>switchPage("settings"));
   document.getElementById("save-keys-btn")?.addEventListener("click", saveKeysFromSettings);
   fillSymbols();
