@@ -1290,6 +1290,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         <span class="cur-price" id="cur-price">--</span>
         <span id="cur-chg" class="ch">--</span>
         <span id="data-source-indicator" style="margin-left:auto;font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px"><span style="color:var(--label)">○</span> Demo (simulerade priser)</span>
+        <span id="sync-indicator" title="Cross-device sync mellan dator + mobil" style="font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px;margin-left:10px"><span style="color:var(--label)">○</span> Sync init...</span>
         <div class="tf-group" id="tf-group">
           <button data-tf="1m">1m</button>
           <button data-tf="5m">5m</button>
@@ -1350,6 +1351,16 @@ body.app-state-onboard .fc-panel{display:none !important}
         <button data-tf="3600">1h</button>
         <button data-tf="14400">4h</button>
         <button data-tf="86400">1d</button>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;font-size:10px">
+        <label style="color:var(--dim)">Eller egen tid:</label>
+        <input type="number" id="bet-tf-custom" placeholder="47" min="10" max="86400" step="1" style="flex:1;padding:5px;background:var(--card2);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:11px;font-family:'SF Mono',monospace" />
+        <select id="bet-tf-unit" style="padding:5px;background:var(--card2);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:11px">
+          <option value="1">sek</option>
+          <option value="60" selected>min</option>
+          <option value="3600">tim</option>
+        </select>
+        <button id="bet-tf-apply" style="padding:5px 10px;background:var(--cyan);color:#000;border:none;border-radius:3px;font-weight:700;font-size:10px;cursor:pointer">SET</button>
       </div>
       <label style="font-size:10px;color:var(--dim)">Belopp (USD)</label>
       <input type="number" id="bet-amt" value="10" min="1" step="1" />
@@ -1787,17 +1798,113 @@ const SESSION_TRADES = 5;            // 5 trades per session
 const SESSION_SCORE_THRESHOLD = 8;   // Bara A+ setups (score ≥8) under session
 const SESSION_TARGET_WINRATE = 0.75; // Mål: 75% winrate
 
+// ─── Candlestick pattern-detection ───
+// Läser senaste candles och letar efter klassiska pattern (Tomas-simulering på riktig data)
+const CANDLE_PATTERNS = {
+  hammer:        { label: "Hammer",            bullish: true,  desc: "Bullish reversal — stor lower wick, liten body" },
+  inv_hammer:    { label: "Inv. Hammer",       bullish: true,  desc: "Bullish reversal — stor upper wick efter downtrend" },
+  bull_engulf:   { label: "Bullish engulfing", bullish: true,  desc: "Stark reversal — grön body sväljer förra röda" },
+  three_soldier: { label: "3 White Soldiers",  bullish: true,  desc: "Stark trend — 3 gröna i rad med högre highs" },
+  morning_star:  { label: "Morning Star",      bullish: true,  desc: "Bottom reversal — 3-candle pattern" },
+  shooting_star: { label: "Shooting Star",     bullish: false, desc: "Bearish reversal — stor upper wick efter uptrend" },
+  bear_engulf:   { label: "Bearish engulfing", bullish: false, desc: "Stark reversal — röd body sväljer förra gröna" },
+  three_crows:   { label: "3 Black Crows",     bullish: false, desc: "Stark downtrend — 3 röda i rad" },
+  doji:          { label: "Doji",              bullish: null,  desc: "Indecision — open ≈ close, vänta på confirmation" },
+  hanging_man:   { label: "Hanging Man",       bullish: false, desc: "Bearish — hammer-form efter uptrend" }
+};
+
+function detectCandlePatterns(candles){
+  if(!candles || candles.length < 3) return [];
+  const patterns = [];
+  const c = candles.slice(-5); // senaste 5
+  const last = c[c.length-1];
+  const prev = c[c.length-2];
+  const prev2 = c[c.length-3];
+  if(!last || !prev) return [];
+  // Hjälpvariabler
+  const body = (k) => Math.abs(k.close - k.open);
+  const upperWick = (k) => k.high - Math.max(k.open, k.close);
+  const lowerWick = (k) => Math.min(k.open, k.close) - k.low;
+  const range = (k) => k.high - k.low;
+  const isBull = (k) => k.close > k.open;
+  const isBear = (k) => k.close < k.open;
+  const lb = body(last), lr = range(last);
+  // Hammer: liten body, stor lower wick (>2x body), liten upper wick
+  if(lb > 0 && lowerWick(last) > lb*2 && upperWick(last) < lb*0.5 && lr > 0){
+    patterns.push({type: "hammer", at: last.time, strength: lowerWick(last)/lb});
+  }
+  // Inverterad hammer
+  if(lb > 0 && upperWick(last) > lb*2 && lowerWick(last) < lb*0.5){
+    patterns.push({type: "inv_hammer", at: last.time, strength: upperWick(last)/lb});
+  }
+  // Doji: open ≈ close
+  if(lr > 0 && lb / lr < 0.1){
+    patterns.push({type: "doji", at: last.time, strength: 1 - (lb/lr)});
+  }
+  // Bullish engulfing: prev red, last green, last body sväljer prev body
+  if(isBear(prev) && isBull(last) && last.open <= prev.close && last.close >= prev.open){
+    patterns.push({type: "bull_engulf", at: last.time, strength: body(last)/Math.max(body(prev),0.0001)});
+  }
+  // Bearish engulfing
+  if(isBull(prev) && isBear(last) && last.open >= prev.close && last.close <= prev.open){
+    patterns.push({type: "bear_engulf", at: last.time, strength: body(last)/Math.max(body(prev),0.0001)});
+  }
+  // Three White Soldiers
+  if(prev2 && isBull(prev2) && isBull(prev) && isBull(last) &&
+     last.close > prev.close && prev.close > prev2.close){
+    patterns.push({type: "three_soldier", at: last.time, strength: 1});
+  }
+  // Three Black Crows
+  if(prev2 && isBear(prev2) && isBear(prev) && isBear(last) &&
+     last.close < prev.close && prev.close < prev2.close){
+    patterns.push({type: "three_crows", at: last.time, strength: 1});
+  }
+  // Shooting Star (bearish topp)
+  if(lb > 0 && upperWick(last) > lb*2 && lowerWick(last) < lb*0.5 && isBear(last)){
+    patterns.push({type: "shooting_star", at: last.time, strength: upperWick(last)/lb});
+  }
+  return patterns;
+}
+
+// Boost confluence-score baserat på candle-pattern som matchar trade-riktning
+function patternBoost(side, patterns){
+  if(!patterns || !patterns.length) return 0;
+  let boost = 0;
+  for(const p of patterns){
+    const meta = CANDLE_PATTERNS[p.type];
+    if(!meta) continue;
+    if(side === "BUY" && meta.bullish === true) boost += 1;
+    else if(side === "SELL" && meta.bullish === false) boost += 1;
+    else if(meta.bullish === null) boost += 0; // doji = neutral
+    else boost -= 1; // motsatt riktning = penalty
+  }
+  return Math.max(-2, Math.min(2, boost)); // cap ±2
+}
+
 // Confluence-score generator: simulerar Tomas score 4-10 baserat på "marknadsläge"
-function generateConfluenceScore(){
+function generateConfluenceScore(side, sym){
+  // Om PROPOSE-mode + riktiga candles finns, använd pattern-detection som boost
+  let boost = 0;
+  if(currentUiMode === "propose" && sym){
+    const key = sym + "|1m";
+    const candles = STATE.candleData[key];
+    if(candles && candles.length >= 3){
+      const patterns = detectCandlePatterns(candles);
+      if(side) boost = patternBoost(side, patterns);
+    }
+  }
   // Bias mot mitten — extremer (4 eller 10) sällsynta, ~7 vanligast
   const r = Math.random();
-  if(r < 0.05) return 4;
-  if(r < 0.15) return 5;
-  if(r < 0.30) return 6;
-  if(r < 0.55) return 7;
-  if(r < 0.80) return 8;
-  if(r < 0.95) return 9;
-  return 10;
+  let baseScore;
+  if(r < 0.05) baseScore = 4;
+  else if(r < 0.15) baseScore = 5;
+  else if(r < 0.30) baseScore = 6;
+  else if(r < 0.55) baseScore = 7;
+  else if(r < 0.80) baseScore = 8;
+  else if(r < 0.95) baseScore = 9;
+  else baseScore = 10;
+  // Pattern-boost (om PROPOSE + riktiga candles): max ±2 till score
+  return Math.max(1, Math.min(10, baseScore + boost));
 }
 
 // Score → winrate: ärlig modellering (strikare filter = bättre resultat)
@@ -1892,6 +1999,7 @@ function ensureWatchState(){
   if(!STATE.pendingConfirms) STATE.pendingConfirms = [];
 }
 function saveWatchState(){
+  if(typeof syncDebounced === "function") syncDebounced();
   try {
     localStorage.setItem("trading_watches", JSON.stringify(STATE.pendingWatches || []));
     localStorage.setItem("trading_confirms", JSON.stringify(STATE.pendingConfirms || []));
@@ -1945,10 +2053,10 @@ function scanWatches(){
       remaining.push(w);
       continue;
     }
-    // Generera nytt score-försök
+    // Generera nytt score-försök (med pattern-boost om PROPOSE + riktiga candles finns)
     w.attempts++;
     w.lastCheck = now;
-    const score = generateConfluenceScore();
+    const score = generateConfluenceScore(w.side, w.sym);
     w.lastScore = score;
     if(score >= w.threshold){
       // A+ träff! Flytta till pendingConfirms
@@ -3785,6 +3893,7 @@ function loadPaperAccount(){
 }
 
 function savePaperAccount(){
+  if(typeof syncDebounced === "function") syncDebounced();
   try { localStorage.setItem("trading_paper_account", JSON.stringify(STATE.paperAccount)); }
   catch(_){}
 }
@@ -3792,6 +3901,7 @@ function savePaperAccount(){
 // Persistera ALL trade-data (positions, history, decisions) — sedan start
 // Session Mode — persist + lifecycle
 function saveSessionData(){
+  if(typeof syncDebounced === "function") syncDebounced();
   try {
     localStorage.setItem("trading_session_active", JSON.stringify(STATE.session));
     localStorage.setItem("trading_session_reports", JSON.stringify((STATE.sessionReports || []).slice(0, 50)));
@@ -3903,6 +4013,8 @@ function pushInAppAlert(msg, durationMs, opts){
 }
 
 function saveTradeData(){
+  // Trigger cross-device sync (debounced)
+  if(typeof syncDebounced === "function") syncDebounced();
   try {
     localStorage.setItem("trading_positions", JSON.stringify(STATE.tradePositions || []));
     // Cap history och decisions på 1000 för att undvika oändlig tillväxt
@@ -4019,6 +4131,134 @@ const SCALP_DEFAULT_SEC = 60;    // 1 min default — snabb testning + scalping
 const DEMO_AGENT_SKILL = 0.65;   // 65% win-rate i demo (simulerar agenter med edge)
 function randomPayout(){ return SCALP_PAYOUT_MIN + Math.random() * (SCALP_PAYOUT_MAX - SCALP_PAYOUT_MIN); }
 
+// ─── Cross-device sync ───
+// Speglar trade-state mellan dator och mobil via VPS-backend
+const SYNC_CLIENT_ID = "mike-private"; // Single-user just nu — multi-tenant senare via Supabase user-id
+const SYNC_DEBOUNCE_MS = 2000;          // Spara max var 2s (debounced)
+let syncSaveTimer = null;
+let syncLastSavedAt = 0;
+let syncLastReceivedAt = 0;
+
+// Vilka delar av STATE syncas mellan devices
+function buildSyncPayload(){
+  return {
+    tradePositions: STATE.tradePositions || [],
+    tradeHistory: (STATE.tradeHistory || []).slice(0, 200),
+    tradeDecisions: (STATE.tradeDecisions || []).slice(0, 100),
+    session: STATE.session || null,
+    sessionReports: (STATE.sessionReports || []).slice(0, 20),
+    pendingWatches: STATE.pendingWatches || [],
+    pendingConfirms: STATE.pendingConfirms || [],
+    paperAccount: STATE.paperAccount || null,
+    syncedAt: Date.now()
+  };
+}
+
+function applySyncPayload(payload){
+  if(!payload) return;
+  if(payload.tradePositions) STATE.tradePositions = payload.tradePositions;
+  if(payload.tradeHistory) STATE.tradeHistory = payload.tradeHistory;
+  if(payload.tradeDecisions) STATE.tradeDecisions = payload.tradeDecisions;
+  if(payload.session !== undefined) STATE.session = payload.session;
+  if(payload.sessionReports) STATE.sessionReports = payload.sessionReports;
+  if(payload.pendingWatches) STATE.pendingWatches = payload.pendingWatches;
+  if(payload.pendingConfirms) STATE.pendingConfirms = payload.pendingConfirms;
+  if(payload.paperAccount) STATE.paperAccount = payload.paperAccount;
+  syncLastReceivedAt = payload.syncedAt || Date.now();
+  // Persistera lokalt också
+  saveTradeData();
+  saveSessionData();
+  saveWatchState();
+  if(STATE.paperAccount) savePaperAccount();
+  renderTradesPage();
+  renderPaperBadge();
+}
+
+async function pullSyncFromServer(){
+  try {
+    const r = await fetch(`/api/sync/load?clientId=${SYNC_CLIENT_ID}`);
+    if(!r.ok) return false;
+    const data = await r.json();
+    if(data.state && data.updatedAt && data.updatedAt > syncLastReceivedAt){
+      applySyncPayload(data.state);
+      const ind = document.getElementById("sync-indicator");
+      if(ind) ind.innerHTML = `<span style="color:var(--green)">●</span> Synkat ${new Date().toLocaleTimeString().slice(0,8)}`;
+      return true;
+    }
+    return false;
+  } catch(e){
+    console.warn("Sync pull-fel:", e);
+    return false;
+  }
+}
+
+async function pushSyncToServer(){
+  try {
+    const payload = buildSyncPayload();
+    const r = await fetch("/api/sync/save", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({clientId: SYNC_CLIENT_ID, state: payload})
+    });
+    if(r.ok){
+      syncLastSavedAt = Date.now();
+      syncLastReceivedAt = syncLastSavedAt; // egen push räknas som mottagen
+      const ind = document.getElementById("sync-indicator");
+      if(ind) ind.innerHTML = `<span style="color:var(--cyan)">●</span> Pushat ${new Date().toLocaleTimeString().slice(0,8)}`;
+      return true;
+    }
+    return false;
+  } catch(e){
+    console.warn("Sync push-fel:", e);
+    return false;
+  }
+}
+
+// Debounced save — kallas efter varje state-ändring
+function syncDebounced(){
+  if(syncSaveTimer) clearTimeout(syncSaveTimer);
+  syncSaveTimer = setTimeout(()=>{
+    pushSyncToServer();
+    syncSaveTimer = null;
+  }, SYNC_DEBOUNCE_MS);
+}
+
+// Subscribe på SSE för realtidssync från andra devices
+function startSyncSubscription(){
+  // Initial pull
+  pullSyncFromServer();
+  // Pull var 5s som backup om SSE ej fungerar
+  setInterval(pullSyncFromServer, 5000);
+  // SSE-subscription
+  try {
+    const es = new EventSource("/api/events");
+    es.addEventListener("sync-updated", (ev)=>{
+      try {
+        const data = JSON.parse(ev.data);
+        // Bara pull om det INTE är vår egen save
+        if(data.updatedAt && data.updatedAt > syncLastSavedAt + 500){
+          pullSyncFromServer();
+        }
+      } catch(_){}
+    });
+  } catch(_){}
+}
+
+// Human-readable timeframe (60 → "1m", 47 → "47s", 270 → "4m 30s")
+function formatTfHuman(sec){
+  if(sec < 60) return sec + "s";
+  if(sec < 3600){
+    const m = Math.floor(sec/60), s = sec%60;
+    return s ? `${m}m ${s}s` : `${m}m`;
+  }
+  if(sec < 86400){
+    const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60);
+    return m ? `${h}h ${m}m` : `${h}h`;
+  }
+  const d = Math.floor(sec/86400);
+  return d + "d";
+}
+
 // Simulera exekvering av en scalp-trade — drar från test-konto + auto-resolve efter timeframe
 function simulateExecuteTrade(sym, side, amount, timeframeSec){
   const acc = loadPaperAccount();
@@ -4027,7 +4267,7 @@ function simulateExecuteTrade(sym, side, amount, timeframeSec){
     return null;
   }
   // Confluence-score för denna setup (Tomas + Karin + Petra inputs simulerade)
-  const score = generateConfluenceScore();
+  const score = generateConfluenceScore(side, sym);
   const setupType = generateSetupType(score);
   const setupMeta = SETUP_TYPES[setupType] || {label:setupType, icon:"•"};
   // Session Mode — strikt filter: hoppa över setups under tröskel
@@ -4043,6 +4283,7 @@ function simulateExecuteTrade(sym, side, amount, timeframeSec){
       source: "session-filter"
     });
     saveTradeData();
+    syncDebounced();
     renderTradesPage();
     return null;
   }
@@ -5115,6 +5356,24 @@ function wire(){
     document.querySelectorAll("#bet-tf button").forEach(b=>b.classList.remove("active"));
     e.target.classList.add("active");
     STATE.betTf = parseInt(e.target.dataset.tf,10);
+    log_ok(`Tidshorisont: ${formatTfHuman(STATE.betTf)}`);
+  });
+  // Custom-tid input: "47 sek" / "8 min" / "30 sek" osv
+  document.getElementById("bet-tf-apply")?.addEventListener("click", ()=>{
+    const val = parseFloat(document.getElementById("bet-tf-custom").value);
+    const unit = parseFloat(document.getElementById("bet-tf-unit").value);
+    if(!val || val < 1){ alert("Ange ett positivt tal"); return; }
+    const seconds = Math.round(val * unit);
+    if(seconds < 10){ alert("Minst 10 sekunder"); return; }
+    if(seconds > 86400*7){ alert("Max 7 dagar"); return; }
+    STATE.betTf = seconds;
+    document.querySelectorAll("#bet-tf button").forEach(b=>b.classList.remove("active"));
+    log_ok(`Custom tid satt: ${formatTfHuman(seconds)} (${seconds}s)`);
+    pushInAppAlert(`⏱ Tidshorisont satt: ${formatTfHuman(seconds)}`, 3000, {telegram:false});
+  });
+  // Tillåt Enter i input → trigger SET
+  document.getElementById("bet-tf-custom")?.addEventListener("keypress", e=>{
+    if(e.key === "Enter") document.getElementById("bet-tf-apply")?.click();
   });
   document.getElementById("bet-amt").addEventListener("input", e=>{
     const v = parseFloat(e.target.value)||0;
@@ -5417,6 +5676,7 @@ function initApp(){
   loadTradeData(); // ladda persisterad trade-historik först
   loadSessionData(); // ladda session-state + reports
   loadWatchState();  // ladda pågående watches + confirms
+  startSyncSubscription(); // cross-device sync (dator ↔ mobil)
   checkKeysSetup();
   loadKeysIntoSettings();
   loadTelegramIntoSettings();

@@ -447,6 +447,49 @@ export function startServer(
         return;
       }
 
+      // ── Cross-device sync (frontend STATE delas mellan dator + mobil) ──
+      // Lagrar JSON per clientId i /app/data/sync/{clientId}.json
+      if (url.pathname === "/api/sync/save" && method === "POST") {
+        const body = await readBody(req);
+        try {
+          const parsed = JSON.parse(body) as { clientId?: string; state?: unknown };
+          if (!parsed.clientId || !parsed.state) {
+            res.writeHead(400);
+            json(res, { error: "clientId + state krävs" });
+            return;
+          }
+          const clientId = String(parsed.clientId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
+          const dir = path.resolve(process.cwd(), "data", "sync");
+          await fs.mkdir(dir, { recursive: true });
+          const file = path.join(dir, `${clientId}.json`);
+          await fs.writeFile(file, JSON.stringify({ updatedAt: Date.now(), state: parsed.state }), "utf8");
+          // Broadcast till andra devices via SSE
+          broadcastEvent("sync-updated", { clientId, updatedAt: Date.now() });
+          json(res, { ok: true, updatedAt: Date.now() });
+        } catch (err) {
+          res.writeHead(500);
+          json(res, { error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      if (url.pathname === "/api/sync/load" && method === "GET") {
+        const clientId = (url.searchParams.get("clientId") || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
+        if (!clientId) {
+          res.writeHead(400);
+          json(res, { error: "clientId krävs" });
+          return;
+        }
+        try {
+          const file = path.resolve(process.cwd(), "data", "sync", `${clientId}.json`);
+          const data = await fs.readFile(file, "utf8");
+          json(res, JSON.parse(data));
+        } catch (err) {
+          // Filen finns ej än — returnera tomt
+          json(res, { updatedAt: 0, state: null });
+        }
+        return;
+      }
+
       // ── Telegram webhook ──
       if (url.pathname === "/api/telegram/webhook" && method === "POST") {
         const body = await readBody(req);
