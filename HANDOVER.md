@@ -1,112 +1,126 @@
-# Mikael Trading OS — Handover till nästa session
+# Mikael Trading OS — Handover för nästa session
 
-**Senast uppdaterad:** 2026-04-28
-**Repo:** github.com/aiupscaleagency-max/mikael-trading-os
-**Domän:** https://trading.aiupscale.agency (live, Docker på Hostinger VPS 72.60.36.92)
+**Senast uppdaterad:** 2026-04-29 23:15 UTC
+**Live URL:** https://trading.aiupscale.agency/
+**GitHub:** github.com/aiupscaleagency-max/mikael-trading-os
+**VPS:** 72.60.36.92 (SSH: `~/.ssh/claude_key`)
 
-## Status — vad som funkar idag
+---
 
-✅ **Landing-sida** AION-stil (svart bg, neon-blå glow, 10-agent roster)
-✅ **Auth-flow** signup/login → dashboard direkt (ingen forced wizard)
-✅ **Admin-bypass** för `aiupscaleagency@gmail.com` / `Trading2026!` — skippar Supabase
-✅ **Supabase** projekt skapat (`orkuexkzufpklttvsclp`, free-tier, schema körd)
-✅ **Sidomeny SPA** — Trade / Team / Chat / Live / Trades / Cost / Settings (URL hash routing)
-✅ **Floating chat** + Chat-sida med persistent historik (localStorage, tid/dag/datum-format, ↻ rensa)
-✅ **Test-konto** — $10K paper-balance, persistent, equity/realized/unrealized PnL i header + Trades-sidan
-✅ **Trades-sidan** — live positioner med 📈 LONG / 📉 SHORT-badges, countdown, Stäng-knappar, decisions-log, history
-✅ **Scalping-mode** — 1m default, 60-90% varierad payout (forex-style), 65% agent-skill bakad in i demo
-✅ **Cost-tracker** med $2/dag cap circuit breaker (`MAX_DAILY_SPEND_USD`)
-✅ **10 agenter** (Lars, Markus, Tomas, Sara, Rasmus, Karin, Petra, Emma, Albert, Hanna)
-✅ **Wall Street-grade prompts** (commit `1436171`):
-  - Tomas → Citadel TA (5 timeframes, R:R, chart-patterns, Fibonacci)
-  - Markus → McKinsey makro (cykel-fas, Fed outlook, sektor-rotation)
-  - Karin → Renaissance kvant (säsongs-patterns, Fed-event correlation)
-  - Rasmus → Bridgewater risk (korrelations-matris, stress-test, hedging)
-  - Petra → BlackRock portfölj (core/satellite, expected return + drawdown)
-✅ **Prompt caching** Hanna + Albert (sparar 50-70% input på iterationer)
-✅ **Restart-loop-fix** (lastRun = bootTime, on-failure:3, ingen initial-turn vid boot)
-✅ **Mänsklig prosa** i Hanna-svar — forex-detect, bättre input-parsing
+## Status — vad är klart
 
-## Aktiv konfig
+### ✅ Backend
+- **Binance dual-mode integration** (Testnet + Mainnet parallellt)
+  - `src/server/integrations/binance.ts` — klient med signed requests
+  - Auto-init från `.env` vid boot (BINANCE_API_KEY/SECRET, BINANCE_TESTNET_API_KEY/SECRET)
+  - Endpoints: `/api/binance/dual`, `/api/binance/account?mode=`, `/api/binance/order`, `/api/binance/trades`, `/api/binance/safety`
+- **Oanda integration** (forex) — `src/server/integrations/oanda.ts` (men **EJ konfigurerad** ännu)
+- **Säkerhetslås LIVE** — `MAX_LIVE_STAKE_USD=5`, `MAX_LIVE_DAILY_LOSS_USD=10` (i `.env`)
+- **Telegram-bot** — webhook + interaktiv chat med 10 agenter (inkl Viktor forex-specialist)
+- **Market context** (`src/server/marketContext.ts`) — live RSI/SMA/MACD/OBV från Binance till agenterna
+- **Pattern detection** (`src/server/patternDetection.ts`) — 25+ chart-mönster
 
-- **Modell-fördelning:** Lars=Perplexity, 7 specialister=Haiku 4.5, Hanna=Sonnet 4.6, Albert=Opus 4.7
-- **Kostnad/session:** ~$0.15 (Albert ~$0.105, Hanna ~$0.021, Lars+specialister ~$0.024)
-- **Schema:** 2 sessions/dag (00:00 + 12:00 UTC), `LOOP_INTERVAL_SECONDS=43200`
-- **Risk-ramar:** DEFAULT_POSITION_USD=50, MIN=20, MAX=100, MAX_TOTAL_EXPOSURE_USD=500
-- **Symbols:** Top-15 crypto + 9 forex-par (EUR/USD, GBP/USD, USD/JPY, etc)
-- **Mode:** TEST (paper / testnet) — INTE live mode än
-- **Container:** kör på VPS, exit kontrollerad, ingen restart-loop möjlig
+### ✅ Frontend (`dashboard.html`)
+- **Mode-knappar:** TEST (testnet) + LIVE (mainnet) — PROPOSE borttagen
+- **Header:** 📊 TEST $X · 💚 LIVE $Y — speglar Binance-saldon i realtid
+- **Binance Live Sync card** — dual-mode display med stablecoin-breakdown
+- **Saldo-card "TEST-KONTO SALDO"** — speglar Binance API beroende på mode
+- **Chat-routing:** alla trades går genom `/api/binance/order`
+- **Säkerhetslås** blockerar live-trades > $5
+- **Cache-busting:** `Cache-Control: no-store` headers på dashboard.html
 
-## Pågående beslut/strategi
+### ✅ Mike's konton
+- **Binance LIVE (mainnet):** $49.84 USDC (köpt med SEB-kort, verifiering klar)
+- **Binance TESTNET:** $50,499 USDT cash + 437 demo-tokens (~$398K total)
+- **Oanda:** ej skapat ännu
 
-- **SaaS-model** låst: family/friends gratis + Starter $29 + Pro $99 + Enterprise $299/mån
-- **Per-user keys** (multi-tenant): users kopplar egna Anthropic + Binance i Settings/onboarding
-- **Admin (Mike)** använder VPS .env-nycklar via hasTradingKeys()-bypass
-- **Ingen Stripe-integration** ännu (Fas 3, väntar)
-- **Backend per-user agent-runs** ej byggd ännu (Fas 2.5, kräver service_role key från Mike)
-- **Inte testat live mode** — Mike vill dubbla paper-balance ($10K → $20K) först
+---
 
-## Mikes specifika önskemål (vad nästa Claude ska adressera)
+## ❗ Pågående/nyligen-deployat
 
-### Förestående (denna session pågår eller nästa)
+### Senaste commits
+1. `b363cad` — Saldo-card speglar TEST/LIVE-mode från Binance API
+2. `bcb2939` — Ta bort paper-card helt (sen återinfört med Binance-koppling)
+3. `909d770` — Ta bort PROPOSE — bara TEST + LIVE
+4. `7ca0e62` — renderPaperBadge disabled — header från Binance Testnet
+5. `a65d3f6` — Unified flow: ALLT mot Binance — paper-simulering borta
 
-1. ✅ Mobil/tablet responsivitet — bottom-nav på mobil, full-screen chat, anpassad chart-höjd
-2. ✅ Intent-klassificering — agenten ska "lyssna" som människa (chat / decide / execute / analyze / challenge)
-3. ✅ Multi-timeframe regler — Tomas alltid 1m/5m/15m/1h/1d/1w/1M
-4. ✅ Wait-for-entry — Hanna får vänta 1-5 min på optimal entry istället för instant trade
-5. **Pre-loaded marknadskontext** (deferred) — Supabase-tabell `market_context` + cron som uppdaterar 1x/h med makro/igår/vecka/månad så agenter slipper analysera från noll
+### Mike's senaste klagomål (när session pausades)
+- TEST-KONTO SALDO panelen visar fortfarande "$10,000.00" i hans browser
+- **Orsak:** browser-cache. Server har korrekt kod (verifierat via curl)
+- **Lösning:** hard-refresh (Cmd+Shift+R) eller inkognito (Cmd+Shift+N)
+- **När hard-refresh klar:** panelen visar `$50,499 (testnet)` eller `$49.84 (live)`
 
-### Senare
+---
 
-6. Backend per-user keys (kräver service_role-key från Mike)
-7. Stripe billing (subscription + per-decision metering)
-8. Multi-tenant orchestrator (varje user kör egna agent-sessions med egna keys)
-9. Resend SMTP för Supabase email-confirmation (när nödvändigt för production)
-10. Cross-user learning pipeline (anonymized aggregation)
+## Tekniska detaljer
 
-## Viktiga filer
-
-- `dashboard.html` — hela frontend (~3500 rader, single-file, vanilla JS)
-- `src/orchestrator/specialists.ts` — Markus, Tomas, Sara prompts
-- `src/orchestrator/advancedSpecialists.ts` — Rasmus, Karin, Petra, Emma, Olof
-- `src/orchestrator/advisor.ts` — Albert
-- `src/orchestrator/headTrader.ts` — Hanna (med tool-use loop + caching)
-- `src/orchestrator/researcher.ts` — Lars (Perplexity)
-- `src/cost/tracker.ts` — kostnads-tracking + circuit breaker
-- `src/auth/supabase.ts` — server-side service-role client (oanvänd än)
-- `supabase/migrations/0001_init_schema.sql` — 9 tabeller med RLS
-- `supabase/migrations/0002_admin.sql` — admin-flagging + auto-trigger
-- `prompts/` — markdown-docs för agenter + crisis-scenarier
-- `Dockerfile`, `docker-compose.yml` — deploy
-
-## Deploy-flöde
-
-```bash
-# Lokalt → GitHub
-git add -A && git commit -m "..." && git push
-
-# GitHub → VPS
-ssh -i ~/.ssh/claude_key root@72.60.36.92
-cd /root/mikael-trading-os
-git pull --rebase
-docker compose build && docker compose up -d
+### .env på VPS (`/root/mikael-trading-os/.env`)
+```
+ANTHROPIC_API_KEY=<satt>
+BINANCE_API_KEY=<live-key från binance.com>
+BINANCE_API_SECRET=<live-secret>
+BINANCE_TESTNET_API_KEY=XBakDluz2U1brE0MYB6MpGCaudMgLALBM4t8KKm2f3dTLN7YV35XZjNvPCzlVL0
+BINANCE_TESTNET_API_SECRET=ZHJKwfFZ5P4MiaoDhyk8pK3tT7Rn8CDlKXRlvs2Ary818RNJ4XBku68rexRJWufp
+PERPLEXITY_API_KEY=<satt>
+OANDA_API_KEY=<satt men ev gammal>
+OANDA_ACCOUNT_ID=<satt men ev gammal>
+SUPABASE_ANON_KEY=<satt>
+TELEGRAM_BOT_TOKEN=8763428928:AAEvZKMevT17M-tNZHyQpGdO89mkpoEOq54
+TELEGRAM_CHAT_ID=1928144865
+PUBLIC_URL=https://trading.aiupscale.agency
+MODE=paper
+EXECUTION_MODE=auto
+MAX_LIVE_STAKE_USD=5
+MAX_LIVE_DAILY_LOSS_USD=10
 ```
 
-## Senaste kommandon Mike vill köra
+### Hjälp-script på VPS
+- `/root/update-binance-keys.sh KEY SECRET testnet|live`
+- `/root/update-testnet-keys.sh KEY SECRET`
 
-- Skriv "skapa konto" → admin-bypass eller Supabase signup
-- Skriv "Välj och kör 4 trades på $500 1min" → 4 forex-scalpar med 65% win-rate
-- Skriv "Stäng allt" → close alla open positions
-- Skriv "Vad tycker ni?" → team-status utan att handla
+### Deploy-kommando
+```bash
+ssh -i ~/.ssh/claude_key root@72.60.36.92 'cd /root/mikael-trading-os && git pull --rebase && docker compose up -d --force-recreate trading-os'
+```
 
-## Säkerhetsnät (lärt sig hårda vägen)
+För TS-ändringar: `docker compose build --no-cache trading-os` först.
 
-- **Aldrig** initial agent-turn vid boot (orsakade $20-burn igår)
-- **Restart on-failure:3** med max 3 omstarter
-- **Cost cap $2/dag** stoppar sessions automatiskt
-- **Cost-tracker loggar** varje API-anrop för transparens
-- **Admin-emails (`aiupscaleagency@gmail.com`, `mikael@aiupscaleagency.com`)** har bypass både frontend och backend
+---
+
+## Nästa steg / TODO
+
+### Hög prio (Mike väntar på)
+1. Verifiera att TEST-KONTO SALDO panelen visar Binance-data efter hard-refresh
+2. Live-trade verifiering: "köp BTC $5" i LIVE-mode → hamna på riktiga binance.com
+3. Trade-historik från Binance — räkna PnL + W/L i panelen från `/api/binance/trades`
+4. Win-rate-fält ("—" just nu) — fyll med riktig data
+
+### Medium prio
+5. Oanda demo-konto för forex-trades
+6. Live WebSocket från Binance (millisekund-uppdateringar)
+7. Position-stängning via API
+
+### Låg prio
+8. TradingView Pine Script-strategier
+9. Multi-tenant migration (Supabase service_role-key behövs)
+10. Stripe billing (SaaS-tier system)
+
+---
 
 ## Hur nästa session börjar
 
-Säg: "Fortsätt från senaste commit på mikael-trading-os, läs HANDOVER.md, fortsätt med pre-loaded market context (Mike's punkt 5)."
+**Mike skriver troligen:**
+> *"Fortsätt från senaste commit på mikael-trading-os, läs HANDOVER.md"*
+
+**Du gör:**
+1. Läs denna fil
+2. Verifiera deploy-status: `curl -s https://trading.aiupscale.agency/api/binance/dual`
+3. Fråga Mike vad han vill prio:era
+
+**Lärdomar från denna session:**
+- Mike hatar när det sägs "fixat" men cache visar gammalt → alltid be om inkognito-test
+- Paper-simulering är borta — TEST = Binance Testnet (riktig API)
+- Mike vill 75%+ winrate men riktigt trading är 50-65%
+- Säkerhetslås $5/trade är kritiska — får ALDRIG tas bort utan explicit OK
+- Allt synkat 1:1 med Binance.com är icke-förhandlingsbart
