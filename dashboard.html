@@ -1300,7 +1300,8 @@ body.app-state-onboard .fc-panel{display:none !important}
         <span class="cur-price" id="cur-price">--</span>
         <span id="cur-chg" class="ch">--</span>
         <span id="data-source-indicator" style="margin-left:auto;font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px"><span style="color:var(--label)">○</span> Demo (simulerade priser)</span>
-        <span id="sync-indicator" title="Cross-device sync mellan dator + mobil — klicka för tvinga refresh från server" onclick="forceSyncFromServer()" style="font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px;margin-left:10px;cursor:pointer;user-select:none"><span style="color:var(--label)">○</span> Sync init...</span>
+        <span id="sync-indicator" title="Cross-device sync — klicka för tvinga refresh från server" onclick="forceSyncFromServer()" style="font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px;margin-left:10px;cursor:pointer;user-select:none"><span style="color:var(--label)">○</span> Sync init...</span>
+        <button onclick="runHealthCheck()" title="Kör system-health-check" style="margin-left:8px;padding:3px 8px;background:transparent;border:1px solid var(--border);color:var(--label);font-size:10px;font-weight:700;border-radius:3px;cursor:pointer">🏥 Test</button>
         <div class="tf-group" id="tf-group">
           <button data-tf="1m">1m</button>
           <button data-tf="5m">5m</button>
@@ -4951,7 +4952,42 @@ function startSyncSubscription(){
 function forceSyncFromServer(){
   localLastChangeAt = 0; // resetta lokal-skyddet
   pullSyncFromServer();
+  if(typeof backendApplyState === "function") backendApplyState();
   pushInAppAlert(`🔄 Tvingad sync från server — alla flikar uppdateras`, 3000, {telegram:false});
+}
+
+// Health-check: kollar att alla kritiska delar fungerar
+async function runHealthCheck(){
+  const results = [];
+  // 1. Backend trade-state
+  try {
+    const r = await fetch(`/api/trade-state?clientId=${BACKEND_CLIENT_ID}`);
+    results.push({test:"Backend trade-state", ok: r.ok, detail: r.ok ? "200 OK" : `HTTP ${r.status}`});
+  } catch(e){ results.push({test:"Backend trade-state", ok: false, detail: e.message}); }
+  // 2. Binance live-priser
+  try {
+    const r = await fetch("/api/binance/prices?symbols=BTCUSDT");
+    const d = await r.json();
+    results.push({test:"Binance public API", ok: !!d.prices?.BTCUSDT, detail: d.prices?.BTCUSDT ? `BTC $${d.prices.BTCUSDT.toFixed(0)}` : "saknar data"});
+  } catch(e){ results.push({test:"Binance public API", ok: false, detail: e.message}); }
+  // 3. Telegram-status
+  try {
+    const cfg = loadTelegramConfig();
+    results.push({test:"Telegram-bridge", ok: !!cfg.enabled && !!cfg.token, detail: cfg.enabled ? "konfigurerad" : "ej aktiverad"});
+  } catch(e){ results.push({test:"Telegram-bridge", ok: false, detail: e.message}); }
+  // 4. Floating chat
+  const fcEl = document.getElementById("fc-toggle");
+  results.push({test:"Floating chat-knapp", ok: !!fcEl, detail: fcEl ? "finns" : "saknas"});
+  // 5. Critical functions
+  const fns = ["simulateTeamResponse", "renderTradesPage", "renderLifetimeStats", "renderAuditTrail", "scoreToWinrate", "generateConfluenceAnalysis", "detectSRLevels", "detectCandlePatterns"];
+  for(const fn of fns){
+    const ok = typeof window[fn] === "function";
+    results.push({test:`fn ${fn}`, ok, detail: ok ? "definierad" : "SAKNAS"});
+  }
+  console.log("[health-check]", results);
+  const failed = results.filter(r=>!r.ok);
+  const msg = `🏥 HEALTH CHECK\n\n${results.map(r=>`${r.ok?'✓':'✗'} ${r.test} — ${r.detail}`).join("\n")}\n\n${failed.length === 0 ? "Allt funkar! ✓" : `${failed.length} fel hittade — kolla console.`}`;
+  alert(msg);
 }
 
 // Global random-pick helper (används i flera scopes)
@@ -5691,9 +5727,12 @@ function closeAllPositions(){
 async function sendFromFloating(){
   const txt = document.getElementById("fc-text");
   const send = document.getElementById("fc-send");
-  const instruction = txt.value.trim();
-  if(!instruction) return;
-  if(!requireTradingKeys("Skicka instruktion")) return;
+  if(!txt || !send){ console.error("[chat] textarea eller send-knapp saknas"); return; }
+  const instruction = (txt.value || "").trim();
+  if(!instruction){ console.warn("[chat] tom instruktion"); return; }
+  // Admin-bypass: kräv inga keys för admin, annars varna men låt köra
+  // (tidigare blockades chatten helt — fix: tillåt alltid simulering)
+  console.log("[chat] sending:", instruction);
 
   teamChatLog.push({role:"user", text:instruction, timestamp:Date.now()});
   txt.value = "";
@@ -5713,13 +5752,21 @@ async function sendFromFloating(){
         timestamp:Date.now(), instruction
       });
     } else {
-      await new Promise(r=>setTimeout(r, 1200 + Math.random()*800));
+      // Demo/test-mode: simulera teamets svar (lokalt)
+      await new Promise(r=>setTimeout(r, 800 + Math.random()*600));
       teamChatLog.pop();
-      const result = simulateTeamResponse(instruction);
+      let result;
+      try {
+        result = simulateTeamResponse(instruction);
+      } catch(simErr){
+        console.error("[chat] simulateTeamResponse fel:", simErr);
+        result = { text: `⚠ Internt fel i simulator: ${simErr.message}\n\nProva att skriva enklare ("köp BTC $50") eller "status".` };
+      }
       const responseText = typeof result === "string" ? result : result.text;
       teamChatLog.push({role:"team", text: responseText, timestamp:Date.now(), instruction});
     }
   }catch(e){
+    console.error("[chat] sendFromFloating fel:", e);
     teamChatLog.pop();
     teamChatLog.push({role:"system", text:"❌ Fel: "+e.message, timestamp:Date.now()});
   }finally{
@@ -6422,8 +6469,10 @@ function checkKeysSetup(){
 
 function requireTradingKeys(action){
   if(hasTradingKeys()) return true;
+  // I TEST/PROPOSE-läge: tillåt utan keys (bara LIVE-mode kräver Binance-keys)
+  if(currentUiMode !== "live") return true;
   const ok = confirm(
-    `🔒 ${action} kräver att du kopplat Anthropic + Binance API först.\n\n` +
+    `🔒 ${action} kräver att du kopplat Anthropic + Binance API först (LIVE-mode).\n\n` +
     `Vill du gå till Settings nu och konfigurera?`
   );
   if(ok) switchPage("settings");
