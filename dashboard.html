@@ -1352,16 +1352,17 @@ body.app-state-onboard .fc-panel{display:none !important}
         <button data-tf="14400">4h</button>
         <button data-tf="86400">1d</button>
       </div>
-      <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;font-size:10px">
-        <label style="color:var(--dim)">Eller egen tid:</label>
-        <input type="number" id="bet-tf-custom" placeholder="47" min="10" max="86400" step="1" style="flex:1;padding:5px;background:var(--card2);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:11px;font-family:'SF Mono',monospace" />
-        <select id="bet-tf-unit" style="padding:5px;background:var(--card2);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:11px">
-          <option value="1">sek</option>
-          <option value="60" selected>min</option>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;font-size:10px">
+        <label style="color:var(--dim);min-width:78px">Egen tid:</label>
+        <input type="number" id="bet-tf-custom" placeholder="30" min="1" max="86400" step="1" style="flex:1;padding:6px;background:var(--card2);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:12px;font-weight:700;font-family:'SF Mono',monospace" />
+        <select id="bet-tf-unit" style="padding:6px;background:var(--card2);border:1px solid var(--cyan);border-radius:3px;color:var(--cyan);font-size:11px;font-weight:700">
+          <option value="1" selected>sek</option>
+          <option value="60">min</option>
           <option value="3600">tim</option>
         </select>
-        <button id="bet-tf-apply" style="padding:5px 10px;background:var(--cyan);color:#000;border:none;border-radius:3px;font-weight:700;font-size:10px;cursor:pointer">SET</button>
+        <button id="bet-tf-apply" style="padding:6px 12px;background:var(--cyan);color:#000;border:none;border-radius:3px;font-weight:700;font-size:10px;cursor:pointer">SET</button>
       </div>
+      <div style="font-size:9px;color:var(--dim);margin-bottom:10px">💡 Skriv t.ex. <b>30 sek</b>, <b>2 min</b>, <b>1 tim</b> · Aktuell: <span id="bet-tf-current" style="color:var(--cyan);font-weight:700">5m</span></div>
       <label style="font-size:10px;color:var(--dim)">Belopp (USD)</label>
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
         <input type="number" id="bet-amt" value="10" min="1" step="1" style="flex:1" />
@@ -5776,22 +5777,32 @@ function wire(){
     STATE.betTf = parseInt(e.target.dataset.tf,10);
     log_ok(`Tidshorisont: ${formatTfHuman(STATE.betTf)}`);
   });
-  // Custom-tid input: "47 sek" / "8 min" / "30 sek" osv
-  document.getElementById("bet-tf-apply")?.addEventListener("click", ()=>{
-    const val = parseFloat(document.getElementById("bet-tf-custom").value);
+  // Custom-tid input: "30 sek" / "8 min" / "1 tim" osv
+  function applyCustomTf(){
+    const inp = document.getElementById("bet-tf-custom");
+    const val = parseFloat(inp.value);
     const unit = parseFloat(document.getElementById("bet-tf-unit").value);
     if(!val || val < 1){ alert("Ange ett positivt tal"); return; }
     const seconds = Math.round(val * unit);
-    if(seconds < 10){ alert("Minst 10 sekunder"); return; }
+    if(seconds < 5){ alert("Minst 5 sekunder"); return; }
     if(seconds > 86400*7){ alert("Max 7 dagar"); return; }
     STATE.betTf = seconds;
     document.querySelectorAll("#bet-tf button").forEach(b=>b.classList.remove("active"));
+    const cur = document.getElementById("bet-tf-current");
+    if(cur){ cur.textContent = formatTfHuman(seconds); cur.style.color = "var(--green)"; setTimeout(()=>{cur.style.color="var(--cyan)"},1500); }
     log_ok(`Custom tid satt: ${formatTfHuman(seconds)} (${seconds}s)`);
-    pushInAppAlert(`⏱ Tidshorisont satt: ${formatTfHuman(seconds)}`, 3000, {telegram:false});
-  });
+    pushInAppAlert(`⏱ Tidshorisont satt: ${formatTfHuman(seconds)}`, 2500, {telegram:false});
+  }
+  document.getElementById("bet-tf-apply")?.addEventListener("click", applyCustomTf);
   // Tillåt Enter i input → trigger SET
   document.getElementById("bet-tf-custom")?.addEventListener("keypress", e=>{
-    if(e.key === "Enter") document.getElementById("bet-tf-apply")?.click();
+    if(e.key === "Enter"){ e.preventDefault(); applyCustomTf(); }
+  });
+  // Uppdatera "Aktuell"-visning när tf-button klickas
+  document.getElementById("bet-tf").addEventListener("click", e=>{
+    if(!e.target.dataset.tf) return;
+    const cur = document.getElementById("bet-tf-current");
+    if(cur) cur.textContent = formatTfHuman(parseInt(e.target.dataset.tf, 10));
   });
   document.getElementById("bet-amt").addEventListener("input", e=>{
     const v = parseFloat(e.target.value)||0;
