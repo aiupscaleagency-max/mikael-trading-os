@@ -17,6 +17,25 @@ import { OandaClient, type OandaCredentials } from "./integrations/oanda.js";
 let binanceCreds: BinanceCredentials | null = null;
 let oandaCreds: OandaCredentials | null = null;
 
+// Auto-init från .env vid boot — Mike har redan keys där
+function initIntegrationsFromEnv(): void {
+  const bk = process.env.BINANCE_API_KEY;
+  const bs = process.env.BINANCE_API_SECRET;
+  const bt = process.env.BINANCE_TESTNET !== "false"; // default true (säkrast)
+  if (bk && bs) {
+    binanceCreds = { apiKey: bk, apiSecret: bs, testnet: bt };
+    log.ok(`Binance auto-initialiserat från .env (mode: ${bt ? "TESTNET" : "MAINNET"})`);
+  }
+  const ot = process.env.OANDA_API_KEY || process.env.OANDA_API_TOKEN;
+  const oa = process.env.OANDA_ACCOUNT_ID;
+  const op = process.env.OANDA_PRACTICE !== "false"; // default true
+  if (ot && oa) {
+    oandaCreds = { apiToken: ot, accountId: oa, practice: op };
+    log.ok(`Oanda auto-initialiserat från .env (mode: ${op ? "PRACTICE" : "LIVE"})`);
+  }
+}
+initIntegrationsFromEnv();
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
 //
