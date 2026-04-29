@@ -1831,8 +1831,54 @@ const STATE = {
 // Session Mode — defaults
 const SESSION_TARGET_TOTAL = 6;     // 6 sessioner
 const SESSION_TRADES = 5;            // 5 trades per session
-const SESSION_SCORE_THRESHOLD = 9;   // Bara A+ setups (score ≥9 = 82% förväntat)
-const SESSION_TARGET_WINRATE = 0.80; // Mikes nya krav: minst 80% winrate
+const SESSION_SCORE_THRESHOLD = 9;   // ≥9 = 82% förväntat (höj till 10 för 88%)
+const SESSION_TARGET_WINRATE = 0.80; // Mikes krav: minst 80% winrate
+
+// Strikt risk/reward — kräv minst 1:2 (TP minst 2x SL)
+const REQUIRED_RR_RATIO = 2.0;
+
+// Time-of-day-filter — UTC-timmar att undvika (öppningstid hög volatilitet)
+const AVOID_HOURS_UTC = [9, 10]; // 9:30-10:00 UTC öppning
+
+// Symbol-blacklist — om N losses i rad → pause i X minuter
+const SYMBOL_LOSS_STREAK_LIMIT = 2;
+const SYMBOL_BLACKLIST_MIN = 60; // 1 timme blacklist
+const symbolBlacklist = new Map(); // sym → expiresAt timestamp
+
+function isSymbolBlacklisted(sym){
+  const exp = symbolBlacklist.get(sym);
+  if(!exp) return false;
+  if(Date.now() >= exp){ symbolBlacklist.delete(sym); return false; }
+  return true;
+}
+
+function trackLossStreak(sym, won){
+  if(!window._lossStreak) window._lossStreak = {};
+  if(won){ window._lossStreak[sym] = 0; return; }
+  window._lossStreak[sym] = (window._lossStreak[sym] || 0) + 1;
+  if(window._lossStreak[sym] >= SYMBOL_LOSS_STREAK_LIMIT){
+    symbolBlacklist.set(sym, Date.now() + SYMBOL_BLACKLIST_MIN * 60 * 1000);
+    window._lossStreak[sym] = 0;
+    pushInAppAlert(`⛔ ${sym} blacklistad i ${SYMBOL_BLACKLIST_MIN} min (${SYMBOL_LOSS_STREAK_LIMIT} förluster i rad)`, 6000);
+  }
+}
+
+// Time-filter: ska vi pausa just nu?
+function isHighVolHour(){
+  const h = new Date().getUTCHours();
+  return AVOID_HOURS_UTC.includes(h);
+}
+
+// Confluence-boost: kollar om flera setup-typer matchar samtidigt på samma sym
+// (returnerar bonus-poäng om ja)
+function calcConfluenceBoost(symbol, history){
+  const recentForSym = (history || []).filter(h => h.sym === symbol).slice(0, 10);
+  if(recentForSym.length < 3) return 0;
+  // Räkna unika setup-typer som vunnit för denna sym
+  const winningSetups = new Set(recentForSym.filter(h => (h.pnl||0) > 0).map(h => h.setupType));
+  // Om 2+ olika setups vunnit historiskt = symbol funkar bra för flera strategier
+  return winningSetups.size >= 2 ? 1 : 0;
+}
 
 // ─── Candlestick pattern-detection ───
 // Läser senaste candles och letar efter klassiska pattern (Tomas-simulering på riktig data)
@@ -2238,6 +2284,21 @@ function generateConfluenceAnalysis(side, sym){
     total += 1;
   }
 
+  // 7. CONFLUENCE-BOOST — flera vinnande setups historiskt på samma symbol
+  if(sym){
+    const boost = calcConfluenceBoost(sym, STATE.tradeHistory);
+    if(boost > 0){
+      factors.push({label:"Multi-strategi-confluence", points:boost, detail:`${sym} har vunnit på flera setup-typer historiskt`, positive:true});
+      total += boost;
+    }
+  }
+
+  // 8. TIME-FILTER — öppningstid hög volatilitet = penalty
+  if(isHighVolHour()){
+    factors.push({label:"⚠ Hög-vol-timme (9-10 UTC)", points:-1, detail:"Öppningstid svår att läsa", positive:false});
+    total -= 1;
+  }
+
   // Skala till 1-10 (bas 5 + total justering)
   const score = Math.max(1, Math.min(10, 5 + total));
   return { score, factors, totalAdjustment: total };
@@ -2467,17 +2528,21 @@ function scanWatches(){
       const entry = STATE.livePrices[w.sym] ?? BASE_PRICES[w.sym] ?? 100;
       const winrate = scoreToWinrate(score);
       const histMatch = calcHistoricalMatch(setupType, score);
+      // R:R 1:2 — SL 1.2%, TP 2.4% = exakt R:R 2.0 (Mikes krav)
+      const slPct = 0.012;
+      const tpPct = slPct * REQUIRED_RR_RATIO; // 2.4%
       const confirm = {
         id: "conf-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
         watchId: w.id,
         sym: w.sym, side: w.side, amount: w.amount, timeframeSec: w.timeframeSec,
         score, setupType, setupLabel: setupMeta.label,
-        factors: analysis.factors,           // Transparent breakdown av WHY score är X
-        expectedWinrate: winrate,            // 0.75 = 75% historiskt vid denna score
-        historicalMatch: histMatch,          // Mikes egen data: liknande setups
+        factors: analysis.factors,
+        expectedWinrate: winrate,
+        historicalMatch: histMatch,
         entry,
-        suggestedSL: w.side==='BUY' ? entry * 0.988 : entry * 1.012,  // 1.2% SL
-        suggestedTP: w.side==='BUY' ? entry * 1.024 : entry * 0.976,  // 2.4% TP
+        suggestedSL: w.side==='BUY' ? entry * (1-slPct) : entry * (1+slPct),
+        suggestedTP: w.side==='BUY' ? entry * (1+tpPct) : entry * (1-tpPct),
+        rrRatio: REQUIRED_RR_RATIO,
         attemptCount: w.attempts,
         createdAt: now,
         expiresAt: now + CONFIRM_TIMEOUT_MS,
@@ -2627,6 +2692,13 @@ function requestTradeExecution(sym, side, amount, timeframeSec){
   // Validering: forex stöds inte än (Oanda-executor kommer)
   if(!isSymbolSupported(sym)){
     pushInAppAlert(`⚠ ${sym} stöds inte än (forex kräver Oanda-executor som byggs i framtid). Använd crypto-pairs som BTCUSDT, ETHUSDT.`, 6000);
+    return null;
+  }
+  // Symbol-blacklist (efter 2 förluster i rad)
+  if(isSymbolBlacklisted(sym)){
+    const exp = symbolBlacklist.get(sym);
+    const minLeft = Math.ceil((exp - Date.now()) / 60000);
+    pushInAppAlert(`⛔ ${sym} blacklistad i ${minLeft} min till (för många förluster i rad). Vänta eller välj annan symbol.`, 6000);
     return null;
   }
   // Session aktiv → använd watch-mode (bevakning + bekräftelse)
@@ -4480,9 +4552,11 @@ async function selectBestSymbolsForBatch(count){
   });
   candidates.push(...forexCandidates);
 
-  // 3. AGENT-CONSENSUS: ranka all och plocka top N (blandning bestäms av marknaden)
-  candidates.sort((a, b) => b.tradeScore - a.tradeScore);
-  const selected = candidates.slice(0, count);
+  // 3. FILTRERA blacklistade symboler (efter loss-streaks)
+  const filtered = candidates.filter(c => !isSymbolBlacklisted(c.sym));
+  // 4. AGENT-CONSENSUS: ranka all och plocka top N (blandning bestäms av marknaden)
+  filtered.sort((a, b) => b.tradeScore - a.tradeScore);
+  const selected = filtered.slice(0, count);
   // Logga agenternas resonemang
   console.log("[agent-select]", selected);
   return selected;
@@ -4781,6 +4855,15 @@ async function backendGetState(){
 async function backendApplyState(){
   const state = await backendGetState();
   if(!state) return false;
+  // Spåra loss-streaks från NYA trades (för symbol-blacklist)
+  if(state.history && Array.isArray(state.history)){
+    const prevHistory = STATE.tradeHistory || [];
+    const prevIds = new Set(prevHistory.map(h => h.id));
+    const newClosed = state.history.filter(h => !prevIds.has(h.id) && h.won !== null && h.won !== undefined);
+    for(const nh of newClosed){
+      trackLossStreak(nh.sym, nh.won === true);
+    }
+  }
   // Server är ALLTID source of truth — ingen lokal-skyddslogik
   // (Tidigare: skip om backend tom + local hade data → orsakade divergens
   //  mellan flikar med gamla localStorage. Nu: server vinner alltid.)
