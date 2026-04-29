@@ -1303,6 +1303,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         <span id="sync-indicator" title="Cross-device sync — klicka för tvinga refresh från server" onclick="forceSyncFromServer()" style="font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px;margin-left:10px;cursor:pointer;user-select:none"><span style="color:var(--label)">○</span> Sync init...</span>
         <button onclick="runHealthCheck()" title="Kör system-health-check (snabb)" style="margin-left:8px;padding:3px 8px;background:transparent;border:1px solid var(--border);color:var(--label);font-size:10px;font-weight:700;border-radius:3px;cursor:pointer">🏥 Test</button>
         <button onclick="runPreLiveVerification()" title="End-to-end verifiering innan riktiga pengar (35s)" style="margin-left:4px;padding:3px 8px;background:#22c55e;border:none;color:#0a0e14;font-size:10px;font-weight:700;border-radius:3px;cursor:pointer">🧪 Pre-Live</button>
+        <button onclick="forceCleanResync()" title="Rensa lokal cache + tvinga server-sync" style="margin-left:4px;padding:3px 8px;background:transparent;border:1px solid #f59e0b;color:#f59e0b;font-size:10px;font-weight:700;border-radius:3px;cursor:pointer">🧹 Resync</button>
         <div class="tf-group" id="tf-group">
           <button data-tf="1m">1m</button>
           <button data-tf="5m">5m</button>
@@ -4740,25 +4741,10 @@ async function backendGetState(){
 async function backendApplyState(){
   const state = await backendGetState();
   if(!state) return false;
-  // Skydda mot stale data
+  // Server är ALLTID source of truth — ingen lokal-skyddslogik
+  // (Tidigare: skip om backend tom + local hade data → orsakade divergens
+  //  mellan flikar med gamla localStorage. Nu: server vinner alltid.)
   if(state.updatedAt && state.updatedAt <= backendStateLastUpdated) return false;
-
-  // KRITISKT: om backend är TOM ($10K, 0 trades) men frontend har data,
-  // försök migrera/seed:a istället för att skriva över Mikes data
-  const backendEmpty = (!state.history || state.history.length === 0)
-                    && (!state.positions || state.positions.length === 0)
-                    && (state.paperAccount?.realizedPnl === 0);
-  const localHasData = (STATE.tradeHistory && STATE.tradeHistory.length > 0)
-                    || (STATE.tradePositions && STATE.tradePositions.length > 0)
-                    || (STATE.sessionReports && STATE.sessionReports.length > 0);
-  if(backendEmpty && localHasData){
-    console.log("[backend-sync] Skip apply — backend tom, frontend har data (skydd mot data-förlust)");
-    // Visa varning så Mike vet
-    const ind = document.getElementById("sync-indicator");
-    if(ind) ind.innerHTML = `<span style="color:#f59e0b">⚠</span> Backend tom, lokal data bevaras`;
-    return false;
-  }
-
   backendStateLastUpdated = state.updatedAt || Date.now();
   // Mappa till STATE — BARA fält som backend faktiskt äger
   STATE.paperAccount = state.paperAccount;
@@ -4854,6 +4840,34 @@ async function backendReconcile(){
 
 // Auto-pull från backend var 2s + på SSE-events
 function startBackendSync(){
+  // KRITISKT: vid första boot, rensa LOKAL gammal cache så vi inte får divergens
+  // Bara om vi inte redan kört denna migration (versionsnummer-flagga)
+  const MIGRATION_VERSION = "v2-backend-truth";
+  const lastMigration = localStorage.getItem("trading_migration_version");
+  if(lastMigration !== MIGRATION_VERSION){
+    console.log("[migration] Rensar gammal localStorage-cache (server är nu source of truth)");
+    const keysToRemove = [
+      "trading_paper_account",
+      "trading_history",
+      "trading_positions",
+      "trading_decisions",
+      "trading_session_active",
+      "trading_session_reports",
+      "trading_watches",
+      "trading_confirms",
+    ];
+    for(const k of keysToRemove) localStorage.removeItem(k);
+    localStorage.setItem("trading_migration_version", MIGRATION_VERSION);
+    // Återställ lokal STATE så ingen gammal data finns kvar i RAM
+    STATE.tradePositions = [];
+    STATE.tradeHistory = [];
+    STATE.tradeDecisions = [];
+    STATE.session = null;
+    STATE.sessionReports = [];
+    STATE.pendingWatches = [];
+    STATE.pendingConfirms = [];
+    STATE.paperAccount = null;
+  }
   // Initial pull
   backendApplyState();
   // Backup-poll
@@ -4865,6 +4879,25 @@ function startBackendSync(){
       backendApplyState();
     });
   } catch(_){}
+}
+
+// Manuell rensning av lokal cache (för Mike om något fortfarande verkar konstigt)
+async function forceCleanResync(){
+  if(!confirm("🧹 Rensa lokal cache och hämta från server?\n\nDetta tar bort all gammal localStorage-data. Server-state blir auktoritativ.\n\n(Trades/sessioner på server påverkas INTE.)")) return;
+  const keys = ["trading_paper_account","trading_history","trading_positions","trading_decisions",
+                "trading_session_active","trading_session_reports","trading_watches","trading_confirms"];
+  for(const k of keys) localStorage.removeItem(k);
+  STATE.tradePositions = [];
+  STATE.tradeHistory = [];
+  STATE.tradeDecisions = [];
+  STATE.session = null;
+  STATE.sessionReports = [];
+  STATE.pendingWatches = [];
+  STATE.pendingConfirms = [];
+  STATE.paperAccount = null;
+  backendStateLastUpdated = 0;
+  await backendApplyState();
+  pushInAppAlert("✓ Lokal cache rensad — visar nu server-state", 4000, {telegram:false});
 }
 
 // ─── Cross-device sync (LEGACY — behålls som fallback) ───
