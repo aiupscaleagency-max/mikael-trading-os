@@ -1478,13 +1478,35 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <div style="display:grid;grid-template-columns:1fr;gap:10px;margin:0 10px">
-    <!-- Paper-card BORTTAGEN — saldo speglas nu från Binance Live Sync nedan -->
-    <!-- Element-IDs nedan stubbade så ingen JS bryter -->
-    <div style="display:none">
-      <span id="pc-equity"></span><span id="pc-realized"></span>
-      <span id="pc-unrealized"></span><span id="pc-cash"></span>
-      <span id="pc-trades"></span><span id="pc-winrate"></span>
-      <button id="pc-reset"></button>
+    <!-- Konto-saldo card — visar Binance TESTNET eller LIVE beroende på mode -->
+    <div class="paper-card" id="paper-card">
+      <div class="pc-row">
+        <div class="pc-col">
+          <div class="pc-lbl" id="pc-mode-label">📊 TESTNET SALDO</div>
+          <div class="pc-equity" id="pc-equity">$0.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">REALISERAT PNL</div>
+          <div class="pc-pnl" id="pc-realized">+$0.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">UNREALIZED (ÖPPNA)</div>
+          <div class="pc-pnl" id="pc-unrealized">+$0.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">CASH FRI</div>
+          <div class="pc-cash" id="pc-cash">$0.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">TRADES (W/L)</div>
+          <div class="pc-trades" id="pc-trades">0/0</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">WIN-RATE</div>
+          <div class="pc-winrate" id="pc-winrate">–</div>
+        </div>
+        <button class="pc-reset" id="pc-reset" style="display:none">↻ Reset</button>
+      </div>
     </div>
 
     <!-- BINANCE LIVE SYNC — jämför med testnet.binance.vision i annan flik -->
@@ -5938,6 +5960,8 @@ function setActiveMode(uiMode){
   document.querySelectorAll(".mode-btn").forEach(b=>{
     b.classList.toggle("active", b.dataset.mode === uiMode);
   });
+  // Trigga saldo-card-refresh direkt så panelen byter mellan TESTNET/LIVE-data
+  if(typeof refreshBinanceSync === "function") refreshBinanceSync();
   // PROPOSE = riktiga priser från Binance
   if(uiMode === "propose"){
     startBinancePolling();
@@ -6544,18 +6568,38 @@ async function refreshBinanceSync(){
       const total = data.live.totalUsdt || data.live.cashUsdt;
       lbEq.textContent = "$" + total.toFixed(2);
     }
-    // Header TEST-balance (= testnet-saldo, INTE paper-simulering längre)
-    // Mike's regel: TEST-knappen ska speglas från Binance Testnet
+    // Header TEST-balance (= testnet-saldo)
     const pbEq = document.getElementById("pb-equity");
     const pbPnl = document.getElementById("pb-pnl");
     if(pbEq && data.testnet?.cashUsdt !== undefined){
       const tnTotal = data.testnet.totalUsdt || data.testnet.cashUsdt;
       pbEq.textContent = "$" + tnTotal.toFixed(2);
     }
-    if(pbPnl){
-      // Räkna PnL från testnet-trades (24h fill-history)
-      pbPnl.textContent = "TESTNET";
-      pbPnl.className = "";
+    if(pbPnl){ pbPnl.textContent = "TESTNET"; pbPnl.className = ""; }
+
+    // SALDO-CARD speglar mode: TEST → Testnet, LIVE → Mainnet
+    const isLive = currentUiMode === "live";
+    const src = isLive ? data.live : data.testnet;
+    const modeLbl = document.getElementById("pc-mode-label");
+    if(modeLbl) modeLbl.textContent = isLive ? "💚 LIVE SALDO (BINANCE.COM)" : "🧪 TESTNET SALDO (TESTNET.BINANCE.VISION)";
+    const setText = (id, val) => { const el = document.getElementById(id); if(el) el.textContent = val; };
+    if(src && src.configured && !src.error){
+      const cash = src.cashUsdt || 0;
+      const total = src.totalUsdt || cash;
+      const positionValue = total - cash;
+      setText("pc-equity", "$" + total.toFixed(2));
+      setText("pc-cash", "$" + cash.toFixed(2));
+      setText("pc-unrealized", positionValue > 0 ? `+$${positionValue.toFixed(2)}` : "$0.00");
+      // Realiserat PnL + W/L kräver trade-historik från Binance — visas som "—" tills vi byggt det
+      setText("pc-realized", "—");
+      setText("pc-trades", "—");
+      setText("pc-winrate", "—");
+    } else {
+      setText("pc-equity", "$0.00");
+      setText("pc-cash", "$0.00");
+      setText("pc-realized", "—");
+      setText("pc-trades", isLive ? "väntar på pengar" : "—");
+      setText("pc-winrate", "—");
     }
     if(timeTag) timeTag.textContent = "uppdaterat " + new Date().toLocaleTimeString().slice(0,8);
     const safetyHtml = `
