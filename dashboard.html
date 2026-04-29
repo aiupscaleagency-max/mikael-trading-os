@@ -6482,53 +6482,68 @@ async function oandaFetchAccount(){
   } catch(e){ if(display) display.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`; }
 }
 
-// Binance Live Sync — pollar var 3s, visar EXAKT vad Binance.com har
+// Binance Live Sync — dual mode: visar BÅDA testnet + live samtidigt
 let binanceSyncInterval = null;
+
+function renderModeCard(mode, data, accentColor){
+  if(!data || !data.configured) return `<div style="background:var(--card2);padding:10px;border-radius:5px;color:var(--dim);font-size:11px">${mode.toUpperCase()}: ej konfigurerat</div>`;
+  if(data.error) return `<div style="background:var(--card2);padding:10px;border-radius:5px;color:var(--red);font-size:11px">⚠ ${mode.toUpperCase()}: ${data.error}</div>`;
+  const positions = (data.positions || []).filter(p => p.valueUsdt > 1).slice(0, 5);
+  const posHtml = positions.length ? positions.map(p =>
+    `<div style="display:grid;grid-template-columns:50px 1fr auto;gap:6px;padding:3px 6px;font-size:10px;font-variant-numeric:tabular-nums">
+      <span style="font-weight:700;color:${accentColor}">${p.asset}</span>
+      <span style="color:var(--dim)">${p.qty.toFixed(4)}</span>
+      <span>$${p.valueUsdt.toFixed(2)}</span>
+    </div>`
+  ).join("") : `<div style="color:var(--dim);font-size:10px;padding:4px">Inga öppna positioner</div>`;
+  const link = mode === "testnet" ? "https://testnet.binance.vision/en/wallet" : "https://www.binance.com/en/wallet";
+  return `
+    <div style="background:var(--card2);padding:12px;border-radius:6px;border-left:3px solid ${accentColor}">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:12px;font-weight:800;color:${accentColor}">${mode === "testnet" ? "🧪 TESTNET" : "🔴 LIVE"}</span>
+        <a href="${link}" target="_blank" style="font-size:9px;color:var(--dim)">jämför ↗</a>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
+        <div>
+          <div style="font-size:8px;color:var(--label);font-weight:700;text-transform:uppercase">Cash USDT</div>
+          <div style="font-size:15px;font-weight:800;font-family:'SF Mono',monospace">$${(data.cashUsdt||0).toFixed(2)}</div>
+        </div>
+        <div>
+          <div style="font-size:8px;color:var(--label);font-weight:700;text-transform:uppercase">Total</div>
+          <div style="font-size:15px;font-weight:800;font-family:'SF Mono',monospace;color:var(--green)">$${(data.totalUsdt||0).toFixed(2)}</div>
+        </div>
+      </div>
+      ${posHtml}
+    </div>
+  `;
+}
+
 async function refreshBinanceSync(){
   const body = document.getElementById("binance-sync-body");
   const modeTag = document.getElementById("binance-sync-mode");
   const timeTag = document.getElementById("binance-sync-time");
   if(!body) return;
   try {
-    const r = await fetch("/api/binance/account");
+    const r = await fetch("/api/binance/dual");
     const data = await r.json();
-    if(!data.ok){
-      body.innerHTML = `<div style="color:var(--red);padding:8px;background:rgba(239,68,68,.08);border-radius:4px">⚠ ${data.error}<br><span style="font-size:11px;color:var(--dim)">Be Mike skapa Testnet-keys på testnet.binance.vision</span></div>`;
-      if(modeTag){ modeTag.textContent = "EJ ANSLUTET"; modeTag.style.color = "var(--red)"; }
-      return;
-    }
+    const safetyR = await fetch("/api/binance/safety");
+    const safety = await safetyR.json();
     if(modeTag){
-      modeTag.textContent = data.mode.toUpperCase();
-      modeTag.style.color = data.mode === "live" ? "var(--red)" : "#f0b90b";
+      const tnOk = data.testnet?.configured;
+      const liveOk = data.live?.configured;
+      modeTag.textContent = (tnOk && liveOk) ? "DUAL-MODE" : (liveOk ? "LIVE" : (tnOk ? "TESTNET" : "EJ ANSLUTET"));
+      modeTag.style.color = liveOk ? "#ef4444" : "#f0b90b";
     }
     if(timeTag) timeTag.textContent = "uppdaterat " + new Date().toLocaleTimeString().slice(0,8);
-    const positions = (data.positions || []).filter(p => p.valueUsdt > 1).slice(0, 8);
-    const posHtml = positions.length ? positions.map(p =>
-      `<div style="display:grid;grid-template-columns:60px 1fr auto;gap:8px;padding:5px 8px;background:var(--card2);border-radius:4px;margin-bottom:3px;font-size:11px;font-variant-numeric:tabular-nums">
-        <span style="font-weight:700;color:#f0b90b">${p.asset}</span>
-        <span style="color:var(--dim)">${p.qty.toFixed(6)}</span>
-        <span style="font-weight:700">$${p.valueUsdt.toFixed(2)}</span>
-      </div>`
-    ).join("") : `<div style="color:var(--dim);font-size:11px;padding:6px">Inga öppna positioner</div>`;
-    body.innerHTML = `
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px">
-        <div style="background:var(--card2);padding:10px 12px;border-radius:5px;border:1px solid var(--border)">
-          <div style="font-size:9px;color:var(--label);font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:3px">USDT Cash</div>
-          <div style="font-size:18px;font-weight:800;font-family:'SF Mono',monospace">$${data.cashUsdt.toFixed(2)}</div>
-        </div>
-        <div style="background:var(--card2);padding:10px 12px;border-radius:5px;border:1px solid var(--border)">
-          <div style="font-size:9px;color:var(--label);font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:3px">Total Equity</div>
-          <div style="font-size:18px;font-weight:800;font-family:'SF Mono',monospace;color:var(--green)">$${data.totalUsdt.toFixed(2)}</div>
-        </div>
-        <div style="background:var(--card2);padding:10px 12px;border-radius:5px;border:1px solid var(--border)">
-          <div style="font-size:9px;color:var(--label);font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:3px">Positioner</div>
-          <div style="font-size:18px;font-weight:800;font-family:'SF Mono',monospace">${positions.length}</div>
-        </div>
+    const safetyHtml = `
+      <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:5px;padding:8px 12px;margin-bottom:10px;font-size:11px">
+        🛡 <b>LIVE-säkerhetslås:</b> max stake <b>$${safety.maxLiveStakeUsd}</b>/trade · daglig loss-cap <b>$${safety.maxLiveDailyLossUsd}</b> · använt idag: <b style="color:${safety.liveDailyLossUsd > 0 ? 'var(--red)' : 'var(--green)'}">$${safety.liveDailyLossUsd.toFixed(2)}</b> ${safety.tradingAllowed ? "" : "<span style='color:var(--red);font-weight:700'>· TRADING PAUSAD</span>"}
       </div>
-      <div style="font-size:10px;color:var(--label);letter-spacing:.4px;text-transform:uppercase;font-weight:700;margin-bottom:6px">Tillgångar (>$1)</div>
-      ${posHtml}
-      <div style="margin-top:10px;font-size:10px;color:var(--dim);text-align:center">
-        Jämför öppet på <a href="https://${data.mode === "testnet" ? "testnet.binance.vision" : "www.binance.com"}/en/trade/BTC_USDT" target="_blank" style="color:#f0b90b">${data.mode === "testnet" ? "testnet.binance.vision" : "binance.com"}</a> i annan flik
+    `;
+    body.innerHTML = safetyHtml + `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        ${renderModeCard("testnet", data.testnet, "#f0b90b")}
+        ${renderModeCard("live", data.live, "#ef4444")}
       </div>
     `;
   } catch(e){

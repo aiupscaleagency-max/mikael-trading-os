@@ -13,28 +13,64 @@ import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
 import { BinanceClient, type BinanceCredentials } from "./integrations/binance.js";
 import { OandaClient, type OandaCredentials } from "./integrations/oanda.js";
 
-// In-memory keys (per server-instans). I produktion: kryptera + Supabase.
-let binanceCreds: BinanceCredentials | null = null;
+// In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
+let binanceLiveCreds: BinanceCredentials | null = null;
+let binanceTestnetCreds: BinanceCredentials | null = null;
 let oandaCreds: OandaCredentials | null = null;
 
-// Auto-init från .env vid boot — Mike har redan keys där
+// Säkerhetslås för LIVE-mode (riktiga pengar)
+const MAX_LIVE_STAKE_USD = parseFloat(process.env.MAX_LIVE_STAKE_USD || "5");
+const MAX_LIVE_DAILY_LOSS_USD = parseFloat(process.env.MAX_LIVE_DAILY_LOSS_USD || "10");
+let liveDailyLossUsd = 0; // resettas vid midnatt
+let lastResetDay = new Date().getUTCDate();
+
+// Helper: välj rätt creds baserat på mode-param ("testnet" default)
+function resolveBinanceCreds(mode: "testnet" | "live"): BinanceCredentials | null {
+  return mode === "live" ? binanceLiveCreds : binanceTestnetCreds;
+}
+
 function initIntegrationsFromEnv(): void {
-  const bk = process.env.BINANCE_API_KEY;
-  const bs = process.env.BINANCE_API_SECRET;
-  const bt = process.env.BINANCE_TESTNET !== "false"; // default true (säkrast)
-  if (bk && bs) {
-    binanceCreds = { apiKey: bk, apiSecret: bs, testnet: bt };
-    log.ok(`Binance auto-initialiserat från .env (mode: ${bt ? "TESTNET" : "MAINNET"})`);
+  // Live-keys (binance.com / mainnet)
+  const liveKey = process.env.BINANCE_API_KEY;
+  const liveSecret = process.env.BINANCE_API_SECRET;
+  const explicitTestnet = process.env.BINANCE_TESTNET === "true";
+  if (liveKey && liveSecret && !explicitTestnet) {
+    binanceLiveCreds = { apiKey: liveKey, apiSecret: liveSecret, testnet: false };
+    log.ok(`Binance LIVE auto-init (mainnet)`);
   }
+  // Testnet-keys (separat så båda kan köras parallellt)
+  const tnKey = process.env.BINANCE_TESTNET_API_KEY;
+  const tnSecret = process.env.BINANCE_TESTNET_API_SECRET;
+  if (tnKey && tnSecret) {
+    binanceTestnetCreds = { apiKey: tnKey, apiSecret: tnSecret, testnet: true };
+    log.ok(`Binance TESTNET auto-init (parallellt med live)`);
+  } else if (liveKey && liveSecret && explicitTestnet) {
+    // Bakåtkompat: om gamla BINANCE_TESTNET=true → använd som testnet
+    binanceTestnetCreds = { apiKey: liveKey, apiSecret: liveSecret, testnet: true };
+    log.ok(`Binance TESTNET auto-init (fallback från BINANCE_TESTNET=true)`);
+  }
+
+  log.info(`Säkerhetslås LIVE: max stake $${MAX_LIVE_STAKE_USD} · daily loss-cap $${MAX_LIVE_DAILY_LOSS_USD}`);
+
   const ot = process.env.OANDA_API_KEY || process.env.OANDA_API_TOKEN;
   const oa = process.env.OANDA_ACCOUNT_ID;
-  const op = process.env.OANDA_PRACTICE !== "false"; // default true
+  const op = process.env.OANDA_PRACTICE !== "false";
   if (ot && oa) {
     oandaCreds = { apiToken: ot, accountId: oa, practice: op };
-    log.ok(`Oanda auto-initialiserat från .env (mode: ${op ? "PRACTICE" : "LIVE"})`);
+    log.ok(`Oanda auto-init (mode: ${op ? "PRACTICE" : "LIVE"})`);
   }
 }
 initIntegrationsFromEnv();
+
+// Reset daily-loss-counter vid midnatt
+setInterval(() => {
+  const today = new Date().getUTCDate();
+  if (today !== lastResetDay) {
+    log.info(`Daglig loss-cap resettad ($${liveDailyLossUsd.toFixed(2)} → $0)`);
+    liveDailyLossUsd = 0;
+    lastResetDay = today;
+  }
+}, 60000);
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
@@ -659,50 +695,95 @@ export function startServer(
           const client = new BinanceClient({ apiKey, apiSecret, testnet: !!testnet });
           const hc = await client.healthCheck();
           if (!hc.ok) { json(res, { ok: false, error: hc.details }); return; }
-          binanceCreds = { apiKey, apiSecret, testnet: !!testnet };
+          if (testnet) binanceTestnetCreds = { apiKey, apiSecret, testnet: true };
+          else binanceLiveCreds = { apiKey, apiSecret, testnet: false };
           json(res, { ok: true, mode: hc.canTrade ? "trading" : "read-only", details: hc.details });
         } catch (err) {
           json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }
         return;
       }
-      // GET /api/binance/account — riktig balans + positions från Binance API
+      // GET /api/binance/account?mode=testnet|live — riktig balans + positions
       if (url.pathname === "/api/binance/account" && method === "GET") {
-        if (!binanceCreds) { json(res, { error: "Binance ej konfigurerat — POSTa /api/binance/setup först" }); return; }
+        const mode = (url.searchParams.get("mode") === "live" ? "live" : "testnet") as "testnet" | "live";
+        const creds = resolveBinanceCreds(mode);
+        if (!creds) { json(res, { error: `Binance ${mode} ej konfigurerat` }); return; }
         try {
-          const client = new BinanceClient(binanceCreds);
+          const client = new BinanceClient(creds);
           const equity = await client.getTotalEquity();
-          json(res, { ok: true, mode: binanceCreds.testnet ? "testnet" : "live", ...equity });
+          json(res, { ok: true, mode, ...equity });
         } catch (err) {
           json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }
         return;
       }
-      // POST /api/binance/order — lägg riktig MARKET-order
+      // GET /api/binance/dual — hämta BÅDA samtidigt
+      if (url.pathname === "/api/binance/dual" && method === "GET") {
+        const result: Record<string, unknown> = {};
+        for (const mode of ["testnet", "live"] as const) {
+          const creds = resolveBinanceCreds(mode);
+          if (!creds) { result[mode] = { configured: false }; continue; }
+          try {
+            const client = new BinanceClient(creds);
+            const equity = await client.getTotalEquity();
+            result[mode] = { configured: true, ...equity };
+          } catch (err) {
+            result[mode] = { configured: true, error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+        json(res, { ok: true, ...result });
+        return;
+      }
+      // POST /api/binance/order — lägg riktig MARKET-order MED SÄKERHETSLÅS
       if (url.pathname === "/api/binance/order" && method === "POST") {
-        if (!binanceCreds) { res.writeHead(400); json(res, { error: "Binance ej konfigurerat" }); return; }
         const body = await readBody(req);
-        const { symbol, side, quoteOrderQty, clientOrderId } = JSON.parse(body) as { symbol: string; side: "BUY" | "SELL"; quoteOrderQty: number; clientOrderId?: string };
+        const { mode = "testnet", symbol, side, quoteOrderQty, clientOrderId } = JSON.parse(body) as { mode?: "testnet" | "live"; symbol: string; side: "BUY" | "SELL"; quoteOrderQty: number; clientOrderId?: string };
+        const creds = resolveBinanceCreds(mode);
+        if (!creds) { res.writeHead(400); json(res, { error: `Binance ${mode} ej konfigurerat` }); return; }
+        // SÄKERHETSLÅS — bara för LIVE-mode (testnet = ingen risk)
+        if (mode === "live") {
+          if (quoteOrderQty > MAX_LIVE_STAKE_USD) {
+            json(res, { ok: false, error: `🛡 Säkerhetslås: max stake $${MAX_LIVE_STAKE_USD}/trade i LIVE-mode (du försökte $${quoteOrderQty})` });
+            return;
+          }
+          if (liveDailyLossUsd >= MAX_LIVE_DAILY_LOSS_USD) {
+            json(res, { ok: false, error: `🛡 Säkerhetslås: daglig förlust-cap $${MAX_LIVE_DAILY_LOSS_USD} uppnådd. Trading pausad till midnatt UTC.` });
+            return;
+          }
+        }
         try {
-          const client = new BinanceClient(binanceCreds);
+          const client = new BinanceClient(creds);
           const order = await client.placeMarketOrder({ symbol, side, quoteOrderQty, clientOrderId });
-          json(res, { ok: true, order });
+          log.info(`[binance-${mode}] ORDER PLACERAD: ${side} ${symbol} $${quoteOrderQty}`);
+          json(res, { ok: true, mode, order });
         } catch (err) {
           json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }
         return;
       }
-      // GET /api/binance/trades?symbol=BTCUSDT — riktig trade-historik
+      // GET /api/binance/trades?symbol=BTCUSDT&mode=live|testnet
       if (url.pathname === "/api/binance/trades" && method === "GET") {
-        if (!binanceCreds) { json(res, { error: "Binance ej konfigurerat" }); return; }
+        const mode = (url.searchParams.get("mode") === "live" ? "live" : "testnet") as "testnet" | "live";
+        const creds = resolveBinanceCreds(mode);
+        if (!creds) { json(res, { error: `Binance ${mode} ej konfigurerat` }); return; }
         const symbol = url.searchParams.get("symbol") || "BTCUSDT";
         try {
-          const client = new BinanceClient(binanceCreds);
+          const client = new BinanceClient(creds);
           const trades = await client.getMyTrades(symbol, 50);
-          json(res, { ok: true, trades });
+          json(res, { ok: true, mode, trades });
         } catch (err) {
           json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }
+        return;
+      }
+      // GET /api/binance/safety — visa nuvarande säkerhetslås-status
+      if (url.pathname === "/api/binance/safety" && method === "GET") {
+        json(res, {
+          maxLiveStakeUsd: MAX_LIVE_STAKE_USD,
+          maxLiveDailyLossUsd: MAX_LIVE_DAILY_LOSS_USD,
+          liveDailyLossUsd,
+          tradingAllowed: liveDailyLossUsd < MAX_LIVE_DAILY_LOSS_USD,
+        });
         return;
       }
 
@@ -750,8 +831,16 @@ export function startServer(
       // Status båda integrationer (för UI)
       if (url.pathname === "/api/integrations/status" && method === "GET") {
         json(res, {
-          binance: binanceCreds ? { configured: true, mode: binanceCreds.testnet ? "testnet" : "live" } : { configured: false },
+          binance: {
+            testnet: { configured: !!binanceTestnetCreds },
+            live: { configured: !!binanceLiveCreds },
+          },
           oanda: oandaCreds ? { configured: true, mode: oandaCreds.practice ? "practice" : "live" } : { configured: false },
+          safety: {
+            maxLiveStakeUsd: MAX_LIVE_STAKE_USD,
+            maxLiveDailyLossUsd: MAX_LIVE_DAILY_LOSS_USD,
+            liveDailyLossUsd,
+          },
         });
         return;
       }
