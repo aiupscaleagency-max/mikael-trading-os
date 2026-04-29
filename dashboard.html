@@ -1478,35 +1478,13 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <div style="display:grid;grid-template-columns:1fr;gap:10px;margin:0 10px">
-    <!-- Test-konto hero-card (gömd — speglas nu via Binance Live Sync nedan) -->
-    <div class="paper-card" id="paper-card" style="display:none">
-      <div class="pc-row">
-        <div class="pc-col">
-          <div class="pc-lbl">📊 TEST-KONTO SALDO</div>
-          <div class="pc-equity" id="pc-equity">$10,000.00</div>
-        </div>
-        <div class="pc-col">
-          <div class="pc-lbl">REALISERAT PnL</div>
-          <div class="pc-pnl" id="pc-realized">+$0.00</div>
-        </div>
-        <div class="pc-col">
-          <div class="pc-lbl">UNREALIZED (öppna)</div>
-          <div class="pc-pnl" id="pc-unrealized">+$0.00</div>
-        </div>
-        <div class="pc-col">
-          <div class="pc-lbl">CASH FRI</div>
-          <div class="pc-cash" id="pc-cash">$10,000.00</div>
-        </div>
-        <div class="pc-col">
-          <div class="pc-lbl">TRADES (W/L)</div>
-          <div class="pc-trades" id="pc-trades">0/0</div>
-        </div>
-        <div class="pc-col">
-          <div class="pc-lbl">WIN-RATE</div>
-          <div class="pc-winrate" id="pc-winrate">–</div>
-        </div>
-        <button class="pc-reset" id="pc-reset" title="Återställ test-konto till $10 000">↻ Reset</button>
-      </div>
+    <!-- Paper-card BORTTAGEN — saldo speglas nu från Binance Live Sync nedan -->
+    <!-- Element-IDs nedan stubbade så ingen JS bryter -->
+    <div style="display:none">
+      <span id="pc-equity"></span><span id="pc-realized"></span>
+      <span id="pc-unrealized"></span><span id="pc-cash"></span>
+      <span id="pc-trades"></span><span id="pc-winrate"></span>
+      <button id="pc-reset"></button>
     </div>
 
     <!-- BINANCE LIVE SYNC — jämför med testnet.binance.vision i annan flik -->
