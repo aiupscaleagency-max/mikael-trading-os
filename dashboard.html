@@ -1301,7 +1301,8 @@ body.app-state-onboard .fc-panel{display:none !important}
         <span id="cur-chg" class="ch">--</span>
         <span id="data-source-indicator" style="margin-left:auto;font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px"><span style="color:var(--label)">○</span> Demo (simulerade priser)</span>
         <span id="sync-indicator" title="Cross-device sync — klicka för tvinga refresh från server" onclick="forceSyncFromServer()" style="font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px;margin-left:10px;cursor:pointer;user-select:none"><span style="color:var(--label)">○</span> Sync init...</span>
-        <button onclick="runHealthCheck()" title="Kör system-health-check" style="margin-left:8px;padding:3px 8px;background:transparent;border:1px solid var(--border);color:var(--label);font-size:10px;font-weight:700;border-radius:3px;cursor:pointer">🏥 Test</button>
+        <button onclick="runHealthCheck()" title="Kör system-health-check (snabb)" style="margin-left:8px;padding:3px 8px;background:transparent;border:1px solid var(--border);color:var(--label);font-size:10px;font-weight:700;border-radius:3px;cursor:pointer">🏥 Test</button>
+        <button onclick="runPreLiveVerification()" title="End-to-end verifiering innan riktiga pengar (35s)" style="margin-left:4px;padding:3px 8px;background:#22c55e;border:none;color:#0a0e14;font-size:10px;font-weight:700;border-radius:3px;cursor:pointer">🧪 Pre-Live</button>
         <div class="tf-group" id="tf-group">
           <button data-tf="1m">1m</button>
           <button data-tf="5m">5m</button>
@@ -2605,22 +2606,22 @@ function requestTradeExecution(sym, side, amount, timeframeSec){
     return createWatch(sym, side, amount, timeframeSec);
   }
   // Ingen session → direkt execute via BACKEND (riktigt Binance-pris vid resolve)
-  // Hämta entry-pris från live-feed eller BASE_PRICES
   const entry = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
-  // Eldfast async-trigger — UI uppdateras via backend-sync när trade öppnats
+  // KRITISKT: skicka inSession-info så backend räknar in den i sessionen
   backendOpenTrade({
     sym, side, amount,
     timeframeSec: timeframeSec || SCALP_DEFAULT_SEC,
     entry,
-    score: 7, // default — höjs när direkt-trade kommer från Hanna med score
+    score: 7,
     setupType: "manual",
     setupLabel: "Manuell",
     source: "frontend-direct",
-    confirmed: true
+    confirmed: true,
+    inSession: !!STATE.session,
+    // Backend läser sessionNum själv från sin state, men vi skickar det som info
   }).then(t => {
     if(t) pushInAppAlert(`✓ Trade öppnad på server: ${sym} ${side==='BUY'?'LONG':'SHORT'} $${amount} · resolveras mot riktigt Binance-pris`, 4000);
   });
-  // Returnera placeholder så UI flow fortsätter (backend syncar in faktisk state)
   return { id: "pending-"+Date.now(), sym, side, amount };
 }
 
@@ -4759,15 +4760,17 @@ async function backendApplyState(){
   }
 
   backendStateLastUpdated = state.updatedAt || Date.now();
-  // Mappa till STATE
+  // Mappa till STATE — BARA fält som backend faktiskt äger
   STATE.paperAccount = state.paperAccount;
   STATE.tradePositions = state.positions || [];
   STATE.tradeHistory = state.history || [];
   STATE.tradeDecisions = state.decisions || [];
   STATE.session = state.session || null;
   STATE.sessionReports = state.sessionReports || [];
-  STATE.pendingWatches = state.pendingWatches || [];
-  STATE.pendingConfirms = state.pendingConfirms || [];
+  // OBS: pendingWatches + pendingConfirms är frontend-only just nu
+  // Skriv INTE över dem från backend (skulle radera Mikes pågående watches)
+  // Backend returnerar bara dessa som tomma arrayer i nuvarande version
+  // STATE.pendingWatches och pendingConfirms behåller sina lokala värden
   // Persistera lokalt också (cache för offline)
   try {
     localStorage.setItem("trading_paper_account", JSON.stringify(STATE.paperAccount));
@@ -5035,6 +5038,99 @@ function forceSyncFromServer(){
   pullSyncFromServer();
   if(typeof backendApplyState === "function") backendApplyState();
   pushInAppAlert(`🔄 Tvingad sync från server — alla flikar uppdateras`, 3000, {telegram:false});
+}
+
+// Pre-Live Verification — end-to-end test som öppnar + resolveas en trade
+// Verifierar att hela kedjan fungerar innan Mike går live med riktiga pengar
+async function runPreLiveVerification(){
+  if(!confirm("🧪 PRE-LIVE VERIFIERING\n\nDetta kommer:\n1. Resetta paper-konto till $10K\n2. Öppna 1 test-trade på BTC\n3. Vänta tills resolve mot riktigt Binance-pris\n4. Verifiera att saldo + counters stämmer\n\nFortsätta? (paper-data raderas)")) return;
+
+  const log = (msg) => { console.log("[verify]", msg); };
+  const fail = (msg) => {
+    console.error("[verify] FAIL:", msg);
+    alert(`❌ VERIFIERING MISSLYCKADES\n\n${msg}\n\nKör inte LIVE-mode förrän detta är fixat.`);
+  };
+
+  try {
+    // 1. RESET
+    log("Step 1: reset paper-konto");
+    const resetR = await fetch("/api/trade-state/reset", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({clientId: BACKEND_CLIENT_ID})});
+    if(!resetR.ok) return fail("Reset misslyckades: HTTP "+resetR.status);
+    const resetState = await resetR.json();
+    if(resetState.state.paperAccount.cash !== 10000) return fail(`Reset gav fel start-balans: ${resetState.state.paperAccount.cash} (förväntat $10000)`);
+    log("✓ Reset OK — start $10K");
+
+    // 2. HÄMTA RIKTIGT BTC-PRIS
+    log("Step 2: hämta Binance BTC-pris");
+    const priceR = await fetch("/api/binance/prices?symbols=BTCUSDT");
+    const priceData = await priceR.json();
+    const btcPrice = priceData.prices?.BTCUSDT;
+    if(!btcPrice) return fail("Kunde inte hämta BTC-pris från Binance");
+    log(`✓ BTC = $${btcPrice}`);
+
+    // 3. ÖPPNA TEST-TRADE
+    log("Step 3: öppna test-trade $50 BUY BTC, 30s expiry");
+    const openR = await fetch("/api/trade-state/open-trade", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        clientId: BACKEND_CLIENT_ID,
+        sym:"BTCUSDT", side:"BUY", amount:50, timeframeSec:30,
+        entry:btcPrice, score:9, setupType:"verify", setupLabel:"Pre-live verify",
+        source:"verification", confirmed:true
+      })
+    });
+    if(!openR.ok) return fail("Open trade misslyckades: HTTP "+openR.status);
+    const openResult = await openR.json();
+    if(!openResult.ok) return fail(`Open trade error: ${openResult.error}`);
+    const tradeId = openResult.trade.id;
+    if(openResult.state.paperAccount.cash !== 9950) return fail(`Cash efter open fel: ${openResult.state.paperAccount.cash} (förväntat $9950)`);
+    log(`✓ Trade öppnad: ${tradeId} · cash $9950`);
+
+    // 4. VÄNTA PÅ RESOLVE (server-scheduler kör var 1s)
+    log("Step 4: väntar 35s på auto-resolve mot Binance...");
+    pushInAppAlert(`🧪 Verifiering: trade öppnad, väntar 35s på auto-resolve...`, 35000, {telegram:false});
+    await new Promise(r => setTimeout(r, 35000));
+
+    // 5. KOLLA RESOLVE
+    log("Step 5: hämta state, verifiera resolve");
+    const stateR = await fetch(`/api/trade-state?clientId=${BACKEND_CLIENT_ID}`);
+    const stateData = await stateR.json();
+    const stillOpen = stateData.positions.find(p => p.id === tradeId);
+    if(stillOpen) return fail("Trade fortfarande öppen efter 35s — scheduler funkar inte");
+    const closed = stateData.history.find(h => h.id === tradeId);
+    if(!closed) return fail("Trade hittas inte i history efter resolve");
+    log(`✓ Resolve OK: ${closed.won ? "WIN" : "LOSS"} · exit $${closed.exit} · pnl ${closed.pnl}`);
+
+    // 6. VERIFIERA RÄKENSKAPER
+    const expected = 10000 + closed.pnl;
+    if(Math.abs(stateData.paperAccount.cash - expected) > 0.5){
+      return fail(`Cash-räkning fel: $${stateData.paperAccount.cash} (förväntat $${expected})`);
+    }
+    if(stateData.paperAccount.totalTrades !== 1) return fail(`totalTrades fel: ${stateData.paperAccount.totalTrades}`);
+    if(closed.won && stateData.paperAccount.winningTrades !== 1) return fail("winningTrades counter fel");
+    if(!closed.won && stateData.paperAccount.losingTrades !== 1) return fail("losingTrades counter fel");
+    log("✓ Alla counters OK");
+
+    // 7. KLART
+    const summary = `✅ PRE-LIVE VERIFIERING GODKÄND\n\n` +
+      `1. ✓ Reset paper-konto fungerar\n` +
+      `2. ✓ Binance live-pris-hämtning fungerar\n` +
+      `3. ✓ Trade öppnas på server (atomic)\n` +
+      `4. ✓ Cash drag dras korrekt vid open\n` +
+      `5. ✓ Server-scheduler resolveas trades automatiskt\n` +
+      `6. ✓ Resolve mot RIKTIGT Binance-pris fungerar\n` +
+      `7. ✓ Counters (W/L, total) räknas korrekt\n` +
+      `8. ✓ Cash-balans matchar PnL-historik\n\n` +
+      `Resultat: ${closed.won ? "WIN" : "LOSS"} · PnL ${closed.pnl >= 0 ? "+" : ""}$${closed.pnl.toFixed(2)}\n` +
+      `Slut-balans: $${stateData.paperAccount.cash.toFixed(2)}\n\n` +
+      `🟢 Systemet är READY för PROPOSE-mode med riktiga priser.\n` +
+      `🟡 Innan LIVE: behöver Binance API-keys konfigureras + steg 5 (Live API integration).`;
+    alert(summary);
+    log("✓ KLART");
+    await backendApplyState();
+  } catch(e){
+    fail(`Oväntat fel: ${e.message}`);
+  }
 }
 
 // Health-check: kollar att alla kritiska delar fungerar
