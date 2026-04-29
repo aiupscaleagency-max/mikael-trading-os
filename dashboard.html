@@ -2527,16 +2527,21 @@ function scanConfirms(){
   STATE.pendingConfirms = remaining;
 }
 
-// Användaren bekräftar setup → execute
-function confirmSetup(confirmId){
+// Användaren bekräftar setup → execute via backend
+async function confirmSetup(confirmId){
   ensureWatchState();
   const idx = STATE.pendingConfirms.findIndex(c => c.id === confirmId);
-  if(idx === -1) return;
+  if(idx === -1){
+    pushInAppAlert(`⚠ Setup hittas inte (ID: ${confirmId.slice(0,12)}...)`, 4000);
+    return;
+  }
   const c = STATE.pendingConfirms[idx];
+  // Ta bort från pending FÖRST så Mike inte kan dubbel-klicka
   STATE.pendingConfirms.splice(idx, 1);
   saveWatchState();
-  // Execute med pre-filled score + setupType (skip filter = inte hoppas över)
-  executeConfirmedTrade(c);
+  renderTradesPage();
+  // Execute via backend (server räknar PnL/balance + auto-resolve mot Binance)
+  await executeConfirmedTrade(c);
 }
 
 function rejectSetup(confirmId){
@@ -2550,54 +2555,30 @@ function rejectSetup(confirmId){
   renderTradesPage();
 }
 
-// Execute pre-confirmed trade — bypass session-filter (vi vet redan score är ≥ threshold)
-function executeConfirmedTrade(c){
-  const acc = loadPaperAccount();
-  if(c.amount > acc.cash){
-    pushInAppAlert(`❌ Inte nog cash: $${acc.cash.toFixed(2)} < $${c.amount}`, 5000);
-    return;
-  }
+// Execute pre-confirmed trade — skickar till BACKEND (single source of truth)
+async function executeConfirmedTrade(c){
   const tf = c.timeframeSec || SCALP_DEFAULT_SEC;
-  const payoutMult = randomPayout();
-  const trade = {
-    id: "trade-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
-    sym: c.sym, side: c.side, amount: c.amount, entry: c.entry,
-    qty: c.amount / c.entry,
-    openedAt: Date.now(),
-    expiresAt: Date.now() + tf * 1000,
+  // Skicka till backend så server räknar PnL/balance
+  // Backend kommer auto-resolva mot riktigt Binance-pris vid expiresAt
+  const trade = await backendOpenTrade({
+    sym: c.sym,
+    side: c.side,
+    amount: c.amount,
     timeframeSec: tf,
-    payoutMultiplier: payoutMult,
-    payoutPct: Math.round((payoutMult - 1) * 100),
+    entry: c.entry,
     score: c.score,
     setupType: c.setupType,
     setupLabel: c.setupLabel,
-    suggestedSL: c.suggestedSL,
-    suggestedTP: c.suggestedTP,
-    inSession: !!STATE.session,
-    sessionNum: STATE.session?.sessionNum,
+    source: "watch-confirm",
     confirmed: true,
-    status: "open",
-    type: "scalp",
-    source: "Watch-confirm"
-  };
-  if(!STATE.tradePositions) STATE.tradePositions = [];
-  if(!STATE.tradeDecisions) STATE.tradeDecisions = [];
-  STATE.tradePositions.push(trade);
-  STATE.tradeDecisions.unshift({
-    timestamp: Date.now(),
-    action: c.side, sym: c.sym, amount: c.amount,
-    score: c.score, setupType: c.setupType,
-    timeframeSec: tf,
-    reasoning: `Bekräftad A+ setup · ${c.setupLabel} · score ${c.score}/10`,
-    source: "watch-confirm"
+    inSession: !!STATE.session,
+    reasoning: `Bekräftad A+ setup · ${c.setupLabel} · score ${c.score}/10`
   });
-  acc.cash -= c.amount;
-  acc.totalTrades++;
-  savePaperAccount();
-  saveTradeData();
-  renderTradesPage();
-  renderPaperBadge();
-  pushInAppAlert(`✓ Order placerad: ${c.sym} ${c.side==='BUY'?'LONG':'SHORT'} $${c.amount} · score ${c.score}/10`, 5000);
+  if(trade){
+    pushInAppAlert(`✓ Order placerad: ${c.sym} ${c.side==='BUY'?'LONG':'SHORT'} $${c.amount} · score ${c.score}/10`, 5000);
+  } else {
+    pushInAppAlert(`❌ Kunde inte placera trade — kolla cash + nätverk`, 5000);
+  }
 }
 
 // Smart trade-router — väljer watch eller direkt-execute beroende på session
@@ -4864,8 +4845,8 @@ function startBackendSync(){
     STATE.tradeDecisions = [];
     STATE.session = null;
     STATE.sessionReports = [];
-    STATE.pendingWatches = [];
-    STATE.pendingConfirms = [];
+    // PendingWatches/Confirms BEHÅLLS — de är frontend-only och får inte rensas
+    // (annars försvinner pågående bekräftelser när Mike laddar om sidan)
     STATE.paperAccount = null;
   }
   // Initial pull
