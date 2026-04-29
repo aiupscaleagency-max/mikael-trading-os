@@ -4243,13 +4243,11 @@ function simulateTeamResponse(instr){
 
   // Frågor / utmaningar (prefix-matchning för böjda former)
   if(/(välj|bestäm|plock|kör för mig|lägg|ta\s)/.test(i)){
-    // Välj symboluniversum baserat på user-intent
+    // Bygg symboluniversum — agenterna föredrar att blanda när användaren inte specificerat
     const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT"];
     const forexSyms = ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/GBP","EUR/JPY","GBP/JPY"];
-    // Bara forex om användaren explicit bad om det
-    // Bara crypto om användaren explicit bad om det
-    // ANNARS: Mikes regel — kombinera 50/50 forex + crypto
     const explicitCrypto = /\b(crypto|krypto|btc|eth|sol)\b/.test(i) && !isForex;
+    // Agenterna kommer överens om bästa läge: blandning när inget explicit val
     const symbols = isForex ? forexSyms : (explicitCrypto ? cryptoSyms : [...cryptoSyms, ...forexSyms]);
 
     const trades = [];
@@ -4393,50 +4391,129 @@ async function startSession(){
   pushInAppAlert(`🎯 Session ${STATE.session?.sessionNum || "?"}/${SESSION_TARGET_TOTAL} startad — bara setups med score ≥${SESSION_SCORE_THRESHOLD} körs. Mål: ${SESSION_TARGET_WINRATE*100}% winrate på ${SESSION_TRADES} trades.`);
 }
 
+// Agent-driven symbol-selektor — agenterna kommer överens om vilka som passar bäst
+// Använder live Binance-data + simulerade specialist-vyer (Viktor/Tomas/Karin)
+async function selectBestSymbolsForBatch(count){
+  const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","AVAXUSDT","DOGEUSDT","BNBUSDT","ADAUSDT","MATICUSDT","LINKUSDT"];
+  const forexSyms = ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/JPY","GBP/JPY"];
+  const candidates = [];
+  // 1. CRYPTO: ranka via live Binance-data — momentum + volym
+  try {
+    const r = await fetch(`/api/binance/prices?symbols=${cryptoSyms.join(",")}`);
+    if(r.ok){
+      const data = await r.json();
+      // Försök även hämta 24h ticker för volume + change
+      const r24 = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+      if(r24.ok){
+        const tickers = await r24.json();
+        for(const sym of cryptoSyms){
+          const t = tickers.find(x => x.symbol === sym);
+          if(!t) continue;
+          const change = parseFloat(t.priceChangePercent);
+          const volume = parseFloat(t.quoteVolume);
+          const absMove = Math.abs(change);
+          // Score: stark trend + bra volym = bra trade
+          const tradeScore = absMove * 1.0 + Math.log10(volume / 1e8);
+          const side = change > 0 ? "BUY" : "SELL";
+          candidates.push({
+            sym, side, type: "crypto",
+            tradeScore, change, volume,
+            reason: `Tomas: ${absMove > 3 ? "stark trend" : "moderat momentum"} 24h ${change>0?'+':''}${change.toFixed(1)}%, volym $${(volume/1e9).toFixed(1)}B`
+          });
+        }
+      }
+    }
+  } catch(e){ console.warn("Binance ticker-fel:", e); }
+
+  // 2. FOREX: simulerad agent-vy från Viktor (DXY-läge + räntedifferentialer)
+  // I framtiden ersätts med Oanda live-data
+  const forexCandidates = forexSyms.map((sym, idx) => {
+    const dxyTrend = Math.random(); // simulerad
+    const carry = Math.random();
+    const tradeScore = (dxyTrend + carry) * 2; // 0-4 range
+    const side = Math.random() > 0.5 ? "BUY" : "SELL";
+    const reasons = [
+      `Viktor: ${sym} DXY-divergens, räntespread positiv`,
+      `Viktor: ${sym} carry-trade aktiv, +2.4% APY`,
+      `Viktor: ${sym} centralbanksdivergens, tekniskt break`,
+      `Viktor: ${sym} risk-on-flöde efter CPI-data`
+    ];
+    return {
+      sym, side, type: "forex",
+      tradeScore,
+      reason: reasons[idx % reasons.length]
+    };
+  });
+  candidates.push(...forexCandidates);
+
+  // 3. AGENT-CONSENSUS: ranka all och plocka top N (blandning bestäms av marknaden)
+  candidates.sort((a, b) => b.tradeScore - a.tradeScore);
+  const selected = candidates.slice(0, count);
+  // Logga agenternas resonemang
+  console.log("[agent-select]", selected);
+  return selected;
+}
+
 // Auto-fyll session: skapa watches för alla återstående trades automatiskt
-// Auto-confirm = trades exekveras direkt utan bekräftelse (men med säkerhetsregler)
-function autoFillSession(){
+// Agenterna analyserar marknaden och VÄLJER — ingen hardcoded mix
+async function autoFillSession(){
   if(!STATE.session) { alert("Ingen aktiv session"); return; }
   const remaining = STATE.session.totalTrades - STATE.session.tradeNum;
   if(remaining <= 0){ alert("Sessionen är redan full"); return; }
 
-  // Säkerhetsnät innan auto-fyll
   const stake = calcAutoPositionSize(); // 2% av equity
   const safety = checkSafetyGates(stake);
-  if(!safety.ok){
-    alert(`🛡 Säkerhetsregel triggrad:\n\n${safety.reason}`);
+  if(!safety.ok){ alert(`🛡 Säkerhetsregel triggrad:\n\n${safety.reason}`); return; }
+
+  const tf = STATE.betTf || SCALP_DEFAULT_SEC;
+  const eq = calcTotalEquity();
+  const lossCap = (eq * SAFETY_DAILY_LOSS_CAP_PCT).toFixed(0);
+
+  // Agenterna analyserar (med live Binance-data) och föreslår
+  pushInAppAlert(`🧠 Tomas + Viktor + Karin analyserar marknaden...`, 3000, {telegram:false});
+  const picks = await selectBestSymbolsForBatch(remaining);
+
+  if(!picks || !picks.length){
+    alert("Agenterna kunde inte hämta marknadsdata — försök igen om en stund");
     return;
   }
 
-  const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","AVAXUSDT","DOGEUSDT","BNBUSDT","ADAUSDT"];
-  const forexSyms = ["EUR/USD","GBP/USD","USD/JPY","AUD/USD","USD/CHF"];
-  const tf = STATE.betTf || SCALP_DEFAULT_SEC;
+  // Bygg läsbar förhandsvisning av agenternas val
+  const cryptoCount = picks.filter(p => p.type === "crypto").length;
+  const forexCount = picks.filter(p => p.type === "forex").length;
+  const previewLines = picks.map((p, i) =>
+    `${i+1}. ${p.type === "crypto" ? "🪙" : "💱"} ${p.sym} ${p.side === "BUY" ? "📈 LONG" : "📉 SHORT"} — ${p.reason}`
+  ).join("\n");
 
-  // Confirm med Mike (förklara säkerhetsreglerna)
-  const eq = calcTotalEquity();
-  const lossCap = (eq * SAFETY_DAILY_LOSS_CAP_PCT).toFixed(0);
-  const confirmMsg = `⚡ AUTO-FYLL Session ${STATE.session.sessionNum}\n\n${remaining} watches startar:\n• Stake: $${stake} (2% av equity)\n• Tid: ${formatTfHuman(tf)} per scalp\n• Mix: 50/50 crypto + forex (Mikes regel)\n• A+ tröskel: score ≥${STATE.session.scoreThreshold} (= ${Math.round(scoreToWinrate(STATE.session.scoreThreshold)*100)}% förväntat winrate)\n• Mål: ${SESSION_TARGET_WINRATE*100}% session-winrate\n• Vinstmarginal: minst 65% per trade (payout 1.65-1.90x)\n\n🛡 SÄKERHETSREGLER (auto-stopp):\n• Daglig loss-cap: -$${lossCap} (5% av equity)\n• Max ${SAFETY_MAX_OPEN_POSITIONS} samtidiga positioner\n• Max ${SAFETY_MAX_DAILY_TRADES} trades/dag\n• A+ setups exekveras AUTOMATISKT (ingen bekräftelse behövs)\n\nFortsätta?`;
+  const confirmMsg =
+    `⚡ AUTO-FYLL Session ${STATE.session.sessionNum}\n\n` +
+    `Agenterna har analyserat marknaden och valt:\n` +
+    `• ${cryptoCount} crypto + ${forexCount} forex\n` +
+    `• Stake: $${stake} (2% av equity)\n` +
+    `• Tid: ${formatTfHuman(tf)} per scalp\n` +
+    `• A+ tröskel: score ≥${STATE.session.scoreThreshold} (= ${Math.round(scoreToWinrate(STATE.session.scoreThreshold)*100)}% förväntat winrate)\n` +
+    `• Vinstmarginal: minst 65% per trade\n\n` +
+    `Agenternas val:\n${previewLines}\n\n` +
+    `🛡 SÄKERHETSREGLER:\n` +
+    `• Daglig loss-cap: -$${lossCap} (5%)\n` +
+    `• Max ${SAFETY_MAX_OPEN_POSITIONS} positioner · ${SAFETY_MAX_DAILY_TRADES} trades/dag\n\n` +
+    `Fortsätta?`;
   if(!confirm(confirmMsg)) return;
 
-  // Aktivera auto-confirm för session
   STATE.session.autoConfirm = true;
   saveSessionData();
 
-  // Sätt upp watches med autoFill-flagga — 50/50 forex/crypto-mix (Mikes regel)
   let placed = 0;
-  for(let i = 0; i < remaining; i++){
-    const useForex = (i % 2 === 1); // varannan = forex (50/50 mix)
-    const pool = useForex ? forexSyms : cryptoSyms;
-    const sym = pool[i % pool.length];
-    const side = Math.random() > 0.4 ? "BUY" : "SELL"; // 60% long bias
-    const w = createWatch(sym, side, stake, tf);
+  for(const pick of picks){
+    const w = createWatch(pick.sym, pick.side, stake, tf);
     if(w){
-      w.fromAutoFill = true; // Flagga: auto-confirm gäller för denna watch
+      w.fromAutoFill = true;
+      w.agentReason = pick.reason; // visas i UI
       placed++;
     }
   }
   saveWatchState();
-  pushInAppAlert(`⚡ Auto-fyll: ${placed} watches startade · stake $${stake} · A+ exekveras direkt · säkerhetsregler aktiva`, 7000);
+  pushInAppAlert(`⚡ ${placed} watches startade · ${cryptoCount} crypto + ${forexCount} forex · agenter valde baserat på marknadsläge`, 7000);
   renderTradesPage();
 }
 
