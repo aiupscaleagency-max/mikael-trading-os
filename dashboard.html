@@ -2662,12 +2662,51 @@ function executeConfirmedTrade(c){
 }
 
 // Smart trade-router — väljer watch eller direkt-execute beroende på session
+// Routing: TEST = paper-sim, PROPOSE/TESTNET = Binance Testnet, LIVE = Binance Mainnet
+async function executeBinanceOrder(sym, side, amount, mode){
+  try {
+    const r = await fetch("/api/binance/order", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({mode, symbol: sym, side, quoteOrderQty: amount})
+    });
+    const data = await r.json();
+    if(!data.ok){
+      pushInAppAlert(`❌ ${mode.toUpperCase()}-order misslyckades: ${data.error}`, 6000);
+      return null;
+    }
+    const fill = data.order;
+    pushInAppAlert(`✅ ${mode.toUpperCase()}-order fylld: ${side} ${sym} $${amount} · pris $${parseFloat(fill.cummulativeQuoteQty/fill.executedQty).toFixed(2)}`, 5000);
+    // Refresha live-sync så saldo/positions uppdateras
+    if(typeof refreshBinanceSync === "function") setTimeout(refreshBinanceSync, 1000);
+    return fill;
+  } catch(e){
+    pushInAppAlert(`❌ ${mode.toUpperCase()}-order fel: ${e.message}`, 6000);
+    return null;
+  }
+}
+
 function requestTradeExecution(sym, side, amount, timeframeSec){
-  // Session aktiv → använd watch-mode (bevakning + bekräftelse)
+  // Routing baserat på header-mode (currentUiMode: paper/propose/live)
+  // - paper / TEST: lokal simulering (gamla flödet)
+  // - propose / TESTNET: riktiga ordrar mot Binance Testnet
+  // - live: riktiga ordrar mot Binance Mainnet (RIKTIGA pengar, max $5/trade)
+  if(currentUiMode === "live"){
+    if(amount > 5){
+      pushInAppAlert(`🛡 LIVE-säkerhetslås: max $5/trade. Sänk beloppet eller kör i TEST-mode.`, 6000);
+      return null;
+    }
+    executeBinanceOrder(sym, side, amount, "live");
+    return { id: "live-pending-"+Date.now(), sym, side, amount, mode: "live" };
+  }
+  if(currentUiMode === "propose"){
+    executeBinanceOrder(sym, side, amount, "testnet");
+    return { id: "testnet-pending-"+Date.now(), sym, side, amount, mode: "testnet" };
+  }
+  // TEST-mode: lokal simulering som förut
   if(STATE.session){
     return createWatch(sym, side, amount, timeframeSec);
   }
-  // Ingen session → direkt execute som tidigare
   return simulateExecuteTrade(sym, side, amount, timeframeSec);
 }
 
