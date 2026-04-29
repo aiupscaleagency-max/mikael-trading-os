@@ -4659,6 +4659,23 @@ async function backendApplyState(){
   if(!state) return false;
   // Skydda mot stale data
   if(state.updatedAt && state.updatedAt <= backendStateLastUpdated) return false;
+
+  // KRITISKT: om backend är TOM ($10K, 0 trades) men frontend har data,
+  // försök migrera/seed:a istället för att skriva över Mikes data
+  const backendEmpty = (!state.history || state.history.length === 0)
+                    && (!state.positions || state.positions.length === 0)
+                    && (state.paperAccount?.realizedPnl === 0);
+  const localHasData = (STATE.tradeHistory && STATE.tradeHistory.length > 0)
+                    || (STATE.tradePositions && STATE.tradePositions.length > 0)
+                    || (STATE.sessionReports && STATE.sessionReports.length > 0);
+  if(backendEmpty && localHasData){
+    console.log("[backend-sync] Skip apply — backend tom, frontend har data (skydd mot data-förlust)");
+    // Visa varning så Mike vet
+    const ind = document.getElementById("sync-indicator");
+    if(ind) ind.innerHTML = `<span style="color:#f59e0b">⚠</span> Backend tom, lokal data bevaras`;
+    return false;
+  }
+
   backendStateLastUpdated = state.updatedAt || Date.now();
   // Mappa till STATE
   STATE.paperAccount = state.paperAccount;
@@ -4678,6 +4695,8 @@ async function backendApplyState(){
   // Uppdatera UI
   if(typeof renderTradesPage === "function") renderTradesPage();
   if(typeof renderPaperBadge === "function") renderPaperBadge();
+  const ind = document.getElementById("sync-indicator");
+  if(ind) ind.innerHTML = `<span style="color:var(--green)">●</span> Backend synced ${new Date().toLocaleTimeString().slice(0,8)}`;
   return true;
 }
 
@@ -6514,7 +6533,8 @@ function initApp(){
   loadSessionData(); // ladda session-state + reports (cache)
   loadWatchState();  // ladda pågående watches + confirms (cache)
   startBackendSync(); // PRIMÄR: backend som single source of truth
-  startSyncSubscription(); // SEKUNDÄR: legacy localStorage cross-device
+  // Legacy sync DISABLED — undviker konflikt med backend-sync (orsak till "flippa ut")
+  // startSyncSubscription();
   checkKeysSetup();
   loadKeysIntoSettings();
   loadTelegramIntoSettings();

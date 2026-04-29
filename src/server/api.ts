@@ -432,18 +432,24 @@ export function startServer(
       }
 
       // ── Dashboard HTML ──
+      // Cache-busting för dashboard (annars cachar browsers gamla buggiga version)
+      const noCacheHeaders = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+      };
       // Servera root-dashboard.html (single source of truth) framför gamla ui/index.html
       if ((url.pathname === "/" || url.pathname === "/dashboard.html") && method === "GET") {
         try {
           const rootDashboard = path.resolve(import.meta.dirname, "../../dashboard.html");
           const html = await fs.readFile(rootDashboard, "utf8");
-          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...noCacheHeaders });
           res.end(html);
         } catch {
           // Fallback: gamla ui/index.html
           try {
             const html = await fs.readFile(path.join(uiDir, "index.html"), "utf8");
-            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...noCacheHeaders });
             res.end(html);
           } catch {
             res.writeHead(500);
