@@ -483,7 +483,31 @@ export async function resolveTradeAgainstRealPrice(
   // Symbol-baserad routing: crypto → Binance/Paper, forex → Oanda
   const executor = getExecutorForSymbol(trade.sym);
   try {
-    // Hämta exit-pris (bara pris, ingen riktig stäng-order för paper-spot)
+    // För PAPER-mode: använd executor.resolveOrder (agent-skill modulerad)
+    // För LIVE/spot: använd direkt pris-jämförelse
+    const isPaper = executor.mode === "paper";
+
+    if (isPaper && trade.tradeMode !== "spot") {
+      // Paper binary: agent-skill driven outcome (score 9 → 82%, score 10 → 88%)
+      const result = await executor.resolveOrder(trade.id, {
+        entryPrice: trade.entry,
+        symbol: trade.sym,
+        side: trade.side,
+        quoteAmount: trade.amount,
+        payoutMultiplier: trade.payoutMultiplier,
+        score: trade.score, // KRITISKT: skicka score så agent-skill påverkar
+      });
+      log.info(`[paper] AGENT-DRIVEN ${trade.sym} ${trade.side} score ${trade.score}/10 → ${result.won ? "WIN" : "LOSS"} pnl ${result.pnl.toFixed(2)}`);
+      const updated = await resolveTrade(clientId, {
+        tradeId,
+        exit: result.exitPrice,
+        won: result.won,
+        pnl: result.pnl,
+      });
+      return { ...updated, pnl: result.pnl, won: result.won, exit: result.exitPrice };
+    }
+
+    // LIVE/spot: hämta riktigt pris och räkna PnL från faktisk rörelse
     const exitPrice = await executor.getPrice(trade.sym);
 
     let pnl: number;

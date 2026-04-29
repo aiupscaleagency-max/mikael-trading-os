@@ -59,9 +59,9 @@ export interface TradeExecutor {
   openOrder(params: OpenOrderParams): Promise<OrderResult>;
 
   // Resolveas en order (för scalp: vid expiresAt; för spot: explicit close)
-  // Returns: exit-pris + faktisk pnl. Paper: simulerar binary outcome.
+  // Returns: exit-pris + faktisk pnl. Paper: agent-skill modulerad (score-driven).
   // Live: stänger position via Binance och rapporterar fill.
-  resolveOrder(orderId: string, openParams: { entryPrice: number; symbol: string; side: "BUY" | "SELL"; quoteAmount: number; payoutMultiplier: number }): Promise<ResolveResult>;
+  resolveOrder(orderId: string, openParams: { entryPrice: number; symbol: string; side: "BUY" | "SELL"; quoteAmount: number; payoutMultiplier: number; score?: number }): Promise<ResolveResult>;
 
   // Hälsa-check — finns API-keys, är endpoints tillgängliga
   healthCheck(): Promise<{ ok: boolean; details: string }>;
