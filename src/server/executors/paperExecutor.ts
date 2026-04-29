@@ -23,6 +23,11 @@ export class PaperExecutor implements TradeExecutor {
   }
 
   async getPrice(symbol: string): Promise<number> {
+    // Symbol-validering: Binance stöder INTE forex-pairs (EUR/JPY, GBP/JPY etc)
+    // För forex behövs Oanda-executor (kommer i framtid)
+    if (symbol.includes("/") || symbol.endsWith("USD") && !symbol.endsWith("USDT")) {
+      throw new Error(`Symbol ${symbol} stöds inte av Binance (forex kräver Oanda-executor)`);
+    }
     // Binance public ticker — ingen auth, fungerar i alla modes
     const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
     if (!r.ok) throw new Error(`Binance ticker svar ${r.status} för ${symbol}`);

@@ -2601,8 +2601,21 @@ async function executeConfirmedTrade(c){
 // App-version som visas tydligt så Mike vet vilken kod han kör
 const APP_VERSION = "v2.4-backend-truth-2026-04-29";
 
+// Validera symbol stöds av nuvarande executor
+function isSymbolSupported(sym){
+  // Just nu (PaperExecutor mot Binance public): bara crypto-pairs som slutar på USDT
+  if(sym.includes("/")) return false; // forex som EUR/USD
+  if(!sym.endsWith("USDT") && !sym.endsWith("USDC") && !sym.endsWith("BUSD")) return false;
+  return true;
+}
+
 // Smart trade-router — väljer watch eller direkt-execute beroende på session
 function requestTradeExecution(sym, side, amount, timeframeSec){
+  // Validering: forex stöds inte än (Oanda-executor kommer)
+  if(!isSymbolSupported(sym)){
+    pushInAppAlert(`⚠ ${sym} stöds inte än (forex kräver Oanda-executor som byggs i framtid). Använd crypto-pairs som BTCUSDT, ETHUSDT.`, 6000);
+    return null;
+  }
   // Session aktiv → använd watch-mode (bevakning + bekräftelse)
   if(STATE.session){
     return createWatch(sym, side, amount, timeframeSec);
@@ -4397,8 +4410,10 @@ async function startSession(){
 // Agent-driven symbol-selektor — agenterna kommer överens om vilka som passar bäst
 // Använder live Binance-data + simulerade specialist-vyer (Viktor/Tomas/Karin)
 async function selectBestSymbolsForBatch(count){
-  const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","AVAXUSDT","DOGEUSDT","BNBUSDT","ADAUSDT","MATICUSDT","LINKUSDT"];
-  const forexSyms = ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/JPY","GBP/JPY"];
+  const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","AVAXUSDT","DOGEUSDT","BNBUSDT","ADAUSDT","MATICUSDT","LINKUSDT","DOTUSDT","TRXUSDT"];
+  // FOREX: tillfälligt avaktiverat — Binance public API stöder INTE forex
+  // Aktiveras igen när Oanda-executor är byggd
+  const forexSyms = []; // ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/JPY","GBP/JPY"];
   const candidates = [];
   // 1. CRYPTO: ranka via live Binance-data — momentum + volym
   try {

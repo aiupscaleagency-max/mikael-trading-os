@@ -488,6 +488,10 @@ export async function resolveTradeAgainstRealPrice(
 
 // Server-side scheduler — auto-resolve scalp-trades vid expiresAt mot riktigt pris
 let schedulerActive = false;
+const RESOLVE_RETRY_LIMIT = 3;       // Max 3 försök innan force-close
+const FORCE_CLOSE_AFTER_MS = 30000;  // Force-close 30s efter expiry om resolve fail
+const failedResolveAttempts = new Map<string, number>(); // tradeId → antal försök
+
 export function startScalpScheduler(getClients: () => string[]): void {
   if (schedulerActive) return;
   schedulerActive = true;
@@ -498,9 +502,31 @@ export function startScalpScheduler(getClients: () => string[]): void {
         const now = Date.now();
         const expired = state.positions.filter((p) => p.type === "scalp" && p.expiresAt && now >= p.expiresAt);
         for (const trade of expired) {
+          const overdueBy = now - (trade.expiresAt || 0);
+          const attempts = failedResolveAttempts.get(trade.id) || 0;
+
+          // Force-close om för många misslyckade försök ELLER för länge fastnat
+          if (attempts >= RESOLVE_RETRY_LIMIT || overdueBy > FORCE_CLOSE_AFTER_MS) {
+            log.warn(`[scheduler] FORCE-CLOSE ${trade.sym} ${trade.side} (${attempts} fail, ${Math.round(overdueBy/1000)}s overdue) — refund stake`);
+            // Refund stake (PnL = 0, won = false men inga förluster)
+            await resolveTrade(clientId, {
+              tradeId: trade.id,
+              exit: trade.entry, // ingen rörelse registrerad
+              won: false,
+              pnl: 0, // refund: inga förluster eftersom vi inte kunde resolva
+            });
+            failedResolveAttempts.delete(trade.id);
+            continue;
+          }
+
+          // Försök resolva mot active executor
           const result = await resolveTradeAgainstRealPrice(clientId, trade.id);
           if (result.ok) {
             log.info(`[scheduler] Auto-resolve ${trade.sym} ${trade.side} → ${result.won ? "WIN" : "LOSS"} pnl ${result.pnl?.toFixed(2)}`);
+            failedResolveAttempts.delete(trade.id);
+          } else {
+            failedResolveAttempts.set(trade.id, attempts + 1);
+            log.warn(`[scheduler] Resolve-fail ${trade.sym} (försök ${attempts + 1}/${RESOLVE_RETRY_LIMIT}): ${result.error}`);
           }
         }
       } catch (err) {
@@ -508,7 +534,7 @@ export function startScalpScheduler(getClients: () => string[]): void {
       }
     }
   }, 1000); // Var 1s — räcker för scalp-precision
-  log.ok("Scalp-scheduler startad (resolve mot riktiga Binance-priser)");
+  log.ok("Scalp-scheduler startad (resolve mot riktiga Binance-priser + auto force-close vid fail)");
 }
 
 // Lista alla clientIds som har en state-fil
