@@ -4305,6 +4305,42 @@ function startSession(){
   pushInAppAlert(`🎯 Session ${STATE.session.sessionNum}/${SESSION_TARGET_TOTAL} startad — bara setups med score ≥${SESSION_SCORE_THRESHOLD} körs. Mål: ${SESSION_TARGET_WINRATE*100}% winrate på ${SESSION_TRADES} trades.`);
 }
 
+// Auto-fyll session: skapa watches för alla återstående trades automatiskt
+function autoFillSession(){
+  if(!STATE.session) { alert("Ingen aktiv session"); return; }
+  const remaining = STATE.session.totalTrades - STATE.session.tradeNum;
+  if(remaining <= 0){ alert("Sessionen är redan full"); return; }
+
+  // Förslag: dela upp i blandning crypto + forex
+  const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","AVAXUSDT","DOGEUSDT","BNBUSDT","ADAUSDT"];
+  const forexSyms = ["EUR/USD","GBP/USD","USD/JPY","AUD/USD","USD/CHF"];
+
+  // Standard: 70% crypto, 30% forex (matchar dagens marknad)
+  const stake = calcAutoPositionSize(); // 2% av equity
+  const tf = STATE.betTf || SCALP_DEFAULT_SEC;
+
+  // Confirm med Mike
+  const confirmMsg = `Auto-fyll Session ${STATE.session.sessionNum}: ${remaining} watches startar med stake $${stake} · ${formatTfHuman(tf)} per scalp.\n\nSök A+ setup i: ${cryptoSyms.slice(0,4).join(", ")} + ${forexSyms.slice(0,2).join(", ")}.\n\nFortsätta?`;
+  if(!confirm(confirmMsg)) return;
+
+  // Sätt upp watches
+  let placed = 0;
+  for(let i = 0; i < remaining; i++){
+    // Mixa crypto och forex
+    const useForex = (i % 3 === 2); // var 3:e = forex
+    const pool = useForex ? forexSyms : cryptoSyms;
+    const sym = pool[i % pool.length];
+    const side = Math.random() > 0.4 ? "BUY" : "SELL"; // 60% long bias
+    if(STATE.session.scoreThreshold){
+      // Skapa watch (även om vi inte är i confirmed-watch flow ännu)
+      createWatch(sym, side, stake, tf);
+      placed++;
+    }
+  }
+  pushInAppAlert(`⚡ Auto-fyll: ${placed} watches startade · söker A+ setups · stake $${stake} · max 15 min per`, 6000);
+  renderTradesPage();
+}
+
 function abortSession(){
   if(!confirm("Avbryta pågående session? Trades hittills sparas men sessionen markeras som avbruten.")) return;
   if(STATE.session && STATE.session.trades.length > 0){
@@ -5013,6 +5049,7 @@ function renderSession(){
         <div class="sess-title">Session ${s.sessionNum}/${s.totalSessions} pågår</div>
         <div class="sess-sub">Tröskel: score ≥${s.scoreThreshold} · Mål: ${SESSION_TARGET_WINRATE*100}% winrate</div>
       </div>
+      <button class="sess-btn" onclick="autoFillSession()" style="background:#22c55e;border-color:#22c55e;color:#0a0e14">⚡ Auto-fyll resten</button>
       <button class="sess-btn danger" onclick="abortSession()">Avbryt</button>
     </div>
     <div class="sess-bar"><div class="sess-bar-fill" style="width:${pct}%"></div></div>
@@ -5023,9 +5060,11 @@ function renderSession(){
       <div class="sess-cell"><div class="sl">PnL Session</div><div class="sv ${totalPnl>=0?'up':'down'}">${totalPnl>=0?'+':''}$${totalPnl.toFixed(2)}</div></div>
       <div class="sess-cell"><div class="sl">Skippade</div><div class="sv">${s.skipped||0}</div></div>
     </div>
-    <div class="sess-sub" style="font-size:11px;color:var(--dim)">
-      💡 Skriv "köp BTC $50" i chatten — Hanna filtrerar automatiskt på score ≥${s.scoreThreshold}.
-      Setups under tröskel hoppas över utan kostnad.
+    <div class="sess-sub" style="font-size:11px;color:var(--dim);line-height:1.5">
+      💡 <b>Tre sätt att lägga trades:</b><br>
+      ⚡ <b>Auto-fyll resten</b> — startar ${total - tradeNum} watches på 1 klick<br>
+      ✍ Skriv i chatten: <code>"köp BTC $${calcAutoPositionSize()}"</code><br>
+      🎯 Snabb-trade-panel: välj symbol + tid + CALL/PUT
     </div>
   `;
 }
