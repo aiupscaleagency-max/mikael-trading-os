@@ -5065,20 +5065,9 @@ function log_ok(msg){ console.log("[OK]", msg); }
 
 // Render paper-balance i header + på Trades-sidan
 function renderPaperBadge(){
-  const acc = loadPaperAccount();
-  const unrealized = calcUnrealizedPnl();
-  const equity = calcTotalEquity();
-  const totalPnl = acc.realizedPnl + unrealized;
-  const pnlPct = (totalPnl / acc.startBalance) * 100;
-  const fmt = n => "$" + n.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
-  // Header-mini
-  const hdrEq = document.getElementById("pb-equity");
-  const hdrPnl = document.getElementById("pb-pnl");
-  if(hdrEq) hdrEq.textContent = fmt(equity);
-  if(hdrPnl){
-    hdrPnl.textContent = `${totalPnl>=0?'+':''}${fmt(totalPnl).replace('$','$')}`;
-    hdrPnl.className = totalPnl >= 0 ? "" : "down";
-  }
+  // DISABLED — header pb-equity uppdateras nu från Binance Testnet (refreshBinanceSync)
+  // Lämnar funktionen för bakåtkompatibilitet men gör ingenting
+  return;
   // Hero-card
   const setVal = (id, val, cls) => {
     const el = document.getElementById(id);
