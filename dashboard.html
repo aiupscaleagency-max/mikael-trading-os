@@ -1544,6 +1544,12 @@ body.app-state-onboard .fc-panel{display:none !important}
       <div id="lifetime-stats"></div>
     </div>
 
+    <div class="card" id="audit-card">
+      <h3>🔍 Audit Trail <span id="audit-check" class="tag" style="margin-left:auto;font-weight:600;font-size:10px"></span></h3>
+      <div id="audit-summary" style="font-size:11px;color:var(--label);margin-bottom:10px;line-height:1.5"></div>
+      <div id="audit-table" style="max-height:400px;overflow-y:auto"></div>
+    </div>
+
     <div class="card">
       <h3>📊 Stängda trades</h3>
       <div id="trade-history-table"></div>
@@ -4927,6 +4933,9 @@ function resolveScalpTrade(p){
     reasoning: `Scalp ${p.side === "BUY" ? "📈 LONG" : "📉 SHORT"} ${formatPrice(p.entry,p.sym)}→${formatPrice(cur,p.sym)} · PnL ${pnl>=0?'+':''}$${pnl.toFixed(2)}${scoreTag}${setupTag}`,
     source: "auto"
   });
+  // Spara balanceAfter på trade för audit-trail
+  STATE.tradeHistory[0].balanceAfter = acc.cash;
+  STATE.tradeHistory[0].equityAfter = acc.cash + (STATE.tradePositions||[]).reduce((s,pp)=>s+pp.amount,0);
   savePaperAccount();
   saveTradeData();
   // Session-tracking: registrera resultat om trade tillhör pågående session
@@ -5282,10 +5291,77 @@ function cancelWatch(watchId){
   renderTradesPage();
 }
 
+function renderAuditTrail(){
+  const summaryEl = document.getElementById("audit-summary");
+  const tableEl = document.getElementById("audit-table");
+  const checkEl = document.getElementById("audit-check");
+  if(!tableEl) return;
+  const history = STATE.tradeHistory || [];
+  const acc = loadPaperAccount();
+  if(!history.length){
+    if(summaryEl) summaryEl.innerHTML = `<span style="color:var(--dim)">Inga trades ännu — Audit Trail visar varje trade med running balance så fort de stängs.</span>`;
+    tableEl.innerHTML = "";
+    if(checkEl){ checkEl.textContent = ""; }
+    return;
+  }
+  // Sortera kronologiskt (äldst först för running balance)
+  const chronological = history.slice().sort((a,b)=>(a.closedAt||0) - (b.closedAt||0));
+  const startBalance = acc.startBalance || PAPER_START_BALANCE;
+  let running = startBalance;
+  let totalPnl = 0;
+  const rows = chronological.map((h, i) => {
+    const pnl = h.pnl || 0;
+    totalPnl += pnl;
+    running += pnl;
+    const t = new Date(h.closedAt || 0).toLocaleString("sv-SE").slice(5,16);
+    const sideLabel = h.side === "BUY" ? "📈 LONG" : "📉 SHORT";
+    const cls = pnl >= 0 ? "up" : "down";
+    return `<div style="display:grid;grid-template-columns:32px 78px 1fr 70px 70px 90px 90px;gap:6px;padding:5px 8px;background:var(--card2);border-radius:3px;margin-bottom:3px;font-size:10px;font-variant-numeric:tabular-nums;align-items:center;border-left:2px solid ${pnl>=0?'var(--green)':'var(--red)'}">
+      <span style="color:var(--dim);font-weight:700">#${i+1}</span>
+      <span style="color:var(--dim)">${t}</span>
+      <span><b>${h.sym || '?'}</b> · ${sideLabel} · ${formatPrice(h.entry||0,h.sym)}→${formatPrice(h.exit||0,h.sym)}</span>
+      <span style="color:var(--label)">$${(h.amount||0).toFixed(0)}</span>
+      <span class="${cls}" style="color:${pnl>=0?'var(--green)':'var(--red)'};font-weight:700">${pnl>=0?'+':''}$${pnl.toFixed(2)}</span>
+      <span style="color:var(--label)">tot ${totalPnl>=0?'+':''}$${totalPnl.toFixed(0)}</span>
+      <span style="font-weight:700">$${running.toFixed(0)}</span>
+    </div>`;
+  });
+  // Visa nyaste först (senaste i toppen)
+  rows.reverse();
+
+  // Header
+  const header = `<div style="display:grid;grid-template-columns:32px 78px 1fr 70px 70px 90px 90px;gap:6px;padding:5px 8px;font-size:9px;color:var(--label);font-weight:700;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--border);margin-bottom:4px">
+    <span>#</span><span>Tid</span><span>Trade</span><span>Stake</span><span>PnL</span><span>Total</span><span>Balance</span>
+  </div>`;
+  tableEl.innerHTML = header + rows.join("");
+
+  // Kontrollräkning
+  const expected = startBalance + totalPnl;
+  const actualEquity = acc.cash + (STATE.tradePositions||[]).reduce((s,p)=>s+p.amount, 0);
+  const diff = Math.abs(expected - actualEquity);
+  const consistent = diff < 0.5; // 50 öre tolerans
+  if(summaryEl){
+    summaryEl.innerHTML = `
+      <strong>Start-balans:</strong> $${startBalance.toFixed(2)} (${new Date(acc.createdAt).toLocaleDateString("sv-SE")})<br>
+      <strong>Total PnL ${chronological.length} trades:</strong> <span style="color:${totalPnl>=0?'var(--green)':'var(--red)'};font-weight:700">${totalPnl>=0?'+':''}$${totalPnl.toFixed(2)}</span><br>
+      <strong>Förväntad balans:</strong> $${expected.toFixed(2)} = start + total PnL<br>
+      <strong>Faktisk equity:</strong> $${actualEquity.toFixed(2)} (cash $${acc.cash.toFixed(2)} + öppna positioner $${((STATE.tradePositions||[]).reduce((s,p)=>s+p.amount,0)).toFixed(2)})
+    `;
+  }
+  if(checkEl){
+    if(consistent){
+      checkEl.innerHTML = `<span style="color:var(--green)">✓ Konsistent</span>`;
+    } else {
+      checkEl.innerHTML = `<span style="color:var(--red)">⚠ Diff $${diff.toFixed(2)}</span>`;
+    }
+  }
+}
+
 function renderTradesPage(){
   renderSession();
   renderWatchesAndConfirms();
   renderLifetimeStats();
+  renderAuditTrail();
   const positions = STATE.tradePositions || [];
   const decisions = STATE.tradeDecisions || [];
   const history = STATE.tradeHistory || [];
