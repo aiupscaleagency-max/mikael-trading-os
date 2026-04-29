@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { log } from "../logger.js";
+import { getActiveExecutor, getCurrentMode } from "./executors/registry.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Trade State Manager — SINGLE SOURCE OF TRUTH för all trade-state
@@ -249,6 +250,29 @@ export interface OpenTradeParams {
 }
 
 export async function openTrade(clientId: string, params: OpenTradeParams): Promise<{ ok: boolean; trade?: TradePosition; state: FullTradeState; error?: string }> {
+  // Använd active executor för att placera ordern
+  // Paper: simulerar och returnerar entry från Binance public-pris
+  // Binance: placerar riktig MARKET-order via Binance API
+  const executor = getActiveExecutor();
+  let executorResult;
+  try {
+    executorResult = await executor.openOrder({
+      symbol: params.sym,
+      side: params.side,
+      quoteAmount: params.amount,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Executor (${executor.mode}) öppna-order-fel: ${err instanceof Error ? err.message : String(err)}`,
+      state: await readState(clientId),
+    };
+  }
+  if (executorResult.status === "rejected") {
+    return { ok: false, error: `Order avvisad av ${executor.mode}`, state: await readState(clientId) };
+  }
+
+  // Lägg in trade i state efter executor-bekräftelse
   return withLock(clientId, async () => {
     const state = await readState(clientId);
     if (params.amount > state.paperAccount.cash) {
@@ -257,13 +281,13 @@ export async function openTrade(clientId: string, params: OpenTradeParams): Prom
     const tf = params.timeframeSec || SCALP_DEFAULT_SEC;
     const payoutMult = randomPayout();
     const trade: TradePosition = {
-      id: `trade-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      id: executorResult.orderId, // använd executor-id (paper: paper-xxx, binance: orderId)
       sym: params.sym,
       side: params.side,
       amount: params.amount,
-      entry: params.entry,
-      qty: params.amount / params.entry,
-      openedAt: Date.now(),
+      entry: executorResult.entryPrice, // FAKTISK fill-pris från executor
+      qty: executorResult.filledQuantity,
+      openedAt: executorResult.timestamp,
       expiresAt: Date.now() + tf * 1000,
       timeframeSec: tf,
       payoutMultiplier: payoutMult,
@@ -276,7 +300,7 @@ export async function openTrade(clientId: string, params: OpenTradeParams): Prom
       confirmed: !!params.confirmed,
       status: "open",
       type: "scalp",
-      source: params.source || "api",
+      source: params.source || `${executor.mode}`,
     };
     state.positions.push(trade);
     state.decisions.unshift({
@@ -286,8 +310,8 @@ export async function openTrade(clientId: string, params: OpenTradeParams): Prom
       amount: params.amount,
       score: params.score,
       setupType: params.setupType,
-      reasoning: params.reasoning || `Trade öppnad via API · ${params.source || "?"}`,
-      source: params.source || "api",
+      reasoning: params.reasoning || `[${executor.mode}] Trade öppnad · entry $${executorResult.entryPrice.toFixed(4)}`,
+      source: params.source || executor.mode,
     });
     state.paperAccount.cash -= params.amount;
     state.paperAccount.totalTrades++;
@@ -423,8 +447,8 @@ export async function abortSession(clientId: string): Promise<{ ok: boolean; sta
   });
 }
 
-// Resolve mot RIKTIGT Binance-pris — vinst/förlust avgörs av faktisk pris-rörelse
-// Detta är skillnaden från tidigare simulering där utfall var slumpat
+// Resolve mot active executor — SAMMA kod-väg i TEST/PROPOSE/LIVE
+// Mikes regel: TEST och LIVE måste bete sig EXAKT likadant.
 export async function resolveTradeAgainstRealPrice(
   clientId: string,
   tradeId: string,
@@ -433,25 +457,33 @@ export async function resolveTradeAgainstRealPrice(
   const trade = stateBefore.positions.find((p) => p.id === tradeId);
   if (!trade) return { ok: false, error: "Trade ej hittad", state: stateBefore };
 
-  // Hämta aktuellt pris från Binance public API
-  let currentPrice: number;
+  // Använd active executor — paper, binance-testnet, eller binance-live
+  // ALLA exekverar via samma interface, bara routing skiljer sig
+  const executor = getActiveExecutor();
   try {
-    const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${trade.sym}`);
-    if (!r.ok) throw new Error(`Binance svar ${r.status}`);
-    const data = (await r.json()) as { price: string };
-    currentPrice = parseFloat(data.price);
-    if (!currentPrice || isNaN(currentPrice)) throw new Error("Ogiltigt pris");
+    const result = await executor.resolveOrder(tradeId, {
+      entryPrice: trade.entry,
+      symbol: trade.sym,
+      side: trade.side,
+      quoteAmount: trade.amount,
+      payoutMultiplier: trade.payoutMultiplier,
+    });
+    log.info(`[${executor.mode}] Resolved ${trade.sym} ${trade.side} → ${result.won ? "WIN" : "LOSS"} pnl ${result.pnl.toFixed(2)} @ ${result.exitPrice.toFixed(4)}`);
+    const updated = await resolveTrade(clientId, {
+      tradeId,
+      exit: result.exitPrice,
+      won: result.won,
+      pnl: result.pnl,
+    });
+    return { ...updated, pnl: result.pnl, won: result.won, exit: result.exitPrice };
   } catch (err) {
-    log.warn(`Kunde inte hämta pris för ${trade.sym}: ${err instanceof Error ? err.message : String(err)}`);
-    return { ok: false, error: `Kunde inte hämta riktigt pris: ${err instanceof Error ? err.message : String(err)}`, state: stateBefore };
+    log.warn(`[${executor.mode}] Resolve-fel ${trade.sym}: ${err instanceof Error ? err.message : String(err)}`);
+    return {
+      ok: false,
+      error: `Executor (${executor.mode}) resolve-fel: ${err instanceof Error ? err.message : String(err)}`,
+      state: stateBefore,
+    };
   }
-
-  // Avgör utfall baserat på FAKTISK pris-rörelse (inte simulering)
-  const won = trade.side === "BUY" ? currentPrice > trade.entry : currentPrice < trade.entry;
-  // PnL: scalp-style binary outcome (stake × (payout-1) eller -stake)
-  const pnl = won ? trade.amount * (trade.payoutMultiplier - 1) : -trade.amount;
-  const result = await resolveTrade(clientId, { tradeId, exit: currentPrice, won, pnl });
-  return { ...result, pnl, won, exit: currentPrice };
 }
 
 // Server-side scheduler — auto-resolve scalp-trades vid expiresAt mot riktigt pris

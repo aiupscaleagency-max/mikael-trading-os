@@ -11,6 +11,7 @@ import { getCostSummary } from "../cost/tracker.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
 import * as tradeState from "./tradeState.js";
+import { switchMode as switchExecutorMode, getCurrentMode as getExecutorMode, getActiveExecutor } from "./executors/registry.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
@@ -456,6 +457,23 @@ export function startServer(
             res.end("Dashboard HTML not found");
           }
         }
+        return;
+      }
+
+      // ── EXECUTOR MODE API (TEST/PROPOSE/LIVE — samma kod-väg, olika executor) ──
+      if (url.pathname === "/api/executor/mode" && method === "GET") {
+        const mode = getExecutorMode();
+        const executor = getActiveExecutor();
+        const hc = await executor.healthCheck();
+        json(res, { mode, name: executor.name, health: hc });
+        return;
+      }
+      if (url.pathname === "/api/executor/mode" && method === "POST") {
+        const body = await readBody(req);
+        const params = JSON.parse(body) as { mode: "paper" | "binance-testnet" | "binance-live"; binanceApiKey?: string; binanceApiSecret?: string };
+        const result = await switchExecutorMode(params.mode, params);
+        if (result.ok) broadcastEvent("executor-mode-changed", { mode: params.mode });
+        json(res, result);
         return;
       }
 
