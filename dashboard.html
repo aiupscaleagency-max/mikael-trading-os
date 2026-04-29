@@ -1504,7 +1504,7 @@ body.app-state-onboard .fc-panel{display:none !important}
           <div class="pc-cash" id="pc-cash">$10,000.00</div>
         </div>
         <div class="pc-col">
-          <div class="pc-lbl">TRADES (W/L)</div>
+          <div class="pc-lbl">VINSTER / FÖRLUSTER</div>
           <div class="pc-trades" id="pc-trades">0/0</div>
         </div>
         <div class="pc-col">
@@ -4648,8 +4648,17 @@ function calcLifetimeStats(){
   const bySide = { BUY: {wins:0, losses:0, pnl:0}, SELL: {wins:0, losses:0, pnl:0} };
   const bySetup = {}; // {setupType: {wins, losses, pnl}}
   const byScore = {}; // {score: {wins, losses, pnl}}
+  let neutrals = 0;
   for(const h of history){
-    const won = (h.pnl || 0) > 0;
+    // Använd serverns won-flagga om den finns; annars härled från pnl
+    // null/undefined = neutral (force-close, refund) → räknas inte i W/L
+    const isNeutral = h.won === null || (h.won === undefined && (h.pnl || 0) === 0);
+    if(isNeutral){
+      neutrals++;
+      totalPnl += (h.pnl || 0);
+      continue; // hoppa över W/L-räkning för neutrala
+    }
+    const won = h.won === true || (h.won === undefined && (h.pnl || 0) > 0);
     if(won){ wins++; avgWin += h.pnl; }
     else { losses++; avgLoss += h.pnl; }
     totalPnl += (h.pnl || 0);
@@ -4662,7 +4671,6 @@ function calcLifetimeStats(){
       bySide[h.side].pnl += (h.pnl || 0);
       if(won) bySide[h.side].wins++; else bySide[h.side].losses++;
     }
-    // Setup-typ-breakdown (träningsdata)
     if(h.setupType){
       if(!bySetup[h.setupType]) bySetup[h.setupType] = {wins:0, losses:0, pnl:0};
       bySetup[h.setupType].pnl += (h.pnl || 0);
@@ -5408,7 +5416,8 @@ function renderPaperBadge(){
   setVal("pc-realized", `${acc.realizedPnl>=0?'+':''}${fmt(acc.realizedPnl)}`, `pc-pnl ${acc.realizedPnl>=0?'up':'down'}`);
   setVal("pc-unrealized", `${unrealized>=0?'+':''}${fmt(unrealized)}`, `pc-pnl ${unrealized>=0?'up':'down'}`);
   setVal("pc-cash", fmt(acc.cash));
-  setVal("pc-trades", `${acc.winningTrades}/${acc.losingTrades}`);
+  const neutral = acc.neutralTrades || 0;
+  setVal("pc-trades", neutral > 0 ? `${acc.winningTrades}W · ${acc.losingTrades}L · ${neutral}N` : `${acc.winningTrades}W · ${acc.losingTrades}L`);
   const totalClosed = acc.winningTrades + acc.losingTrades;
   setVal("pc-winrate", totalClosed > 0 ? `${Math.round(acc.winningTrades/totalClosed*100)}%` : "–");
 }

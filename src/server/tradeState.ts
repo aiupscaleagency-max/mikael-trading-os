@@ -46,7 +46,9 @@ export interface TradePosition {
 export interface ClosedTrade extends TradePosition {
   exit: number;
   pnl: number;
-  won: boolean;
+  // won: true = vinst, false = förlust, null = neutral (force-closed/refund/ej resolverad)
+  // Neutrala räknas INTE i W/L-stats men finns i history för transparens
+  won: boolean | null;
   closedAt: number;
   balanceAfter?: number;
   equityAfter?: number;
@@ -59,6 +61,7 @@ export interface PaperAccount {
   totalTrades: number;
   winningTrades: number;
   losingTrades: number;
+  neutralTrades: number;  // force-closed / refund / ej resolverade — räknas inte i W/L
   createdAt: number;
 }
 
@@ -153,6 +156,7 @@ function createDefaultState(): FullTradeState {
       totalTrades: 0,
       winningTrades: 0,
       losingTrades: 0,
+      neutralTrades: 0,
       createdAt: Date.now(),
     },
     positions: [],
@@ -321,7 +325,7 @@ export async function openTrade(clientId: string, params: OpenTradeParams): Prom
 export interface ResolveTradeParams {
   tradeId: string;
   exit: number;
-  won: boolean;
+  won: boolean | null;  // null = neutral (force-close / ej resolverad)
   pnl: number;
 }
 
@@ -334,8 +338,10 @@ export async function resolveTrade(clientId: string, params: ResolveTradeParams)
     state.positions.splice(idx, 1);
     state.paperAccount.cash += pos.amount + params.pnl;
     state.paperAccount.realizedPnl += params.pnl;
-    if (params.won) state.paperAccount.winningTrades++;
-    else state.paperAccount.losingTrades++;
+    // Räkna ENDAST riktiga wins/losses; null = neutral (refund/force-close)
+    if (params.won === true) state.paperAccount.winningTrades++;
+    else if (params.won === false) state.paperAccount.losingTrades++;
+    else state.paperAccount.neutralTrades = (state.paperAccount.neutralTrades || 0) + 1;
     const closed: ClosedTrade = {
       ...pos,
       exit: params.exit,
@@ -504,13 +510,13 @@ export function startScalpScheduler(getClients: () => string[]): void {
 
           // Force-close om för många misslyckade försök ELLER för länge fastnat
           if (attempts >= RESOLVE_RETRY_LIMIT || overdueBy > FORCE_CLOSE_AFTER_MS) {
-            log.warn(`[scheduler] FORCE-CLOSE ${trade.sym} ${trade.side} (${attempts} fail, ${Math.round(overdueBy/1000)}s overdue) — refund stake`);
-            // Refund stake (PnL = 0, won = false men inga förluster)
+            log.warn(`[scheduler] FORCE-CLOSE ${trade.sym} ${trade.side} (${attempts} fail, ${Math.round(overdueBy/1000)}s overdue) — refund stake (NEUTRAL, ej win/loss)`);
+            // Refund stake — markera som NEUTRAL (won=null), räknas inte i W/L-stats
             await resolveTrade(clientId, {
               tradeId: trade.id,
-              exit: trade.entry, // ingen rörelse registrerad
-              won: false,
-              pnl: 0, // refund: inga förluster eftersom vi inte kunde resolva
+              exit: trade.entry,
+              won: null as unknown as boolean, // hack: backend hanterar null som neutral
+              pnl: 0,
             });
             failedResolveAttempts.delete(trade.id);
             continue;
@@ -546,21 +552,22 @@ export async function listClients(): Promise<string[]> {
 }
 
 // Reconciliation — räknar igenom history och korrigerar paperAccount-counters
-// så att Lifetime stats och header-stats ALLTID stämmer
+// så att Lifetime stats och header-stats ALLTID stämmer (även med neutrala)
 export async function reconcile(clientId: string): Promise<{ before: PaperAccount; after: PaperAccount; state: FullTradeState }> {
   return withLock(clientId, async () => {
     const state = await readState(clientId);
     const before = { ...state.paperAccount };
-    let wins = 0,
-      losses = 0,
-      realizedPnl = 0;
+    let wins = 0, losses = 0, neutrals = 0, realizedPnl = 0;
     for (const h of state.history) {
-      if (h.won) wins++;
-      else losses++;
+      // null/undefined = neutral (ej resolverad, force-close, refund)
+      if (h.won === true) wins++;
+      else if (h.won === false) losses++;
+      else neutrals++;
       realizedPnl += h.pnl || 0;
     }
     state.paperAccount.winningTrades = wins;
     state.paperAccount.losingTrades = losses;
+    state.paperAccount.neutralTrades = neutrals;
     state.paperAccount.totalTrades = state.history.length + state.positions.length;
     state.paperAccount.realizedPnl = realizedPnl;
     // Cash-räkning från ground truth: start - öppna stakes + alla pnls
