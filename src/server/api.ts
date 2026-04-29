@@ -10,6 +10,7 @@ import { config } from "../config.js";
 import { getCostSummary } from "../cost/tracker.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
+import * as tradeState from "./tradeState.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
@@ -449,6 +450,72 @@ export function startServer(
             res.end("Dashboard HTML not found");
           }
         }
+        return;
+      }
+
+      // ── TRADE STATE API (single source of truth — ersätter localStorage gradvis) ──
+      // GET /api/trade-state?clientId=mike-private → full state
+      if (url.pathname === "/api/trade-state" && method === "GET") {
+        const clientId = url.searchParams.get("clientId") || "mike-private";
+        const state = await tradeState.getState(clientId);
+        json(res, state);
+        return;
+      }
+      // POST /api/trade-state/reset → wipe paper-account
+      if (url.pathname === "/api/trade-state/reset" && method === "POST") {
+        const body = await readBody(req);
+        const { clientId } = JSON.parse(body || "{}") as { clientId?: string };
+        const state = await tradeState.resetPaperAccount(clientId || "mike-private");
+        broadcastEvent("trade-state-updated", { clientId: clientId || "mike-private", action: "reset" });
+        json(res, { ok: true, state });
+        return;
+      }
+      // POST /api/trade-state/open-trade → öppna ny trade
+      if (url.pathname === "/api/trade-state/open-trade" && method === "POST") {
+        const body = await readBody(req);
+        const params = JSON.parse(body) as { clientId?: string } & tradeState.OpenTradeParams;
+        const clientId = params.clientId || "mike-private";
+        const result = await tradeState.openTrade(clientId, params);
+        if (result.ok) broadcastEvent("trade-state-updated", { clientId, action: "open-trade", tradeId: result.trade?.id });
+        json(res, result);
+        return;
+      }
+      // POST /api/trade-state/resolve-trade → stäng trade med exit + pnl
+      if (url.pathname === "/api/trade-state/resolve-trade" && method === "POST") {
+        const body = await readBody(req);
+        const params = JSON.parse(body) as { clientId?: string } & tradeState.ResolveTradeParams;
+        const clientId = params.clientId || "mike-private";
+        const result = await tradeState.resolveTrade(clientId, params);
+        if (result.ok) broadcastEvent("trade-state-updated", { clientId, action: "resolve-trade" });
+        json(res, result);
+        return;
+      }
+      // POST /api/trade-state/start-session
+      if (url.pathname === "/api/trade-state/start-session" && method === "POST") {
+        const body = await readBody(req);
+        const params = JSON.parse(body || "{}") as { clientId?: string; totalSessions?: number; totalTrades?: number; scoreThreshold?: number };
+        const clientId = params.clientId || "mike-private";
+        const result = await tradeState.startSession(clientId, params);
+        if (result.ok) broadcastEvent("trade-state-updated", { clientId, action: "start-session" });
+        json(res, result);
+        return;
+      }
+      // POST /api/trade-state/abort-session
+      if (url.pathname === "/api/trade-state/abort-session" && method === "POST") {
+        const body = await readBody(req);
+        const { clientId } = JSON.parse(body || "{}") as { clientId?: string };
+        const result = await tradeState.abortSession(clientId || "mike-private");
+        broadcastEvent("trade-state-updated", { clientId: clientId || "mike-private", action: "abort-session" });
+        json(res, result);
+        return;
+      }
+      // POST /api/trade-state/reconcile → räkna om counters från history (städar inkonsistenser)
+      if (url.pathname === "/api/trade-state/reconcile" && method === "POST") {
+        const body = await readBody(req);
+        const { clientId } = JSON.parse(body || "{}") as { clientId?: string };
+        const result = await tradeState.reconcile(clientId || "mike-private");
+        broadcastEvent("trade-state-updated", { clientId: clientId || "mike-private", action: "reconcile" });
+        json(res, result);
         return;
       }
 
