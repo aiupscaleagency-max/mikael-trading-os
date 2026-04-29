@@ -423,6 +423,73 @@ export async function abortSession(clientId: string): Promise<{ ok: boolean; sta
   });
 }
 
+// Resolve mot RIKTIGT Binance-pris — vinst/förlust avgörs av faktisk pris-rörelse
+// Detta är skillnaden från tidigare simulering där utfall var slumpat
+export async function resolveTradeAgainstRealPrice(
+  clientId: string,
+  tradeId: string,
+): Promise<{ ok: boolean; state: FullTradeState; pnl?: number; won?: boolean; exit?: number; error?: string }> {
+  const stateBefore = await readState(clientId);
+  const trade = stateBefore.positions.find((p) => p.id === tradeId);
+  if (!trade) return { ok: false, error: "Trade ej hittad", state: stateBefore };
+
+  // Hämta aktuellt pris från Binance public API
+  let currentPrice: number;
+  try {
+    const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${trade.sym}`);
+    if (!r.ok) throw new Error(`Binance svar ${r.status}`);
+    const data = (await r.json()) as { price: string };
+    currentPrice = parseFloat(data.price);
+    if (!currentPrice || isNaN(currentPrice)) throw new Error("Ogiltigt pris");
+  } catch (err) {
+    log.warn(`Kunde inte hämta pris för ${trade.sym}: ${err instanceof Error ? err.message : String(err)}`);
+    return { ok: false, error: `Kunde inte hämta riktigt pris: ${err instanceof Error ? err.message : String(err)}`, state: stateBefore };
+  }
+
+  // Avgör utfall baserat på FAKTISK pris-rörelse (inte simulering)
+  const won = trade.side === "BUY" ? currentPrice > trade.entry : currentPrice < trade.entry;
+  // PnL: scalp-style binary outcome (stake × (payout-1) eller -stake)
+  const pnl = won ? trade.amount * (trade.payoutMultiplier - 1) : -trade.amount;
+  const result = await resolveTrade(clientId, { tradeId, exit: currentPrice, won, pnl });
+  return { ...result, pnl, won, exit: currentPrice };
+}
+
+// Server-side scheduler — auto-resolve scalp-trades vid expiresAt mot riktigt pris
+let schedulerActive = false;
+export function startScalpScheduler(getClients: () => string[]): void {
+  if (schedulerActive) return;
+  schedulerActive = true;
+  setInterval(async () => {
+    for (const clientId of getClients()) {
+      try {
+        const state = await getState(clientId);
+        const now = Date.now();
+        const expired = state.positions.filter((p) => p.type === "scalp" && p.expiresAt && now >= p.expiresAt);
+        for (const trade of expired) {
+          const result = await resolveTradeAgainstRealPrice(clientId, trade.id);
+          if (result.ok) {
+            log.info(`[scheduler] Auto-resolve ${trade.sym} ${trade.side} → ${result.won ? "WIN" : "LOSS"} pnl ${result.pnl?.toFixed(2)}`);
+          }
+        }
+      } catch (err) {
+        log.warn(`Scheduler-fel för ${clientId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }, 1000); // Var 1s — räcker för scalp-precision
+  log.ok("Scalp-scheduler startad (resolve mot riktiga Binance-priser)");
+}
+
+// Lista alla clientIds som har en state-fil
+export async function listClients(): Promise<string[]> {
+  try {
+    await fs.mkdir(STATE_DIR, { recursive: true });
+    const files = await fs.readdir(STATE_DIR);
+    return files.filter((f) => f.endsWith(".json") && !f.endsWith(".tmp")).map((f) => f.replace(".json", ""));
+  } catch {
+    return [];
+  }
+}
+
 // Reconciliation — räknar igenom history och korrigerar paperAccount-counters
 // så att Lifetime stats och header-stats ALLTID stämmer
 export async function reconcile(clientId: string): Promise<{ before: PaperAccount; after: PaperAccount; state: FullTradeState }> {

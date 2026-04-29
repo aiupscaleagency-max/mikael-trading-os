@@ -710,6 +710,16 @@ export function startServer(
         log.error(`Telegram-webhook setup-fel: ${err instanceof Error ? err.message : String(err)}`);
       });
     }
+    // Starta server-side scheduler för auto-resolve mot riktiga Binance-priser
+    // OBS: bara aktiva clients (mike-private just nu) — multi-tenant senare
+    let cachedClients: string[] = ["mike-private"];
+    tradeState.listClients().then((c) => {
+      if (c.length) cachedClients = c;
+    });
+    setInterval(() => {
+      tradeState.listClients().then((c) => { if (c.length) cachedClients = c; });
+    }, 60000);
+    tradeState.startScalpScheduler(() => cachedClients);
   });
 
   return server;

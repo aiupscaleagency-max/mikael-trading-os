@@ -1545,7 +1545,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
     <div class="card" id="audit-card">
-      <h3>🔍 Audit Trail <span id="audit-check" class="tag" style="margin-left:auto;font-weight:600;font-size:10px"></span></h3>
+      <h3>🔍 Audit Trail <button onclick="backendReconcile()" style="margin-left:8px;padding:4px 10px;background:var(--cyan);color:#000;border:none;border-radius:3px;font-size:10px;font-weight:700;cursor:pointer">🔧 Reconcile</button> <span id="audit-check" class="tag" style="margin-left:auto;font-weight:600;font-size:10px"></span></h3>
       <div id="audit-summary" style="font-size:11px;color:var(--label);margin-bottom:10px;line-height:1.5"></div>
       <div id="audit-table" style="max-height:400px;overflow-y:auto"></div>
     </div>
@@ -2603,8 +2603,24 @@ function requestTradeExecution(sym, side, amount, timeframeSec){
   if(STATE.session){
     return createWatch(sym, side, amount, timeframeSec);
   }
-  // Ingen session → direkt execute som tidigare
-  return simulateExecuteTrade(sym, side, amount, timeframeSec);
+  // Ingen session → direkt execute via BACKEND (riktigt Binance-pris vid resolve)
+  // Hämta entry-pris från live-feed eller BASE_PRICES
+  const entry = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
+  // Eldfast async-trigger — UI uppdateras via backend-sync när trade öppnats
+  backendOpenTrade({
+    sym, side, amount,
+    timeframeSec: timeframeSec || SCALP_DEFAULT_SEC,
+    entry,
+    score: 7, // default — höjs när direkt-trade kommer från Hanna med score
+    setupType: "manual",
+    setupLabel: "Manuell",
+    source: "frontend-direct",
+    confirmed: true
+  }).then(t => {
+    if(t) pushInAppAlert(`✓ Trade öppnad på server: ${sym} ${side==='BUY'?'LONG':'SHORT'} $${amount} · resolveras mot riktigt Binance-pris`, 4000);
+  });
+  // Returnera placeholder så UI flow fortsätter (backend syncar in faktisk state)
+  return { id: "pending-"+Date.now(), sym, side, amount };
 }
 
 /* ======================================================================
@@ -4361,24 +4377,15 @@ function loadSessionData(){
   } catch(_){}
 }
 
-function startSession(){
-  const completed = (STATE.sessionReports || []).length;
-  STATE.session = {
-    sessionNum: completed + 1,
+async function startSession(){
+  // Routa via backend (single source of truth)
+  const ok = await backendStartSession({
     totalSessions: SESSION_TARGET_TOTAL,
-    tradeNum: 0,
     totalTrades: SESSION_TRADES,
-    wins: 0,
-    losses: 0,
-    scoreThreshold: SESSION_SCORE_THRESHOLD,
-    startedAt: Date.now(),
-    trades: [],
-    skipped: 0
-  };
-  saveSessionData();
-  renderTradesPage();
-  // Toast
-  pushInAppAlert(`🎯 Session ${STATE.session.sessionNum}/${SESSION_TARGET_TOTAL} startad — bara setups med score ≥${SESSION_SCORE_THRESHOLD} körs. Mål: ${SESSION_TARGET_WINRATE*100}% winrate på ${SESSION_TRADES} trades.`);
+    scoreThreshold: SESSION_SCORE_THRESHOLD
+  });
+  if(!ok){ alert("Kunde inte starta session — kolla nätverk"); return; }
+  pushInAppAlert(`🎯 Session ${STATE.session?.sessionNum || "?"}/${SESSION_TARGET_TOTAL} startad — bara setups med score ≥${SESSION_SCORE_THRESHOLD} körs. Mål: ${SESSION_TARGET_WINRATE*100}% winrate på ${SESSION_TRADES} trades.`);
 }
 
 // Auto-fyll session: skapa watches för alla återstående trades automatiskt
@@ -4428,15 +4435,10 @@ function autoFillSession(){
   renderTradesPage();
 }
 
-function abortSession(){
+async function abortSession(){
   if(!confirm("Avbryta pågående session? Trades hittills sparas men sessionen markeras som avbruten.")) return;
-  if(STATE.session && STATE.session.trades.length > 0){
-    completeSession(true);
-  } else {
-    STATE.session = null;
-    saveSessionData();
-    renderTradesPage();
-  }
+  await backendAbortSession();
+  pushInAppAlert(`✗ Session avbruten`, 3000);
 }
 
 function recordSessionTrade(score, won, pnl, sym, side){
@@ -4587,22 +4589,17 @@ function calcLifetimeStats(){
 }
 
 function resetPaperAccount(){
-  STATE.paperAccount = {
-    startBalance: PAPER_START_BALANCE,
-    cash: PAPER_START_BALANCE,
-    realizedPnl: 0,
-    totalTrades: 0,
-    winningTrades: 0,
-    losingTrades: 0,
-    createdAt: Date.now(),
-  };
-  STATE.tradePositions = [];
-  STATE.tradeHistory = [];
-  STATE.tradeDecisions = [];
-  savePaperAccount();
-  saveTradeData(); // rensa persisterat också
-  renderTradesPage();
-  renderPaperBadge();
+  if(!confirm("Resetta hela paper-kontot?\n\nDetta nollställer balans, history, sessions, watches på SERVERN — påverkar alla dina devices.\n\nFortsätta?")) return;
+  // Använd backend-reset (single source of truth)
+  backendResetPaper().catch(e => alert("Reset-fel: "+e.message));
+  // Rensa även lokal cache
+  STATE.session = null;
+  STATE.sessionReports = [];
+  STATE.pendingWatches = [];
+  STATE.pendingConfirms = [];
+  saveSessionData();
+  saveWatchState();
+  pushInAppAlert(`🔄 Reset triggrad — synkar från server...`, 3000);
 }
 
 // Beräkna unrealized PnL från öppna positioner
@@ -4640,7 +4637,133 @@ function getSymbolType(sym){
   return "crypto";
 }
 
-// ─── Cross-device sync ───
+// ─── BACKEND TRADE-STATE (single source of truth) ───
+// Ersätter localStorage som primär källa. Frontend POST:ar actions, GET:ar state.
+const BACKEND_CLIENT_ID = "mike-private";
+let backendStateLastUpdated = 0;
+
+async function backendGetState(){
+  try {
+    const r = await fetch(`/api/trade-state?clientId=${BACKEND_CLIENT_ID}`);
+    if(!r.ok) return null;
+    const state = await r.json();
+    return state;
+  } catch(e){
+    console.warn("Backend state fetch-fel:", e);
+    return null;
+  }
+}
+
+async function backendApplyState(){
+  const state = await backendGetState();
+  if(!state) return false;
+  // Skydda mot stale data
+  if(state.updatedAt && state.updatedAt <= backendStateLastUpdated) return false;
+  backendStateLastUpdated = state.updatedAt || Date.now();
+  // Mappa till STATE
+  STATE.paperAccount = state.paperAccount;
+  STATE.tradePositions = state.positions || [];
+  STATE.tradeHistory = state.history || [];
+  STATE.tradeDecisions = state.decisions || [];
+  STATE.session = state.session || null;
+  STATE.sessionReports = state.sessionReports || [];
+  STATE.pendingWatches = state.pendingWatches || [];
+  STATE.pendingConfirms = state.pendingConfirms || [];
+  // Persistera lokalt också (cache för offline)
+  try {
+    localStorage.setItem("trading_paper_account", JSON.stringify(STATE.paperAccount));
+    localStorage.setItem("trading_history", JSON.stringify(STATE.tradeHistory));
+    localStorage.setItem("trading_positions", JSON.stringify(STATE.tradePositions));
+  } catch(_){}
+  // Uppdatera UI
+  if(typeof renderTradesPage === "function") renderTradesPage();
+  if(typeof renderPaperBadge === "function") renderPaperBadge();
+  return true;
+}
+
+async function backendResetPaper(){
+  const r = await fetch("/api/trade-state/reset", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({clientId: BACKEND_CLIENT_ID})
+  });
+  if(r.ok){
+    await backendApplyState();
+    pushInAppAlert(`✓ Paper-konto resetat på server — ren slate $10K`, 4000);
+  }
+  return r.ok;
+}
+
+async function backendOpenTrade(params){
+  const r = await fetch("/api/trade-state/open-trade", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({clientId: BACKEND_CLIENT_ID, ...params})
+  });
+  if(!r.ok) return null;
+  const result = await r.json();
+  if(result.ok){
+    backendStateLastUpdated = result.state.updatedAt || Date.now();
+    await backendApplyState();
+    return result.trade;
+  }
+  pushInAppAlert(`❌ ${result.error || "Trade-fel"}`, 5000);
+  return null;
+}
+
+async function backendStartSession(opts){
+  const r = await fetch("/api/trade-state/start-session", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({clientId: BACKEND_CLIENT_ID, ...(opts||{})})
+  });
+  if(r.ok){ await backendApplyState(); return true; }
+  return false;
+}
+
+async function backendAbortSession(){
+  const r = await fetch("/api/trade-state/abort-session", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({clientId: BACKEND_CLIENT_ID})
+  });
+  if(r.ok){ await backendApplyState(); return true; }
+  return false;
+}
+
+async function backendReconcile(){
+  const r = await fetch("/api/trade-state/reconcile", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({clientId: BACKEND_CLIENT_ID})
+  });
+  if(!r.ok) return null;
+  const result = await r.json();
+  if(result.before && result.after){
+    const diffTrades = result.after.totalTrades - result.before.totalTrades;
+    const diffPnl = (result.after.realizedPnl - result.before.realizedPnl).toFixed(2);
+    pushInAppAlert(`🔧 Reconciled: counters justerade · trades ${result.before.totalTrades}→${result.after.totalTrades} · PnL diff $${diffPnl}`, 6000);
+    await backendApplyState();
+  }
+  return result;
+}
+
+// Auto-pull från backend var 2s + på SSE-events
+function startBackendSync(){
+  // Initial pull
+  backendApplyState();
+  // Backup-poll
+  setInterval(backendApplyState, 2000);
+  // SSE för instant uppdateringar
+  try {
+    const es = new EventSource("/api/events");
+    es.addEventListener("trade-state-updated", ()=>{
+      backendApplyState();
+    });
+  } catch(_){}
+}
+
+// ─── Cross-device sync (LEGACY — behålls som fallback) ───
 // Speglar trade-state mellan dator och mobil via VPS-backend
 const SYNC_CLIENT_ID = "mike-private"; // Single-user just nu — multi-tenant senare via Supabase user-id
 const SYNC_DEBOUNCE_MS = 500;           // Snabb push (500ms) för att undvika race med pull-loop
@@ -4832,6 +4955,8 @@ function formatTfHuman(sec){
 
 // Simulera exekvering av en scalp-trade — drar från test-konto + auto-resolve efter timeframe
 function simulateExecuteTrade(sym, side, amount, timeframeSec){
+  // FRAMTIDA: routa via backend.openTrade — då räknar servern PnL mot riktigt Binance-pris
+  // Just nu: behåll legacy för bakåtkompatibilitet, men backend är truth via reconcile
   const acc = loadPaperAccount();
   if(amount > acc.cash){
     log_warn(`Inte nog cash i paper-account: $${acc.cash.toFixed(2)} < $${amount}`);
@@ -6385,10 +6510,11 @@ function wireTelegramSettings(){
 }
 
 function initApp(){
-  loadTradeData(); // ladda persisterad trade-historik först
-  loadSessionData(); // ladda session-state + reports
-  loadWatchState();  // ladda pågående watches + confirms
-  startSyncSubscription(); // cross-device sync (dator ↔ mobil)
+  loadTradeData(); // ladda persisterad trade-historik först (cache)
+  loadSessionData(); // ladda session-state + reports (cache)
+  loadWatchState();  // ladda pågående watches + confirms (cache)
+  startBackendSync(); // PRIMÄR: backend som single source of truth
+  startSyncSubscription(); // SEKUNDÄR: legacy localStorage cross-device
   checkKeysSetup();
   loadKeysIntoSettings();
   loadTelegramIntoSettings();
