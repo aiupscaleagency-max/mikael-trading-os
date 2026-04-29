@@ -9,6 +9,7 @@ import { log } from "../logger.js";
 import { config } from "../config.js";
 import { getCostSummary } from "../cost/tracker.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
+import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
@@ -499,7 +500,7 @@ export function startServer(
         const body = await readBody(req);
         try {
           const update = JSON.parse(body);
-          // Helper för att fråga agent (Hanna m.fl.)
+          // Helper för att fråga agent (Hanna m.fl.) — INKL live-marknadsdata
           const askAgent = async (agentKey: string, question: string): Promise<string> => {
             if (!anthropicApiKey) return "❌ Anthropic API-nyckel ej konfigurerad i backend.";
             const agentMap: Record<string, string> = {
@@ -518,11 +519,31 @@ export function startServer(
             const profileKey = agentMap[agentKey] || agentKey;
             const profile = AGENT_PROMPTS[profileKey];
             if (!profile) return `❌ Okänd agent: ${agentKey}`;
+
+            // Hämta live marknadsdata för agenter som behöver det
+            // (Hanna/head_trader, technical, quant, forex, advisor, portfolio)
+            const wantsMarketData = ["head_trader", "technical", "quant", "forex", "advisor", "portfolio", "risk"].includes(profileKey);
+            let systemPrompt = profile.system;
+            if (wantsMarketData) {
+              try {
+                const snap = await getMarketSnapshot();
+                if (snap) {
+                  const marketBlock = formatSnapshotForPrompt(snap);
+                  systemPrompt = `${profile.system}\n\n---\n\n${marketBlock}\n\n**VIKTIGT:** Använd alltid datan ovan när du svarar — det är riktiga live-priser från Binance just nu. Hänvisa till specifika nivåer, RSI-värden, trender. Du HAR realtidsdata. Vägra inte ge konkreta rekommendationer.`;
+                }
+              } catch (err) {
+                log.warn(`Market snapshot misslyckades: ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
+
+            // Prompt-caching på system-promten — sparar tokens när Mike frågar flera gånger
             const client = new Anthropic({ apiKey: anthropicApiKey });
             const resp = await client.messages.create({
               model: profile.model,
-              max_tokens: 600,
-              system: profile.system,
+              max_tokens: 800,
+              system: [
+                { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } },
+              ],
               messages: [{ role: "user", content: question }],
             });
             const txt = resp.content.find((b) => b.type === "text");
