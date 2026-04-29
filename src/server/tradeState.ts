@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { log } from "../logger.js";
-import { getActiveExecutor, getCurrentMode } from "./executors/registry.js";
+import { getExecutorForSymbol, getCurrentMode } from "./executors/registry.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Trade State Manager — SINGLE SOURCE OF TRUTH för all trade-state
@@ -250,10 +250,8 @@ export interface OpenTradeParams {
 }
 
 export async function openTrade(clientId: string, params: OpenTradeParams): Promise<{ ok: boolean; trade?: TradePosition; state: FullTradeState; error?: string }> {
-  // Använd active executor för att placera ordern
-  // Paper: simulerar och returnerar entry från Binance public-pris
-  // Binance: placerar riktig MARKET-order via Binance API
-  const executor = getActiveExecutor();
+  // Symbol-baserad routing: crypto → Binance/Paper, forex → Oanda
+  const executor = getExecutorForSymbol(params.sym);
   let executorResult;
   try {
     executorResult = await executor.openOrder({
@@ -457,9 +455,8 @@ export async function resolveTradeAgainstRealPrice(
   const trade = stateBefore.positions.find((p) => p.id === tradeId);
   if (!trade) return { ok: false, error: "Trade ej hittad", state: stateBefore };
 
-  // Använd active executor — paper, binance-testnet, eller binance-live
-  // ALLA exekverar via samma interface, bara routing skiljer sig
-  const executor = getActiveExecutor();
+  // Symbol-baserad routing: crypto → Binance/Paper, forex → Oanda
+  const executor = getExecutorForSymbol(trade.sym);
   try {
     const result = await executor.resolveOrder(tradeId, {
       entryPrice: trade.entry,

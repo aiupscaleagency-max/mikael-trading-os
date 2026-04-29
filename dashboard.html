@@ -1616,7 +1616,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       </div>
       <div>
         <label>💱 Oanda Token (forex) <span style="color:var(--dim);font-size:9px">VALFRI</span></label>
-        <input type="password" id="set-oanda-key" placeholder="lämna tom om ej forex" />
+        <input type="password" id="set-oanda-key" placeholder="från oanda.com → developers" />
       </div>
       <div>
         <label>💱 Oanda Account ID <span style="color:var(--dim);font-size:9px">VALFRI</span></label>
@@ -1624,7 +1624,11 @@ body.app-state-onboard .fc-panel{display:none !important}
       </div>
     </div>
     <button class="run-btn" id="save-keys-btn" style="margin-top:8px">Spara nycklar</button>
+    <button id="activate-oanda-btn" style="margin-top:8px;margin-left:8px;padding:8px 14px;background:#22c55e;border:none;color:#0a0e14;font-weight:700;border-radius:4px;cursor:pointer">💱 Aktivera Oanda forex</button>
     <span id="save-keys-status" style="margin-left:12px;font-size:11px"></span>
+    <div style="margin-top:6px;font-size:10px;color:var(--dim);line-height:1.5">
+      💡 <b>Forex via Oanda:</b> skapa gratis demo-konto på <a href="https://oanda.com" target="_blank" style="color:var(--cyan)">oanda.com</a> → Developers → Generate Token → kopiera. Account-ID hittas i konto-info. Demo (practice) är gratis och låter dig köra forex utan riktiga pengar.
+    </div>
 
     <h4 style="margin-top:18px">📱 Telegram-notiser</h4>
     <p style="font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:8px">Få push när session startar/slutar, A+ setup hittas, eller mål uppnått. Skapa bot via <a href="https://t.me/BotFather" target="_blank" style="color:var(--cyan)">@BotFather</a> → /newbot → kopiera token. Hämta chat-id via <a href="https://t.me/userinfobot" target="_blank" style="color:var(--cyan)">@userinfobot</a>.</p>
@@ -2601,10 +2605,13 @@ async function executeConfirmedTrade(c){
 // App-version som visas tydligt så Mike vet vilken kod han kör
 const APP_VERSION = "v2.4-backend-truth-2026-04-29";
 
-// Validera symbol stöds av nuvarande executor
+// Validera symbol stöds av nuvarande executor-konfig
 function isSymbolSupported(sym){
-  // Just nu (PaperExecutor mot Binance public): bara crypto-pairs som slutar på USDT
-  if(sym.includes("/")) return false; // forex som EUR/USD
+  // Forex: stöds bara om Oanda är configured
+  if(sym.includes("/")){
+    return !!window.OANDA_CONFIGURED;
+  }
+  // Crypto: BTCUSDT, ETHUSDT etc
   if(!sym.endsWith("USDT") && !sym.endsWith("USDC") && !sym.endsWith("BUSD")) return false;
   return true;
 }
@@ -4411,9 +4418,8 @@ async function startSession(){
 // Använder live Binance-data + simulerade specialist-vyer (Viktor/Tomas/Karin)
 async function selectBestSymbolsForBatch(count){
   const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","AVAXUSDT","DOGEUSDT","BNBUSDT","ADAUSDT","MATICUSDT","LINKUSDT","DOTUSDT","TRXUSDT"];
-  // FOREX: tillfälligt avaktiverat — Binance public API stöder INTE forex
-  // Aktiveras igen när Oanda-executor är byggd
-  const forexSyms = []; // ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/JPY","GBP/JPY"];
+  // FOREX: aktiveras automatiskt när Oanda är configured
+  const forexSyms = window.OANDA_CONFIGURED ? ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/JPY","GBP/JPY"] : [];
   const candidates = [];
   // 1. CRYPTO: ranka via live Binance-data — momentum + volym
   try {
@@ -6743,6 +6749,43 @@ async function saveKeysFromSettings(){
   checkKeysSetup();
 }
 
+// Wire Oanda-aktivering
+async function activateOanda(){
+  const apiToken = document.getElementById("set-oanda-key")?.value?.trim();
+  const accountId = document.getElementById("set-oanda-account")?.value?.trim();
+  if(!apiToken || !accountId){
+    alert("Fyll i Oanda Token + Account ID först");
+    return;
+  }
+  const status = document.getElementById("save-keys-status");
+  if(status){ status.textContent = "Aktiverar Oanda..."; status.style.color = "var(--label)"; }
+  try {
+    const r = await fetch("/api/executor/oanda", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({apiToken, accountId, practice: true})
+    });
+    const result = await r.json();
+    if(result.ok){
+      if(status){ status.textContent = "✓ "+result.details; status.style.color = "var(--green)"; }
+      pushInAppAlert(`💱 Oanda aktiverad: ${result.details}`, 5000);
+      window.OANDA_CONFIGURED = true;
+    } else {
+      if(status){ status.textContent = "❌ "+result.details; status.style.color = "var(--red)"; }
+    }
+  } catch(e){
+    if(status){ status.textContent = "❌ "+e.message; status.style.color = "var(--red)"; }
+  }
+}
+
+async function checkOandaStatus(){
+  try {
+    const r = await fetch("/api/executor/oanda/status");
+    const data = await r.json();
+    window.OANDA_CONFIGURED = !!data.configured;
+  } catch(_){}
+}
+
 // Wire Telegram-config UI
 function loadTelegramIntoSettings(){
   const cfg = loadTelegramConfig();
@@ -6814,6 +6857,8 @@ function initApp(){
   loadKeysIntoSettings();
   loadTelegramIntoSettings();
   wireTelegramSettings();
+  document.getElementById("activate-oanda-btn")?.addEventListener("click", activateOanda);
+  checkOandaStatus();
   document.getElementById("setup-banner-go")?.addEventListener("click", ()=>switchPage("settings"));
   document.getElementById("save-keys-btn")?.addEventListener("click", saveKeysFromSettings);
   fillSymbols();

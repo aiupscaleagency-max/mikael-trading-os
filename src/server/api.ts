@@ -11,7 +11,7 @@ import { getCostSummary } from "../cost/tracker.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
 import * as tradeState from "./tradeState.js";
-import { switchMode as switchExecutorMode, getCurrentMode as getExecutorMode, getActiveExecutor } from "./executors/registry.js";
+import { switchMode as switchExecutorMode, getCurrentMode as getExecutorMode, getActiveExecutor, setupOanda, hasForexExecutor } from "./executors/registry.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
@@ -474,6 +474,19 @@ export function startServer(
         const result = await switchExecutorMode(params.mode, params);
         if (result.ok) broadcastEvent("executor-mode-changed", { mode: params.mode });
         json(res, result);
+        return;
+      }
+      // Oanda-setup för forex (kan köras parallellt med Binance/Paper för crypto)
+      if (url.pathname === "/api/executor/oanda" && method === "POST") {
+        const body = await readBody(req);
+        const params = JSON.parse(body) as { apiToken: string; accountId: string; practice?: boolean };
+        const result = await setupOanda(params);
+        if (result.ok) broadcastEvent("oanda-configured", { ok: true });
+        json(res, result);
+        return;
+      }
+      if (url.pathname === "/api/executor/oanda/status" && method === "GET") {
+        json(res, { configured: hasForexExecutor() });
         return;
       }
 
