@@ -10,8 +10,6 @@ import { config } from "../config.js";
 import { getCostSummary } from "../cost/tracker.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
-import * as tradeState from "./tradeState.js";
-import { switchMode as switchExecutorMode, getCurrentMode as getExecutorMode, getActiveExecutor, setupOanda, setupBlofin, hasForexExecutor } from "./executors/registry.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
@@ -433,135 +431,24 @@ export function startServer(
       }
 
       // ── Dashboard HTML ──
-      // Cache-busting för dashboard (annars cachar browsers gamla buggiga version)
-      const noCacheHeaders = {
-        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-        "Pragma": "no-cache",
-        "Expires": "0",
-      };
       // Servera root-dashboard.html (single source of truth) framför gamla ui/index.html
       if ((url.pathname === "/" || url.pathname === "/dashboard.html") && method === "GET") {
         try {
           const rootDashboard = path.resolve(import.meta.dirname, "../../dashboard.html");
           const html = await fs.readFile(rootDashboard, "utf8");
-          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...noCacheHeaders });
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
           res.end(html);
         } catch {
           // Fallback: gamla ui/index.html
           try {
             const html = await fs.readFile(path.join(uiDir, "index.html"), "utf8");
-            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...noCacheHeaders });
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
             res.end(html);
           } catch {
             res.writeHead(500);
             res.end("Dashboard HTML not found");
           }
         }
-        return;
-      }
-
-      // ── EXECUTOR MODE API (TEST/PROPOSE/LIVE — samma kod-väg, olika executor) ──
-      if (url.pathname === "/api/executor/mode" && method === "GET") {
-        const mode = getExecutorMode();
-        const executor = getActiveExecutor();
-        const hc = await executor.healthCheck();
-        json(res, { mode, name: executor.name, health: hc });
-        return;
-      }
-      if (url.pathname === "/api/executor/mode" && method === "POST") {
-        const body = await readBody(req);
-        const params = JSON.parse(body) as { mode: "paper" | "binance-testnet" | "binance-live"; binanceApiKey?: string; binanceApiSecret?: string };
-        const result = await switchExecutorMode(params.mode, params);
-        if (result.ok) broadcastEvent("executor-mode-changed", { mode: params.mode });
-        json(res, result);
-        return;
-      }
-      // Oanda-setup för forex (kan köras parallellt med Binance/Paper för crypto)
-      if (url.pathname === "/api/executor/oanda" && method === "POST") {
-        const body = await readBody(req);
-        const params = JSON.parse(body) as { apiToken: string; accountId: string; practice?: boolean };
-        const result = await setupOanda(params);
-        if (result.ok) broadcastEvent("oanda-configured", { ok: true });
-        json(res, result);
-        return;
-      }
-      if (url.pathname === "/api/executor/oanda/status" && method === "GET") {
-        json(res, { configured: hasForexExecutor() });
-        return;
-      }
-      // Blofin-setup (alternativ broker till Binance)
-      if (url.pathname === "/api/executor/blofin" && method === "POST") {
-        const body = await readBody(req);
-        const params = JSON.parse(body) as { apiKey: string; apiSecret: string; passphrase: string; testnet?: boolean };
-        const result = await setupBlofin(params);
-        if (result.ok) broadcastEvent("executor-mode-changed", { mode: "blofin" });
-        json(res, result);
-        return;
-      }
-
-      // ── TRADE STATE API (single source of truth — ersätter localStorage gradvis) ──
-      // GET /api/trade-state?clientId=mike-private → full state
-      if (url.pathname === "/api/trade-state" && method === "GET") {
-        const clientId = url.searchParams.get("clientId") || "mike-private";
-        const state = await tradeState.getState(clientId);
-        json(res, state);
-        return;
-      }
-      // POST /api/trade-state/reset → wipe paper-account
-      if (url.pathname === "/api/trade-state/reset" && method === "POST") {
-        const body = await readBody(req);
-        const { clientId } = JSON.parse(body || "{}") as { clientId?: string };
-        const state = await tradeState.resetPaperAccount(clientId || "mike-private");
-        broadcastEvent("trade-state-updated", { clientId: clientId || "mike-private", action: "reset" });
-        json(res, { ok: true, state });
-        return;
-      }
-      // POST /api/trade-state/open-trade → öppna ny trade
-      if (url.pathname === "/api/trade-state/open-trade" && method === "POST") {
-        const body = await readBody(req);
-        const params = JSON.parse(body) as { clientId?: string } & tradeState.OpenTradeParams;
-        const clientId = params.clientId || "mike-private";
-        const result = await tradeState.openTrade(clientId, params);
-        if (result.ok) broadcastEvent("trade-state-updated", { clientId, action: "open-trade", tradeId: result.trade?.id });
-        json(res, result);
-        return;
-      }
-      // POST /api/trade-state/resolve-trade → stäng trade med exit + pnl
-      if (url.pathname === "/api/trade-state/resolve-trade" && method === "POST") {
-        const body = await readBody(req);
-        const params = JSON.parse(body) as { clientId?: string } & tradeState.ResolveTradeParams;
-        const clientId = params.clientId || "mike-private";
-        const result = await tradeState.resolveTrade(clientId, params);
-        if (result.ok) broadcastEvent("trade-state-updated", { clientId, action: "resolve-trade" });
-        json(res, result);
-        return;
-      }
-      // POST /api/trade-state/start-session
-      if (url.pathname === "/api/trade-state/start-session" && method === "POST") {
-        const body = await readBody(req);
-        const params = JSON.parse(body || "{}") as { clientId?: string; totalSessions?: number; totalTrades?: number; scoreThreshold?: number };
-        const clientId = params.clientId || "mike-private";
-        const result = await tradeState.startSession(clientId, params);
-        if (result.ok) broadcastEvent("trade-state-updated", { clientId, action: "start-session" });
-        json(res, result);
-        return;
-      }
-      // POST /api/trade-state/abort-session
-      if (url.pathname === "/api/trade-state/abort-session" && method === "POST") {
-        const body = await readBody(req);
-        const { clientId } = JSON.parse(body || "{}") as { clientId?: string };
-        const result = await tradeState.abortSession(clientId || "mike-private");
-        broadcastEvent("trade-state-updated", { clientId: clientId || "mike-private", action: "abort-session" });
-        json(res, result);
-        return;
-      }
-      // POST /api/trade-state/reconcile → räkna om counters från history (städar inkonsistenser)
-      if (url.pathname === "/api/trade-state/reconcile" && method === "POST") {
-        const body = await readBody(req);
-        const { clientId } = JSON.parse(body || "{}") as { clientId?: string };
-        const result = await tradeState.reconcile(clientId || "mike-private");
-        broadcastEvent("trade-state-updated", { clientId: clientId || "mike-private", action: "reconcile" });
-        json(res, result);
         return;
       }
 
@@ -756,16 +643,6 @@ export function startServer(
         log.error(`Telegram-webhook setup-fel: ${err instanceof Error ? err.message : String(err)}`);
       });
     }
-    // Starta server-side scheduler för auto-resolve mot riktiga Binance-priser
-    // OBS: bara aktiva clients (mike-private just nu) — multi-tenant senare
-    let cachedClients: string[] = ["mike-private"];
-    tradeState.listClients().then((c) => {
-      if (c.length) cachedClients = c;
-    });
-    setInterval(() => {
-      tradeState.listClients().then((c) => { if (c.length) cachedClients = c; });
-    }, 60000);
-    tradeState.startScalpScheduler(() => cachedClients);
   });
 
   return server;

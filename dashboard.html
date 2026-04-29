@@ -1300,11 +1300,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         <span class="cur-price" id="cur-price">--</span>
         <span id="cur-chg" class="ch">--</span>
         <span id="data-source-indicator" style="margin-left:auto;font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px"><span style="color:var(--label)">○</span> Demo (simulerade priser)</span>
-        <span id="sync-indicator" title="Cross-device sync — klicka för tvinga refresh från server" onclick="forceSyncFromServer()" style="font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px;margin-left:10px;cursor:pointer;user-select:none"><span style="color:var(--label)">○</span> Sync init...</span>
-        <button onclick="runHealthCheck()" title="Kör system-health-check (snabb)" style="margin-left:8px;padding:3px 8px;background:transparent;border:1px solid var(--border);color:var(--label);font-size:10px;font-weight:700;border-radius:3px;cursor:pointer">🏥 Test</button>
-        <button onclick="runPreLiveVerification()" title="End-to-end verifiering innan riktiga pengar (35s)" style="margin-left:4px;padding:3px 8px;background:#22c55e;border:none;color:#0a0e14;font-size:10px;font-weight:700;border-radius:3px;cursor:pointer">🧪 Pre-Live</button>
-        <button onclick="forceCleanResync()" title="Rensa lokal cache + tvinga server-sync" style="margin-left:4px;padding:3px 8px;background:transparent;border:1px solid #f59e0b;color:#f59e0b;font-size:10px;font-weight:700;border-radius:3px;cursor:pointer">🧹 Resync</button>
-        <span id="app-version" title="App-version — om du ser gammal version, hard-refresh" style="margin-left:6px;padding:2px 6px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);color:#22c55e;font-size:9px;font-weight:700;border-radius:2px;font-family:'SF Mono',monospace">v2.4</span>
+        <span id="sync-indicator" title="Cross-device sync mellan dator + mobil — klicka för tvinga refresh från server" onclick="forceSyncFromServer()" style="font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px;margin-left:10px;cursor:pointer;user-select:none"><span style="color:var(--label)">○</span> Sync init...</span>
         <div class="tf-group" id="tf-group">
           <button data-tf="1m">1m</button>
           <button data-tf="5m">5m</button>
@@ -1504,7 +1500,7 @@ body.app-state-onboard .fc-panel{display:none !important}
           <div class="pc-cash" id="pc-cash">$10,000.00</div>
         </div>
         <div class="pc-col">
-          <div class="pc-lbl">VINSTER / FÖRLUSTER</div>
+          <div class="pc-lbl">TRADES (W/L)</div>
           <div class="pc-trades" id="pc-trades">0/0</div>
         </div>
         <div class="pc-col">
@@ -1537,15 +1533,9 @@ body.app-state-onboard .fc-panel{display:none !important}
       <div id="trade-positions-table"></div>
     </div>
 
-    <div class="card collapsible" id="decisions-card">
-      <h3 onclick="toggleCollapse('decisions-card')" style="cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px">
-        <span class="collapse-arrow" id="decisions-arrow">▶</span>
-        🤖 Hannas beslut (senaste)
-        <span id="decisions-count" class="tag" style="margin-left:auto;color:var(--label);font-weight:500;font-size:10px">klicka för att visa</span>
-      </h3>
-      <div id="decisions-body" style="display:none">
-        <div id="trade-decisions-table"></div>
-      </div>
+    <div class="card">
+      <h3>🤖 Hannas beslut (senaste)</h3>
+      <div id="trade-decisions-table"></div>
     </div>
 
     <!-- Statistik sedan start -->
@@ -1555,7 +1545,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
     <div class="card" id="audit-card">
-      <h3>🔍 Audit Trail <button onclick="backendReconcile()" style="margin-left:8px;padding:4px 10px;background:var(--cyan);color:#000;border:none;border-radius:3px;font-size:10px;font-weight:700;cursor:pointer">🔧 Reconcile</button> <span id="audit-check" class="tag" style="margin-left:auto;font-weight:600;font-size:10px"></span></h3>
+      <h3>🔍 Audit Trail <span id="audit-check" class="tag" style="margin-left:auto;font-weight:600;font-size:10px"></span></h3>
       <div id="audit-summary" style="font-size:11px;color:var(--label);margin-bottom:10px;line-height:1.5"></div>
       <div id="audit-table" style="max-height:400px;overflow-y:auto"></div>
     </div>
@@ -1622,7 +1612,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       </div>
       <div>
         <label>💱 Oanda Token (forex) <span style="color:var(--dim);font-size:9px">VALFRI</span></label>
-        <input type="password" id="set-oanda-key" placeholder="från oanda.com → developers" />
+        <input type="password" id="set-oanda-key" placeholder="lämna tom om ej forex" />
       </div>
       <div>
         <label>💱 Oanda Account ID <span style="color:var(--dim);font-size:9px">VALFRI</span></label>
@@ -1630,11 +1620,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       </div>
     </div>
     <button class="run-btn" id="save-keys-btn" style="margin-top:8px">Spara nycklar</button>
-    <button id="activate-oanda-btn" style="margin-top:8px;margin-left:8px;padding:8px 14px;background:#22c55e;border:none;color:#0a0e14;font-weight:700;border-radius:4px;cursor:pointer">💱 Aktivera Oanda forex</button>
     <span id="save-keys-status" style="margin-left:12px;font-size:11px"></span>
-    <div style="margin-top:6px;font-size:10px;color:var(--dim);line-height:1.5">
-      💡 <b>Forex via Oanda:</b> skapa gratis demo-konto på <a href="https://oanda.com" target="_blank" style="color:var(--cyan)">oanda.com</a> → Developers → Generate Token → kopiera. Account-ID hittas i konto-info. Demo (practice) är gratis och låter dig köra forex utan riktiga pengar.
-    </div>
 
     <h4 style="margin-top:18px">📱 Telegram-notiser</h4>
     <p style="font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:8px">Få push när session startar/slutar, A+ setup hittas, eller mål uppnått. Skapa bot via <a href="https://t.me/BotFather" target="_blank" style="color:var(--cyan)">@BotFather</a> → /newbot → kopiera token. Hämta chat-id via <a href="https://t.me/userinfobot" target="_blank" style="color:var(--cyan)">@userinfobot</a>.</p>
@@ -1831,54 +1817,8 @@ const STATE = {
 // Session Mode — defaults
 const SESSION_TARGET_TOTAL = 6;     // 6 sessioner
 const SESSION_TRADES = 5;            // 5 trades per session
-const SESSION_SCORE_THRESHOLD = 9;   // ≥9 = 82% förväntat (höj till 10 för 88%)
-const SESSION_TARGET_WINRATE = 0.80; // Mikes krav: minst 80% winrate
-
-// Strikt risk/reward — kräv minst 1:2 (TP minst 2x SL)
-const REQUIRED_RR_RATIO = 2.0;
-
-// Time-of-day-filter — UTC-timmar att undvika (öppningstid hög volatilitet)
-const AVOID_HOURS_UTC = [9, 10]; // 9:30-10:00 UTC öppning
-
-// Symbol-blacklist — om N losses i rad → pause i X minuter
-const SYMBOL_LOSS_STREAK_LIMIT = 2;
-const SYMBOL_BLACKLIST_MIN = 60; // 1 timme blacklist
-const symbolBlacklist = new Map(); // sym → expiresAt timestamp
-
-function isSymbolBlacklisted(sym){
-  const exp = symbolBlacklist.get(sym);
-  if(!exp) return false;
-  if(Date.now() >= exp){ symbolBlacklist.delete(sym); return false; }
-  return true;
-}
-
-function trackLossStreak(sym, won){
-  if(!window._lossStreak) window._lossStreak = {};
-  if(won){ window._lossStreak[sym] = 0; return; }
-  window._lossStreak[sym] = (window._lossStreak[sym] || 0) + 1;
-  if(window._lossStreak[sym] >= SYMBOL_LOSS_STREAK_LIMIT){
-    symbolBlacklist.set(sym, Date.now() + SYMBOL_BLACKLIST_MIN * 60 * 1000);
-    window._lossStreak[sym] = 0;
-    pushInAppAlert(`⛔ ${sym} blacklistad i ${SYMBOL_BLACKLIST_MIN} min (${SYMBOL_LOSS_STREAK_LIMIT} förluster i rad)`, 6000);
-  }
-}
-
-// Time-filter: ska vi pausa just nu?
-function isHighVolHour(){
-  const h = new Date().getUTCHours();
-  return AVOID_HOURS_UTC.includes(h);
-}
-
-// Confluence-boost: kollar om flera setup-typer matchar samtidigt på samma sym
-// (returnerar bonus-poäng om ja)
-function calcConfluenceBoost(symbol, history){
-  const recentForSym = (history || []).filter(h => h.sym === symbol).slice(0, 10);
-  if(recentForSym.length < 3) return 0;
-  // Räkna unika setup-typer som vunnit för denna sym
-  const winningSetups = new Set(recentForSym.filter(h => (h.pnl||0) > 0).map(h => h.setupType));
-  // Om 2+ olika setups vunnit historiskt = symbol funkar bra för flera strategier
-  return winningSetups.size >= 2 ? 1 : 0;
-}
+const SESSION_SCORE_THRESHOLD = 8;   // Bara A+ setups (score ≥8) under session
+const SESSION_TARGET_WINRATE = 0.75; // Mål: 75% winrate
 
 // ─── Candlestick pattern-detection ───
 // Läser senaste candles och letar efter klassiska pattern (Tomas-simulering på riktig data)
@@ -2284,21 +2224,6 @@ function generateConfluenceAnalysis(side, sym){
     total += 1;
   }
 
-  // 7. CONFLUENCE-BOOST — flera vinnande setups historiskt på samma symbol
-  if(sym){
-    const boost = calcConfluenceBoost(sym, STATE.tradeHistory);
-    if(boost > 0){
-      factors.push({label:"Multi-strategi-confluence", points:boost, detail:`${sym} har vunnit på flera setup-typer historiskt`, positive:true});
-      total += boost;
-    }
-  }
-
-  // 8. TIME-FILTER — öppningstid hög volatilitet = penalty
-  if(isHighVolHour()){
-    factors.push({label:"⚠ Hög-vol-timme (9-10 UTC)", points:-1, detail:"Öppningstid svår att läsa", positive:false});
-    total -= 1;
-  }
-
   // Skala till 1-10 (bas 5 + total justering)
   const score = Math.max(1, Math.min(10, 5 + total));
   return { score, factors, totalAdjustment: total };
@@ -2528,21 +2453,17 @@ function scanWatches(){
       const entry = STATE.livePrices[w.sym] ?? BASE_PRICES[w.sym] ?? 100;
       const winrate = scoreToWinrate(score);
       const histMatch = calcHistoricalMatch(setupType, score);
-      // R:R 1:2 — SL 1.2%, TP 2.4% = exakt R:R 2.0 (Mikes krav)
-      const slPct = 0.012;
-      const tpPct = slPct * REQUIRED_RR_RATIO; // 2.4%
       const confirm = {
         id: "conf-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
         watchId: w.id,
         sym: w.sym, side: w.side, amount: w.amount, timeframeSec: w.timeframeSec,
         score, setupType, setupLabel: setupMeta.label,
-        factors: analysis.factors,
-        expectedWinrate: winrate,
-        historicalMatch: histMatch,
+        factors: analysis.factors,           // Transparent breakdown av WHY score är X
+        expectedWinrate: winrate,            // 0.75 = 75% historiskt vid denna score
+        historicalMatch: histMatch,          // Mikes egen data: liknande setups
         entry,
-        suggestedSL: w.side==='BUY' ? entry * (1-slPct) : entry * (1+slPct),
-        suggestedTP: w.side==='BUY' ? entry * (1+tpPct) : entry * (1-tpPct),
-        rrRatio: REQUIRED_RR_RATIO,
+        suggestedSL: w.side==='BUY' ? entry * 0.988 : entry * 1.012,  // 1.2% SL
+        suggestedTP: w.side==='BUY' ? entry * 1.024 : entry * 0.976,  // 2.4% TP
         attemptCount: w.attempts,
         createdAt: now,
         expiresAt: now + CONFIRM_TIMEOUT_MS,
@@ -2603,21 +2524,16 @@ function scanConfirms(){
   STATE.pendingConfirms = remaining;
 }
 
-// Användaren bekräftar setup → execute via backend
-async function confirmSetup(confirmId){
+// Användaren bekräftar setup → execute
+function confirmSetup(confirmId){
   ensureWatchState();
   const idx = STATE.pendingConfirms.findIndex(c => c.id === confirmId);
-  if(idx === -1){
-    pushInAppAlert(`⚠ Setup hittas inte (ID: ${confirmId.slice(0,12)}...)`, 4000);
-    return;
-  }
+  if(idx === -1) return;
   const c = STATE.pendingConfirms[idx];
-  // Ta bort från pending FÖRST så Mike inte kan dubbel-klicka
   STATE.pendingConfirms.splice(idx, 1);
   saveWatchState();
-  renderTradesPage();
-  // Execute via backend (server räknar PnL/balance + auto-resolve mot Binance)
-  await executeConfirmedTrade(c);
+  // Execute med pre-filled score + setupType (skip filter = inte hoppas över)
+  executeConfirmedTrade(c);
 }
 
 function rejectSetup(confirmId){
@@ -2631,98 +2547,64 @@ function rejectSetup(confirmId){
   renderTradesPage();
 }
 
-// Execute pre-confirmed trade — skickar till BACKEND (single source of truth)
-async function executeConfirmedTrade(c){
-  const tf = c.timeframeSec || SCALP_DEFAULT_SEC;
-  // Verifiera att backendOpenTrade existerar (annars kör vi gammal cached JS)
-  if(typeof backendOpenTrade !== "function"){
-    alert("⚠ Du kör en gammal version av appen. Hard-refresha (Cmd+Shift+R) och försök igen.\n\nDina trades skulle annars hamna i lokal cache utan att synkas till server.");
+// Execute pre-confirmed trade — bypass session-filter (vi vet redan score är ≥ threshold)
+function executeConfirmedTrade(c){
+  const acc = loadPaperAccount();
+  if(c.amount > acc.cash){
+    pushInAppAlert(`❌ Inte nog cash: $${acc.cash.toFixed(2)} < $${c.amount}`, 5000);
     return;
   }
-  // Skicka till backend så server räknar PnL/balance
-  // Backend kommer auto-resolva mot riktigt Binance-pris vid expiresAt
-  const trade = await backendOpenTrade({
-    sym: c.sym,
-    side: c.side,
-    amount: c.amount,
+  const tf = c.timeframeSec || SCALP_DEFAULT_SEC;
+  const payoutMult = randomPayout();
+  const trade = {
+    id: "trade-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
+    sym: c.sym, side: c.side, amount: c.amount, entry: c.entry,
+    qty: c.amount / c.entry,
+    openedAt: Date.now(),
+    expiresAt: Date.now() + tf * 1000,
     timeframeSec: tf,
-    entry: c.entry,
+    payoutMultiplier: payoutMult,
+    payoutPct: Math.round((payoutMult - 1) * 100),
     score: c.score,
     setupType: c.setupType,
     setupLabel: c.setupLabel,
-    source: "watch-confirm",
-    confirmed: true,
+    suggestedSL: c.suggestedSL,
+    suggestedTP: c.suggestedTP,
     inSession: !!STATE.session,
-    reasoning: `Bekräftad A+ setup · ${c.setupLabel} · score ${c.score}/10`
+    sessionNum: STATE.session?.sessionNum,
+    confirmed: true,
+    status: "open",
+    type: "scalp",
+    source: "Watch-confirm"
+  };
+  if(!STATE.tradePositions) STATE.tradePositions = [];
+  if(!STATE.tradeDecisions) STATE.tradeDecisions = [];
+  STATE.tradePositions.push(trade);
+  STATE.tradeDecisions.unshift({
+    timestamp: Date.now(),
+    action: c.side, sym: c.sym, amount: c.amount,
+    score: c.score, setupType: c.setupType,
+    timeframeSec: tf,
+    reasoning: `Bekräftad A+ setup · ${c.setupLabel} · score ${c.score}/10`,
+    source: "watch-confirm"
   });
-  if(trade){
-    pushInAppAlert(`✓ Order placerad PÅ SERVER: ${c.sym} ${c.side==='BUY'?'LONG':'SHORT'} $${c.amount} · score ${c.score}/10`, 5000);
-    // Verifiera att trade faktiskt finns i backend efter 1s
-    setTimeout(async ()=>{
-      const state = await backendGetState();
-      const found = state?.positions?.find(p => p.id === trade.id) || state?.history?.find(h => h.id === trade.id);
-      if(!found){
-        console.error("[verify] Trade hittas inte på server efter 1s:", trade.id);
-        pushInAppAlert(`⚠ Varning: trade kanske inte sparades på server (${c.sym})`, 8000);
-      } else {
-        console.log("[verify] Trade bekräftad på server:", trade.id);
-      }
-    }, 1500);
-  } else {
-    pushInAppAlert(`❌ Kunde inte placera trade — kolla cash + nätverk`, 5000);
-  }
-}
-
-// App-version som visas tydligt så Mike vet vilken kod han kör
-const APP_VERSION = "v2.4-backend-truth-2026-04-29";
-
-// Validera symbol stöds av nuvarande executor-konfig
-function isSymbolSupported(sym){
-  // Forex: stöds bara om Oanda är configured
-  if(sym.includes("/")){
-    return !!window.OANDA_CONFIGURED;
-  }
-  // Crypto: BTCUSDT, ETHUSDT etc
-  if(!sym.endsWith("USDT") && !sym.endsWith("USDC") && !sym.endsWith("BUSD")) return false;
-  return true;
+  acc.cash -= c.amount;
+  acc.totalTrades++;
+  savePaperAccount();
+  saveTradeData();
+  renderTradesPage();
+  renderPaperBadge();
+  pushInAppAlert(`✓ Order placerad: ${c.sym} ${c.side==='BUY'?'LONG':'SHORT'} $${c.amount} · score ${c.score}/10`, 5000);
 }
 
 // Smart trade-router — väljer watch eller direkt-execute beroende på session
 function requestTradeExecution(sym, side, amount, timeframeSec){
-  // Validering: forex stöds inte än (Oanda-executor kommer)
-  if(!isSymbolSupported(sym)){
-    pushInAppAlert(`⚠ ${sym} stöds inte än (forex kräver Oanda-executor som byggs i framtid). Använd crypto-pairs som BTCUSDT, ETHUSDT.`, 6000);
-    return null;
-  }
-  // Symbol-blacklist (efter 2 förluster i rad)
-  if(isSymbolBlacklisted(sym)){
-    const exp = symbolBlacklist.get(sym);
-    const minLeft = Math.ceil((exp - Date.now()) / 60000);
-    pushInAppAlert(`⛔ ${sym} blacklistad i ${minLeft} min till (för många förluster i rad). Vänta eller välj annan symbol.`, 6000);
-    return null;
-  }
   // Session aktiv → använd watch-mode (bevakning + bekräftelse)
   if(STATE.session){
     return createWatch(sym, side, amount, timeframeSec);
   }
-  // Ingen session → direkt execute via BACKEND (riktigt Binance-pris vid resolve)
-  const entry = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
-  // KRITISKT: skicka inSession-info så backend räknar in den i sessionen
-  backendOpenTrade({
-    sym, side, amount,
-    timeframeSec: timeframeSec || SCALP_DEFAULT_SEC,
-    entry,
-    score: 7,
-    setupType: "manual",
-    setupLabel: "Manuell",
-    source: "frontend-direct",
-    confirmed: true,
-    inSession: !!STATE.session,
-    // Backend läser sessionNum själv från sin state, men vi skickar det som info
-  }).then(t => {
-    if(t) pushInAppAlert(`✓ Trade öppnad på server: ${sym} ${side==='BUY'?'LONG':'SHORT'} $${amount} · resolveras mot riktigt Binance-pris`, 4000);
-  });
-  return { id: "pending-"+Date.now(), sym, side, amount };
+  // Ingen session → direkt execute som tidigare
+  return simulateExecuteTrade(sym, side, amount, timeframeSec);
 }
 
 /* ======================================================================
@@ -4344,12 +4226,10 @@ function simulateTeamResponse(instr){
 
   // Frågor / utmaningar (prefix-matchning för böjda former)
   if(/(välj|bestäm|plock|kör för mig|lägg|ta\s)/.test(i)){
-    // Bygg symboluniversum — agenterna föredrar att blanda när användaren inte specificerat
+    // Välj symboluniversum baserat på user-intent (forex eller crypto)
     const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT"];
     const forexSyms = ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/GBP","EUR/JPY","GBP/JPY"];
-    const explicitCrypto = /\b(crypto|krypto|btc|eth|sol)\b/.test(i) && !isForex;
-    // Agenterna kommer överens om bästa läge: blandning när inget explicit val
-    const symbols = isForex ? forexSyms : (explicitCrypto ? cryptoSyms : [...cryptoSyms, ...forexSyms]);
+    const symbols = isForex ? forexSyms : cryptoSyms;
 
     const trades = [];
     const usedSyms = new Set();
@@ -4481,154 +4361,82 @@ function loadSessionData(){
   } catch(_){}
 }
 
-async function startSession(){
-  // Routa via backend (single source of truth)
-  const ok = await backendStartSession({
+function startSession(){
+  const completed = (STATE.sessionReports || []).length;
+  STATE.session = {
+    sessionNum: completed + 1,
     totalSessions: SESSION_TARGET_TOTAL,
+    tradeNum: 0,
     totalTrades: SESSION_TRADES,
-    scoreThreshold: SESSION_SCORE_THRESHOLD
-  });
-  if(!ok){ alert("Kunde inte starta session — kolla nätverk"); return; }
-  pushInAppAlert(`🎯 Session ${STATE.session?.sessionNum || "?"}/${SESSION_TARGET_TOTAL} startad — bara setups med score ≥${SESSION_SCORE_THRESHOLD} körs. Mål: ${SESSION_TARGET_WINRATE*100}% winrate på ${SESSION_TRADES} trades.`);
-}
-
-// Agent-driven symbol-selektor — agenterna kommer överens om vilka som passar bäst
-// Använder live Binance-data + simulerade specialist-vyer (Viktor/Tomas/Karin)
-async function selectBestSymbolsForBatch(count){
-  // CRYPTO + Binance-forex (EURUSDT, GBPUSDT, AUDUSDT) — samma API, samma keys
-  const cryptoSyms = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","AVAXUSDT","DOGEUSDT","BNBUSDT","ADAUSDT","MATICUSDT","LINKUSDT","DOTUSDT","TRXUSDT",
-    "EURUSDT","GBPUSDT","AUDUSDT" // Binance forex-light (samma keys)
-  ];
-  // FOREX (cross-pairs): kräver Oanda — EUR/JPY, GBP/JPY, USD/CHF etc
-  const forexSyms = window.OANDA_CONFIGURED ? ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/JPY","GBP/JPY"] : [];
-  const candidates = [];
-  // 1. CRYPTO: ranka via live Binance-data — momentum + volym
-  try {
-    const r = await fetch(`/api/binance/prices?symbols=${cryptoSyms.join(",")}`);
-    if(r.ok){
-      const data = await r.json();
-      // Försök även hämta 24h ticker för volume + change
-      const r24 = await fetch("https://api.binance.com/api/v3/ticker/24hr");
-      if(r24.ok){
-        const tickers = await r24.json();
-        for(const sym of cryptoSyms){
-          const t = tickers.find(x => x.symbol === sym);
-          if(!t) continue;
-          const change = parseFloat(t.priceChangePercent);
-          const volume = parseFloat(t.quoteVolume);
-          const absMove = Math.abs(change);
-          // Score: stark trend + bra volym = bra trade
-          const tradeScore = absMove * 1.0 + Math.log10(volume / 1e8);
-          const side = change > 0 ? "BUY" : "SELL";
-          candidates.push({
-            sym, side, type: "crypto",
-            tradeScore, change, volume,
-            reason: `Tomas: ${absMove > 3 ? "stark trend" : "moderat momentum"} 24h ${change>0?'+':''}${change.toFixed(1)}%, volym $${(volume/1e9).toFixed(1)}B`
-          });
-        }
-      }
-    }
-  } catch(e){ console.warn("Binance ticker-fel:", e); }
-
-  // 2. FOREX: simulerad agent-vy från Viktor (DXY-läge + räntedifferentialer)
-  // I framtiden ersätts med Oanda live-data
-  const forexCandidates = forexSyms.map((sym, idx) => {
-    const dxyTrend = Math.random(); // simulerad
-    const carry = Math.random();
-    const tradeScore = (dxyTrend + carry) * 2; // 0-4 range
-    const side = Math.random() > 0.5 ? "BUY" : "SELL";
-    const reasons = [
-      `Viktor: ${sym} DXY-divergens, räntespread positiv`,
-      `Viktor: ${sym} carry-trade aktiv, +2.4% APY`,
-      `Viktor: ${sym} centralbanksdivergens, tekniskt break`,
-      `Viktor: ${sym} risk-on-flöde efter CPI-data`
-    ];
-    return {
-      sym, side, type: "forex",
-      tradeScore,
-      reason: reasons[idx % reasons.length]
-    };
-  });
-  candidates.push(...forexCandidates);
-
-  // 3. FILTRERA blacklistade symboler (efter loss-streaks)
-  const filtered = candidates.filter(c => !isSymbolBlacklisted(c.sym));
-  // 4. AGENT-CONSENSUS: ranka all och plocka top N (blandning bestäms av marknaden)
-  filtered.sort((a, b) => b.tradeScore - a.tradeScore);
-  const selected = filtered.slice(0, count);
-  // Logga agenternas resonemang
-  console.log("[agent-select]", selected);
-  return selected;
+    wins: 0,
+    losses: 0,
+    scoreThreshold: SESSION_SCORE_THRESHOLD,
+    startedAt: Date.now(),
+    trades: [],
+    skipped: 0
+  };
+  saveSessionData();
+  renderTradesPage();
+  // Toast
+  pushInAppAlert(`🎯 Session ${STATE.session.sessionNum}/${SESSION_TARGET_TOTAL} startad — bara setups med score ≥${SESSION_SCORE_THRESHOLD} körs. Mål: ${SESSION_TARGET_WINRATE*100}% winrate på ${SESSION_TRADES} trades.`);
 }
 
 // Auto-fyll session: skapa watches för alla återstående trades automatiskt
-// Agenterna analyserar marknaden och VÄLJER — ingen hardcoded mix
-async function autoFillSession(){
+// Auto-confirm = trades exekveras direkt utan bekräftelse (men med säkerhetsregler)
+function autoFillSession(){
   if(!STATE.session) { alert("Ingen aktiv session"); return; }
   const remaining = STATE.session.totalTrades - STATE.session.tradeNum;
   if(remaining <= 0){ alert("Sessionen är redan full"); return; }
 
+  // Säkerhetsnät innan auto-fyll
   const stake = calcAutoPositionSize(); // 2% av equity
   const safety = checkSafetyGates(stake);
-  if(!safety.ok){ alert(`🛡 Säkerhetsregel triggrad:\n\n${safety.reason}`); return; }
-
-  const tf = STATE.betTf || SCALP_DEFAULT_SEC;
-  const eq = calcTotalEquity();
-  const lossCap = (eq * SAFETY_DAILY_LOSS_CAP_PCT).toFixed(0);
-
-  // Agenterna analyserar (med live Binance-data) och föreslår
-  pushInAppAlert(`🧠 Tomas + Viktor + Karin analyserar marknaden...`, 3000, {telegram:false});
-  const picks = await selectBestSymbolsForBatch(remaining);
-
-  if(!picks || !picks.length){
-    alert("Agenterna kunde inte hämta marknadsdata — försök igen om en stund");
+  if(!safety.ok){
+    alert(`🛡 Säkerhetsregel triggrad:\n\n${safety.reason}`);
     return;
   }
 
-  // Bygg läsbar förhandsvisning av agenternas val
-  const cryptoCount = picks.filter(p => p.type === "crypto").length;
-  const forexCount = picks.filter(p => p.type === "forex").length;
-  const previewLines = picks.map((p, i) =>
-    `${i+1}. ${p.type === "crypto" ? "🪙" : "💱"} ${p.sym} ${p.side === "BUY" ? "📈 LONG" : "📉 SHORT"} — ${p.reason}`
-  ).join("\n");
+  const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","AVAXUSDT","DOGEUSDT","BNBUSDT","ADAUSDT"];
+  const forexSyms = ["EUR/USD","GBP/USD","USD/JPY","AUD/USD","USD/CHF"];
+  const tf = STATE.betTf || SCALP_DEFAULT_SEC;
 
-  const confirmMsg =
-    `⚡ AUTO-FYLL Session ${STATE.session.sessionNum}\n\n` +
-    `Agenterna har analyserat marknaden och valt:\n` +
-    `• ${cryptoCount} crypto + ${forexCount} forex\n` +
-    `• Stake: $${stake} (2% av equity)\n` +
-    `• Tid: ${formatTfHuman(tf)} per scalp\n` +
-    `• A+ tröskel: score ≥${STATE.session.scoreThreshold} (= ${Math.round(scoreToWinrate(STATE.session.scoreThreshold)*100)}% förväntat winrate)\n` +
-    `• Vinstmarginal: minst 65% per trade\n\n` +
-    `Agenternas val:\n${previewLines}\n\n` +
-    `🛡 SÄKERHETSREGLER:\n` +
-    `• Daglig loss-cap: -$${lossCap} (5%)\n` +
-    `• Max ${SAFETY_MAX_OPEN_POSITIONS} positioner · ${SAFETY_MAX_DAILY_TRADES} trades/dag\n\n` +
-    `Fortsätta?`;
+  // Confirm med Mike (förklara säkerhetsreglerna)
+  const eq = calcTotalEquity();
+  const lossCap = (eq * SAFETY_DAILY_LOSS_CAP_PCT).toFixed(0);
+  const confirmMsg = `⚡ AUTO-FYLL Session ${STATE.session.sessionNum}\n\n${remaining} watches startar:\n• Stake: $${stake} (2% av equity)\n• Tid: ${formatTfHuman(tf)} per scalp\n• Mix: 70% crypto + 30% forex\n• A+ tröskel: score ≥${STATE.session.scoreThreshold}\n\n🛡 SÄKERHETSREGLER (auto-stopp):\n• Daglig loss-cap: -$${lossCap} (5% av equity)\n• Max ${SAFETY_MAX_OPEN_POSITIONS} samtidiga positioner\n• Max ${SAFETY_MAX_DAILY_TRADES} trades/dag\n• A+ setups exekveras AUTOMATISKT (ingen bekräftelse behövs)\n\nFortsätta?`;
   if(!confirm(confirmMsg)) return;
 
+  // Aktivera auto-confirm för session
   STATE.session.autoConfirm = true;
   saveSessionData();
 
+  // Sätt upp watches med autoFill-flagga
   let placed = 0;
-  for(const pick of picks){
-    const w = createWatch(pick.sym, pick.side, stake, tf);
+  for(let i = 0; i < remaining; i++){
+    const useForex = (i % 3 === 2); // var 3:e = forex
+    const pool = useForex ? forexSyms : cryptoSyms;
+    const sym = pool[i % pool.length];
+    const side = Math.random() > 0.4 ? "BUY" : "SELL"; // 60% long bias
+    const w = createWatch(sym, side, stake, tf);
     if(w){
-      w.fromAutoFill = true;
-      w.agentReason = pick.reason; // visas i UI
+      w.fromAutoFill = true; // Flagga: auto-confirm gäller för denna watch
       placed++;
     }
   }
   saveWatchState();
-  pushInAppAlert(`⚡ ${placed} watches startade · ${cryptoCount} crypto + ${forexCount} forex · agenter valde baserat på marknadsläge`, 7000);
+  pushInAppAlert(`⚡ Auto-fyll: ${placed} watches startade · stake $${stake} · A+ exekveras direkt · säkerhetsregler aktiva`, 7000);
   renderTradesPage();
 }
 
-async function abortSession(){
+function abortSession(){
   if(!confirm("Avbryta pågående session? Trades hittills sparas men sessionen markeras som avbruten.")) return;
-  await backendAbortSession();
-  pushInAppAlert(`✗ Session avbruten`, 3000);
+  if(STATE.session && STATE.session.trades.length > 0){
+    completeSession(true);
+  } else {
+    STATE.session = null;
+    saveSessionData();
+    renderTradesPage();
+  }
 }
 
 function recordSessionTrade(score, won, pnl, sym, side){
@@ -4732,17 +4540,8 @@ function calcLifetimeStats(){
   const bySide = { BUY: {wins:0, losses:0, pnl:0}, SELL: {wins:0, losses:0, pnl:0} };
   const bySetup = {}; // {setupType: {wins, losses, pnl}}
   const byScore = {}; // {score: {wins, losses, pnl}}
-  let neutrals = 0;
   for(const h of history){
-    // Använd serverns won-flagga om den finns; annars härled från pnl
-    // null/undefined = neutral (force-close, refund) → räknas inte i W/L
-    const isNeutral = h.won === null || (h.won === undefined && (h.pnl || 0) === 0);
-    if(isNeutral){
-      neutrals++;
-      totalPnl += (h.pnl || 0);
-      continue; // hoppa över W/L-räkning för neutrala
-    }
-    const won = h.won === true || (h.won === undefined && (h.pnl || 0) > 0);
+    const won = (h.pnl || 0) > 0;
     if(won){ wins++; avgWin += h.pnl; }
     else { losses++; avgLoss += h.pnl; }
     totalPnl += (h.pnl || 0);
@@ -4755,6 +4554,7 @@ function calcLifetimeStats(){
       bySide[h.side].pnl += (h.pnl || 0);
       if(won) bySide[h.side].wins++; else bySide[h.side].losses++;
     }
+    // Setup-typ-breakdown (träningsdata)
     if(h.setupType){
       if(!bySetup[h.setupType]) bySetup[h.setupType] = {wins:0, losses:0, pnl:0};
       bySetup[h.setupType].pnl += (h.pnl || 0);
@@ -4787,17 +4587,22 @@ function calcLifetimeStats(){
 }
 
 function resetPaperAccount(){
-  if(!confirm("Resetta hela paper-kontot?\n\nDetta nollställer balans, history, sessions, watches på SERVERN — påverkar alla dina devices.\n\nFortsätta?")) return;
-  // Använd backend-reset (single source of truth)
-  backendResetPaper().catch(e => alert("Reset-fel: "+e.message));
-  // Rensa även lokal cache
-  STATE.session = null;
-  STATE.sessionReports = [];
-  STATE.pendingWatches = [];
-  STATE.pendingConfirms = [];
-  saveSessionData();
-  saveWatchState();
-  pushInAppAlert(`🔄 Reset triggrad — synkar från server...`, 3000);
+  STATE.paperAccount = {
+    startBalance: PAPER_START_BALANCE,
+    cash: PAPER_START_BALANCE,
+    realizedPnl: 0,
+    totalTrades: 0,
+    winningTrades: 0,
+    losingTrades: 0,
+    createdAt: Date.now(),
+  };
+  STATE.tradePositions = [];
+  STATE.tradeHistory = [];
+  STATE.tradeDecisions = [];
+  savePaperAccount();
+  saveTradeData(); // rensa persisterat också
+  renderTradesPage();
+  renderPaperBadge();
 }
 
 // Beräkna unrealized PnL från öppna positioner
@@ -4814,11 +4619,11 @@ function calcTotalEquity(){
   return acc.cash + (STATE.tradePositions||[]).reduce((s,p)=>s+p.amount, 0) + calcUnrealizedPnl();
 }
 
-// Default scalping-config — Mikes krav: minst 65% vinstmarginal per trade
-const SCALP_PAYOUT_MIN = 1.65;   // 65% marginal = $500 → $825 (Mikes nya minimum)
+// Default scalping-config — payout som valutatrading (Mikes erfarenhet: 60-90% marginal)
+const SCALP_PAYOUT_MIN = 1.60;   // 60% marginal = $500 → $800
 const SCALP_PAYOUT_MAX = 1.90;   // 90% marginal = $500 → $950
 const SCALP_DEFAULT_SEC = 60;    // 1 min default — snabb testning + scalping
-const DEMO_AGENT_SKILL = 0.80;   // 80% win-rate baseline (simulerar agent-edge)
+const DEMO_AGENT_SKILL = 0.65;   // 65% win-rate i demo (simulerar agenter med edge)
 function randomPayout(){ return SCALP_PAYOUT_MIN + Math.random() * (SCALP_PAYOUT_MAX - SCALP_PAYOUT_MIN); }
 
 // Risk per trade — 2% av total equity (paper + öppna positioner + unrealized PnL)
@@ -4835,195 +4640,7 @@ function getSymbolType(sym){
   return "crypto";
 }
 
-// ─── BACKEND TRADE-STATE (single source of truth) ───
-// Ersätter localStorage som primär källa. Frontend POST:ar actions, GET:ar state.
-const BACKEND_CLIENT_ID = "mike-private";
-let backendStateLastUpdated = 0;
-
-async function backendGetState(){
-  try {
-    const r = await fetch(`/api/trade-state?clientId=${BACKEND_CLIENT_ID}`);
-    if(!r.ok) return null;
-    const state = await r.json();
-    return state;
-  } catch(e){
-    console.warn("Backend state fetch-fel:", e);
-    return null;
-  }
-}
-
-async function backendApplyState(){
-  const state = await backendGetState();
-  if(!state) return false;
-  // Spåra loss-streaks från NYA trades (för symbol-blacklist)
-  if(state.history && Array.isArray(state.history)){
-    const prevHistory = STATE.tradeHistory || [];
-    const prevIds = new Set(prevHistory.map(h => h.id));
-    const newClosed = state.history.filter(h => !prevIds.has(h.id) && h.won !== null && h.won !== undefined);
-    for(const nh of newClosed){
-      trackLossStreak(nh.sym, nh.won === true);
-    }
-  }
-  // Server är ALLTID source of truth — ingen lokal-skyddslogik
-  // (Tidigare: skip om backend tom + local hade data → orsakade divergens
-  //  mellan flikar med gamla localStorage. Nu: server vinner alltid.)
-  if(state.updatedAt && state.updatedAt <= backendStateLastUpdated) return false;
-  backendStateLastUpdated = state.updatedAt || Date.now();
-  // Mappa till STATE — BARA fält som backend faktiskt äger
-  STATE.paperAccount = state.paperAccount;
-  STATE.tradePositions = state.positions || [];
-  STATE.tradeHistory = state.history || [];
-  STATE.tradeDecisions = state.decisions || [];
-  STATE.session = state.session || null;
-  STATE.sessionReports = state.sessionReports || [];
-  // OBS: pendingWatches + pendingConfirms är frontend-only just nu
-  // Skriv INTE över dem från backend (skulle radera Mikes pågående watches)
-  // Backend returnerar bara dessa som tomma arrayer i nuvarande version
-  // STATE.pendingWatches och pendingConfirms behåller sina lokala värden
-  // Persistera lokalt också (cache för offline)
-  try {
-    localStorage.setItem("trading_paper_account", JSON.stringify(STATE.paperAccount));
-    localStorage.setItem("trading_history", JSON.stringify(STATE.tradeHistory));
-    localStorage.setItem("trading_positions", JSON.stringify(STATE.tradePositions));
-  } catch(_){}
-  // Uppdatera UI
-  if(typeof renderTradesPage === "function") renderTradesPage();
-  if(typeof renderPaperBadge === "function") renderPaperBadge();
-  const ind = document.getElementById("sync-indicator");
-  if(ind) ind.innerHTML = `<span style="color:var(--green)">●</span> Backend synced ${new Date().toLocaleTimeString().slice(0,8)}`;
-  return true;
-}
-
-async function backendResetPaper(){
-  const r = await fetch("/api/trade-state/reset", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({clientId: BACKEND_CLIENT_ID})
-  });
-  if(r.ok){
-    await backendApplyState();
-    pushInAppAlert(`✓ Paper-konto resetat på server — ren slate $10K`, 4000);
-  }
-  return r.ok;
-}
-
-async function backendOpenTrade(params){
-  const r = await fetch("/api/trade-state/open-trade", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({clientId: BACKEND_CLIENT_ID, ...params})
-  });
-  if(!r.ok) return null;
-  const result = await r.json();
-  if(result.ok){
-    backendStateLastUpdated = result.state.updatedAt || Date.now();
-    await backendApplyState();
-    return result.trade;
-  }
-  pushInAppAlert(`❌ ${result.error || "Trade-fel"}`, 5000);
-  return null;
-}
-
-async function backendStartSession(opts){
-  const r = await fetch("/api/trade-state/start-session", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({clientId: BACKEND_CLIENT_ID, ...(opts||{})})
-  });
-  if(r.ok){ await backendApplyState(); return true; }
-  return false;
-}
-
-async function backendAbortSession(){
-  const r = await fetch("/api/trade-state/abort-session", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({clientId: BACKEND_CLIENT_ID})
-  });
-  if(r.ok){ await backendApplyState(); return true; }
-  return false;
-}
-
-async function backendReconcile(){
-  const r = await fetch("/api/trade-state/reconcile", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({clientId: BACKEND_CLIENT_ID})
-  });
-  if(!r.ok) return null;
-  const result = await r.json();
-  if(result.before && result.after){
-    const diffTrades = result.after.totalTrades - result.before.totalTrades;
-    const diffPnl = (result.after.realizedPnl - result.before.realizedPnl).toFixed(2);
-    pushInAppAlert(`🔧 Reconciled: counters justerade · trades ${result.before.totalTrades}→${result.after.totalTrades} · PnL diff $${diffPnl}`, 6000);
-    await backendApplyState();
-  }
-  return result;
-}
-
-// Auto-pull från backend var 2s + på SSE-events
-function startBackendSync(){
-  // KRITISKT: vid första boot, rensa LOKAL gammal cache så vi inte får divergens
-  // Bara om vi inte redan kört denna migration (versionsnummer-flagga)
-  const MIGRATION_VERSION = "v2-backend-truth";
-  const lastMigration = localStorage.getItem("trading_migration_version");
-  if(lastMigration !== MIGRATION_VERSION){
-    console.log("[migration] Rensar gammal localStorage-cache (server är nu source of truth)");
-    const keysToRemove = [
-      "trading_paper_account",
-      "trading_history",
-      "trading_positions",
-      "trading_decisions",
-      "trading_session_active",
-      "trading_session_reports",
-      "trading_watches",
-      "trading_confirms",
-    ];
-    for(const k of keysToRemove) localStorage.removeItem(k);
-    localStorage.setItem("trading_migration_version", MIGRATION_VERSION);
-    // Återställ lokal STATE så ingen gammal data finns kvar i RAM
-    STATE.tradePositions = [];
-    STATE.tradeHistory = [];
-    STATE.tradeDecisions = [];
-    STATE.session = null;
-    STATE.sessionReports = [];
-    // PendingWatches/Confirms BEHÅLLS — de är frontend-only och får inte rensas
-    // (annars försvinner pågående bekräftelser när Mike laddar om sidan)
-    STATE.paperAccount = null;
-  }
-  // Initial pull
-  backendApplyState();
-  // Backup-poll
-  setInterval(backendApplyState, 2000);
-  // SSE för instant uppdateringar
-  try {
-    const es = new EventSource("/api/events");
-    es.addEventListener("trade-state-updated", ()=>{
-      backendApplyState();
-    });
-  } catch(_){}
-}
-
-// Manuell rensning av lokal cache (för Mike om något fortfarande verkar konstigt)
-async function forceCleanResync(){
-  if(!confirm("🧹 Rensa lokal cache och hämta från server?\n\nDetta tar bort all gammal localStorage-data. Server-state blir auktoritativ.\n\n(Trades/sessioner på server påverkas INTE.)")) return;
-  const keys = ["trading_paper_account","trading_history","trading_positions","trading_decisions",
-                "trading_session_active","trading_session_reports","trading_watches","trading_confirms"];
-  for(const k of keys) localStorage.removeItem(k);
-  STATE.tradePositions = [];
-  STATE.tradeHistory = [];
-  STATE.tradeDecisions = [];
-  STATE.session = null;
-  STATE.sessionReports = [];
-  STATE.pendingWatches = [];
-  STATE.pendingConfirms = [];
-  STATE.paperAccount = null;
-  backendStateLastUpdated = 0;
-  await backendApplyState();
-  pushInAppAlert("✓ Lokal cache rensad — visar nu server-state", 4000, {telegram:false});
-}
-
-// ─── Cross-device sync (LEGACY — behålls som fallback) ───
+// ─── Cross-device sync ───
 // Speglar trade-state mellan dator och mobil via VPS-backend
 const SYNC_CLIENT_ID = "mike-private"; // Single-user just nu — multi-tenant senare via Supabase user-id
 const SYNC_DEBOUNCE_MS = 500;           // Snabb push (500ms) för att undvika race med pull-loop
@@ -5192,168 +4809,11 @@ function startSyncSubscription(){
 function forceSyncFromServer(){
   localLastChangeAt = 0; // resetta lokal-skyddet
   pullSyncFromServer();
-  if(typeof backendApplyState === "function") backendApplyState();
   pushInAppAlert(`🔄 Tvingad sync från server — alla flikar uppdateras`, 3000, {telegram:false});
-}
-
-// Pre-Live Verification — end-to-end test som öppnar + resolveas en trade
-// Verifierar att hela kedjan fungerar innan Mike går live med riktiga pengar
-async function runPreLiveVerification(){
-  if(!confirm("🧪 PRE-LIVE VERIFIERING\n\nDetta kommer:\n1. Resetta paper-konto till $10K\n2. Öppna 1 test-trade på BTC\n3. Vänta tills resolve mot riktigt Binance-pris\n4. Verifiera att saldo + counters stämmer\n\nFortsätta? (paper-data raderas)")) return;
-
-  const log = (msg) => { console.log("[verify]", msg); };
-  const fail = (msg) => {
-    console.error("[verify] FAIL:", msg);
-    alert(`❌ VERIFIERING MISSLYCKADES\n\n${msg}\n\nKör inte LIVE-mode förrän detta är fixat.`);
-  };
-
-  try {
-    // 1. RESET
-    log("Step 1: reset paper-konto");
-    const resetR = await fetch("/api/trade-state/reset", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({clientId: BACKEND_CLIENT_ID})});
-    if(!resetR.ok) return fail("Reset misslyckades: HTTP "+resetR.status);
-    const resetState = await resetR.json();
-    if(resetState.state.paperAccount.cash !== 10000) return fail(`Reset gav fel start-balans: ${resetState.state.paperAccount.cash} (förväntat $10000)`);
-    log("✓ Reset OK — start $10K");
-
-    // 2. HÄMTA RIKTIGT BTC-PRIS
-    log("Step 2: hämta Binance BTC-pris");
-    const priceR = await fetch("/api/binance/prices?symbols=BTCUSDT");
-    const priceData = await priceR.json();
-    const btcPrice = priceData.prices?.BTCUSDT;
-    if(!btcPrice) return fail("Kunde inte hämta BTC-pris från Binance");
-    log(`✓ BTC = $${btcPrice}`);
-
-    // 3. ÖPPNA TEST-TRADE
-    log("Step 3: öppna test-trade $50 BUY BTC, 30s expiry");
-    const openR = await fetch("/api/trade-state/open-trade", {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({
-        clientId: BACKEND_CLIENT_ID,
-        sym:"BTCUSDT", side:"BUY", amount:50, timeframeSec:30,
-        entry:btcPrice, score:9, setupType:"verify", setupLabel:"Pre-live verify",
-        source:"verification", confirmed:true
-      })
-    });
-    if(!openR.ok) return fail("Open trade misslyckades: HTTP "+openR.status);
-    const openResult = await openR.json();
-    if(!openResult.ok) return fail(`Open trade error: ${openResult.error}`);
-    const tradeId = openResult.trade.id;
-    if(openResult.state.paperAccount.cash !== 9950) return fail(`Cash efter open fel: ${openResult.state.paperAccount.cash} (förväntat $9950)`);
-    log(`✓ Trade öppnad: ${tradeId} · cash $9950`);
-
-    // 4. VÄNTA PÅ RESOLVE (server-scheduler kör var 1s)
-    log("Step 4: väntar 35s på auto-resolve mot Binance...");
-    pushInAppAlert(`🧪 Verifiering: trade öppnad, väntar 35s på auto-resolve...`, 35000, {telegram:false});
-    await new Promise(r => setTimeout(r, 35000));
-
-    // 5. KOLLA RESOLVE
-    log("Step 5: hämta state, verifiera resolve");
-    const stateR = await fetch(`/api/trade-state?clientId=${BACKEND_CLIENT_ID}`);
-    const stateData = await stateR.json();
-    const stillOpen = stateData.positions.find(p => p.id === tradeId);
-    if(stillOpen) return fail("Trade fortfarande öppen efter 35s — scheduler funkar inte");
-    const closed = stateData.history.find(h => h.id === tradeId);
-    if(!closed) return fail("Trade hittas inte i history efter resolve");
-    log(`✓ Resolve OK: ${closed.won ? "WIN" : "LOSS"} · exit $${closed.exit} · pnl ${closed.pnl}`);
-
-    // 6. VERIFIERA RÄKENSKAPER
-    const expected = 10000 + closed.pnl;
-    if(Math.abs(stateData.paperAccount.cash - expected) > 0.5){
-      return fail(`Cash-räkning fel: $${stateData.paperAccount.cash} (förväntat $${expected})`);
-    }
-    if(stateData.paperAccount.totalTrades !== 1) return fail(`totalTrades fel: ${stateData.paperAccount.totalTrades}`);
-    if(closed.won && stateData.paperAccount.winningTrades !== 1) return fail("winningTrades counter fel");
-    if(!closed.won && stateData.paperAccount.losingTrades !== 1) return fail("losingTrades counter fel");
-    log("✓ Alla counters OK");
-
-    // 7. KLART
-    const summary = `✅ PRE-LIVE VERIFIERING GODKÄND\n\n` +
-      `1. ✓ Reset paper-konto fungerar\n` +
-      `2. ✓ Binance live-pris-hämtning fungerar\n` +
-      `3. ✓ Trade öppnas på server (atomic)\n` +
-      `4. ✓ Cash drag dras korrekt vid open\n` +
-      `5. ✓ Server-scheduler resolveas trades automatiskt\n` +
-      `6. ✓ Resolve mot RIKTIGT Binance-pris fungerar\n` +
-      `7. ✓ Counters (W/L, total) räknas korrekt\n` +
-      `8. ✓ Cash-balans matchar PnL-historik\n\n` +
-      `Resultat: ${closed.won ? "WIN" : "LOSS"} · PnL ${closed.pnl >= 0 ? "+" : ""}$${closed.pnl.toFixed(2)}\n` +
-      `Slut-balans: $${stateData.paperAccount.cash.toFixed(2)}\n\n` +
-      `🟢 Systemet är READY för PROPOSE-mode med riktiga priser.\n` +
-      `🟡 Innan LIVE: behöver Binance API-keys konfigureras + steg 5 (Live API integration).`;
-    alert(summary);
-    log("✓ KLART");
-    await backendApplyState();
-  } catch(e){
-    fail(`Oväntat fel: ${e.message}`);
-  }
-}
-
-// Health-check: kollar att alla kritiska delar fungerar
-async function runHealthCheck(){
-  const results = [];
-  // 1. Backend trade-state
-  try {
-    const r = await fetch(`/api/trade-state?clientId=${BACKEND_CLIENT_ID}`);
-    results.push({test:"Backend trade-state", ok: r.ok, detail: r.ok ? "200 OK" : `HTTP ${r.status}`});
-  } catch(e){ results.push({test:"Backend trade-state", ok: false, detail: e.message}); }
-  // 2. Binance live-priser
-  try {
-    const r = await fetch("/api/binance/prices?symbols=BTCUSDT");
-    const d = await r.json();
-    results.push({test:"Binance public API", ok: !!d.prices?.BTCUSDT, detail: d.prices?.BTCUSDT ? `BTC $${d.prices.BTCUSDT.toFixed(0)}` : "saknar data"});
-  } catch(e){ results.push({test:"Binance public API", ok: false, detail: e.message}); }
-  // 3. Telegram-status
-  try {
-    const cfg = loadTelegramConfig();
-    results.push({test:"Telegram-bridge", ok: !!cfg.enabled && !!cfg.token, detail: cfg.enabled ? "konfigurerad" : "ej aktiverad"});
-  } catch(e){ results.push({test:"Telegram-bridge", ok: false, detail: e.message}); }
-  // 4. Floating chat
-  const fcEl = document.getElementById("fc-toggle");
-  results.push({test:"Floating chat-knapp", ok: !!fcEl, detail: fcEl ? "finns" : "saknas"});
-  // 5. Critical functions
-  const fns = ["simulateTeamResponse", "renderTradesPage", "renderLifetimeStats", "renderAuditTrail", "scoreToWinrate", "generateConfluenceAnalysis", "detectSRLevels", "detectCandlePatterns"];
-  for(const fn of fns){
-    const ok = typeof window[fn] === "function";
-    results.push({test:`fn ${fn}`, ok, detail: ok ? "definierad" : "SAKNAS"});
-  }
-  console.log("[health-check]", results);
-  const failed = results.filter(r=>!r.ok);
-  const msg = `🏥 HEALTH CHECK\n\n${results.map(r=>`${r.ok?'✓':'✗'} ${r.test} — ${r.detail}`).join("\n")}\n\n${failed.length === 0 ? "Allt funkar! ✓" : `${failed.length} fel hittade — kolla console.`}`;
-  alert(msg);
 }
 
 // Global random-pick helper (används i flera scopes)
 function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
-
-// Collapse/expand-toggle för cards (Hannas beslut etc)
-function toggleCollapse(cardId){
-  const card = document.getElementById(cardId);
-  if(!card) return;
-  const bodyId = cardId.replace("-card", "-body");
-  const arrowId = cardId.replace("-card", "-arrow");
-  const body = document.getElementById(bodyId);
-  const arrow = document.getElementById(arrowId);
-  if(!body) return;
-  const isOpen = body.style.display !== "none";
-  body.style.display = isOpen ? "none" : "";
-  if(arrow) arrow.textContent = isOpen ? "▶" : "▼";
-  // Spara state
-  try { localStorage.setItem("collapse_" + cardId, isOpen ? "0" : "1"); } catch(_){}
-}
-
-// Återställ collapse-state vid load
-function restoreCollapseStates(){
-  ["decisions-card"].forEach(id => {
-    const wasOpen = localStorage.getItem("collapse_" + id) === "1";
-    if(wasOpen){
-      const body = document.getElementById(id.replace("-card","-body"));
-      const arrow = document.getElementById(id.replace("-card","-arrow"));
-      if(body) body.style.display = "";
-      if(arrow) arrow.textContent = "▼";
-    }
-  });
-}
 
 // Human-readable timeframe (60 → "1m", 47 → "47s", 270 → "4m 30s")
 function formatTfHuman(sec){
@@ -5372,8 +4832,6 @@ function formatTfHuman(sec){
 
 // Simulera exekvering av en scalp-trade — drar från test-konto + auto-resolve efter timeframe
 function simulateExecuteTrade(sym, side, amount, timeframeSec){
-  // FRAMTIDA: routa via backend.openTrade — då räknar servern PnL mot riktigt Binance-pris
-  // Just nu: behåll legacy för bakåtkompatibilitet, men backend är truth via reconcile
   const acc = loadPaperAccount();
   if(amount > acc.cash){
     log_warn(`Inte nog cash i paper-account: $${acc.cash.toFixed(2)} < $${amount}`);
@@ -5538,8 +4996,7 @@ function renderPaperBadge(){
   setVal("pc-realized", `${acc.realizedPnl>=0?'+':''}${fmt(acc.realizedPnl)}`, `pc-pnl ${acc.realizedPnl>=0?'up':'down'}`);
   setVal("pc-unrealized", `${unrealized>=0?'+':''}${fmt(unrealized)}`, `pc-pnl ${unrealized>=0?'up':'down'}`);
   setVal("pc-cash", fmt(acc.cash));
-  const neutral = acc.neutralTrades || 0;
-  setVal("pc-trades", neutral > 0 ? `${acc.winningTrades}W · ${acc.losingTrades}L · ${neutral}N` : `${acc.winningTrades}W · ${acc.losingTrades}L`);
+  setVal("pc-trades", `${acc.winningTrades}/${acc.losingTrades}`);
   const totalClosed = acc.winningTrades + acc.losingTrades;
   setVal("pc-winrate", totalClosed > 0 ? `${Math.round(acc.winningTrades/totalClosed*100)}%` : "–");
 }
@@ -5962,9 +5419,7 @@ function renderTradesPage(){
     }
   }
 
-  // Decisions-log + count i header
-  const decCount = document.getElementById("decisions-count");
-  if(decCount) decCount.textContent = decisions.length ? `${decisions.length} st · klicka för att visa` : "inga än";
+  // Decisions-log
   const decTbl = document.getElementById("trade-decisions-table");
   if(decTbl){
     if(!decisions.length){
@@ -6092,12 +5547,9 @@ function closeAllPositions(){
 async function sendFromFloating(){
   const txt = document.getElementById("fc-text");
   const send = document.getElementById("fc-send");
-  if(!txt || !send){ console.error("[chat] textarea eller send-knapp saknas"); return; }
-  const instruction = (txt.value || "").trim();
-  if(!instruction){ console.warn("[chat] tom instruktion"); return; }
-  // Admin-bypass: kräv inga keys för admin, annars varna men låt köra
-  // (tidigare blockades chatten helt — fix: tillåt alltid simulering)
-  console.log("[chat] sending:", instruction);
+  const instruction = txt.value.trim();
+  if(!instruction) return;
+  if(!requireTradingKeys("Skicka instruktion")) return;
 
   teamChatLog.push({role:"user", text:instruction, timestamp:Date.now()});
   txt.value = "";
@@ -6117,21 +5569,13 @@ async function sendFromFloating(){
         timestamp:Date.now(), instruction
       });
     } else {
-      // Demo/test-mode: simulera teamets svar (lokalt)
-      await new Promise(r=>setTimeout(r, 800 + Math.random()*600));
+      await new Promise(r=>setTimeout(r, 1200 + Math.random()*800));
       teamChatLog.pop();
-      let result;
-      try {
-        result = simulateTeamResponse(instruction);
-      } catch(simErr){
-        console.error("[chat] simulateTeamResponse fel:", simErr);
-        result = { text: `⚠ Internt fel i simulator: ${simErr.message}\n\nProva att skriva enklare ("köp BTC $50") eller "status".` };
-      }
+      const result = simulateTeamResponse(instruction);
       const responseText = typeof result === "string" ? result : result.text;
       teamChatLog.push({role:"team", text: responseText, timestamp:Date.now(), instruction});
     }
   }catch(e){
-    console.error("[chat] sendFromFloating fel:", e);
     teamChatLog.pop();
     teamChatLog.push({role:"system", text:"❌ Fel: "+e.message, timestamp:Date.now()});
   }finally{
@@ -6834,10 +6278,8 @@ function checkKeysSetup(){
 
 function requireTradingKeys(action){
   if(hasTradingKeys()) return true;
-  // I TEST/PROPOSE-läge: tillåt utan keys (bara LIVE-mode kräver Binance-keys)
-  if(currentUiMode !== "live") return true;
   const ok = confirm(
-    `🔒 ${action} kräver att du kopplat Anthropic + Binance API först (LIVE-mode).\n\n` +
+    `🔒 ${action} kräver att du kopplat Anthropic + Binance API först.\n\n` +
     `Vill du gå till Settings nu och konfigurera?`
   );
   if(ok) switchPage("settings");
@@ -6880,43 +6322,6 @@ async function saveKeysFromSettings(){
     }
   }
   checkKeysSetup();
-}
-
-// Wire Oanda-aktivering
-async function activateOanda(){
-  const apiToken = document.getElementById("set-oanda-key")?.value?.trim();
-  const accountId = document.getElementById("set-oanda-account")?.value?.trim();
-  if(!apiToken || !accountId){
-    alert("Fyll i Oanda Token + Account ID först");
-    return;
-  }
-  const status = document.getElementById("save-keys-status");
-  if(status){ status.textContent = "Aktiverar Oanda..."; status.style.color = "var(--label)"; }
-  try {
-    const r = await fetch("/api/executor/oanda", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({apiToken, accountId, practice: true})
-    });
-    const result = await r.json();
-    if(result.ok){
-      if(status){ status.textContent = "✓ "+result.details; status.style.color = "var(--green)"; }
-      pushInAppAlert(`💱 Oanda aktiverad: ${result.details}`, 5000);
-      window.OANDA_CONFIGURED = true;
-    } else {
-      if(status){ status.textContent = "❌ "+result.details; status.style.color = "var(--red)"; }
-    }
-  } catch(e){
-    if(status){ status.textContent = "❌ "+e.message; status.style.color = "var(--red)"; }
-  }
-}
-
-async function checkOandaStatus(){
-  try {
-    const r = await fetch("/api/executor/oanda/status");
-    const data = await r.json();
-    window.OANDA_CONFIGURED = !!data.configured;
-  } catch(_){}
 }
 
 // Wire Telegram-config UI
@@ -6980,19 +6385,14 @@ function wireTelegramSettings(){
 }
 
 function initApp(){
-  loadTradeData(); // ladda persisterad trade-historik först (cache)
-  loadSessionData(); // ladda session-state + reports (cache)
-  loadWatchState();  // ladda pågående watches + confirms (cache)
-  restoreCollapseStates(); // återställ kollapsade cards
-  startBackendSync(); // PRIMÄR: backend som single source of truth
-  // Legacy sync DISABLED — undviker konflikt med backend-sync (orsak till "flippa ut")
-  // startSyncSubscription();
+  loadTradeData(); // ladda persisterad trade-historik först
+  loadSessionData(); // ladda session-state + reports
+  loadWatchState();  // ladda pågående watches + confirms
+  startSyncSubscription(); // cross-device sync (dator ↔ mobil)
   checkKeysSetup();
   loadKeysIntoSettings();
   loadTelegramIntoSettings();
   wireTelegramSettings();
-  document.getElementById("activate-oanda-btn")?.addEventListener("click", activateOanda);
-  checkOandaStatus();
   document.getElementById("setup-banner-go")?.addEventListener("click", ()=>switchPage("settings"));
   document.getElementById("save-keys-btn")?.addEventListener("click", saveKeysFromSettings);
   fillSymbols();
