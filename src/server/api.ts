@@ -91,6 +91,10 @@ const AGENT_PROMPTS: Record<string, { model: string; system: string }> = {
     model: "claude-opus-4-7",
     system: "Du är Claude Advisor i Mikaels trading-team. Du är en strategisk rådgivare som ser helheten: marknadscykler, beteendefinans-fällor, contrarian-perspektiv, blinda fläckar, svansrisker. Du ifrågasätter alltid teamets konsensus. Svara på svenska.",
   },
+  forex: {
+    model: "claude-haiku-4-5-20251001",
+    system: "Du är Viktor — Forex-Specialisten i Mikaels trading-team. Du analyserar valuta-mot-valuta-trades (EUR/USD, GBP/USD, USD/JPY, AUD/USD, NZD/USD, USD/CHF, USD/CAD, EUR/GBP, EUR/JPY, GBP/JPY). Du fokuserar på: centralbanksbeslut (Fed, ECB, BoE, BoJ, RBA, RBNZ, SNB, BoC), räntedifferentialer, DXY (dollar-index), risk-on/risk-off-flöden, carry trades, och geopolitik. Du ger entry/SL/TP per pair, R:R-ratio, och flaggar viktiga events (CPI, NFP, FOMC, ECB, BoJ-intervention). Svara koncist på svenska.",
+  },
   head_trader: {
     model: "claude-sonnet-4-6",
     system: "Du är Head Trader i Mikaels trading-team. Du syntetiserar alla specialisters analyser och fattar slutgiltiga handelsbeslut. Du har veto från Risk-analytikern och Advisor. Avsluta alltid med Rule of 3: [1] Regim [2] Action [3] Bevaka. Svara på svenska.",
@@ -498,7 +502,21 @@ export function startServer(
           // Helper för att fråga agent (Hanna m.fl.)
           const askAgent = async (agentKey: string, question: string): Promise<string> => {
             if (!anthropicApiKey) return "❌ Anthropic API-nyckel ej konfigurerad i backend.";
-            const profile = AGENT_PROMPTS[agentKey === "hanna" ? "head_trader" : (agentKey === "tomas" ? "technical" : (agentKey === "karin" ? "quant" : (agentKey === "rasmus" ? "risk" : (agentKey === "markus" ? "macro" : (agentKey === "petra" ? "portfolio" : (agentKey === "sara" ? "sentiment" : (agentKey === "lars" ? "macro" : (agentKey === "emma" ? "execution" : (agentKey === "albert" ? "advisor" : agentKey)))))))))];
+            const agentMap: Record<string, string> = {
+              hanna: "head_trader",
+              tomas: "technical",
+              karin: "quant",
+              rasmus: "risk",
+              markus: "macro",
+              petra: "portfolio",
+              sara: "sentiment",
+              lars: "macro",
+              emma: "execution",
+              albert: "advisor",
+              viktor: "forex",
+            };
+            const profileKey = agentMap[agentKey] || agentKey;
+            const profile = AGENT_PROMPTS[profileKey];
             if (!profile) return `❌ Okänd agent: ${agentKey}`;
             const client = new Anthropic({ apiKey: anthropicApiKey });
             const resp = await client.messages.create({

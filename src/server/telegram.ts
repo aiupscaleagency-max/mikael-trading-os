@@ -134,8 +134,8 @@ export function classifyIntent(text: string): Intent {
     return { type: "sell", sym, amount: parseInt(sellMatch[3], 10) };
   }
 
-  // Fråga specifik agent (Hanna, Tomas, Karin, Markus, Rasmus, Petra, Sara, Lars, Emma, Albert)
-  const agentMatch = t.match(/^(hanna|tomas|karin|markus|rasmus|petra|sara|lars|emma|albert)\s*[,:]?\s+(.+)$/i);
+  // Fråga specifik agent (Hanna, Tomas, Karin, Markus, Rasmus, Petra, Sara, Lars, Emma, Albert, Viktor)
+  const agentMatch = t.match(/^(hanna|tomas|karin|markus|rasmus|petra|sara|lars|emma|albert|viktor)\s*[,:]?\s+(.+)$/i);
   if (agentMatch && agentMatch[1] && agentMatch[2]) {
     return { type: "ask_agent", agent: agentMatch[1].toLowerCase(), question: agentMatch[2] };
   }
@@ -180,7 +180,8 @@ export async function handleUpdate(
         `• <code>Hanna, vad tycker du om BTC?</code>\n` +
         `• <code>Tomas, är EMA-cross live på ETH?</code>\n` +
         `• <code>Karin, är det hög volatilitet nu?</code>\n` +
-        `• <code>Rasmus, hur är risken i portföljen?</code>\n\n` +
+        `• <code>Rasmus, hur är risken i portföljen?</code>\n` +
+        `• <code>Viktor, vad gör EUR/USD inför Fed?</code>  ← NY (forex)\n\n` +
         `<i>Du chattar via boten, agenterna är hjärnan.</i>`,
       );
       break;

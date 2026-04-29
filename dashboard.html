@@ -1363,7 +1363,11 @@ body.app-state-onboard .fc-panel{display:none !important}
         <button id="bet-tf-apply" style="padding:5px 10px;background:var(--cyan);color:#000;border:none;border-radius:3px;font-weight:700;font-size:10px;cursor:pointer">SET</button>
       </div>
       <label style="font-size:10px;color:var(--dim)">Belopp (USD)</label>
-      <input type="number" id="bet-amt" value="10" min="1" step="1" />
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
+        <input type="number" id="bet-amt" value="10" min="1" step="1" style="flex:1" />
+        <button id="bet-auto-2pct" title="Auto-size: 2% av total equity (Mikes risk-regel)" style="padding:6px 10px;background:var(--card2);border:1px solid var(--cyan);border-radius:3px;color:var(--cyan);font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap">2% AUTO</button>
+      </div>
+      <div style="font-size:9px;color:var(--dim);margin-bottom:6px" id="bet-auto-hint">2% av equity = ~$<span id="bet-auto-val">200</span> (auto-size för LIVE)</div>
       <div class="payout">Payout: <b>1.85x</b> · Möjlig vinst: <span id="bet-win">$8.50</span></div>
       <button class="bet-call" id="bet-call">▲ CALL (UP)</button>
       <button class="bet-put" id="bet-put">▼ PUT (DOWN)</button>
@@ -2595,6 +2599,7 @@ const AGENT_DEFS = [
   {key:"portfolio",  person:"Petra",  role:"Portfölj-Strateg",      title:"Portfölj-Strateg",      initial:"PS", model:"haiku 4.5"},
   {key:"execution",  person:"Emma",   role:"Exekverings-Optimerare",title:"Exekverings-Optimerare",initial:"EO", model:"haiku 4.5"},
   {key:"advisor",    person:"Albert", role:"Strategisk Advisor",    title:"Claude Advisor",        initial:"AD", model:"opus 4.7",  premium:true},
+  {key:"forex",      person:"Viktor", role:"Forex-Specialist",      title:"Forex-Specialist",      initial:"FX", model:"haiku 4.5"},
   {key:"head",       person:"Hanna",  role:"Head Trader (chef)",    title:"Head Trader",           initial:"HT", model:"sonnet 4.6",premium:true}
 ];
 
@@ -2678,6 +2683,22 @@ function genSimAgents(){
         {type:"sell",text:"Trim SOL +12% mark"}
       ],
       rule3:["Regim: risk-on med VIX <17","Action: 2 nya positioner, 1 trim","Bevaka: Fed-möte tor 14:00 UTC"]
+    },
+    forex:{
+      // Viktor — Forex-Specialist (centralbanker, räntor, DXY, carry)
+      dxy: (102+Math.random()*4).toFixed(2),
+      bias: pick(["USD-stark","USD-svag","NEUTRAL","EUR-stark","JPY-svag"]),
+      topPair: pick(["EUR/USD","GBP/USD","USD/JPY","AUD/USD","USD/CHF"]),
+      cbWatch: pick([
+        "Fed Powell talar 14:00 UTC — väntat hökigt",
+        "ECB Lagarde imorgon — håll stilla 4.5%",
+        "BoJ kan intervenera USD/JPY > 152",
+        "BoE Bailey signalerar pause i juni",
+        "RBA håller 4.35%, AUD svag på Kina-data"
+      ]),
+      carryTrades:["AUD/JPY: +3.6% APY","NZD/JPY: +3.9% APY"],
+      eventsToday:["US PCE 14:30 UTC","EU CPI imorgon"],
+      recommendation:"USD-svag bias kortsiktigt — long EUR/USD vid 1.0820 retest"
     }
   };
 }
@@ -2696,6 +2717,7 @@ function agentSignal(key, d){
     case "execution":  return {text:d.urgency||"–", cls:d.urgency==="high"?"red":d.urgency==="medium"?"yellow":"green"};
     case "advisor":    return {text:d.cycle||"–", cls:""};
     case "head":       return {text:(d.decision||"HOLD")+" · "+((d.actions||[]).length)+"x", cls:d.decision==="BUY"?"green":d.decision==="SELL"?"red":"yellow"};
+    case "forex":      return {text:(d.bias||"–")+" · "+(d.topPair||""), cls:d.bias?.includes("USD-stark")?"green":d.bias?.includes("USD-svag")?"red":"yellow"};
   }
   return {text:"–", cls:""};
 }
@@ -3753,6 +3775,13 @@ function simulateTeamResponse(instr){
         executedTrades: []
       };
     }
+    const symType = getSymbolType(sym);
+    if(symType === "forex"){
+      return {
+        text: `Viktor: OK, ${sym} LONG $${amount} — ${pick(["DXY 102.4 + Fed-möte denna vecka","Räntedifferential talar för köpet","Carry-spread positiv","Riskon-flöde efter CPI"])}.\nRasmus: Forex-pos räknas in i daily heat.\nHanna: Order placerad.\n\n✓ Forex-order placerad — se Trades-sidan.${testNote}`,
+        executedTrades: [result]
+      };
+    }
     return {
       text: `Hanna: OK, köper **${sym}** för $${amount}.\nRasmus: Inom risk-ramen, godkänner.\nKarin: Vol-regim medium.\nAlbert: Cykel-fas ${pick(["accumulation","early-markup"])} — passar in.\n\n✓ Order placerad — se Trades-sidan.${testNote}`,
       executedTrades: [result]
@@ -4130,6 +4159,20 @@ const SCALP_PAYOUT_MAX = 1.90;   // 90% marginal = $500 → $950
 const SCALP_DEFAULT_SEC = 60;    // 1 min default — snabb testning + scalping
 const DEMO_AGENT_SKILL = 0.65;   // 65% win-rate i demo (simulerar agenter med edge)
 function randomPayout(){ return SCALP_PAYOUT_MIN + Math.random() * (SCALP_PAYOUT_MAX - SCALP_PAYOUT_MIN); }
+
+// Risk per trade — 2% av total equity (paper + öppna positioner + unrealized PnL)
+const RISK_PCT_PER_TRADE = 0.02; // 2% — Mikes regel för LIVE-mode start
+function calcAutoPositionSize(){
+  const eq = calcTotalEquity();
+  return Math.max(1, Math.round(eq * RISK_PCT_PER_TRADE));
+}
+// Symbol-typ: avgör om en symbol är crypto eller forex (avgör vilken agent som äger analysen)
+function getSymbolType(sym){
+  if(!sym) return "crypto";
+  if(sym.includes("/") || /^(EUR|GBP|USD|JPY|CHF|AUD|NZD|CAD)$/.test(sym.split("/")[0])) return "forex";
+  if(sym.endsWith("USDT") || sym.endsWith("USDC") || sym.endsWith("BUSD")) return "crypto";
+  return "crypto";
+}
 
 // ─── Cross-device sync ───
 // Speglar trade-state mellan dator och mobil via VPS-backend
@@ -5379,6 +5422,21 @@ function wire(){
     const v = parseFloat(e.target.value)||0;
     document.getElementById("bet-win").textContent = "$"+(v*0.85).toFixed(2);
   });
+  // 2% auto-size knapp
+  document.getElementById("bet-auto-2pct")?.addEventListener("click", ()=>{
+    const auto = calcAutoPositionSize();
+    const inp = document.getElementById("bet-amt");
+    if(inp){
+      inp.value = auto;
+      document.getElementById("bet-win").textContent = "$"+(auto*0.85).toFixed(2);
+      pushInAppAlert(`💼 Auto-size: $${auto} (2% av equity $${calcTotalEquity().toFixed(0)})`, 3500, {telegram:false});
+    }
+  });
+  // Auto-update hint var 5s
+  setInterval(()=>{
+    const el = document.getElementById("bet-auto-val");
+    if(el) el.textContent = calcAutoPositionSize();
+  }, 5000);
   document.getElementById("bet-call").addEventListener("click",()=>placeBet("UP"));
   document.getElementById("bet-put").addEventListener("click",()=>placeBet("DOWN"));
 
