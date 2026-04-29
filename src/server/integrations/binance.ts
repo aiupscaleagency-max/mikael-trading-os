@@ -168,8 +168,13 @@ export class BinanceClient {
   async getTotalEquity(): Promise<{ cashUsdt: number; positions: Array<{ asset: string; qty: number; valueUsdt: number }>; totalUsdt: number }> {
     const account = await this.getAccount();
     const nonZero = account.balances.filter((b) => parseFloat(b.free) + parseFloat(b.locked) > 0);
-    const usdt = nonZero.find((b) => b.asset === "USDT");
-    const cashUsdt = usdt ? parseFloat(usdt.free) + parseFloat(usdt.locked) : 0;
+    // Räkna ALLA stablecoins som cash (1:1 USD): USDT, USDC, BUSD, FDUSD, TUSD, DAI, USDP
+    const STABLES = ["USDT", "USDC", "BUSD", "FDUSD", "TUSD", "DAI", "USDP"];
+    let cashUsdt = 0;
+    for (const stable of STABLES) {
+      const b = nonZero.find((x) => x.asset === stable);
+      if (b) cashUsdt += parseFloat(b.free) + parseFloat(b.locked);
+    }
     // Hämta ALLA priser i ETT anrop (snabbare än per-token)
     let allPrices: Map<string, number> = new Map();
     try {
@@ -184,7 +189,7 @@ export class BinanceClient {
     const positions: Array<{ asset: string; qty: number; valueUsdt: number }> = [];
     let totalUsdt = cashUsdt;
     for (const b of nonZero) {
-      if (b.asset === "USDT" || b.asset === "BUSD" || b.asset === "USDC" || b.asset === "FDUSD") continue;
+      if (STABLES.includes(b.asset)) continue;
       const qty = parseFloat(b.free) + parseFloat(b.locked);
       const price = allPrices.get(`${b.asset}USDT`);
       if (price && price > 0) {
