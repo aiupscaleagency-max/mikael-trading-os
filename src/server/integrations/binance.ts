@@ -165,15 +165,22 @@ export class BinanceClient {
   // ─── Härledda metoder ───
 
   // Total USDT-värde av kontot — använder BATCH-fetch (1 request för alla priser)
-  async getTotalEquity(): Promise<{ cashUsdt: number; positions: Array<{ asset: string; qty: number; valueUsdt: number }>; totalUsdt: number }> {
+  async getTotalEquity(): Promise<{ cashUsdt: number; cashBreakdown: Array<{ asset: string; amount: number }>; positions: Array<{ asset: string; qty: number; valueUsdt: number }>; totalUsdt: number }> {
     const account = await this.getAccount();
     const nonZero = account.balances.filter((b) => parseFloat(b.free) + parseFloat(b.locked) > 0);
     // Räkna ALLA stablecoins som cash (1:1 USD): USDT, USDC, BUSD, FDUSD, TUSD, DAI, USDP
     const STABLES = ["USDT", "USDC", "BUSD", "FDUSD", "TUSD", "DAI", "USDP"];
     let cashUsdt = 0;
+    const cashBreakdown: Array<{ asset: string; amount: number }> = [];
     for (const stable of STABLES) {
       const b = nonZero.find((x) => x.asset === stable);
-      if (b) cashUsdt += parseFloat(b.free) + parseFloat(b.locked);
+      if (b) {
+        const amount = parseFloat(b.free) + parseFloat(b.locked);
+        if (amount > 0.01) {
+          cashUsdt += amount;
+          cashBreakdown.push({ asset: stable, amount });
+        }
+      }
     }
     // Hämta ALLA priser i ETT anrop (snabbare än per-token)
     let allPrices: Map<string, number> = new Map();
@@ -200,7 +207,7 @@ export class BinanceClient {
     }
     // Sortera positioner efter värde (störst först)
     positions.sort((a, b) => b.valueUsdt - a.valueUsdt);
-    return { cashUsdt, positions, totalUsdt };
+    return { cashUsdt, cashBreakdown, positions, totalUsdt };
   }
 
   // Healthcheck — verifierar API-keys + permissions
