@@ -4417,8 +4417,12 @@ async function startSession(){
 // Agent-driven symbol-selektor — agenterna kommer överens om vilka som passar bäst
 // Använder live Binance-data + simulerade specialist-vyer (Viktor/Tomas/Karin)
 async function selectBestSymbolsForBatch(count){
-  const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","AVAXUSDT","DOGEUSDT","BNBUSDT","ADAUSDT","MATICUSDT","LINKUSDT","DOTUSDT","TRXUSDT"];
-  // FOREX: aktiveras automatiskt när Oanda är configured
+  // CRYPTO + Binance-forex (EURUSDT, GBPUSDT, AUDUSDT) — samma API, samma keys
+  const cryptoSyms = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","AVAXUSDT","DOGEUSDT","BNBUSDT","ADAUSDT","MATICUSDT","LINKUSDT","DOTUSDT","TRXUSDT",
+    "EURUSDT","GBPUSDT","AUDUSDT" // Binance forex-light (samma keys)
+  ];
+  // FOREX (cross-pairs): kräver Oanda — EUR/JPY, GBP/JPY, USD/CHF etc
   const forexSyms = window.OANDA_CONFIGURED ? ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/JPY","GBP/JPY"] : [];
   const candidates = [];
   // 1. CRYPTO: ranka via live Binance-data — momentum + volym
