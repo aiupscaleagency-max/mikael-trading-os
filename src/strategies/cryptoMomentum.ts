@@ -54,7 +54,15 @@ export class CryptoMomentumEngine implements StrategyEngine {
     this.broker = broker;
   }
 
+  // Cooldown vid IP-ban — pausa skanning i 10 min efter 418/429
+  private static cooldownUntil = 0;
+
   async scan(): Promise<StrategySignal[]> {
+    if (Date.now() < CryptoMomentumEngine.cooldownUntil) {
+      const sec = Math.ceil((CryptoMomentumEngine.cooldownUntil - Date.now()) / 1000);
+      log.info(`[Motor C] I cooldown ${sec}s pga rate-limit. Skippar.`);
+      return [];
+    }
     log.info("[Motor C] Skannar krypto-momentum…");
     const signals: StrategySignal[] = [];
 
@@ -62,9 +70,17 @@ export class CryptoMomentumEngine implements StrategyEngine {
       try {
         const signal = await this.evaluateSymbol(symbol);
         if (signal) signals.push(signal);
+        // Liten paus mellan symbols så vi inte burst:ar API-weight
+        await new Promise((r) => setTimeout(r, 300));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.warn(`[Motor C] Kunde inte analysera ${symbol}: ${msg}`);
+        // Trigga 10-min cooldown om vi får ban-status
+        if (msg.includes("418") || msg.includes("429") || msg.includes("IP banned")) {
+          CryptoMomentumEngine.cooldownUntil = Date.now() + 10 * 60 * 1000;
+          log.warn(`[Motor C] IP-ban upptäckt — pausar skanning i 10 min`);
+          break;
+        }
       }
     }
 

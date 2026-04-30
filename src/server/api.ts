@@ -124,8 +124,10 @@ async function startUserDataStream(mode: "testnet" | "live"): Promise<void> {
     setTimeout(() => startUserDataStream(mode), 30_000);
   }
 }
-// Starta WS-streams vid boot (om creds finns)
-setTimeout(() => { startUserDataStream("testnet"); startUserDataStream("live"); }, 2000);
+// WS-streams: pausat — createListenKey returnerar 410 (proxy-issue eller permission saknas)
+// Polling-baserad sync (3s + 30s portfolio) räcker tills detta är debugat.
+// För att aktivera: uncomment raden nedan
+// setTimeout(() => { startUserDataStream("testnet"); startUserDataStream("live"); }, 2000);
 
 // Reset daily-loss-counter vid midnatt
 setInterval(() => {
