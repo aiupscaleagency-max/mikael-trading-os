@@ -162,6 +162,58 @@ export class BinanceClient {
     return this.signedRequest("DELETE", "/api/v3/order", { symbol, orderId });
   }
 
+  // ─── ORDER- & TRANSFER-historik ───
+
+  async getAllOrders(symbol: string, limit = 100): Promise<Array<{
+    symbol: string; orderId: number; clientOrderId: string;
+    price: string; origQty: string; executedQty: string; cummulativeQuoteQty: string;
+    status: string; type: string; side: string; time: number; updateTime: number;
+  }>> {
+    return this.signedRequest("GET", "/api/v3/allOrders", { symbol, limit });
+  }
+
+  // Insättningshistorik (mainnet bara — testnet stödjer ej /sapi/)
+  async getDepositHistory(): Promise<Array<{
+    amount: string; coin: string; network: string; status: number;
+    address: string; txId: string; insertTime: number; transferType: number;
+  }>> {
+    if (this.mode === "testnet") return [];
+    return this.signedRequest("GET", "/sapi/v1/capital/deposit/hisrec", { limit: 100 });
+  }
+
+  // Uttagshistorik (mainnet bara)
+  async getWithdrawHistory(): Promise<Array<{
+    id: string; amount: string; coin: string; network: string; status: number;
+    address: string; txId: string; applyTime: string; transactionFee: string;
+  }>> {
+    if (this.mode === "testnet") return [];
+    return this.signedRequest("GET", "/sapi/v1/capital/withdraw/history", { limit: 100 });
+  }
+
+  // ─── WebSocket User Data Stream ───
+  // Skapa listenKey (giltig 60 min, måste pingas var 30 min)
+  async createListenKey(): Promise<string> {
+    const r = await fetch(`${this.baseUrl}/api/v3/userDataStream`, {
+      method: "POST",
+      headers: { "X-MBX-APIKEY": this.apiKey },
+    });
+    if (!r.ok) throw new Error(`createListenKey ${r.status}: ${await r.text()}`);
+    const data = (await r.json()) as { listenKey: string };
+    return data.listenKey;
+  }
+
+  async keepAliveListenKey(listenKey: string): Promise<void> {
+    const r = await fetch(`${this.baseUrl}/api/v3/userDataStream?listenKey=${listenKey}`, {
+      method: "PUT",
+      headers: { "X-MBX-APIKEY": this.apiKey },
+    });
+    if (!r.ok) throw new Error(`keepAliveListenKey ${r.status}`);
+  }
+
+  getWsUrl(): string {
+    return this.mode === "testnet" ? "wss://stream.testnet.binance.vision/ws" : "wss://stream.binance.com:9443/ws";
+  }
+
   // ─── Härledda metoder ───
 
   // Total USDT-värde av kontot — använder BATCH-fetch (1 request för alla priser)
@@ -208,6 +260,120 @@ export class BinanceClient {
     // Sortera positioner efter värde (störst först)
     positions.sort((a, b) => b.valueUsdt - a.valueUsdt);
     return { cashUsdt, cashBreakdown, positions, totalUsdt };
+  }
+
+  // ─── PORTFOLIO TRADES + REALIZED PnL (FIFO) ───
+  // Aggregerar trades för alla symbols där användaren haft volym, beräknar realized PnL via FIFO-matchning
+  async getPortfolioTradeStats(): Promise<{
+    totalTrades: number;
+    closedTrades: number;
+    wins: number;
+    losses: number;
+    realizedPnlUsdt: number;
+    feesUsdt: number;
+    perSymbol: Array<{ symbol: string; trades: number; realizedPnl: number; wins: number; losses: number }>;
+    recentTrades: Array<{ symbol: string; side: string; price: number; qty: number; quoteQty: number; time: number; pnl: number | null }>;
+  }> {
+    const account = await this.getAccount();
+    const STABLES = ["USDT", "USDC", "BUSD", "FDUSD", "TUSD", "DAI", "USDP"];
+    // Symboler att kolla = alla non-stablecoin assets med någonsin-balans + några bas-pairs
+    const candidates = new Set<string>();
+    for (const b of account.balances) {
+      if (STABLES.includes(b.asset)) continue;
+      const total = parseFloat(b.free) + parseFloat(b.locked);
+      if (total > 0) candidates.add(`${b.asset}USDT`);
+    }
+    // Lägg till vanliga par så vi fångar stängda positioner (sålda till 0)
+    ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"].forEach((s) => candidates.add(s));
+
+    let allTrades: Array<{ symbol: string; side: "BUY" | "SELL"; price: number; qty: number; quoteQty: number; commission: number; commissionAsset: string; time: number }> = [];
+    // Hämta trades parallellt (max 10 åt gången för att inte trigga rate-limit)
+    const symbols = Array.from(candidates);
+    const batchSize = 8;
+    for (let i = 0; i < symbols.length; i += batchSize) {
+      const batch = symbols.slice(i, i + batchSize);
+      const results = await Promise.allSettled(batch.map((s) => this.getMyTrades(s, 100)));
+      for (let j = 0; j < batch.length; j++) {
+        const symbol = batch[j];
+        const r = results[j];
+        if (r.status !== "fulfilled") continue;
+        for (const t of r.value) {
+          allTrades.push({
+            symbol,
+            side: t.isBuyer ? "BUY" : "SELL",
+            price: parseFloat(t.price),
+            qty: parseFloat(t.qty),
+            quoteQty: parseFloat(t.quoteQty),
+            commission: parseFloat(t.commission),
+            commissionAsset: t.commissionAsset,
+            time: t.time,
+          });
+        }
+      }
+    }
+    allTrades.sort((a, b) => a.time - b.time);
+
+    // FIFO realized PnL per symbol
+    const perSymbol = new Map<string, { trades: number; realizedPnl: number; wins: number; losses: number; lots: Array<{ qty: number; price: number }> }>();
+    let totalFees = 0;
+    const tradedWithPnL: Array<{ symbol: string; side: string; price: number; qty: number; quoteQty: number; time: number; pnl: number | null }> = [];
+
+    for (const t of allTrades) {
+      let s = perSymbol.get(t.symbol);
+      if (!s) { s = { trades: 0, realizedPnl: 0, wins: 0, losses: 0, lots: [] }; perSymbol.set(t.symbol, s); }
+      s.trades++;
+      // Approx fee i USDT (commissionAsset varierar — om USDT ta direkt, annars approx via price)
+      const feeUsdt = t.commissionAsset === "USDT" ? t.commission : t.commission * t.price;
+      totalFees += feeUsdt;
+
+      let tradePnl: number | null = null;
+      if (t.side === "BUY") {
+        s.lots.push({ qty: t.qty, price: t.price });
+      } else {
+        // SELL → matcha mot oldest BUY-lots (FIFO)
+        let qtyToSell = t.qty;
+        let costBasis = 0;
+        while (qtyToSell > 0 && s.lots.length > 0) {
+          const lot = s.lots[0];
+          const taken = Math.min(qtyToSell, lot.qty);
+          costBasis += taken * lot.price;
+          lot.qty -= taken;
+          qtyToSell -= taken;
+          if (lot.qty <= 1e-9) s.lots.shift();
+        }
+        const sellValue = (t.qty - qtyToSell) * t.price;
+        tradePnl = sellValue - costBasis - feeUsdt;
+        if (tradePnl !== 0) {
+          s.realizedPnl += tradePnl;
+          if (tradePnl > 0) s.wins++; else s.losses++;
+        }
+      }
+      tradedWithPnL.push({ symbol: t.symbol, side: t.side, price: t.price, qty: t.qty, quoteQty: t.quoteQty, time: t.time, pnl: tradePnl });
+    }
+
+    let totalRealized = 0, wins = 0, losses = 0, closedTrades = 0;
+    const perSymArr: Array<{ symbol: string; trades: number; realizedPnl: number; wins: number; losses: number }> = [];
+    for (const [sym, s] of perSymbol) {
+      totalRealized += s.realizedPnl;
+      wins += s.wins;
+      losses += s.losses;
+      closedTrades += s.wins + s.losses;
+      perSymArr.push({ symbol: sym, trades: s.trades, realizedPnl: s.realizedPnl, wins: s.wins, losses: s.losses });
+    }
+    perSymArr.sort((a, b) => Math.abs(b.realizedPnl) - Math.abs(a.realizedPnl));
+    // Senaste 20 trades (nyast först)
+    const recentTrades = tradedWithPnL.slice(-20).reverse();
+
+    return {
+      totalTrades: allTrades.length,
+      closedTrades,
+      wins,
+      losses,
+      realizedPnlUsdt: totalRealized,
+      feesUsdt: totalFees,
+      perSymbol: perSymArr,
+      recentTrades,
+    };
   }
 
   // Healthcheck — verifierar API-keys + permissions

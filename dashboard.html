@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-29-23-35">
+<meta name="version" content="v2026-04-30-portfolio-trades">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-29-23-35 inte är samma → reload
-  const expectedVer = "v2026-04-29-23-35";
+  // Tvinga ny version: om v2026-04-30-portfolio-trades inte är samma → reload
+  const expectedVer = "v2026-04-30-portfolio-trades";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -6605,10 +6605,27 @@ async function refreshBinanceSync(){
       setText("pc-equity", "$" + total.toFixed(2));
       setText("pc-cash", "$" + cash.toFixed(2));
       setText("pc-unrealized", positionValue > 0 ? `+$${positionValue.toFixed(2)}` : "$0.00");
-      // Realiserat PnL + W/L kräver trade-historik från Binance — visas som "—" tills vi byggt det
-      setText("pc-realized", "—");
-      setText("pc-trades", "—");
-      setText("pc-winrate", "—");
+      // Realized PnL + W/L hämtas från /api/binance/portfolio-trades (cached 60s)
+      try {
+        const ptR = await fetch(`/api/binance/portfolio-trades?mode=${isLive ? "live" : "testnet"}`);
+        const pt = await ptR.json();
+        if(pt.ok){
+          const realized = pt.realizedPnlUsdt || 0;
+          const wins = pt.wins || 0;
+          const losses = pt.losses || 0;
+          const closed = pt.closedTrades || 0;
+          const winRate = closed > 0 ? Math.round((wins / closed) * 100) : null;
+          setText("pc-realized", (realized >= 0 ? "+" : "") + "$" + realized.toFixed(2));
+          const realEl = document.getElementById("pc-realized");
+          if(realEl) realEl.className = "pc-pnl " + (realized >= 0 ? "up" : "down");
+          setText("pc-trades", closed > 0 ? `${wins}W / ${losses}L` : (pt.totalTrades > 0 ? `${pt.totalTrades} trades` : "—"));
+          setText("pc-winrate", winRate !== null ? winRate + "%" : "—");
+        } else {
+          setText("pc-realized", "—"); setText("pc-trades", "—"); setText("pc-winrate", "—");
+        }
+      } catch {
+        setText("pc-realized", "—"); setText("pc-trades", "—"); setText("pc-winrate", "—");
+      }
     } else {
       setText("pc-equity", "$0.00");
       setText("pc-cash", "$0.00");
@@ -6636,7 +6653,33 @@ async function refreshBinanceSync(){
 function startBinanceSync(){
   if(binanceSyncInterval) return;
   refreshBinanceSync();
-  binanceSyncInterval = setInterval(refreshBinanceSync, 3000); // var 3s
+  binanceSyncInterval = setInterval(refreshBinanceSync, 3000); // var 3s polling baseline
+  // SSE: pushar order-fills + balansändringar i realtid (Binance user-data-stream)
+  startBinanceUserStream();
+}
+
+let binanceUserStreamES = null;
+function startBinanceUserStream(){
+  if(binanceUserStreamES) return;
+  try {
+    const es = new EventSource("/api/binance/stream");
+    binanceUserStreamES = es;
+    // executionReport = order placed/filled/cancelled
+    es.addEventListener("executionReport", (e)=>{
+      try {
+        const d = JSON.parse(e.data);
+        // Trigga omedelbar refresh när order fylls (X = filled)
+        if(d.X === "FILLED" || d.X === "PARTIALLY_FILLED" || d.X === "CANCELED"){
+          refreshBinanceSync();
+        }
+      } catch {}
+    });
+    // outboundAccountPosition = balansändring
+    es.addEventListener("outboundAccountPosition", ()=>{ refreshBinanceSync(); });
+    // balanceUpdate = deposit/withdrawal
+    es.addEventListener("balanceUpdate", ()=>{ refreshBinanceSync(); });
+    es.onerror = ()=>{ /* EventSource auto-reconnectar */ };
+  } catch(e){ console.warn("SSE-init failed:", e); }
 }
 
 function wireBrokerIntegrations(){

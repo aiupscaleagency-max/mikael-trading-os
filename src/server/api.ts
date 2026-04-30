@@ -62,6 +62,71 @@ function initIntegrationsFromEnv(): void {
 }
 initIntegrationsFromEnv();
 
+// ─── Portfolio-stats cache (60s TTL för att inte spam:a Binance API) ───
+type PortfolioStats = Awaited<ReturnType<BinanceClient["getPortfolioTradeStats"]>>;
+const portfolioStatsCache = new Map<"testnet" | "live", { ts: number; data: PortfolioStats }>();
+const PORTFOLIO_TTL_MS = 60_000;
+function getCachedPortfolioStats(mode: "testnet" | "live"): PortfolioStats | null {
+  const c = portfolioStatsCache.get(mode);
+  if (c && Date.now() - c.ts < PORTFOLIO_TTL_MS) return c.data;
+  return null;
+}
+function setCachedPortfolioStats(mode: "testnet" | "live", data: PortfolioStats): void {
+  portfolioStatsCache.set(mode, { ts: Date.now(), data });
+}
+
+// ─── SSE-subscribers för Binance user-data-stream ───
+const userStreamSubscribers: http.ServerResponse[] = [];
+function broadcastUserStream(event: string, payload: unknown): void {
+  const msg = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const r of userStreamSubscribers) {
+    try { r.write(msg); } catch { /* dead socket */ }
+  }
+}
+
+// ─── Binance WebSocket User Data Stream — pushar order-fills + balans-uppdateringar i realtid ───
+import WebSocket from "ws";
+const userStreams: Map<"testnet" | "live", { ws: WebSocket; listenKey: string; keepAlive: NodeJS.Timeout }> = new Map();
+
+async function startUserDataStream(mode: "testnet" | "live"): Promise<void> {
+  const creds = resolveBinanceCreds(mode);
+  if (!creds) return;
+  if (userStreams.has(mode)) return;
+  try {
+    const client = new BinanceClient(creds);
+    const listenKey = await client.createListenKey();
+    const wsUrl = `${client.getWsUrl()}/${listenKey}`;
+    const ws = new WebSocket(wsUrl);
+    ws.on("open", () => log.ok(`[binance-${mode}] user-data-stream öppnad`));
+    ws.on("message", (raw: WebSocket.RawData) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+        // Invalidera portfolio-cache vid varje event så nästa request hämtar färska siffror
+        portfolioStatsCache.delete(mode);
+        broadcastUserStream(msg.e || "update", { mode, ...msg });
+      } catch { /* ignore malformed */ }
+    });
+    ws.on("error", (err) => log.warn(`[binance-${mode}] WS error: ${err.message}`));
+    ws.on("close", () => {
+      log.warn(`[binance-${mode}] WS stängd — återansluter om 5s`);
+      const entry = userStreams.get(mode);
+      if (entry) clearInterval(entry.keepAlive);
+      userStreams.delete(mode);
+      setTimeout(() => startUserDataStream(mode), 5000);
+    });
+    // Keep-alive listenKey var 30 min
+    const keepAlive = setInterval(() => {
+      client.keepAliveListenKey(listenKey).catch((e) => log.warn(`[binance-${mode}] keepAlive fail: ${e.message}`));
+    }, 30 * 60 * 1000);
+    userStreams.set(mode, { ws, listenKey, keepAlive });
+  } catch (err) {
+    log.warn(`[binance-${mode}] user-data-stream init fail: ${err instanceof Error ? err.message : String(err)}`);
+    setTimeout(() => startUserDataStream(mode), 30_000);
+  }
+}
+// Starta WS-streams vid boot (om creds finns)
+setTimeout(() => { startUserDataStream("testnet"); startUserDataStream("live"); }, 2000);
+
 // Reset daily-loss-counter vid midnatt
 setInterval(() => {
   const today = new Date().getUTCDate();
@@ -774,6 +839,83 @@ export function startServer(
         } catch (err) {
           json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }
+        return;
+      }
+      // GET /api/binance/portfolio-trades?mode= — full trade-historik + realized PnL + W/L
+      if (url.pathname === "/api/binance/portfolio-trades" && method === "GET") {
+        const mode = (url.searchParams.get("mode") === "live" ? "live" : "testnet") as "testnet" | "live";
+        const creds = resolveBinanceCreds(mode);
+        if (!creds) { json(res, { ok: false, error: `Binance ${mode} ej konfigurerat` }); return; }
+        try {
+          const cached = getCachedPortfolioStats(mode);
+          if (cached) { json(res, { ok: true, mode, ...cached, cached: true }); return; }
+          const client = new BinanceClient(creds);
+          const stats = await client.getPortfolioTradeStats();
+          setCachedPortfolioStats(mode, stats);
+          json(res, { ok: true, mode, ...stats, cached: false });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      // GET /api/binance/orders/open?mode= — pending limit-orders
+      if (url.pathname === "/api/binance/orders/open" && method === "GET") {
+        const mode = (url.searchParams.get("mode") === "live" ? "live" : "testnet") as "testnet" | "live";
+        const creds = resolveBinanceCreds(mode);
+        if (!creds) { json(res, { ok: false, error: `Binance ${mode} ej konfigurerat` }); return; }
+        try {
+          const client = new BinanceClient(creds);
+          const orders = await client.getOpenOrders();
+          json(res, { ok: true, mode, orders });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      // GET /api/binance/orders/history?mode=&symbol=BTCUSDT
+      if (url.pathname === "/api/binance/orders/history" && method === "GET") {
+        const mode = (url.searchParams.get("mode") === "live" ? "live" : "testnet") as "testnet" | "live";
+        const creds = resolveBinanceCreds(mode);
+        if (!creds) { json(res, { ok: false, error: `Binance ${mode} ej konfigurerat` }); return; }
+        const symbol = url.searchParams.get("symbol") || "BTCUSDT";
+        try {
+          const client = new BinanceClient(creds);
+          const orders = await client.getAllOrders(symbol, 50);
+          json(res, { ok: true, mode, symbol, orders });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      // GET /api/binance/transfers?mode= — deposits + withdrawals (mainnet bara)
+      if (url.pathname === "/api/binance/transfers" && method === "GET") {
+        const mode = (url.searchParams.get("mode") === "live" ? "live" : "testnet") as "testnet" | "live";
+        const creds = resolveBinanceCreds(mode);
+        if (!creds) { json(res, { ok: false, error: `Binance ${mode} ej konfigurerat` }); return; }
+        try {
+          const client = new BinanceClient(creds);
+          const [deposits, withdrawals] = await Promise.all([client.getDepositHistory(), client.getWithdrawHistory()]);
+          json(res, { ok: true, mode, deposits, withdrawals });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      // GET /api/binance/stream — SSE-bridge för WS user-data-stream events (real-tid order-fills)
+      if (url.pathname === "/api/binance/stream" && method === "GET") {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "X-Accel-Buffering": "no",
+        });
+        const id = userStreamSubscribers.length;
+        userStreamSubscribers.push(res);
+        res.write(`event: hello\ndata: ${JSON.stringify({ subscriberId: id, ts: Date.now() })}\n\n`);
+        req.on("close", () => {
+          const idx = userStreamSubscribers.indexOf(res);
+          if (idx >= 0) userStreamSubscribers.splice(idx, 1);
+        });
         return;
       }
       // GET /api/binance/safety — visa nuvarande säkerhetslås-status
