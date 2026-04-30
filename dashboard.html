@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-portfolio-trades">
+<meta name="version" content="v2026-04-30-throttled">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-portfolio-trades inte är samma → reload
-  const expectedVer = "v2026-04-30-portfolio-trades";
+  // Tvinga ny version: om v2026-04-30-throttled inte är samma → reload
+  const expectedVer = "v2026-04-30-throttled";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -6605,27 +6605,8 @@ async function refreshBinanceSync(){
       setText("pc-equity", "$" + total.toFixed(2));
       setText("pc-cash", "$" + cash.toFixed(2));
       setText("pc-unrealized", positionValue > 0 ? `+$${positionValue.toFixed(2)}` : "$0.00");
-      // Realized PnL + W/L hämtas från /api/binance/portfolio-trades (cached 60s)
-      try {
-        const ptR = await fetch(`/api/binance/portfolio-trades?mode=${isLive ? "live" : "testnet"}`);
-        const pt = await ptR.json();
-        if(pt.ok){
-          const realized = pt.realizedPnlUsdt || 0;
-          const wins = pt.wins || 0;
-          const losses = pt.losses || 0;
-          const closed = pt.closedTrades || 0;
-          const winRate = closed > 0 ? Math.round((wins / closed) * 100) : null;
-          setText("pc-realized", (realized >= 0 ? "+" : "") + "$" + realized.toFixed(2));
-          const realEl = document.getElementById("pc-realized");
-          if(realEl) realEl.className = "pc-pnl " + (realized >= 0 ? "up" : "down");
-          setText("pc-trades", closed > 0 ? `${wins}W / ${losses}L` : (pt.totalTrades > 0 ? `${pt.totalTrades} trades` : "—"));
-          setText("pc-winrate", winRate !== null ? winRate + "%" : "—");
-        } else {
-          setText("pc-realized", "—"); setText("pc-trades", "—"); setText("pc-winrate", "—");
-        }
-      } catch {
-        setText("pc-realized", "—"); setText("pc-trades", "—"); setText("pc-winrate", "—");
-      }
+      // Realized PnL + W/L hämtas via separat throttlad funktion (var 30s, ej varje 3s)
+      maybeRefreshPortfolioTrades(isLive ? "live" : "testnet");
     } else {
       setText("pc-equity", "$0.00");
       setText("pc-cash", "$0.00");
@@ -6658,6 +6639,31 @@ function startBinanceSync(){
   startBinanceUserStream();
 }
 
+// Throttlad portfolio-trades fetch (max 1 per 30s per mode för att skydda Binance rate-limit)
+const _lastPtFetch = { testnet: 0, live: 0 };
+async function maybeRefreshPortfolioTrades(mode){
+  const now = Date.now();
+  if(now - _lastPtFetch[mode] < 30000) return; // skip om < 30s sen senaste
+  _lastPtFetch[mode] = now;
+  const setText = (id, val) => { const el = document.getElementById(id); if(el) el.textContent = val; };
+  try {
+    const ptR = await fetch(`/api/binance/portfolio-trades?mode=${mode}`);
+    const pt = await ptR.json();
+    if(pt.ok){
+      const realized = pt.realizedPnlUsdt || 0;
+      const wins = pt.wins || 0;
+      const losses = pt.losses || 0;
+      const closed = pt.closedTrades || 0;
+      const winRate = closed > 0 ? Math.round((wins / closed) * 100) : null;
+      setText("pc-realized", (realized >= 0 ? "+" : "") + "$" + realized.toFixed(2));
+      const realEl = document.getElementById("pc-realized");
+      if(realEl) realEl.className = "pc-pnl " + (realized >= 0 ? "up" : "down");
+      setText("pc-trades", closed > 0 ? `${wins}W / ${losses}L` : (pt.totalTrades > 0 ? `${pt.totalTrades} trades` : "—"));
+      setText("pc-winrate", winRate !== null ? winRate + "%" : "—");
+    }
+  } catch(e){ /* tyst — keep prev values */ }
+}
+
 let binanceUserStreamES = null;
 function startBinanceUserStream(){
   if(binanceUserStreamES) return;
@@ -6670,6 +6676,8 @@ function startBinanceUserStream(){
         const d = JSON.parse(e.data);
         // Trigga omedelbar refresh när order fylls (X = filled)
         if(d.X === "FILLED" || d.X === "PARTIALLY_FILLED" || d.X === "CANCELED"){
+          // Force-bypass throttle: portfolio-trades uppdateras NU (riktig trade hände)
+          _lastPtFetch.testnet = 0; _lastPtFetch.live = 0;
           refreshBinanceSync();
         }
       } catch {}

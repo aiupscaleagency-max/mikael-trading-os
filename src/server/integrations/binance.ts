@@ -274,16 +274,17 @@ export class BinanceClient {
     perSymbol: Array<{ symbol: string; trades: number; realizedPnl: number; wins: number; losses: number }>;
     recentTrades: Array<{ symbol: string; side: string; price: number; qty: number; quoteQty: number; time: number; pnl: number | null }>;
   }> {
-    const account = await this.getAccount();
+    // Optimerad: använd getTotalEquity för att hitta TOP-N positioner by value
+    // Binance rate-limit: /myTrades = weight 20 per symbol, max 6000/min IP weight
+    // Säker gräns: max 20 symbols per call → 400 weight (lämnar headroom för andra calls)
+    const equity = await this.getTotalEquity();
     const STABLES = ["USDT", "USDC", "BUSD", "FDUSD", "TUSD", "DAI", "USDP"];
-    // Symboler att kolla = alla non-stablecoin assets med någonsin-balans + några bas-pairs
     const candidates = new Set<string>();
-    for (const b of account.balances) {
-      if (STABLES.includes(b.asset)) continue;
-      const total = parseFloat(b.free) + parseFloat(b.locked);
-      if (total > 0) candidates.add(`${b.asset}USDT`);
+    // Top-20 positioner by value
+    for (const p of equity.positions.slice(0, 20)) {
+      candidates.add(`${p.asset}USDT`);
     }
-    // Lägg till vanliga par så vi fångar stängda positioner (sålda till 0)
+    // Plus standard-pairs (för att fånga stängda positioner)
     ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"].forEach((s) => candidates.add(s));
 
     let allTrades: Array<{ symbol: string; side: "BUY" | "SELL"; price: number; qty: number; quoteQty: number; commission: number; commissionAsset: string; time: number }> = [];

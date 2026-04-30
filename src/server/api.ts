@@ -65,7 +65,7 @@ initIntegrationsFromEnv();
 // ─── Portfolio-stats cache (60s TTL för att inte spam:a Binance API) ───
 type PortfolioStats = Awaited<ReturnType<BinanceClient["getPortfolioTradeStats"]>>;
 const portfolioStatsCache = new Map<"testnet" | "live", { ts: number; data: PortfolioStats }>();
-const PORTFOLIO_TTL_MS = 60_000;
+const PORTFOLIO_TTL_MS = 5 * 60_000; // 5 min — invalideras vid WS-event vid behov
 function getCachedPortfolioStats(mode: "testnet" | "live"): PortfolioStats | null {
   const c = portfolioStatsCache.get(mode);
   if (c && Date.now() - c.ts < PORTFOLIO_TTL_MS) return c.data;
