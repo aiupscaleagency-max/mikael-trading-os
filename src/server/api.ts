@@ -12,6 +12,7 @@ import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessag
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
 import { detectAllPatterns, type Candle } from "./patternDetection.js";
 import { BinanceClient, type BinanceCredentials } from "./integrations/binance.js";
+import { startPositionMonitor, recordEntry as recordPositionEntry, getMonitorStatus, setMonitorEnabled, setLiveAutoSell } from "./positionMonitor.js";
 import { OandaClient, type OandaCredentials } from "./integrations/oanda.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
@@ -62,6 +63,10 @@ function initIntegrationsFromEnv(): void {
   }
 }
 initIntegrationsFromEnv();
+
+// Starta autonom Position Monitor (TESTNET-only första 7 dagarna)
+// LIVE auto-sell aktiveras via /api/monitor/live-enable när Mike är redo
+startPositionMonitor(binanceTestnetCreds, binanceLiveCreds);
 
 // ─── Portfolio-stats cache (60s TTL för att inte spam:a Binance API) ───
 type PortfolioStats = Awaited<ReturnType<BinanceClient["getPortfolioTradeStats"]>>;
@@ -157,6 +162,8 @@ async function executeChatTool(
       try {
         const fill = await client.placeMarketOrder({ symbol: s.symbol, side: "BUY", quoteOrderQty: amt });
         const fillPrice = parseFloat(fill.cummulativeQuoteQty) / parseFloat(fill.executedQty);
+        // Registrera entry till PositionMonitor så den vet när auto-sell ska triggas
+        recordPositionEntry(s.baseAsset, mode, fillPrice, parseFloat(fill.executedQty));
         return { symbol: s.symbol, ok: true, qty: parseFloat(fill.executedQty), fill_price: fillPrice, order_id: fill.orderId };
       } catch (e) {
         return { symbol: s.symbol, ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
@@ -1326,6 +1333,27 @@ Regler:
         return;
       }
 
+      // GET /api/monitor/status — autonom auto-sell-monitor status
+      if (url.pathname === "/api/monitor/status" && method === "GET") {
+        json(res, { ok: true, ...getMonitorStatus() });
+        return;
+      }
+      // POST /api/monitor/toggle { enabled: boolean } — slå på/av monitor
+      if (url.pathname === "/api/monitor/toggle" && method === "POST") {
+        const body = await readBody(req);
+        const { enabled } = JSON.parse(body) as { enabled: boolean };
+        setMonitorEnabled(!!enabled);
+        json(res, { ok: true, enabled: !!enabled });
+        return;
+      }
+      // POST /api/monitor/live-enable { enabled: boolean } — aktivera LIVE auto-sell
+      if (url.pathname === "/api/monitor/live-enable" && method === "POST") {
+        const body = await readBody(req);
+        const { enabled } = JSON.parse(body) as { enabled: boolean };
+        setLiveAutoSell(!!enabled);
+        json(res, { ok: true, liveEnabled: !!enabled });
+        return;
+      }
       // GET /api/binance/safety — visa nuvarande säkerhetslås-status
       if (url.pathname === "/api/binance/safety" && method === "GET") {
         json(res, {
