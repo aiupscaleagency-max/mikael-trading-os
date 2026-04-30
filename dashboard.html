@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-mode-split-chat">
+<meta name="version" content="v2026-04-30-binance-positions">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-mode-split-chat inte är samma → reload
-  const expectedVer = "v2026-04-30-mode-split-chat";
+  // Tvinga ny version: om v2026-04-30-binance-positions inte är samma → reload
+  const expectedVer = "v2026-04-30-binance-positions";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -5551,6 +5551,41 @@ function renderTradesPage(){
   if(posTbl){
     if(!positions.length){
       posTbl.innerHTML = `<div class="tt-empty">Inga öppna positioner. Skriv "Köp BTC för $50" i chatten — eller klicka "Kör analys" så jobbar Hanna automatiskt.</div>`;
+    } else if(positions[0]?.fromBinance){
+      // Binance-positioner: enklare rendering (ingen scalp/timeframe), avrundat värde
+      posTbl.innerHTML = `<div class="tt-tbl">${positions.map(p=>{
+        const valueStr = p.amount >= 100 ? "$"+p.amount.toFixed(2) : "$"+p.amount.toFixed(4);
+        const qtyStr = p.qty >= 1 ? p.qty.toFixed(4) : p.qty.toFixed(6);
+        const priceStr = p.entry >= 1 ? p.entry.toFixed(2) : p.entry.toFixed(8);
+        return `<div class="tt-row long" data-id="${p.id}">
+          <span class="tt-side buy">📈 LONG</span>
+          <div>
+            <div class="tt-sym">${p.sym}</div>
+            <div class="tt-meta">${qtyStr} st @ ~$${priceStr} · spot</div>
+          </div>
+          <div class="tt-meta">→ värde nu</div>
+          <div class="tt-pnl up">${valueStr}</div>
+          <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+            <span class="tt-time" style="font-size:9px;color:var(--dim)">på Binance</span>
+            <button class="tt-act" data-close="${p.id}">Sälj</button>
+          </div>
+        </div>`;
+      }).join("")}</div>`;
+      // Wire sälj-knappar — skickar via /api/chat → close_all_positions för enkelhet,
+      // eller per-symbol om vi byter senare
+      posTbl.querySelectorAll("[data-close]").forEach(b=>{
+        b.addEventListener("click", ()=>{
+          if(!confirm("Sälja denna position via market-order?")) return;
+          // Skicka SELL-instruction till Hanna via chatt
+          const sym = b.dataset.close.replace(/^binance-(live|test)-/, "");
+          if(typeof teamChatLog !== "undefined"){
+            teamChatLog.push({role:"user", text:`sälj ${sym}`, timestamp:Date.now()});
+            renderTeamChatLog();
+            const txt = document.getElementById("team-chat-text");
+            if(txt){ txt.value = `sälj ${sym}`; sendTeamChat(); }
+          }
+        });
+      });
     } else {
       posTbl.innerHTML = `<div class="tt-tbl">${positions.map(p=>{
         const cur = STATE.livePrices[p.sym] ?? p.entry;
@@ -6697,6 +6732,32 @@ async function refreshBinanceSync(){
     // SALDO-CARD speglar mode: TEST → Testnet, LIVE → Mainnet
     const isLive = currentUiMode === "live";
     const src = isLive ? data.live : data.testnet;
+
+    // BINANCE-POSITIONS → STATE.tradePositions (för "Aktiva positioner"-tabellen)
+    // Visas på Trades-sidan så Mike ser sina riktiga öppna positioner
+    if(src && src.positions){
+      STATE.tradePositions = src.positions.map((p, idx) => {
+        const pricePerUnit = p.qty > 0 ? p.valueUsdt / p.qty : 0;
+        return {
+          id: `binance-${isLive?"live":"test"}-${p.asset}`,
+          sym: p.asset,
+          side: "BUY",
+          amount: p.valueUsdt,
+          entry: pricePerUnit,
+          qty: p.qty,
+          openedAt: Date.now(),
+          type: "spot",
+          fromBinance: true
+        };
+      });
+      // Re-rendera om Trades-sidan är aktiv
+      if(STATE.activeTab === "trades" && typeof renderTradesPage === "function"){
+        try { renderTradesPage(); } catch(_){}
+      }
+      // Uppdatera position-räknaren i header också
+      const posCount = document.getElementById("pos-count");
+      if(posCount) posCount.textContent = STATE.tradePositions.length;
+    }
     const modeLbl = document.getElementById("pc-mode-label");
     if(modeLbl) modeLbl.textContent = isLive ? "💚 LIVE SALDO (BINANCE.COM)" : "🧪 TESTNET SALDO (TESTNET.BINANCE.VISION)";
     const setText = (id, val) => { const el = document.getElementById(id); if(el) el.textContent = val; };
