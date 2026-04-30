@@ -162,6 +162,42 @@ export class BinanceClient {
     return this.signedRequest("DELETE", "/api/v3/order", { symbol, orderId });
   }
 
+  // ─── EXCHANGE INFO + MIN_NOTIONAL (publik endpoint, ingen auth) ───
+  // Returnerar metadata för alla symbols: minimum order size, status, filters
+  async getExchangeInfo(): Promise<{
+    symbols: Array<{
+      symbol: string; status: string; baseAsset: string; quoteAsset: string;
+      filters: Array<{ filterType: string; minNotional?: string; minQty?: string; stepSize?: string; tickSize?: string }>;
+    }>;
+  }> {
+    const r = await fetch(`${this.baseUrl}/api/v3/exchangeInfo`);
+    if (!r.ok) throw new Error(`exchangeInfo ${r.status}`);
+    return r.json() as ReturnType<BinanceClient["getExchangeInfo"]>;
+  }
+
+  // Lista alla TRADING-symboler grupperade per quote-asset (USDT, USDC, BTC, ...)
+  async getTradableSymbols(quoteAssets: string[] = ["USDT", "USDC"]): Promise<Array<{
+    symbol: string; baseAsset: string; quoteAsset: string; minNotional: number; minQty: number; stepSize: number;
+  }>> {
+    const info = await this.getExchangeInfo();
+    const out: Array<{ symbol: string; baseAsset: string; quoteAsset: string; minNotional: number; minQty: number; stepSize: number }> = [];
+    for (const s of info.symbols) {
+      if (s.status !== "TRADING") continue;
+      if (!quoteAssets.includes(s.quoteAsset)) continue;
+      const minNot = s.filters.find((f) => f.filterType === "NOTIONAL" || f.filterType === "MIN_NOTIONAL");
+      const lot = s.filters.find((f) => f.filterType === "LOT_SIZE");
+      out.push({
+        symbol: s.symbol,
+        baseAsset: s.baseAsset,
+        quoteAsset: s.quoteAsset,
+        minNotional: minNot?.minNotional ? parseFloat(minNot.minNotional) : 5,
+        minQty: lot?.minQty ? parseFloat(lot.minQty) : 0,
+        stepSize: lot?.stepSize ? parseFloat(lot.stepSize) : 0,
+      });
+    }
+    return out;
+  }
+
   // ─── ORDER- & TRANSFER-historik ───
 
   async getAllOrders(symbol: string, limit = 100): Promise<Array<{

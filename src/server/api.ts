@@ -75,6 +75,10 @@ function setCachedPortfolioStats(mode: "testnet" | "live", data: PortfolioStats)
   portfolioStatsCache.set(mode, { ts: Date.now(), data });
 }
 
+// ─── Symbols cache (1 timme TTL — exchangeInfo är publik och rate-cheap) ───
+const symbolsCache = new Map<"testnet" | "live", { ts: number; data: Array<{ symbol: string; baseAsset: string; quoteAsset: string; minNotional: number; minQty: number; stepSize: number }> }>();
+const SYMBOLS_TTL_MS = 60 * 60_000;
+
 // ─── SSE-subscribers för Binance user-data-stream ───
 const userStreamSubscribers: http.ServerResponse[] = [];
 function broadcastUserStream(event: string, payload: unknown): void {
@@ -918,6 +922,23 @@ export function startServer(
           const idx = userStreamSubscribers.indexOf(res);
           if (idx >= 0) userStreamSubscribers.splice(idx, 1);
         });
+        return;
+      }
+      // GET /api/binance/symbols?mode= — alla tradeable USDT+USDC pairs med MIN_NOTIONAL
+      if (url.pathname === "/api/binance/symbols" && method === "GET") {
+        const mode = (url.searchParams.get("mode") === "live" ? "live" : "testnet") as "testnet" | "live";
+        const creds = resolveBinanceCreds(mode);
+        if (!creds) { json(res, { ok: false, error: `Binance ${mode} ej konfigurerat` }); return; }
+        try {
+          const cached = symbolsCache.get(mode);
+          if (cached && Date.now() - cached.ts < SYMBOLS_TTL_MS) { json(res, { ok: true, mode, symbols: cached.data, cached: true }); return; }
+          const client = new BinanceClient(creds);
+          const symbols = await client.getTradableSymbols(["USDT", "USDC"]);
+          symbolsCache.set(mode, { ts: Date.now(), data: symbols });
+          json(res, { ok: true, mode, symbols, cached: false });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
         return;
       }
       // GET /api/binance/safety — visa nuvarande säkerhetslås-status

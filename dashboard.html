@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-real-orders">
+<meta name="version" content="v2026-04-30-all-symbols">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-real-orders inte är samma → reload
-  const expectedVer = "v2026-04-30-real-orders";
+  // Tvinga ny version: om v2026-04-30-all-symbols inte är samma → reload
+  const expectedVer = "v2026-04-30-all-symbols";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -4191,8 +4191,8 @@ function classifyIntent(text){
      /(köp|sälj|stäng|öppna|placera)\s+\w+/i.test(i)){
     return { intent: "execute" };
   }
-  // Decide — be teamet välja
-  if(/(välj|bestäm|plock|kör för mig|lägg|ta\s)/i.test(i) ||
+  // Decide — be teamet välja (matchar "kör", "kör 3 trades", "lägg 5", "ta 2")
+  if(/\b(välj|bestäm|plock|kör|lägg|ta)\b/i.test(i) ||
      /(vad\s+ska|borde|kan du|skulle du)/i.test(i)){
     return { intent: "decide" };
   }
@@ -4331,11 +4331,21 @@ async function simulateTeamResponse(instr){
   const tfLabel = timeframeSec < 60 ? `${timeframeSec}s` : timeframeSec < 3600 ? `${Math.round(timeframeSec/60)}m` : `${Math.round(timeframeSec/3600)}h`;
 
   // Frågor / utmaningar (prefix-matchning för böjda former)
-  if(/(välj|bestäm|plock|kör för mig|lägg|ta\s)/.test(i)){
-    // Välj symboluniversum baserat på user-intent (forex eller crypto)
-    const cryptoSyms = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT"];
-    const forexSyms = ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/GBP","EUR/JPY","GBP/JPY"];
-    const symbols = isForex ? forexSyms : cryptoSyms;
+  if(/\b(välj|bestäm|plock|kör|lägg|ta)\b/.test(i)){
+    // BINANCE-RIKTIG SYMBOL-UNIVERSUM: hämtas dynamiskt från /api/binance/symbols (cachad 1h)
+    // Mike har USDC på LIVE → använd USDC-pairs där det finns (BTCUSDC, ETHUSDC, ...)
+    // På TESTNET har Mike USDT → använd USDT-pairs
+    const modeForSyms = currentUiMode === "live" ? "live" : "testnet";
+    const userQuotePref = /usdc|usd-c/i.test(i) ? "USDC" : (modeForSyms === "live" ? "USDC" : "USDT");
+    let allSyms = [];
+    try {
+      const symR = await fetch(`/api/binance/symbols?mode=${modeForSyms}`);
+      const symData = await symR.json();
+      if(symData.ok) allSyms = symData.symbols;
+    } catch {}
+    if(!allSyms.length){
+      return { text: `❌ Kunde inte hämta symbol-lista från Binance ${modeForSyms}. Försök igen om 5s.`, executedTrades: [] };
+    }
 
     const trades = [];
     const usedSyms = new Set();
@@ -4371,26 +4381,40 @@ async function simulateTeamResponse(instr){
         executedTrades: []
       };
     }
-    const mode = currentUiMode === "live" ? "live" : "testnet";
-    // Säkerhetslås LIVE — blockera redan här innan vi spammar API:et
-    if(mode === "live" && amount > 5){
+    const mode = modeForSyms;
+    // Filtrera symboler: Mike's quote-preferens + amount >= MIN_NOTIONAL + MARKETABLE
+    // På LIVE har Mike USDC → välj USDC-pairs. På TESTNET → USDT-pairs (han har $50K USDT där).
+    const eligibleSyms = allSyms.filter(s =>
+      s.quoteAsset === userQuotePref &&
+      amount >= s.minNotional &&
+      // Skippa stables-mot-stables (USDCUSDT etc) och fiat-pairs som ger "OCO_NOT_ALLOWED"
+      !["EUR","GBP","JPY","TRY","BRL","ARS","RON","ZAR","UAH","NGN"].includes(s.baseAsset)
+    );
+    if(eligibleSyms.length === 0){
+      // Hitta lägsta MIN_NOTIONAL för quote-preferensen så vi kan föreslå rätt belopp
+      const sameQuote = allSyms.filter(s => s.quoteAsset === userQuotePref);
+      const lowestMin = sameQuote.length ? Math.min(...sameQuote.map(s => s.minNotional)) : 5;
       return {
-        text: `🛡 LIVE-säkerhetslås: max **$5/trade**. Du försökte köra $${amount}/trade. Sänk beloppet eller byt till TEST-mode.`,
+        text: `❌ Inga **${userQuotePref}**-pairs på Binance ${mode.toUpperCase()} accepterar $${amount}/trade.\n\nLägsta minimum för ${userQuotePref}-pairs: **$${lowestMin.toFixed(2)}**.\n\nFöreslår: "kör ${tradeCount} trades på $${Math.ceil(lowestMin)}".${testNote}`,
+        executedTrades: []
+      };
+    }
+    // Säkerhetslås LIVE
+    if(mode === "live" && amount > 50){
+      return {
+        text: `🛡 LIVE-säkerhetslås: max **$50/trade**. Du försökte $${amount}/trade. Sänk beloppet eller byt till TEST-mode.`,
         executedTrades: []
       };
     }
     // Bygg lista av (symbol, side) parallellt
     const plan = [];
     for(let n = 0; n < Math.min(tradeCount, 10); n++){
-      let sym;
-      do { sym = pick(symbols); } while(usedSyms.has(sym) && usedSyms.size < symbols.length);
-      usedSyms.add(sym);
-      const isLong = Math.random() > 0.3;
-      plan.push({ sym, side: isLong ? "BUY" : "SELL", isLong });
+      let symInfo;
+      do { symInfo = pick(eligibleSyms); } while(usedSyms.has(symInfo.symbol) && usedSyms.size < eligibleSyms.length);
+      usedSyms.add(symInfo.symbol);
+      // SHORT kräver margin — på spot kör vi BUY-only
+      plan.push({ sym: symInfo.symbol, side: "BUY", isLong: true, minNotional: symInfo.minNotional });
     }
-    // SELL kräver att vi redan har kvantitet — i scalp-flöde startar vi LONG-only på Binance spot
-    // för enkelhet (SHORT på spot kräver margin-konto). Tvinga BUY för LIVE/TESTNET-spot.
-    plan.forEach(p => { p.side = "BUY"; p.isLong = true; });
     // Lägg ordrarna parallellt med riktig Binance API
     const fillResults = await Promise.all(plan.map(p => executeBinanceOrder(p.sym, p.side, amount, mode)));
     const filled = [];
@@ -4410,8 +4434,9 @@ async function simulateTeamResponse(instr){
     const macroComment = pick(macroComments);
 
     if(filled.length === 0){
+      const symList = plan.map(p => `${p.sym} (min $${p.minNotional.toFixed(2)})`).join(", ");
       return {
-        text: `❌ Ingen av de ${plan.length} ordrarna gick igenom på Binance ${mode}. Kolla saldo (${mode === "live" ? "$49.84" : "$50,499"}) eller minimum order size (Binance kräver typ ~$10 i quoteOrderQty).${testNote}`,
+        text: `❌ Ingen av de ${plan.length} ordrarna gick igenom på Binance ${mode.toUpperCase()}.\n\nFörsökta symboler: ${symList}\n\nMöjliga orsaker:\n• För lågt belopp ($${amount}) — höj till lägst $${Math.max(...plan.map(p => p.minNotional)).toFixed(2)}\n• Insufficient ${userQuotePref}-saldo\n• Symbol pausad / illikvid på testnet\n\nDetaljer i notiser (övre högra hörnet).${testNote}`,
         executedTrades: []
       };
     }
