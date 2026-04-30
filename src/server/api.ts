@@ -1269,39 +1269,46 @@ Regler:
             messages,
           });
 
-          // Plocka ut text + tool_use från svaret
+          // Multi-tool-loop: Claude kan returnera FLERA tool_uses i samma svar och
+          // kan kedja flera turn:s. Loopa tills inga fler tool_uses returneras.
+          let currentReply = reply;
           let replyText = "";
-          let toolCall: { name: string; input: Record<string, unknown> } | null = null;
-          for (const block of reply.content) {
-            if (block.type === "text") replyText += block.text;
-            if (block.type === "tool_use") toolCall = { name: block.name, input: block.input as Record<string, unknown> };
-          }
-
-          // Om tool_call finns: exekvera, lägg in resultat, be Claude svara igen
-          let executedResult: unknown = null;
-          if (toolCall) {
-            executedResult = await executeChatTool(toolCall.name, toolCall.input, mode, client, symbols, userQuotes);
-            // Andra runda — Claude får tool-result och formulerar slut-svar
-            messages.push({ role: "assistant", content: reply.content });
+          const toolNames: string[] = [];
+          const executedResults: Record<string, unknown> = {};
+          const MAX_TURNS = 5;
+          for (let turn = 0; turn < MAX_TURNS; turn++) {
+            const toolUses = currentReply.content.filter(b => b.type === "tool_use") as Anthropic.ToolUseBlock[];
+            const textBlocks = currentReply.content.filter(b => b.type === "text") as Anthropic.TextBlock[];
+            replyText = textBlocks.map(b => b.text).join("");
+            if (toolUses.length === 0) break;
+            // Exekvera alla tool_uses parallellt
+            const toolResults = await Promise.all(toolUses.map(async (tu) => {
+              toolNames.push(tu.name);
+              const result = await executeChatTool(tu.name, tu.input as Record<string, unknown>, mode, client, symbols, userQuotes);
+              executedResults[tu.id] = result;
+              return { tool_use_id: tu.id, content: JSON.stringify(result) };
+            }));
+            // Lägg in i conversation: assistant turn + alla tool_results
+            messages.push({ role: "assistant", content: currentReply.content });
             messages.push({
               role: "user",
-              content: [{
-                type: "tool_result",
-                tool_use_id: (reply.content.find(b => b.type === "tool_use") as Anthropic.ToolUseBlock).id,
-                content: JSON.stringify(executedResult),
-              }],
+              content: toolResults.map(tr => ({ type: "tool_result" as const, tool_use_id: tr.tool_use_id, content: tr.content })),
             });
-            const finalReply = await anthropic.messages.create({
+            currentReply = await anthropic.messages.create({
               model: "claude-haiku-4-5",
               max_tokens: 1024,
               system: systemPrompt,
               tools,
               messages,
             });
-            replyText = finalReply.content.filter(b => b.type === "text").map(b => (b as Anthropic.TextBlock).text).join("");
           }
 
-          json(res, { ok: true, reply: replyText, toolCall: toolCall?.name, executed: executedResult });
+          json(res, {
+            ok: true,
+            reply: replyText,
+            toolCall: toolNames.length > 0 ? toolNames.join(",") : undefined,
+            executed: Object.keys(executedResults).length > 0 ? executedResults : null,
+          });
         } catch (err) {
           json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }

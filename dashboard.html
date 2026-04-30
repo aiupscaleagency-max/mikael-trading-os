@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-claude-agent">
+<meta name="version" content="v2026-04-30-mode-split-chat">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-claude-agent inte är samma → reload
-  const expectedVer = "v2026-04-30-claude-agent";
+  // Tvinga ny version: om v2026-04-30-mode-split-chat inte är samma → reload
+  const expectedVer = "v2026-04-30-mode-split-chat";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -4016,29 +4016,50 @@ function wireAuth(){
 /* ======================================================================
    TEAM CHAT — direktinstruktioner till hela teamet (persistent)
    ====================================================================== */
-let teamChatLog = []; // {role:"user"|"team"|"system", text, timestamp, instruction?}
+// SEPARATA chat-historiker per mode — TESTNET och LIVE blandas inte (Mike-krav)
+let chatLogTestnet = [];
+let chatLogLive = [];
+// teamChatLog = proxy som pekar på rätt array baserat på currentUiMode
+let teamChatLog = chatLogTestnet;
 
-// Ladda från localStorage vid boot
+function activeChatKey(){ return currentUiMode === "live" ? "trading_team_chat_live" : "trading_team_chat_testnet"; }
+function setActiveChatLog(){
+  teamChatLog = currentUiMode === "live" ? chatLogLive : chatLogTestnet;
+}
+
 (function loadChatLog(){
   try {
-    const saved = localStorage.getItem("trading_team_chat");
-    if(saved){
-      const parsed = JSON.parse(saved);
-      // Behåll bara senaste 200 meddelanden för att undvika oändlig tillväxt
-      teamChatLog = Array.isArray(parsed) ? parsed.slice(-200) : [];
+    const t = localStorage.getItem("trading_team_chat_testnet");
+    if(t) chatLogTestnet = (JSON.parse(t) || []).slice(-200);
+    const l = localStorage.getItem("trading_team_chat_live");
+    if(l) chatLogLive = (JSON.parse(l) || []).slice(-200);
+    // Migrera ev. gammal blandad historik till testnet (default)
+    const legacy = localStorage.getItem("trading_team_chat");
+    if(legacy && !t){
+      chatLogTestnet = (JSON.parse(legacy) || []).slice(-200);
+      localStorage.setItem("trading_team_chat_testnet", JSON.stringify(chatLogTestnet));
+      localStorage.removeItem("trading_team_chat");
     }
+    setActiveChatLog();
   } catch(_){}
 })();
 
 function saveChatLog(){
-  try { localStorage.setItem("trading_team_chat", JSON.stringify(teamChatLog.slice(-200))); }
+  try { localStorage.setItem(activeChatKey(), JSON.stringify(teamChatLog.slice(-200))); }
   catch(_){}
 }
 
 function clearChatLog(){
-  if(!confirm("Rensa all chat-historik? Detta går inte att ångra.")) return;
-  teamChatLog = [];
+  if(!confirm(`Rensa ${currentUiMode === "live" ? "LIVE" : "TESTNET"}-chat? Detta går inte att ångra.`)) return;
+  if(currentUiMode === "live"){ chatLogLive = []; teamChatLog = chatLogLive; }
+  else { chatLogTestnet = []; teamChatLog = chatLogTestnet; }
   saveChatLog();
+  renderTeamChatLog();
+}
+
+// Anropas vid mode-byte (TEST <-> LIVE) så chat-loggen swap:as
+function switchChatLogForMode(){
+  setActiveChatLog();
   renderTeamChatLog();
 }
 
@@ -6046,6 +6067,10 @@ function setActiveMode(uiMode){
   document.querySelectorAll(".mode-btn").forEach(b=>{
     b.classList.toggle("active", b.dataset.mode === uiMode);
   });
+  // Byt chat-historik baserat på mode (TESTNET <-> LIVE separata loggar)
+  if(typeof switchChatLogForMode === "function") switchChatLogForMode();
+  // Uppdatera chat-header-tagg
+  if(typeof updateChatModeTag === "function") updateChatModeTag();
   // Trigga saldo-card-refresh direkt så panelen byter mellan TESTNET/LIVE-data
   if(typeof refreshBinanceSync === "function") refreshBinanceSync();
   // PROPOSE = riktiga priser från Binance
@@ -6053,6 +6078,23 @@ function setActiveMode(uiMode){
     startBinancePolling();
   } else {
     stopBinancePolling();
+  }
+}
+
+// Uppdaterar header-taggen i chat-panelen så Mike ALLTID ser om TESTNET eller LIVE
+function updateChatModeTag(){
+  const isLive = currentUiMode === "live";
+  // Floating chat-panelens header
+  const subEl = document.querySelector(".fc-sub");
+  if(subEl){
+    subEl.textContent = isLive ? "💚 LIVE — RIKTIGA PENGAR" : "🧪 TESTNET — demo";
+    subEl.style.color = isLive ? "#22c55e" : "#f0b90b";
+    subEl.style.fontWeight = "700";
+  }
+  // Trades-page Team Chat header
+  const teamHeader = document.querySelector("#team-chat-header b");
+  if(teamHeader){
+    teamHeader.innerHTML = isLive ? `Team Chat <span style="color:#22c55e">(💚 LIVE)</span>` : `Team Chat <span style="color:#f0b90b">(🧪 TESTNET)</span>`;
   }
 }
 
