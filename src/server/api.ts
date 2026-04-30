@@ -201,19 +201,30 @@ async function consultAdvisor(
         marketClient.getKlines(sym, "4h", 100),
         marketClient.getPrice(sym),
       ]);
-      const candles1h: Candle[] = klines1h.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
-      const patterns1h = detectAllPatterns(candles1h).slice(-5);
-      const candles4h: Candle[] = klines4h.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
-      const patterns4h = detectAllPatterns(candles4h).slice(-3);
-      // Enkla indikatorer
+      // Pattern-detection kan crasha på korta arrayer — gör det optional
+      let patterns1h: string[] = [], patterns4h: string[] = [];
+      try {
+        const candles1h: Candle[] = klines1h.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+        patterns1h = detectAllPatterns(candles1h).slice(-5).map(p => p.type);
+      } catch (e) { /* skip */ }
+      try {
+        const candles4h: Candle[] = klines4h.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+        patterns4h = detectAllPatterns(candles4h).slice(-3).map(p => p.type);
+      } catch (e) { /* skip */ }
+      // Enkla indikatorer — robust mot korta arrays
+      if (!klines1h || klines1h.length < 25) {
+        return { symbol: sym, price, error: `Otillräckligt med klines (${klines1h?.length || 0}) för indikatorer` };
+      }
       const closes = klines1h.map(k => k.close);
-      const sma20 = closes.slice(-20).reduce((s,c) => s+c, 0) / 20;
-      const sma50 = closes.slice(-50).reduce((s,c) => s+c, 0) / 50;
-      const change24h = ((klines1h[klines1h.length-1].close - klines1h[klines1h.length-25].close) / klines1h[klines1h.length-25].close) * 100;
-      // RSI
+      const len = closes.length;
+      const sma20 = closes.slice(-Math.min(20, len)).reduce((s,c) => s+c, 0) / Math.min(20, len);
+      const sma50 = closes.slice(-Math.min(50, len)).reduce((s,c) => s+c, 0) / Math.min(50, len);
+      const change24h = ((closes[len-1] - closes[Math.max(0, len-25)]) / closes[Math.max(0, len-25)]) * 100;
+      // RSI (14)
       let gains = 0, losses = 0;
-      for (let i = klines1h.length-15; i < klines1h.length; i++) {
-        const diff = klines1h[i].close - klines1h[i-1].close;
+      const rsiStart = Math.max(1, len-15);
+      for (let i = rsiStart; i < len; i++) {
+        const diff = closes[i] - closes[i-1];
         if (diff > 0) gains += diff; else losses -= diff;
       }
       const rs = gains / (losses || 1);
@@ -223,8 +234,8 @@ async function consultAdvisor(
         sma20: sma20.toFixed(2), sma50: sma50.toFixed(2),
         trend: price > sma20 && sma20 > sma50 ? "UPTREND" : (price < sma20 && sma20 < sma50 ? "DOWNTREND" : "RANGING"),
         rsi14: rsi14.toFixed(1),
-        patterns_1h: patterns1h.map(p => `${p.type}@${p.candle.time}`),
-        patterns_4h: patterns4h.map(p => `${p.type}@${p.candle.time}`),
+        patterns_1h: patterns1h,
+        patterns_4h: patterns4h,
       };
     } catch (e) {
       return { symbol: sym, error: e instanceof Error ? e.message : String(e) };
