@@ -340,26 +340,26 @@ async function main(): Promise<void> {
     execute: () => runOnce(brokers, engines),
   });
 
-  scheduler.addTask({
-    ...schedule.positionScan,
-    execute: () =>
-      runOnce(
-        brokers,
-        engines,
-        "Position-scan: kolla alla öppna positioner, justera trailing stops uppåt (aldrig ner), stäng om stop/target nåtts.",
-        false, // position-scan = single agent (snabbare)
-      ),
-  });
+  // LEGACY position-scan (trailing stops) DISABLED — ersatt av positionMonitor.ts
+  // Den spammade 437 testnet-positioner med trailing-stop-notiser till Telegram.
+  // Auto-sell + advisor-verifikation hanteras nu av src/server/positionMonitor.ts
+  //
+  // scheduler.addTask({
+  //   ...schedule.positionScan,
+  //   execute: () => runOnce(brokers, engines, "Position-scan: ...", false),
+  // });
 
-  scheduler.addTask({
-    ...schedule.morningBriefing,
-    execute: () => runOnce(brokers, engines, buildMorningBriefingPrompt()),
-  });
-
-  scheduler.addTask({
-    ...schedule.dailyPnl,
-    execute: () => runOnce(brokers, engines, buildDailyPnlPrompt()),
-  });
+  // LEGACY morning briefing + daily P&L också disabled (skickade Telegram-spam för 437 positioner)
+  // Återaktiveras när vi har riktig daily-summary som inte iterar varje position
+  //
+  // scheduler.addTask({
+  //   ...schedule.morningBriefing,
+  //   execute: () => runOnce(brokers, engines, buildMorningBriefingPrompt()),
+  // });
+  // scheduler.addTask({
+  //   ...schedule.dailyPnl,
+  //   execute: () => runOnce(brokers, engines, buildDailyPnlPrompt()),
+  // });
 
   // INGEN initial agent-turn vid boot — väntar på schemalagd tid.
   // Anledning: tidigare orsakade en exit-loop (boot → fel → restart → boot → fel)
