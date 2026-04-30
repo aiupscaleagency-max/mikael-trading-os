@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-binance-only">
+<meta name="version" content="v2026-04-30-real-orders">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-binance-only inte är samma → reload
-  const expectedVer = "v2026-04-30-binance-only";
+  // Tvinga ny version: om v2026-04-30-real-orders inte är samma → reload
+  const expectedVer = "v2026-04-30-real-orders";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -4213,7 +4213,7 @@ function classifyIntent(text){
 }
 
 // Returnerar { text, executedTrade?: {...} }
-function simulateTeamResponse(instr){
+async function simulateTeamResponse(instr){
   const i = (instr||"").toLowerCase();
   const pick = a => a[Math.floor(Math.random()*a.length)];
   const isTest = CFG.mode !== "live";
@@ -4274,11 +4274,12 @@ function simulateTeamResponse(instr){
     i.match(/^(\d+)\s+/);
   const tradeCount = tradeCountMatch ? parseInt(tradeCountMatch[1],10) : 1;
   // Belopp: föredra $-prefixed (\$500), undvik procent-tal som "80-90%"
+  // Tillåt 1+ siffror så "$1" / "$5" funkar (LIVE-säkerhetslås $5/trade)
   const amtMatch =
-    i.match(/\$\s?(\d{2,5})/) ||           // "$500" eller "$ 500"
-    i.match(/(\d{2,5})\s*(?:dollar|usd)/) || // "500 dollar"
-    i.match(/(?:per|för)\s+(\d{2,5})/) ||   // "per 500" / "för 500"
-    i.match(/(?<![-%\d])(\d{3,5})(?![-%])/); // 3+ siffror, ej i %-uttryck
+    i.match(/\$\s?(\d{1,5})/) ||           // "$1", "$500", "$ 500"
+    i.match(/(\d{1,5})\s*(?:dollar|usd)/) || // "1 dollar"
+    i.match(/(?:per|för)\s+(\d{1,5})/) ||   // "per 1" / "för 1"
+    i.match(/(?<![-%\d])(\d{3,5})(?![-%])/); // 3+ siffror utan $ (ambiguity-skydd)
   const amount = amtMatch ? parseInt(amtMatch[1],10) : 50;
   // Forex-mode? Trigger på "valuta", "forex", eller specifika valutapar
   const isForex = /valuta|forex|fx\b|eur|usd\/|gbp|jpy|chf|aud|cad/.test(i);
@@ -4362,41 +4363,68 @@ function simulateTeamResponse(instr){
       "Albert i accumulation-fas, passar in att lägga long-bias här",
     ];
 
+    // BINANCE-RIKTIGT FLÖDE: lägger faktiska MARKET-orders via /api/binance/order
+    // Forex routas inte (Binance stöder inte forex) — kasta felmeddelande
+    if(isForex){
+      return {
+        text: `❌ Forex är inte aktiverat ännu — Oanda-integrationen kräver konfiguration. Vi kör bara krypto via Binance just nu.\n\nVill du köra ${tradeCount} krypto-trades á $${amount} istället? Säg "kör ${tradeCount} krypto-trades på $${amount}".`,
+        executedTrades: []
+      };
+    }
+    const mode = currentUiMode === "live" ? "live" : "testnet";
+    // Säkerhetslås LIVE — blockera redan här innan vi spammar API:et
+    if(mode === "live" && amount > 5){
+      return {
+        text: `🛡 LIVE-säkerhetslås: max **$5/trade**. Du försökte köra $${amount}/trade. Sänk beloppet eller byt till TEST-mode.`,
+        executedTrades: []
+      };
+    }
+    // Bygg lista av (symbol, side) parallellt
+    const plan = [];
     for(let n = 0; n < Math.min(tradeCount, 10); n++){
       let sym;
       do { sym = pick(symbols); } while(usedSyms.has(sym) && usedSyms.size < symbols.length);
       usedSyms.add(sym);
       const isLong = Math.random() > 0.3;
-      const side = isLong ? "BUY" : "SELL";
-      // Använd requestTradeExecution så session-mode → bevakning, ej direct execute
-      // (fixar bug: "lägg 5 trades" → bara 1 lades pga score-filter på simulateExecuteTrade)
-      const t = requestTradeExecution(sym, side, amount, timeframeSec);
-      if(t){
-        if(t.reasoning !== undefined) t.reasoning = (isLong ? pick(longTalk) : pick(shortTalk))(sym);
-      }
-      trades.push(t);
+      plan.push({ sym, side: isLong ? "BUY" : "SELL", isLong });
     }
-    const validTrades = trades.filter(Boolean);
-    const longCount = validTrades.filter(t=>t.side==="BUY").length;
-    const shortCount = validTrades.length - longCount;
-    const totalPotential = validTrades.reduce((s,t)=>s+t.amount*(t.payoutMultiplier-1), 0).toFixed(0);
+    // SELL kräver att vi redan har kvantitet — i scalp-flöde startar vi LONG-only på Binance spot
+    // för enkelhet (SHORT på spot kräver margin-konto). Tvinga BUY för LIVE/TESTNET-spot.
+    plan.forEach(p => { p.side = "BUY"; p.isLong = true; });
+    // Lägg ordrarna parallellt med riktig Binance API
+    const fillResults = await Promise.all(plan.map(p => executeBinanceOrder(p.sym, p.side, amount, mode)));
+    const filled = [];
+    plan.forEach((p, idx) => {
+      const fill = fillResults[idx];
+      if(fill){
+        const fillPrice = parseFloat(fill.cummulativeQuoteQty) / parseFloat(fill.executedQty);
+        filled.push({
+          sym: p.sym, side: p.side, amount,
+          fillPrice, qty: parseFloat(fill.executedQty),
+          orderId: fill.orderId,
+          reasoning: pick(longTalk)(p.sym)
+        });
+      }
+    });
+    const failed = plan.length - filled.length;
     const macroComment = pick(macroComments);
 
-    // Mänsklig prosa istället för rapport-format
-    let openingLine;
-    if(validTrades.length === 1){
-      openingLine = `OK, jag tar **${validTrades.length} ${tfLabel}-${isForex?'forex':'krypto'}-scalp** åt dig på $${amount}.`;
-    } else {
-      openingLine = `OK, ${validTrades.length} ${tfLabel}-${isForex?'forex':'krypto'}-scalpar á $${amount}, ${longCount} long och ${shortCount} short. Här är mina val:`;
+    if(filled.length === 0){
+      return {
+        text: `❌ Ingen av de ${plan.length} ordrarna gick igenom på Binance ${mode}. Kolla saldo (${mode === "live" ? "$49.84" : "$50,499"}) eller minimum order size (Binance kräver typ ~$10 i quoteOrderQty).${testNote}`,
+        executedTrades: []
+      };
     }
-    const tradeProse = validTrades.map((t,idx)=>{
-      const dir = t.side === "BUY" ? "long (call/up)" : "short (put/down)";
-      return `${idx+1}. **${t.sym}** ${dir} — ${t.reasoning}. Payout ${t.payoutPct}% = +$${(t.amount*(t.payoutMultiplier-1)).toFixed(0)} vid vinst.`;
-    }).join("\n");
-
+    let openingLine = filled.length === 1
+      ? `OK, ${filled.length} riktig **Binance ${mode.toUpperCase()}**-order placerad á $${amount}.`
+      : `OK, ${filled.length} riktiga **Binance ${mode.toUpperCase()}**-orders á $${amount}.${failed > 0 ? ` (${failed} failade — se notiser)` : ""} Här är fillsen:`;
+    const tradeProse = filled.map((t, idx) =>
+      `${idx+1}. **${t.sym}** BUY $${t.amount} → fyllt ${t.qty.toFixed(6)} @ $${t.fillPrice.toFixed(2)} (orderId ${t.orderId}). ${t.reasoning}.`
+    ).join("\n");
+    const totalSpent = filled.reduce((s,t) => s + t.amount, 0);
     return {
-      text: `${openingLine}\n\n${tradeProse}\n\n${macroComment}.\n\nTotal potential om alla träffar: **+$${totalPotential}**. Auto-resolve om ${tfLabel} — du följer dem live på Trades-sidan.${testNote}`,
-      executedTrades: validTrades
+      text: `${openingLine}\n\n${tradeProse}\n\n${macroComment}.\n\nTotal kostnad: **$${totalSpent.toFixed(2)}**. Speglat 1:1 med Binance ${mode === "live" ? "Mainnet" : "Testnet"} — se Trades-sidan + binance.com.${testNote}`,
+      executedTrades: filled
     };
   }
   if(/(varför|säker|men |istället|fel|verkligen)/.test(i)){
