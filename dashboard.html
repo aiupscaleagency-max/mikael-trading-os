@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-stop-spam">
+<meta name="version" content="v2026-04-30-no-frontend-tg">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-stop-spam inte är samma → reload
-  const expectedVer = "v2026-04-30-stop-spam";
+  // Tvinga ny version: om v2026-04-30-no-frontend-tg inte är samma → reload
+  const expectedVer = "v2026-04-30-no-frontend-tg";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -2377,24 +2377,14 @@ function saveTelegramConfig(token, chatId, enabled){
   localStorage.setItem("tg_chat_id", chatId || "");
   localStorage.setItem("tg_enabled", enabled ? "1" : "0");
 }
+// FRONTEND TELEGRAM DISABLED PERMANENT
+// Tidigare: pushInAppAlert auto-forwardade till Telegram via varje frontend-tick
+// (437 testnet-positioner × X ticks/sek = thousands of spam-notiser).
+// Nu: ALLA Telegram-notiser kommer från backend (positionMonitor.ts) — bara
+// 1 per faktisk SELL eller VETO.
 async function sendTelegramMessage(text){
-  const cfg = loadTelegramConfig();
-  if(!cfg.enabled || !cfg.token || !cfg.chatId) return false;
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${cfg.token}/sendMessage`, {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({
-        chat_id: cfg.chatId,
-        text: text,
-        parse_mode: "HTML"
-      })
-    });
-    return res.ok;
-  } catch(e){
-    console.warn("Telegram-fel:", e);
-    return false;
-  }
+  // No-op. Backend hanterar alla notiser.
+  return false;
 }
 
 // ─── Watch-mode: bevakar marknaden tills A+ setup hittas ───
