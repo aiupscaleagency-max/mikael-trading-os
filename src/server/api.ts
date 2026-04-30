@@ -10,6 +10,7 @@ import { config } from "../config.js";
 import { getCostSummary } from "../cost/tracker.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
+import { detectAllPatterns, type Candle } from "./patternDetection.js";
 import { BinanceClient, type BinanceCredentials } from "./integrations/binance.js";
 import { OandaClient, type OandaCredentials } from "./integrations/oanda.js";
 
@@ -116,6 +117,17 @@ async function executeChatTool(
     }
     return { closed: closes, total_attempted: closes.length, successful: closes.filter(c => c.ok).length };
   }
+  if (toolName === "consult_advisor") {
+    const question = String(input.question || "");
+    const symbols = Array.isArray(input.symbols) ? (input.symbols as string[]) : [];
+    if (!question) return { ok: false, error: "consult_advisor kräver 'question'" };
+    try {
+      const result = await consultAdvisor(question, symbols, client, mode);
+      return { ok: true, advisor_recommendation: result.recommendation, supporting_data_keys: Object.keys(result.data) };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
   if (toolName === "place_market_orders") {
     const n = Math.min(Math.max(1, Number(input.n_trades) || 1), 10);
     const amt = Number(input.amount_per_trade) || 5;
@@ -159,6 +171,120 @@ async function executeChatTool(
     };
   }
   return { ok: false, error: `Okänt verktyg: ${toolName}` };
+}
+
+// ─── ADVISOR — senior trading-AI på Opus med marknadskontext + historik + patterns ───
+async function consultAdvisor(
+  question: string,
+  symbols: string[],
+  client: BinanceClient,
+  mode: "testnet" | "live",
+): Promise<{ recommendation: string; data: Record<string, unknown> }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY ej satt");
+  const anthropic = new Anthropic({ apiKey });
+
+  const targetSyms = symbols.length > 0 ? symbols : ["BTCUSDT", "ETHUSDT"];
+
+  // Hämta marknadsdata för varje symbol parallellt: 1h + 4h klines + ticker
+  const marketData = await Promise.all(targetSyms.slice(0, 5).map(async (sym) => {
+    try {
+      const [klines1h, klines4h, price] = await Promise.all([
+        client.getKlines(sym, "1h", 100),
+        client.getKlines(sym, "4h", 100),
+        client.getPrice(sym),
+      ]);
+      const candles1h: Candle[] = klines1h.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+      const patterns1h = detectAllPatterns(candles1h).slice(-5);
+      const candles4h: Candle[] = klines4h.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+      const patterns4h = detectAllPatterns(candles4h).slice(-3);
+      // Enkla indikatorer
+      const closes = klines1h.map(k => k.close);
+      const sma20 = closes.slice(-20).reduce((s,c) => s+c, 0) / 20;
+      const sma50 = closes.slice(-50).reduce((s,c) => s+c, 0) / 50;
+      const change24h = ((klines1h[klines1h.length-1].close - klines1h[klines1h.length-25].close) / klines1h[klines1h.length-25].close) * 100;
+      // RSI
+      let gains = 0, losses = 0;
+      for (let i = klines1h.length-15; i < klines1h.length; i++) {
+        const diff = klines1h[i].close - klines1h[i-1].close;
+        if (diff > 0) gains += diff; else losses -= diff;
+      }
+      const rs = gains / (losses || 1);
+      const rsi14 = 100 - (100 / (1 + rs));
+      return {
+        symbol: sym, price, change_24h_pct: change24h.toFixed(2),
+        sma20: sma20.toFixed(2), sma50: sma50.toFixed(2),
+        trend: price > sma20 && sma20 > sma50 ? "UPTREND" : (price < sma20 && sma20 < sma50 ? "DOWNTREND" : "RANGING"),
+        rsi14: rsi14.toFixed(1),
+        patterns_1h: patterns1h.map(p => `${p.type}@${p.candle.time}`),
+        patterns_4h: patterns4h.map(p => `${p.type}@${p.candle.time}`),
+      };
+    } catch (e) {
+      return { symbol: sym, error: e instanceof Error ? e.message : String(e) };
+    }
+  }));
+
+  // Hämta Mike's historik (FIFO trade-stats)
+  const portfolioStats = await client.getPortfolioTradeStats();
+  const tradeHistory = {
+    total_trades: portfolioStats.totalTrades,
+    closed_trades: portfolioStats.closedTrades,
+    wins: portfolioStats.wins, losses: portfolioStats.losses,
+    win_rate_pct: portfolioStats.closedTrades > 0 ? Math.round((portfolioStats.wins / portfolioStats.closedTrades) * 100) : null,
+    realized_pnl_usdt: portfolioStats.realizedPnlUsdt.toFixed(2),
+    fees_usdt: portfolioStats.feesUsdt.toFixed(2),
+    per_symbol: portfolioStats.perSymbol.slice(0, 10),
+    recent_trades: portfolioStats.recentTrades.slice(0, 15),
+  };
+
+  // Tid + day-of-week (vissa edges är time-baserade)
+  const now = new Date();
+  const timeContext = {
+    iso: now.toISOString(),
+    utc_hour: now.getUTCHours(),
+    weekday: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][now.getUTCDay()],
+    is_weekend: now.getUTCDay() === 0 || now.getUTCDay() === 6,
+    market_session: now.getUTCHours() >= 13 && now.getUTCHours() < 21 ? "US_OPEN" : (now.getUTCHours() >= 7 && now.getUTCHours() < 16 ? "EU_OPEN" : "ASIA_OFFHOURS"),
+  };
+
+  const advisorSystem = `Du är ADVISOR — Mike's senior trading-AI på Claude Opus. Mike's huvud-agent (Hanna, Haiku) konsulterar dig för djup analys.
+
+Din roll:
+- Strikt data-driven. Inga magkänslor utan stöd i siffrorna.
+- Referera ALLTID till Mike's faktiska historik när du gör rekommendationer ("din SOLUSDT-history visar 3W/1L").
+- Time-of-day och weekday-bias: notera om vi är i lågvolym-ASIA, högvolym-US, eller weekend (krypto = 24/7 men volym dippar).
+- Kombinera: trend (SMA20 vs SMA50) + momentum (RSI) + chart-mönster + Mike's egna edge per symbol.
+- Var konkret: rekommendera SPECIFIKA symbols + amount (inom $1-50 LIVE-säkerhetslås).
+- Om setup är dålig — säg det rakt ut, ingen FOMO. "Vänta" är ett legitimt råd.
+- Svara KORT (max 6 punkter, ADHD-vänligt). Mike vill action eller "vänta", inte essäer.
+
+Mode: ${mode === "live" ? "LIVE — RIKTIGA PENGAR (säkerhetslås max $50/trade, daglig $10)" : "TESTNET — gratis demo"}`;
+
+  const advisorUserMsg = `Mike frågar: "${question}"
+
+═══ MARKNADSDATA ═══
+${JSON.stringify(marketData, null, 2)}
+
+═══ MIKE'S TRADE-HISTORIK ═══
+${JSON.stringify(tradeHistory, null, 2)}
+
+═══ TIDSKONTEXT ═══
+${JSON.stringify(timeContext, null, 2)}
+
+Ge din rekommendation. Var KORT, KONKRET, REFERERA TILL DATAN OVAN.`;
+
+  const reply = await anthropic.messages.create({
+    model: "claude-opus-4-7",
+    max_tokens: 1500,
+    system: advisorSystem,
+    messages: [{ role: "user", content: advisorUserMsg }],
+  });
+
+  const recommendation = reply.content.filter(b => b.type === "text").map(b => (b as Anthropic.TextBlock).text).join("");
+  return {
+    recommendation,
+    data: { market: marketData, history: tradeHistory, time: timeContext },
+  };
 }
 
 // ─── Symbols cache (1 timme TTL — exchangeInfo är publik och rate-cheap) ───
@@ -1076,6 +1202,7 @@ Regler:
 - Om Mike säger "kör N trades på $X" → kalla place_market_orders med n_trades, amount_per_trade.
 - Om Mike säger "stäng allt" → kalla close_all_positions.
 - Om Mike frågar status/läge → kalla get_account_status.
+- Om Mike vill ha DJUP analys ("vad tycker Advisor?", "borde jag köra?", "rekommendera setups", "analysera marknaden", "vad är bäst nu?") → kalla consult_advisor med Mike's fråga. Advisor är en senior trading-AI på Opus med marknadsdata + Mike's historik + chart-mönster. Använd advisor_recommendation som-är till Mike, eventuellt med din egen sammanfattning.
 - Om Mike vill prata, fråga om åsikter, brainstorma → svara i prosa utan tool-call.
 - Var ALLTID konkret. Säg vad du gör, inte "jag tänker på det".
 - Om belopp < min_notional för en symbol — välj annan symbol som accepterar det.`;
@@ -1106,6 +1233,18 @@ Regler:
               description: "Hämtar färsk kontoöversikt: saldo, positioner, PnL. Använd när Mike frågar 'hur går det?' / 'status' / 'läge'.",
               input_schema: { type: "object", properties: {}, required: [] },
             },
+            {
+              name: "consult_advisor",
+              description: "Konsultera Advisor (senior trading-AI på Claude Opus). Använd när Mike vill ha djup analys: 'vad tycker Advisor?', 'borde jag köra trades nu?', 'analysera marknaden', 'rekommendera setups'. Advisor får marknadsdata (klines, RSI, MACD), chart-mönster, Mike's trade-historik (W/L per symbol), tid på dagen, och svarar med strukturerad rekommendation. Använd INTE för enkla 'kör 3 trades'-kommandon — då place_market_orders direkt.",
+              input_schema: {
+                type: "object",
+                properties: {
+                  question: { type: "string", description: "Mike's exakta fråga eller den frågeställning Advisor ska besvara" },
+                  symbols: { type: "array", items: { type: "string" }, description: "Symboler att analysera (default: BTCUSDT, ETHUSDT)" },
+                },
+                required: ["question"],
+              },
+            },
           ];
 
           // Bygg meddelande-historik
@@ -1116,7 +1255,7 @@ Regler:
           messages.push({ role: "user", content: message });
 
           const reply = await anthropic.messages.create({
-            model: "claude-opus-4-7",
+            model: "claude-haiku-4-5",
             max_tokens: 1024,
             system: systemPrompt,
             tools,
@@ -1146,7 +1285,7 @@ Regler:
               }],
             });
             const finalReply = await anthropic.messages.create({
-              model: "claude-opus-4-7",
+              model: "claude-haiku-4-5",
               max_tokens: 1024,
               system: systemPrompt,
               tools,
