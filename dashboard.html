@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-all-symbols">
+<meta name="version" content="v2026-04-30-claude-agent">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-all-symbols inte är samma → reload
-  const expectedVer = "v2026-04-30-all-symbols";
+  // Tvinga ny version: om v2026-04-30-claude-agent inte är samma → reload
+  const expectedVer = "v2026-04-30-claude-agent";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -1737,23 +1737,14 @@ body.app-state-onboard .fc-panel{display:none !important}
 <!-- LIVE-MODE KONFIRMATION (6-punkts checklista) -->
 <div class="live-modal-bg" id="live-modal-bg">
   <div class="live-modal">
-    <h2>⚠ AKTIVERA LIVE-LÄGE</h2>
-    <div class="warning">
-      Du är på väg att aktivera <b>Live-läge</b>. Hanna kommer lägga <b>RIKTIGA ordrar</b>
-      med <b>RIKTIGA pengar</b> på din Binance. Förluster är permanenta.
-      Bekräfta varje punkt nedan innan du fortsätter.
-    </div>
-    <div class="checklist" id="live-checklist">
-      <div class="check-item"><input type="checkbox" data-idx="0" id="lc0"><label for="lc0">Jag har testat i Paper-läge i minst 7 dagar och ser att Hannas beslut är acceptabla.</label></div>
-      <div class="check-item"><input type="checkbox" data-idx="1" id="lc1"><label for="lc1">Jag har separata <b>BINANCE_LIVE_API_KEY/SECRET</b> (inte testnet-nycklar) konfigurerade.</label></div>
-      <div class="check-item"><input type="checkbox" data-idx="2" id="lc2"><label for="lc2">Jag har bestämt ett <b>maxbelopp</b> jag är villig att förlora och konfigurerat MAX_TOTAL_EXPOSURE_USD därefter.</label></div>
-      <div class="check-item"><input type="checkbox" data-idx="3" id="lc3"><label for="lc3">Jag förstår att Hanna kan göra fel-trades — och att jag inte kan ångra dem.</label></div>
-      <div class="check-item"><input type="checkbox" data-idx="4" id="lc4"><label for="lc4">Jag har testat <b>kill-switchen</b> och vet att den faktiskt stoppar all trading.</label></div>
-      <div class="check-item"><input type="checkbox" data-idx="5" id="lc5"><label for="lc5">Jag har en plan om systemet failar nattetid — t.ex. notifieringar, daily-loss-cap.</label></div>
+    <h2>⚠ LIVE-LÄGE AKTIVERAS</h2>
+    <div class="warning" style="font-size:14px;line-height:1.6">
+      Du växlar till <b>LIVE</b>. Alla trades blir <b>RIKTIGA orders</b> med <b>RIKTIGA pengar</b> på din Binance.<br><br>
+      Säkerhetslås: <b>max $50/trade</b> · daglig loss-cap <b>$10</b> · kill-switch tillgänglig längst ner i sidomenyn.
     </div>
     <div class="actions">
       <button class="cancel" id="live-cancel">Avbryt</button>
-      <button class="confirm" id="live-confirm" disabled>🔴 Aktivera Live</button>
+      <button class="confirm" id="live-confirm">💚 Aktivera LIVE</button>
     </div>
   </div>
 </div>
@@ -4134,29 +4125,36 @@ async function sendTeamChat(){
   renderTeamChatLog();
 
   try{
-    if(CFG.mode === "live"){
-      // Skicka instruction till backend
-      const result = await apiPost("/api/run-agent", {instruction});
-      // Ta bort system-msg, vänta på SSE för riktigt svar
-      teamChatLog.pop();
-      teamChatLog.push({
-        role:"team",
-        text:`Instruktion mottagen: "${instruction}".\nTeam-session startad — beslut + ev. trades visas på Trades-sidan när klart (~10-30s).`,
-        timestamp:Date.now(),
-        instruction
-      });
+    // BINANCE-AGENT via Claude API — mänsklig dialog + tool_use för riktiga orders
+    const mode = currentUiMode === "live" ? "live" : "testnet";
+    const history = teamChatLog
+      .filter(m => m.role === "user" || m.role === "team")
+      .slice(-10, -1)  // senaste 9 meddelanden (exklusive nyligen pushade user-msg)
+      .map(m => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ message: instruction, mode, history })
+    });
+    const data = await r.json();
+    teamChatLog.pop(); // ta bort "⏳ Teamet analyserar..."
+    if(!data.ok){
+      teamChatLog.push({role:"system", text:`❌ ${data.error}`, timestamp:Date.now()});
     } else {
-      // Demo-läge: simulera svar (kan returnera string ELLER {text, executedTrades, ...})
-      await new Promise(r=>setTimeout(r, 1500 + Math.random()*1000));
-      teamChatLog.pop();
-      const result = simulateTeamResponse(instruction);
-      const responseText = typeof result === "string" ? result : result.text;
       teamChatLog.push({
-        role:"team",
-        text: responseText,
-        timestamp:Date.now(),
-        instruction
+        role: "team",
+        text: data.reply || "(tomt svar)",
+        timestamp: Date.now(),
+        instruction,
+        toolCall: data.toolCall,
+        executed: data.executed
       });
+      // Om tool exekverades → trigger refresh av saldo + trade-history
+      if(data.toolCall && typeof refreshBinanceSync === "function"){
+        _lastPtFetch.testnet = 0; _lastPtFetch.live = 0;
+        _lastBinTrades.ts = 0;
+        setTimeout(refreshBinanceSync, 500);
+      }
     }
   } catch(e) {
     teamChatLog.pop();
@@ -5721,20 +5719,27 @@ async function sendFromFloating(){
   renderTeamChatLog();
 
   try{
-    if(CFG.mode === "live"){
-      await apiPost("/api/run-agent", {instruction});
-      teamChatLog.pop();
-      teamChatLog.push({
-        role:"team",
-        text:`Instruktion mottagen. Team-session startad — beslut + ev. trades visas på Trades-sidan när klart.`,
-        timestamp:Date.now(), instruction
-      });
+    const mode = currentUiMode === "live" ? "live" : "testnet";
+    const history = teamChatLog
+      .filter(m => m.role === "user" || m.role === "team")
+      .slice(-10, -1)
+      .map(m => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ message: instruction, mode, history })
+    });
+    const data = await r.json();
+    teamChatLog.pop();
+    if(!data.ok){
+      teamChatLog.push({role:"system", text:`❌ ${data.error}`, timestamp:Date.now()});
     } else {
-      await new Promise(r=>setTimeout(r, 1200 + Math.random()*800));
-      teamChatLog.pop();
-      const result = simulateTeamResponse(instruction);
-      const responseText = typeof result === "string" ? result : result.text;
-      teamChatLog.push({role:"team", text: responseText, timestamp:Date.now(), instruction});
+      teamChatLog.push({role:"team", text: data.reply || "(tomt svar)", timestamp:Date.now(), instruction, toolCall: data.toolCall, executed: data.executed});
+      if(data.toolCall && typeof refreshBinanceSync === "function"){
+        _lastPtFetch.testnet = 0; _lastPtFetch.live = 0;
+        _lastBinTrades.ts = 0;
+        setTimeout(refreshBinanceSync, 500);
+      }
     }
   }catch(e){
     teamChatLog.pop();
@@ -6069,25 +6074,17 @@ async function requestMode(uiMode, confirmation){
 }
 
 function openLiveConfirm(){
-  document.querySelectorAll("#live-checklist input").forEach(i=>{ i.checked = false; });
-  document.getElementById("live-confirm").disabled = true;
   document.getElementById("live-modal-bg").classList.add("on");
 }
 function closeLiveConfirm(){
   document.getElementById("live-modal-bg").classList.remove("on");
 }
-function liveChecklistChanged(){
-  const all = [...document.querySelectorAll("#live-checklist input")];
-  const allChecked = all.every(i => i.checked);
-  document.getElementById("live-confirm").disabled = !allChecked;
-}
 async function confirmLive(){
-  const confirmed = [...document.querySelectorAll("#live-checklist input")].map(i=>i.checked);
+  // Enkel bekräftelse — säkerhetslås $50/trade och daglig loss-cap $10 räcker
   try{
-    await requestMode("live", {confirmed});
+    await requestMode("live", {confirmed: true});
     setActiveMode("live");
     closeLiveConfirm();
-    alert("⚠ LIVE-LÄGE AKTIVT. Hanna handlar nu med riktiga pengar.");
   }catch(e){
     alert("Fel: "+e.message);
   }
@@ -6306,9 +6303,6 @@ function wire(){
   });
   document.getElementById("live-cancel").addEventListener("click", closeLiveConfirm);
   document.getElementById("live-confirm").addEventListener("click", confirmLive);
-  document.querySelectorAll("#live-checklist input").forEach(i=>{
-    i.addEventListener("change", liveChecklistChanged);
-  });
   document.getElementById("live-modal-bg").addEventListener("click", e=>{
     if(e.target.id === "live-modal-bg") closeLiveConfirm();
   });

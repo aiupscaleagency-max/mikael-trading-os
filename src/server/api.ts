@@ -75,6 +75,92 @@ function setCachedPortfolioStats(mode: "testnet" | "live", data: PortfolioStats)
   portfolioStatsCache.set(mode, { ts: Date.now(), data });
 }
 
+// ─── Chat-tool executor — utför Claude's tool_use mot riktiga Binance-orders ───
+async function executeChatTool(
+  toolName: string,
+  input: Record<string, unknown>,
+  mode: "testnet" | "live",
+  client: BinanceClient,
+  symbols: Array<{ symbol: string; baseAsset: string; quoteAsset: string; minNotional: number; minQty: number; stepSize: number }>,
+  userQuotes: string[],
+): Promise<unknown> {
+  if (toolName === "get_account_status") {
+    const eq = await client.getTotalEquity();
+    return {
+      total_usdt: eq.totalUsdt,
+      cash_usdt: eq.cashUsdt,
+      cash_breakdown: eq.cashBreakdown,
+      open_positions_count: eq.positions.length,
+      top_positions: eq.positions.slice(0, 5).map(p => ({ asset: p.asset, qty: p.qty, value_usdt: p.valueUsdt })),
+    };
+  }
+  if (toolName === "close_all_positions") {
+    const eq = await client.getTotalEquity();
+    const STABLES = ["USDT", "USDC", "BUSD", "FDUSD", "TUSD", "DAI", "USDP"];
+    const closes: Array<{ symbol: string; qty: number; ok: boolean; error?: string }> = [];
+    for (const p of eq.positions) {
+      if (STABLES.includes(p.asset)) continue;
+      // Försök sälja mot USDT först, sen USDC
+      const symInfo = symbols.find(s => s.baseAsset === p.asset && (s.quoteAsset === "USDT" || s.quoteAsset === "USDC"));
+      if (!symInfo) { closes.push({ symbol: p.asset, qty: p.qty, ok: false, error: "Ingen tradable USDT/USDC-pair" }); continue; }
+      try {
+        // Avrunda qty till stepSize
+        const stepSize = symInfo.stepSize || 0.000001;
+        const qtyRounded = Math.floor(p.qty / stepSize) * stepSize;
+        if (qtyRounded <= 0) { closes.push({ symbol: symInfo.symbol, qty: p.qty, ok: false, error: "qty < stepSize" }); continue; }
+        const fill = await client.placeMarketOrder({ symbol: symInfo.symbol, side: "SELL", quantity: qtyRounded });
+        closes.push({ symbol: symInfo.symbol, qty: qtyRounded, ok: !!fill });
+      } catch (e) {
+        closes.push({ symbol: symInfo.symbol, qty: p.qty, ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { closed: closes, total_attempted: closes.length, successful: closes.filter(c => c.ok).length };
+  }
+  if (toolName === "place_market_orders") {
+    const n = Math.min(Math.max(1, Number(input.n_trades) || 1), 10);
+    const amt = Number(input.amount_per_trade) || 5;
+    let quotePref = String(input.quote_preference || "AUTO");
+    if (quotePref === "AUTO") {
+      // Välj quote Mike har mest av
+      quotePref = userQuotes.includes("USDC") ? "USDC" : (userQuotes.includes("USDT") ? "USDT" : "USDT");
+    }
+    // LIVE säkerhetslås
+    if (mode === "live" && amt > MAX_LIVE_STAKE_USD) {
+      return { ok: false, error: `LIVE-säkerhetslås: max $${MAX_LIVE_STAKE_USD}/trade. Du försökte $${amt}.` };
+    }
+    if (mode === "live" && liveDailyLossUsd >= MAX_LIVE_DAILY_LOSS_USD) {
+      return { ok: false, error: `Daglig loss-cap nådd ($${liveDailyLossUsd.toFixed(2)} / $${MAX_LIVE_DAILY_LOSS_USD}). Trading pausad.` };
+    }
+    // Filtrera symbols
+    const skipBases = new Set(["EUR", "GBP", "JPY", "TRY", "BRL", "ARS", "RON", "ZAR", "UAH", "NGN"]);
+    const eligible = symbols.filter(s => s.quoteAsset === quotePref && amt >= s.minNotional && !skipBases.has(s.baseAsset));
+    if (eligible.length === 0) {
+      const sameQuote = symbols.filter(s => s.quoteAsset === quotePref);
+      const lowestMin = sameQuote.length ? Math.min(...sameQuote.map(s => s.minNotional)) : 5;
+      return { ok: false, error: `Inga ${quotePref}-pairs accepterar $${amt}. Lägsta min är $${lowestMin.toFixed(2)}.` };
+    }
+    // Plocka random N (utan duplicates)
+    const shuffled = [...eligible].sort(() => Math.random() - 0.5).slice(0, n);
+    const fills = await Promise.all(shuffled.map(async (s) => {
+      try {
+        const fill = await client.placeMarketOrder({ symbol: s.symbol, side: "BUY", quoteOrderQty: amt });
+        const fillPrice = parseFloat(fill.cummulativeQuoteQty) / parseFloat(fill.executedQty);
+        return { symbol: s.symbol, ok: true, qty: parseFloat(fill.executedQty), fill_price: fillPrice, order_id: fill.orderId };
+      } catch (e) {
+        return { symbol: s.symbol, ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+      }
+    }));
+    return {
+      ok: true,
+      requested: n,
+      filled: fills.filter(f => f.ok).length,
+      failed: fills.filter(f => !f.ok).length,
+      orders: fills,
+    };
+  }
+  return { ok: false, error: `Okänt verktyg: ${toolName}` };
+}
+
 // ─── Symbols cache (1 timme TTL — exchangeInfo är publik och rate-cheap) ───
 const symbolsCache = new Map<"testnet" | "live", { ts: number; data: Array<{ symbol: string; baseAsset: string; quoteAsset: string; minNotional: number; minQty: number; stepSize: number }> }>();
 const SYMBOLS_TTL_MS = 60 * 60_000;
@@ -941,6 +1027,141 @@ export function startServer(
         }
         return;
       }
+      // POST /api/chat — Mike pratar naturligt med Claude som agent med Binance-tools
+      // Mike vill mänsklig dialog: "kör 5 trades på $1", "stäng allt", "vad tycker ni om BTC?"
+      if (url.pathname === "/api/chat" && method === "POST") {
+        const body = await readBody(req);
+        const { message, mode, history } = JSON.parse(body) as {
+          message: string;
+          mode: "testnet" | "live";
+          history?: Array<{ role: "user" | "assistant"; text: string }>;
+        };
+        const apiKey = process.env.ANTHROPIC_API_KEY;
+        if (!apiKey) { json(res, { ok: false, error: "ANTHROPIC_API_KEY ej satt" }); return; }
+        const creds = resolveBinanceCreds(mode);
+        if (!creds) { json(res, { ok: false, error: `Binance ${mode} ej konfigurerat` }); return; }
+
+        try {
+          const client = new BinanceClient(creds);
+          const anthropic = new Anthropic({ apiKey });
+
+          // Hämta kontext: saldo + symbols + senaste trades
+          const [equity, symbols] = await Promise.all([
+            client.getTotalEquity(),
+            (async () => {
+              const c = symbolsCache.get(mode);
+              if (c && Date.now() - c.ts < SYMBOLS_TTL_MS) return c.data;
+              const fresh = await client.getTradableSymbols(["USDT", "USDC"]);
+              symbolsCache.set(mode, { ts: Date.now(), data: fresh });
+              return fresh;
+            })(),
+          ]);
+          // Vilka quote-assets har Mike pengar i?
+          const userQuotes = equity.cashBreakdown.filter(b => b.amount >= 1).map(b => b.asset);
+
+          const systemPrompt = `Du är Hanna — Mike's AI-trading-agent. Du pratar svenska, konkret och mänskligt (ADHD-vänligt).
+
+Mike's konto just nu (Binance ${mode === "live" ? "MAINNET — RIKTIGA PENGAR" : "TESTNET — gratis demo"}):
+- Total equity: $${equity.totalUsdt.toFixed(2)}
+- Cash: $${equity.cashUsdt.toFixed(2)} (${equity.cashBreakdown.map(b => `$${b.amount.toFixed(2)} ${b.asset}`).join(", ")})
+- Öppna positioner: ${equity.positions.length} ${equity.positions.length > 0 ? "(top: " + equity.positions.slice(0,3).map(p => `${p.asset} $${p.valueUsdt.toFixed(2)}`).join(", ") + ")" : ""}
+
+Säkerhetslås LIVE: max $${MAX_LIVE_STAKE_USD}/trade, daglig loss-cap $${MAX_LIVE_DAILY_LOSS_USD}.
+
+Tradable symbols på Binance ${mode}: ${symbols.length} st (USDT + USDC quote-pairs).
+Mike's quote-tillgång: ${userQuotes.join(", ") || "ingen"} — välj alltid pairs där quote = en tillgång Mike har.
+
+Regler:
+- Använd verktyget place_market_orders för att lägga riktiga orders. ALDRIG simulera.
+- Om Mike säger "kör N trades på $X" → kalla place_market_orders med n_trades, amount_per_trade.
+- Om Mike säger "stäng allt" → kalla close_all_positions.
+- Om Mike frågar status/läge → kalla get_account_status.
+- Om Mike vill prata, fråga om åsikter, brainstorma → svara i prosa utan tool-call.
+- Var ALLTID konkret. Säg vad du gör, inte "jag tänker på det".
+- Om belopp < min_notional för en symbol — välj annan symbol som accepterar det.`;
+
+          // Tools — Claude kan anropa dessa direkt
+          const tools: Anthropic.Tool[] = [
+            {
+              name: "place_market_orders",
+              description: "Lägger N st MARKET BUY-orders á $X på Binance, randomly valda symboler från Mike's quote-tillgångar. Symboler filtreras automatiskt på MIN_NOTIONAL.",
+              input_schema: {
+                type: "object",
+                properties: {
+                  n_trades: { type: "number", description: "Antal trades, 1-10" },
+                  amount_per_trade: { type: "number", description: "USD-belopp per trade" },
+                  quote_preference: { type: "string", enum: ["USDT", "USDC", "AUTO"], description: "Quote-asset preferens. AUTO = välj baserat på Mike's saldo." },
+                  symbol_filter: { type: "string", description: "Optional: 'memecoins' / 'top' / 'random'. Default: random." },
+                },
+                required: ["n_trades", "amount_per_trade"],
+              },
+            },
+            {
+              name: "close_all_positions",
+              description: "Stänger ALLA öppna positioner via MARKET SELL. Använd när Mike säger 'stäng allt' / 'sälj allt' / 'cash out'.",
+              input_schema: { type: "object", properties: {}, required: [] },
+            },
+            {
+              name: "get_account_status",
+              description: "Hämtar färsk kontoöversikt: saldo, positioner, PnL. Använd när Mike frågar 'hur går det?' / 'status' / 'läge'.",
+              input_schema: { type: "object", properties: {}, required: [] },
+            },
+          ];
+
+          // Bygg meddelande-historik
+          const messages: Anthropic.MessageParam[] = (history || []).slice(-8).map(h => ({
+            role: h.role,
+            content: h.text,
+          }));
+          messages.push({ role: "user", content: message });
+
+          const reply = await anthropic.messages.create({
+            model: "claude-opus-4-7",
+            max_tokens: 1024,
+            system: systemPrompt,
+            tools,
+            messages,
+          });
+
+          // Plocka ut text + tool_use från svaret
+          let replyText = "";
+          let toolCall: { name: string; input: Record<string, unknown> } | null = null;
+          for (const block of reply.content) {
+            if (block.type === "text") replyText += block.text;
+            if (block.type === "tool_use") toolCall = { name: block.name, input: block.input as Record<string, unknown> };
+          }
+
+          // Om tool_call finns: exekvera, lägg in resultat, be Claude svara igen
+          let executedResult: unknown = null;
+          if (toolCall) {
+            executedResult = await executeChatTool(toolCall.name, toolCall.input, mode, client, symbols, userQuotes);
+            // Andra runda — Claude får tool-result och formulerar slut-svar
+            messages.push({ role: "assistant", content: reply.content });
+            messages.push({
+              role: "user",
+              content: [{
+                type: "tool_result",
+                tool_use_id: (reply.content.find(b => b.type === "tool_use") as Anthropic.ToolUseBlock).id,
+                content: JSON.stringify(executedResult),
+              }],
+            });
+            const finalReply = await anthropic.messages.create({
+              model: "claude-opus-4-7",
+              max_tokens: 1024,
+              system: systemPrompt,
+              tools,
+              messages,
+            });
+            replyText = finalReply.content.filter(b => b.type === "text").map(b => (b as Anthropic.TextBlock).text).join("");
+          }
+
+          json(res, { ok: true, reply: replyText, toolCall: toolCall?.name, executed: executedResult });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+
       // GET /api/binance/safety — visa nuvarande säkerhetslås-status
       if (url.pathname === "/api/binance/safety" && method === "GET") {
         json(res, {
