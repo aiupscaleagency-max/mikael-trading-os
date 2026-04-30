@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-binance-positions">
+<meta name="version" content="v2026-04-30-stop-spam">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-binance-positions inte är samma → reload
-  const expectedVer = "v2026-04-30-binance-positions";
+  // Tvinga ny version: om v2026-04-30-stop-spam inte är samma → reload
+  const expectedVer = "v2026-04-30-stop-spam";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -2973,12 +2973,14 @@ function tick(){
     document.getElementById("cur-price").textContent = formatPrice(last.close, STATE.symbol);
   }
 
-  // evaluate active positions
+  // evaluate active positions (READ-ONLY: live PnL för rendering)
   evalPositions();
-  evalScalpTrades();        // auto-resolve scalp-trades efter timeframe
-  evaluateTrailingStops();  // trailing stop +10% activate, 5% follow
-  evaluateDCALadders();     // laddered DCA -15% / -20% / -30%
-  scanWatches();            // bevaka pending watches + auto-expire confirms
+  // PAPER-LOOPS DISABLED: dessa körde mot STATE.tradePositions vilket nu är 437 Binance-positioner
+  // → 437 spam-notiser till Telegram per tick. Auto-sell/trailing hanteras nu av positionMonitor.ts (backend).
+  // evalScalpTrades();
+  // evaluateTrailingStops();
+  // evaluateDCALadders();
+  scanWatches();
   updateTickerStrip();
   updatePnL();
   // Live PnL refresh på Trades-sidan om vi är där
