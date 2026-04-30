@@ -312,16 +312,17 @@ export class BinanceClient {
   }> {
     // Optimerad: använd getTotalEquity för att hitta TOP-N positioner by value
     // Binance rate-limit: /myTrades = weight 20 per symbol, max 6000/min IP weight
-    // Säker gräns: max 20 symbols per call → 400 weight (lämnar headroom för andra calls)
+    // Säker gräns: max 30 symbols per call → 600 weight (USDT + USDC varianter)
     const equity = await this.getTotalEquity();
     const STABLES = ["USDT", "USDC", "BUSD", "FDUSD", "TUSD", "DAI", "USDP"];
     const candidates = new Set<string>();
-    // Top-20 positioner by value
-    for (const p of equity.positions.slice(0, 20)) {
+    // Top-15 positioner by value × 2 quote-pairs (USDT + USDC) = max 30 symbols
+    for (const p of equity.positions.slice(0, 15)) {
       candidates.add(`${p.asset}USDT`);
+      candidates.add(`${p.asset}USDC`);
     }
     // Plus standard-pairs (för att fånga stängda positioner)
-    ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"].forEach((s) => candidates.add(s));
+    ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDC", "ETHUSDC"].forEach((s) => candidates.add(s));
 
     let allTrades: Array<{ symbol: string; side: "BUY" | "SELL"; price: number; qty: number; quoteQty: number; commission: number; commissionAsset: string; time: number }> = [];
     // Hämta trades parallellt (max 10 åt gången för att inte trigga rate-limit)

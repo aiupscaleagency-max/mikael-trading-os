@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-no-frontend-tg">
+<meta name="version" content="v2026-04-30-trades-visible">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-no-frontend-tg inte är samma → reload
-  const expectedVer = "v2026-04-30-no-frontend-tg";
+  // Tvinga ny version: om v2026-04-30-trades-visible inte är samma → reload
+  const expectedVer = "v2026-04-30-trades-visible";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -1554,12 +1554,12 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
     <div class="card">
-      <h3>🟢 Aktiva positioner <span id="pos-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span></h3>
+      <h3>🟢 Aktiva positioner <span id="pos-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span> <span id="pos-refresh-tag" class="tag" style="font-size:9px;color:var(--label);font-weight:500">⏱ uppdateras var 3s</span></h3>
       <div id="trade-positions-table"></div>
     </div>
 
     <div class="card">
-      <h3>🤖 Hannas beslut (senaste)</h3>
+      <h3>🤖 Hannas beslut (senaste) <span class="tag" style="margin-left:auto;font-size:9px;color:var(--label);font-weight:500">⏱ Binance trades · uppdateras var 30s</span></h3>
       <div id="trade-decisions-table"></div>
     </div>
 
@@ -1576,7 +1576,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
     <div class="card">
-      <h3>📊 Stängda trades</h3>
+      <h3>📊 Stängda trades <span class="tag" style="margin-left:auto;font-size:9px;color:var(--label);font-weight:500">FIFO realized PnL · auto-uppdateras</span></h3>
       <div id="trade-history-table"></div>
     </div>
   </div>
