@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-wl-display">
+<meta name="version" content="v2026-04-30-mode-tag">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-wl-display inte är samma → reload
-  const expectedVer = "v2026-04-30-wl-display";
+  // Tvinga ny version: om v2026-04-30-mode-tag inte är samma → reload
+  const expectedVer = "v2026-04-30-mode-tag";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -1554,7 +1554,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
     <div class="card">
-      <h3>🟢 Aktiva positioner <span id="pos-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span> <span id="pos-refresh-tag" class="tag" style="font-size:9px;color:var(--label);font-weight:500">⏱ uppdateras var 3s</span></h3>
+      <h3>🟢 Aktiva positioner <span id="trades-mode-tag" class="tag" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px">🧪 TESTNET</span> <span id="pos-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span> <span id="pos-refresh-tag" class="tag" style="font-size:9px;color:var(--label);font-weight:500">⏱ var 3s</span></h3>
       <div id="trade-positions-table"></div>
     </div>
 
@@ -6094,10 +6094,36 @@ function setActiveMode(uiMode){
   document.querySelectorAll(".mode-btn").forEach(b=>{
     b.classList.toggle("active", b.dataset.mode === uiMode);
   });
+  // Mode-tag på Trades-sidan
+  const tag = document.getElementById("trades-mode-tag");
+  if(tag){
+    if(uiMode === "live"){
+      tag.textContent = "💚 LIVE — RIKTIGA PENGAR";
+      tag.style.background = "rgba(34,197,94,.18)";
+      tag.style.color = "#22c55e";
+      tag.style.border = "1px solid rgba(34,197,94,.4)";
+    } else {
+      tag.textContent = "🧪 TESTNET — demo";
+      tag.style.background = "rgba(240,185,11,.15)";
+      tag.style.color = "#f0b90b";
+      tag.style.border = "1px solid rgba(240,185,11,.35)";
+    }
+  }
+  // RENSA gammal mode-data så Trades-page inte visar fel positions vid mode-byte
+  STATE.tradePositions = [];
+  STATE.tradeDecisions = [];
+  STATE.tradeHistory = [];
+  // Force-bypass alla throttles så ny mode laddas direkt
+  if(typeof _lastBinTrades !== "undefined") _lastBinTrades.ts = 0;
+  if(typeof _lastPtFetch !== "undefined") { _lastPtFetch.testnet = 0; _lastPtFetch.live = 0; }
   // Byt chat-historik baserat på mode (TESTNET <-> LIVE separata loggar)
   if(typeof switchChatLogForMode === "function") switchChatLogForMode();
   // Uppdatera chat-header-tagg
   if(typeof updateChatModeTag === "function") updateChatModeTag();
+  // Re-rendera Trades-page direkt om vi är där
+  if(STATE.activeTab === "trades" && typeof renderTradesPage === "function"){
+    try { renderTradesPage(); } catch(_){}
+  }
   // Trigga saldo-card-refresh direkt så panelen byter mellan TESTNET/LIVE-data
   if(typeof refreshBinanceSync === "function") refreshBinanceSync();
   // PROPOSE = riktiga priser från Binance
