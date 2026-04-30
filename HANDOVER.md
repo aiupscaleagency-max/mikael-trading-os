@@ -1,33 +1,46 @@
 # Mikael Trading OS — Handover för nästa session
 
-**Senast uppdaterad:** 2026-04-29 23:15 UTC
+**Senast uppdaterad:** 2026-04-30 09:25 UTC
 **Live URL:** https://trading.aiupscale.agency/
 **GitHub:** github.com/aiupscaleagency-max/mikael-trading-os
 **VPS:** 72.60.36.92 (SSH: `~/.ssh/claude_key`)
+**Senaste commit:** `19e699b` (Binance-only UI: rensa paper-data + spegla decisions/history)
 
 ---
 
 ## Status — vad är klart
 
-### ✅ Backend
+### ✅ Backend (Fas 1–4 implementerade)
 - **Binance dual-mode integration** (Testnet + Mainnet parallellt)
   - `src/server/integrations/binance.ts` — klient med signed requests
-  - Auto-init från `.env` vid boot (BINANCE_API_KEY/SECRET, BINANCE_TESTNET_API_KEY/SECRET)
-  - Endpoints: `/api/binance/dual`, `/api/binance/account?mode=`, `/api/binance/order`, `/api/binance/trades`, `/api/binance/safety`
-- **Oanda integration** (forex) — `src/server/integrations/oanda.ts` (men **EJ konfigurerad** ännu)
-- **Säkerhetslås LIVE** — `MAX_LIVE_STAKE_USD=5`, `MAX_LIVE_DAILY_LOSS_USD=10` (i `.env`)
-- **Telegram-bot** — webhook + interaktiv chat med 10 agenter (inkl Viktor forex-specialist)
-- **Market context** (`src/server/marketContext.ts`) — live RSI/SMA/MACD/OBV från Binance till agenterna
-- **Pattern detection** (`src/server/patternDetection.ts`) — 25+ chart-mönster
+  - Auto-init från `.env` vid boot
+- **Endpoints (alla verifierade live):**
+  - `GET /api/binance/dual` — cash + positions för båda mode parallellt
+  - `GET /api/binance/account?mode=` — enskild kontodata
+  - `GET /api/binance/portfolio-trades?mode=` — **NY** trade-historik + FIFO realized PnL + W/L
+  - `GET /api/binance/orders/open?mode=` — **NY** pending limit-orders
+  - `GET /api/binance/orders/history?mode=&symbol=` — **NY** filled/cancelled
+  - `GET /api/binance/transfers?mode=` — **NY** deposits + withdrawals (mainnet)
+  - `GET /api/binance/stream` — **NY** SSE-bridge för realtid (frontend-ready)
+  - `POST /api/binance/order` — order-läggning med säkerhetslås $5
+  - `GET /api/binance/safety` — säkerhetslås-status
+- **WS user-data-stream** kodad men **pausad auto-start** — `createListenKey` returnerar 410
+  (proxy/permission-issue, debug krävs). Polling 3s/30s räcker som baseline.
+- **Säkerhetslås LIVE** — `MAX_LIVE_STAKE_USD=5`, `MAX_LIVE_DAILY_LOSS_USD=10`
+- **Telegram-bot** — webhook + 10 agenter (inkl Viktor forex-specialist)
+- **Market context** — live RSI/SMA/MACD/OBV från Binance till agenterna
+- **Pattern detection** — 25+ chart-mönster
+- **Motor C cooldown** — 10-min paus vid 418/429 + 300ms throttle mellan symbols
 
 ### ✅ Frontend (`dashboard.html`)
-- **Mode-knappar:** TEST (testnet) + LIVE (mainnet) — PROPOSE borttagen
-- **Header:** 📊 TEST $X · 💚 LIVE $Y — speglar Binance-saldon i realtid
-- **Binance Live Sync card** — dual-mode display med stablecoin-breakdown
-- **Saldo-card "TEST-KONTO SALDO"** — speglar Binance API beroende på mode
-- **Chat-routing:** alla trades går genom `/api/binance/order`
-- **Säkerhetslås** blockerar live-trades > $5
-- **Cache-busting:** `Cache-Control: no-store` headers på dashboard.html
+- **Header default `—`** istället för hard-coded `$10,000` (uppdateras till Binance-saldo inom 1–2s)
+- **Mode-knappar:** TEST (testnet) + LIVE (mainnet)
+- **TEST-KONTO SALDO panel** speglar Binance API beroende på mode
+- **Realiserat PnL / W/L / Win-rate** kopplade till `/portfolio-trades` (FIFO)
+- **"Hannas beslut" + "Stängda trades"** speglar Binance trades (paper-data auto-rensas vid load)
+- **Cache-busting:** version `v2026-04-30-binance-only` + auto-reload-script
+- **SSE-listener** för realtid order-fills (när WS aktiveras senare)
+- **Throttling:** portfolio-trades max var 30s frontend, 5min server-cache
 
 ### ✅ Mike's konton
 - **Binance LIVE (mainnet):** $49.84 USDC (köpt med SEB-kort, verifiering klar)
@@ -36,38 +49,51 @@
 
 ---
 
-## ❗ Pågående/nyligen-deployat
+## ✅ Slutverifiering 2026-04-30 09:25 UTC
 
-### Senaste commits
-1. `b363cad` — Saldo-card speglar TEST/LIVE-mode från Binance API
-2. `bcb2939` — Ta bort paper-card helt (sen återinfört med Binance-koppling)
-3. `909d770` — Ta bort PROPOSE — bara TEST + LIVE
-4. `7ca0e62` — renderPaperBadge disabled — header från Binance Testnet
-5. `a65d3f6` — Unified flow: ALLT mot Binance — paper-simulering borta
+```
+TESTNET portfolio-trades: ok=True  totalTrades=0 closed=0 realizedPnL=$0
+LIVE portfolio-trades:    ok=True  totalTrades=0 closed=0 realizedPnL=$0
+TESTNET dual:             cash=$50,499  configured=True  error=none
+LIVE dual:                cash=$49.84   configured=True
+TESTNET open orders:      ok=True  count=0
+LIVE transfers:           ok=True  deposits=0 withdrawals=0
+SSE stream:               event: hello  ✓
+```
 
-### Mike's senaste klagomål (när session pausades)
-- TEST-KONTO SALDO panelen visar fortfarande "$10,000.00" i hans browser
-- **Orsak:** browser-cache. Server har korrekt kod (verifierat via curl)
-- **Lösning:** hard-refresh (Cmd+Shift+R) eller inkognito (Cmd+Shift+N)
-- **När hard-refresh klar:** panelen visar `$50,499 (testnet)` eller `$49.84 (live)`
+IP-ban löpte ut 09:15 UTC (efter `getPortfolioTradeStats` triggade rate-limit på 437 testnet-positioner).
+Fix: top-20 positions cap + 5min server-cache + 30s frontend-throttle + Motor C cooldown.
+
+---
+
+## ❗ Senaste commits (i ordning)
+
+1. `19e699b` — Binance-only UI: rensa paper-data + spegla decisions/history
+2. `8cfc29d` — Skydda Binance rate-limit: pause WS auto-start + Motor C cooldown
+3. `d3a7379` — Rate-limit-fix: top-20 positioner + 5min cache + 30s throttle
+4. `950c2bf` — Fas 1-3: Portfolio trades + FIFO PnL + WS user-data-stream + SSE realtid
+5. `c7a6b62` — Aggressive cache-bust: meta no-store + auto-reload-script vid version mismatch
 
 ---
 
 ## Tekniska detaljer
 
-### .env på VPS (`/root/mikael-trading-os/.env`)
+### .env på VPS (`/root/mikael-trading-os/.env`) — alla nycklar verifierade
 ```
 ANTHROPIC_API_KEY=<satt>
-BINANCE_API_KEY=<live-key från binance.com>
-BINANCE_API_SECRET=<live-secret>
-BINANCE_TESTNET_API_KEY=XBakDluz2U1brE0MYB6MpGCaudMgLALBM4t8KKm2f3dTLN7YV35XZjNvPCzlVL0
-BINANCE_TESTNET_API_SECRET=ZHJKwfFZ5P4MiaoDhyk8pK3tT7Rn8CDlKXRlvs2Ary818RNJ4XBku68rexRJWufp
+BINANCE_API_KEY=<satt>
+BINANCE_API_SECRET=<satt>
+BINANCE_TESTNET=<satt>
+BINANCE_TESTNET_API_KEY=<satt>
+BINANCE_TESTNET_API_SECRET=<satt>
 PERPLEXITY_API_KEY=<satt>
-OANDA_API_KEY=<satt men ev gammal>
-OANDA_ACCOUNT_ID=<satt men ev gammal>
+OANDA_API_KEY=<satt>
+OANDA_ACCOUNT_ID=<satt>
+OANDA_BASE_URL=<satt>
+SUPABASE_URL=<satt>
 SUPABASE_ANON_KEY=<satt>
-TELEGRAM_BOT_TOKEN=8763428928:AAEvZKMevT17M-tNZHyQpGdO89mkpoEOq54
-TELEGRAM_CHAT_ID=1928144865
+TELEGRAM_BOT_TOKEN=<satt>
+TELEGRAM_CHAT_ID=<satt>
 PUBLIC_URL=https://trading.aiupscale.agency
 MODE=paper
 EXECUTION_MODE=auto
@@ -81,30 +107,31 @@ MAX_LIVE_DAILY_LOSS_USD=10
 
 ### Deploy-kommando
 ```bash
-ssh -i ~/.ssh/claude_key root@72.60.36.92 'cd /root/mikael-trading-os && git pull --rebase && docker compose up -d --force-recreate trading-os'
+ssh -i ~/.ssh/claude_key root@72.60.36.92 'cd /root/mikael-trading-os && git pull --rebase && docker compose build --no-cache trading-os && docker compose up -d --force-recreate trading-os'
 ```
 
-För TS-ändringar: `docker compose build --no-cache trading-os` först.
+För TS-ändringar krävs `--no-cache` eftersom Dockerfile cachar `COPY src ./src`.
 
 ---
 
 ## Nästa steg / TODO
 
-### Hög prio (Mike väntar på)
-1. Verifiera att TEST-KONTO SALDO panelen visar Binance-data efter hard-refresh
-2. Live-trade verifiering: "köp BTC $5" i LIVE-mode → hamna på riktiga binance.com
-3. Trade-historik från Binance — räkna PnL + W/L i panelen från `/api/binance/trades`
-4. Win-rate-fält ("—" just nu) — fyll med riktig data
+### Hög prio
+1. **Mike testar första riktiga LIVE-trade** — chatta "köp BTC $5" i LIVE-mode → säkerhetslås $5 håller → faktisk order på binance.com → siffror uppdateras inom 30s
+2. **Debugga WS user-data-stream 410** — `createListenKey` returnerar 410 HTML
+   - Möjliga orsaker: (a) proxy blockerar POST, (b) testnet kräver annan endpoint, (c) keypermission saknar "User Data Stream"
+   - Workaround idag: 3s polling + 30s portfolio-trades räcker
 
 ### Medium prio
-5. Oanda demo-konto för forex-trades
-6. Live WebSocket från Binance (millisekund-uppdateringar)
-7. Position-stängning via API
+3. Oanda demo-konto för forex-trades (Viktor-agenten väntar)
+4. WS user-data-stream (när 410-felet är debugat) → millisekund-uppdateringar
+5. Position-stängning via `/api/binance/order` (SELL) — endpoint finns, UI saknar knapp utöver "Stäng" i `tradePositions`
+6. Insättningar/uttag-visning i UI (transfers-endpoint finns, ingen UI-yta än)
 
 ### Låg prio
-8. TradingView Pine Script-strategier
-9. Multi-tenant migration (Supabase service_role-key behövs)
-10. Stripe billing (SaaS-tier system)
+7. TradingView Pine Script-strategier
+8. Multi-tenant migration (Supabase service_role-key behövs)
+9. Stripe billing (SaaS-tier system)
 
 ---
 
@@ -115,12 +142,18 @@ För TS-ändringar: `docker compose build --no-cache trading-os` först.
 
 **Du gör:**
 1. Läs denna fil
-2. Verifiera deploy-status: `curl -s https://trading.aiupscale.agency/api/binance/dual`
+2. Verifiera deploy-status:
+   ```bash
+   curl -s "https://trading.aiupscale.agency/api/binance/portfolio-trades?mode=testnet" | python3 -m json.tool | head -20
+   curl -s "https://trading.aiupscale.agency/api/binance/dual" | python3 -m json.tool | head -10
+   ```
 3. Fråga Mike vad han vill prio:era
 
-**Lärdomar från denna session:**
-- Mike hatar när det sägs "fixat" men cache visar gammalt → alltid be om inkognito-test
+**Lärdomar:**
+- Mike hatar när det sägs "fixat" men cache visar gammalt → alltid be om inkognito-test efter version-bump
 - Paper-simulering är borta — TEST = Binance Testnet (riktig API)
-- Mike vill 75%+ winrate men riktigt trading är 50-65%
 - Säkerhetslås $5/trade är kritiska — får ALDRIG tas bort utan explicit OK
 - Allt synkat 1:1 med Binance.com är icke-förhandlingsbart
+- **Rate-limit:** `/myTrades` har weight 20 — max ~250 symbols/min innan ban. Cap till top-20 positions + 5min cache.
+- **Motor C** scannar 15 default symbols och kan trigga ban om Binance är glad — cooldown 10min vid 418/429.
+- VS Code/Cursor cachar Docker-images — alltid `--no-cache` när TS ändras.
