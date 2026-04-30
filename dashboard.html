@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-throttled">
+<meta name="version" content="v2026-04-30-binance-only">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-throttled inte är samma → reload
-  const expectedVer = "v2026-04-30-throttled";
+  // Tvinga ny version: om v2026-04-30-binance-only inte är samma → reload
+  const expectedVer = "v2026-04-30-binance-only";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -1182,8 +1182,8 @@ body.app-state-onboard .fc-panel{display:none !important}
   <button class="kill" id="kill-btn">⏻ KILL SWITCH</button>
   <span class="pnl up" id="pnl">+$0.00 (0.00%)</span>
   <button class="run-btn" id="run-btn">▶ Kör analys</button>
-  <button class="paper-balance" id="paper-balance" title="Test-konto saldo (klicka för Trades-sidan)">📊 TEST <b id="pb-equity">$10,000</b> <span id="pb-pnl">+$0.00</span></button>
-  <button class="paper-balance" id="live-balance" style="background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(16,185,129,.08));border-color:rgba(34,197,94,.5)" title="Live Binance saldo (riktiga pengar)">💚 LIVE <b id="lb-equity" style="color:var(--green)">$0.00</b></button>
+  <button class="paper-balance" id="paper-balance" title="Binance Testnet saldo (klicka för Trades-sidan)">📊 TEST <b id="pb-equity">—</b> <span id="pb-pnl">TESTNET</span></button>
+  <button class="paper-balance" id="live-balance" style="background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(16,185,129,.08));border-color:rgba(34,197,94,.5)" title="Live Binance saldo (riktiga pengar)">💚 LIVE <b id="lb-equity" style="color:var(--green)">—</b></button>
   <button class="cost-mini" id="cost-mini" title="Klicka för detaljerad kostnadsvy">💰 <b id="cost-today">$0.00</b> idag</button>
   <div class="user-wrap">
     <button class="user-chip" id="user-chip" title="Konto-meny">
@@ -4624,6 +4624,16 @@ function saveTradeData(){
 }
 
 function loadTradeData(){
+  // PAPER-DATA RENSAS: alla siffror speglas nu från Binance via /api/binance/*
+  // Gammalt paper-state i localStorage rensas vid first-load med ny version-tag
+  const PAPER_DATA_VERSION_KEY = "trading_data_version";
+  const CURRENT_DATA_VERSION = "binance-only-v1";
+  if(localStorage.getItem(PAPER_DATA_VERSION_KEY) !== CURRENT_DATA_VERSION){
+    localStorage.removeItem("trading_positions");
+    localStorage.removeItem("trading_history");
+    localStorage.removeItem("trading_decisions");
+    localStorage.setItem(PAPER_DATA_VERSION_KEY, CURRENT_DATA_VERSION);
+  }
   try {
     const pos = localStorage.getItem("trading_positions");
     const hist = localStorage.getItem("trading_history");
@@ -5457,6 +5467,9 @@ function renderTradesPage(){
   renderWatchesAndConfirms();
   renderLifetimeStats();
   renderAuditTrail();
+  // BINANCE-SPEGLING: hämta riktiga positions/decisions/trades från Binance
+  // Throttlad så vi inte spammar API:et
+  maybeRefreshBinanceTradeData();
   const positions = STATE.tradePositions || [];
   const decisions = STATE.tradeDecisions || [];
   const history = STATE.tradeHistory || [];
@@ -6637,6 +6650,59 @@ function startBinanceSync(){
   binanceSyncInterval = setInterval(refreshBinanceSync, 3000); // var 3s polling baseline
   // SSE: pushar order-fills + balansändringar i realtid (Binance user-data-stream)
   startBinanceUserStream();
+}
+
+// Throttlad Binance trade-data hämtning (decisions + history) — speglar Binance 1:1
+// Hämtar /portfolio-trades (recent trades + per-symbol stats) och fyller STATE
+const _lastBinTrades = { ts: 0 };
+async function maybeRefreshBinanceTradeData(){
+  const now = Date.now();
+  if(now - _lastBinTrades.ts < 30000) return;
+  _lastBinTrades.ts = now;
+  const mode = currentUiMode === "live" ? "live" : "testnet";
+  try {
+    const r = await fetch(`/api/binance/portfolio-trades?mode=${mode}`);
+    const pt = await r.json();
+    if(!pt.ok) return;
+    // Recent trades → decisions-log (Hannas beslut visar nu Binance fills)
+    const recentTrades = pt.recentTrades || [];
+    STATE.tradeDecisions = recentTrades.map(t => ({
+      timestamp: t.time,
+      action: t.side,
+      sym: t.symbol,
+      amount: t.quoteQty.toFixed(2),
+      reasoning: t.pnl !== null ? `Realized PnL ${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}` : `${t.qty} @ $${t.price}`,
+      source: "binance"
+    }));
+    // Closed trades med PnL → history-tabellen
+    STATE.tradeHistory = recentTrades.filter(t => t.pnl !== null).map(t => ({
+      sym: t.symbol,
+      side: t.side === "SELL" ? "BUY" : "SELL",
+      entry: t.price,
+      exit: t.price,
+      qty: t.qty,
+      amount: t.quoteQty.toFixed(2),
+      profit: t.pnl,
+      won: t.pnl > 0,
+      closedAt: t.time
+    }));
+    // Re-rendera trades-page om vi är där
+    if(STATE.activeTab === "trades" && typeof renderTradesPage === "function"){
+      // Uppdatera tabellerna direkt utan att triggera ny fetch (set _lastBinTrades.ts redan)
+      const decTbl = document.getElementById("trade-decisions-table");
+      const histTbl = document.getElementById("trade-history-table");
+      if(decTbl){
+        if(!STATE.tradeDecisions.length){
+          decTbl.innerHTML = `<div class="tt-empty">Inga trades på Binance ${mode} än. Gör din första trade så syns den här.</div>`;
+        }
+      }
+      if(histTbl){
+        if(!STATE.tradeHistory.length){
+          histTbl.innerHTML = `<div class="tt-empty">Inga stängda trades på Binance ${mode}.</div>`;
+        }
+      }
+    }
+  } catch(e){ /* tyst fail — keep prev state */ }
 }
 
 // Throttlad portfolio-trades fetch (max 1 per 30s per mode för att skydda Binance rate-limit)
