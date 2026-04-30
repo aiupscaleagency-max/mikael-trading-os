@@ -174,25 +174,32 @@ async function executeChatTool(
 }
 
 // ─── ADVISOR — senior trading-AI på Opus med marknadskontext + historik + patterns ───
+// VIKTIGT: marknadsdata hämtas ALLTID via mainnet (publika endpoints, ingen auth/rate-limit-konflikt
+// med testnet). Bara user-specifik data (trades, positions) använder mode-clienten.
 async function consultAdvisor(
   question: string,
   symbols: string[],
-  client: BinanceClient,
+  userClient: BinanceClient,
   mode: "testnet" | "live",
 ): Promise<{ recommendation: string; data: Record<string, unknown> }> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY ej satt");
   const anthropic = new Anthropic({ apiKey });
 
-  const targetSyms = symbols.length > 0 ? symbols : ["BTCUSDT", "ETHUSDT"];
+  // Mainnet-client för publik marknadsdata — använder LIVE creds om de finns,
+  // annars en publik client utan auth (klines + price är opublic)
+  const liveCredsForData = binanceLiveCreds || { apiKey: "public", apiSecret: "public", testnet: false };
+  const marketClient = new BinanceClient(liveCredsForData);
+
+  const targetSyms = symbols.length > 0 ? symbols : ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 
   // Hämta marknadsdata för varje symbol parallellt: 1h + 4h klines + ticker
   const marketData = await Promise.all(targetSyms.slice(0, 5).map(async (sym) => {
     try {
       const [klines1h, klines4h, price] = await Promise.all([
-        client.getKlines(sym, "1h", 100),
-        client.getKlines(sym, "4h", 100),
-        client.getPrice(sym),
+        marketClient.getKlines(sym, "1h", 100),
+        marketClient.getKlines(sym, "4h", 100),
+        marketClient.getPrice(sym),
       ]);
       const candles1h: Candle[] = klines1h.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
       const patterns1h = detectAllPatterns(candles1h).slice(-5);
@@ -224,8 +231,8 @@ async function consultAdvisor(
     }
   }));
 
-  // Hämta Mike's historik (FIFO trade-stats)
-  const portfolioStats = await client.getPortfolioTradeStats();
+  // Hämta Mike's historik (FIFO trade-stats) — använd userClient (mode-specifik)
+  const portfolioStats = await userClient.getPortfolioTradeStats();
   const tradeHistory = {
     total_trades: portfolioStats.totalTrades,
     closed_trades: portfolioStats.closedTrades,
@@ -254,11 +261,11 @@ Din roll:
 - Referera ALLTID till Mike's faktiska historik när du gör rekommendationer ("din SOLUSDT-history visar 3W/1L").
 - Time-of-day och weekday-bias: notera om vi är i lågvolym-ASIA, högvolym-US, eller weekend (krypto = 24/7 men volym dippar).
 - Kombinera: trend (SMA20 vs SMA50) + momentum (RSI) + chart-mönster + Mike's egna edge per symbol.
-- Var konkret: rekommendera SPECIFIKA symbols + amount (inom $1-50 LIVE-säkerhetslås).
+- Var konkret: rekommendera SPECIFIKA symbols + amount.
 - Om setup är dålig — säg det rakt ut, ingen FOMO. "Vänta" är ett legitimt råd.
 - Svara KORT (max 6 punkter, ADHD-vänligt). Mike vill action eller "vänta", inte essäer.
 
-Mode: ${mode === "live" ? "LIVE — RIKTIGA PENGAR (säkerhetslås max $50/trade, daglig $10)" : "TESTNET — gratis demo"}`;
+Mode: ${mode === "live" ? `LIVE — RIKTIGA PENGAR (säkerhetslås max $${MAX_LIVE_STAKE_USD}/trade, daglig $${MAX_LIVE_DAILY_LOSS_USD}). Pusha INTE Mike över dessa.` : `TESTNET — gratis demo-pengar ($50,499 USDT). INGEN $-gräns, Mike kan köra $500/trade utan problem. Var generös med rekommendationer i testnet.`}`;
 
   const advisorUserMsg = `Mike frågar: "${question}"
 
@@ -1192,7 +1199,7 @@ Mike's konto just nu (Binance ${mode === "live" ? "MAINNET — RIKTIGA PENGAR" :
 - Cash: $${equity.cashUsdt.toFixed(2)} (${equity.cashBreakdown.map(b => `$${b.amount.toFixed(2)} ${b.asset}`).join(", ")})
 - Öppna positioner: ${equity.positions.length} ${equity.positions.length > 0 ? "(top: " + equity.positions.slice(0,3).map(p => `${p.asset} $${p.valueUsdt.toFixed(2)}`).join(", ") + ")" : ""}
 
-Säkerhetslås LIVE: max $${MAX_LIVE_STAKE_USD}/trade, daglig loss-cap $${MAX_LIVE_DAILY_LOSS_USD}.
+Säkerhetslås: ${mode === "live" ? `LIVE-mode: max $${MAX_LIVE_STAKE_USD}/trade, daglig loss-cap $${MAX_LIVE_DAILY_LOSS_USD}` : `TESTNET-mode: INGEN gräns, Mike har $50,499 demo. Kör vad han ber om — $500, $1000, vad som helst inom hans saldo.`}
 
 Tradable symbols på Binance ${mode}: ${symbols.length} st (USDT + USDC quote-pairs).
 Mike's quote-tillgång: ${userQuotes.join(", ") || "ingen"} — välj alltid pairs där quote = en tillgång Mike har.
