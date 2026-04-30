@@ -15,6 +15,7 @@ import { BinanceClient, type BinanceCredentials } from "./integrations/binance.j
 import { detectAllPatterns, type Candle, type PatternType } from "./patternDetection.js";
 import { sendMessage as sendTelegramMessage } from "./telegram.js";
 import { log } from "../logger.js";
+import Anthropic from "@anthropic-ai/sdk";
 
 const CHECK_INTERVAL_MS = 5 * 60_000;
 const TAKE_PROFIT_PCT = 10;
@@ -40,17 +41,25 @@ interface MonitorState {
   lastResetDay: number;
   // Track entry-pris per position (sym → { entryPrice, qty, openedAt })
   positionEntries: Map<string, { entryPrice: number; qty: number; openedAt: number; mode: "testnet" | "live" }>;
-  // Sales-log för audit
-  recentSales: Array<{ symbol: string; mode: string; pnl: number; reason: string; time: number; orderId: number }>;
+  // Sales-log för audit + LÄRDOMS-LOOP (Advisor läser denna inför nästa beslut)
+  recentSales: Array<{
+    symbol: string; mode: string; pnl: number; pnlPct: number | null;
+    reason: string; advisorVerdict: string; advisorReasoning: string;
+    holdMinutes: number; rsi: number; patterns: string[];
+    time: number; orderId: number;
+  }>;
+  // Advisor-verifikation: kräver djup analys före LIVE-sell
+  requireAdvisorOnLive: boolean;
 }
 
 const state: MonitorState = {
   enabled: true,
-  liveEnabled: false, // TESTNET-only första 7 dagarna
+  liveEnabled: false,
   autoSellsToday: { testnet: 0, live: 0 },
   lastResetDay: new Date().getUTCDate(),
   positionEntries: new Map(),
   recentSales: [],
+  requireAdvisorOnLive: true, // LIVE: alltid Advisor-verifikation före SELL (Mike-krav)
 };
 
 export function setMonitorEnabled(enabled: boolean): void {
@@ -87,6 +96,102 @@ function resetDailyCounters(): void {
   }
 }
 
+// ─── ADVISOR-VERIFIKATION (Opus) — djup analys före LIVE auto-sell ───
+// Mike's krav: "djupt analyserat, agenterna ska läsa och lära upp sig att känna igen
+// chart-mönster, hålla koll på marknaden i realtid, använda historik"
+async function verifyWithAdvisor(
+  asset: string,
+  symbol: string,
+  mode: "testnet" | "live",
+  marketSnapshot: { currentPrice: number; klines1h: Candle[]; klines4h: Candle[]; rsi: number; patterns1h: string[]; patterns4h: string[] },
+  position: { entryPrice: number | null; pnlPct: number | null; holdMinutes: number; qty: number; valueUsdt: number },
+  ruleSignals: { tpSl: string; pattern: string; rsi: string },
+): Promise<{ approve: boolean; verdict: string; reasoning: string }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    log.warn("[Advisor] ANTHROPIC_API_KEY saknas — defaultar till APPROVE");
+    return { approve: true, verdict: "APPROVE_NO_AI", reasoning: "Advisor unavailable, regelbaserat beslut godkänt." };
+  }
+  const anthropic = new Anthropic({ apiKey });
+
+  // LÄRDOMAR: senaste 10 sales på samma symbol + 5 övriga
+  const symbolSpecific = state.recentSales.filter(s => s.symbol === symbol).slice(-10);
+  const otherRecent = state.recentSales.filter(s => s.symbol !== symbol).slice(-5);
+  const lessons = [...symbolSpecific, ...otherRecent].map(s => ({
+    symbol: s.symbol, hold_min: s.holdMinutes, pnl: s.pnl.toFixed(2), pnl_pct: s.pnlPct?.toFixed(1) || "?",
+    reason: s.reason, advisor: s.advisorVerdict, patterns: s.patterns.join(","), rsi_at_sell: s.rsi.toFixed(0),
+  }));
+
+  // Senaste 20 candles för att Advisor ska se närbild av marknaden
+  const recentCandles = marketSnapshot.klines1h.slice(-20).map(k => ({
+    t: new Date(k.time * 1000).toISOString().slice(5,16),
+    o: k.open.toFixed(6), h: k.high.toFixed(6), l: k.low.toFixed(6), c: k.close.toFixed(6),
+    v: k.volume.toFixed(0),
+  }));
+
+  const systemPrompt = `Du är ADVISOR — Mike's senior trading-AI på Claude Opus, och du är sista instans innan en RIKTIG SELL-order läggs på Binance ${mode === "live" ? "MAINNET (riktiga pengar)" : "TESTNET"}.
+
+Din uppgift: läs marknadsdata + Mike's lärdomar och avgör om regelbaserade signalerna verkligen indikerar SELL eller om du ser annan kontext (volym-spike, support-håller, falsk-pattern).
+
+Svara med EXAKT format:
+VERDICT: APPROVE eller VETO
+REASONING: 2-3 meningar varför.
+
+Approve = SELL körs. Veto = position behålls (Mike förlorar ev. winning-trade men du anser signalerna är svaga eller riskabla).
+
+Var data-driven. Referera direkt till siffror. Om patterns motsäger varandra (ex bullish 4h + bearish 1h) — väg in det.
+Om Mike's tidigare lärdomar visar att liknande exits PNL'ade dåligt — viktig signal.`;
+
+  const userMsg = `═══ POSITION ═══
+Symbol: ${symbol} (asset ${asset})
+Mode: ${mode}
+Qty: ${position.qty}
+Värde nu: $${position.valueUsdt.toFixed(2)}
+Entry-pris: ${position.entryPrice?.toFixed(8) ?? "OKÄNT (manuell köp innan tracking)"}
+Aktuellt pris: $${marketSnapshot.currentPrice.toFixed(8)}
+PnL: ${position.pnlPct !== null ? `${position.pnlPct >= 0 ? "+" : ""}${position.pnlPct.toFixed(2)}%` : "okänt"}
+Hold-tid: ${position.holdMinutes.toFixed(0)} min
+
+═══ REGELBASERADE SIGNALER (varför vi överväger SELL) ═══
+- TP/SL: ${ruleSignals.tpSl || "neutral"}
+- Pattern: ${ruleSignals.pattern || "inga bearish"}
+- RSI: ${ruleSignals.rsi || `${marketSnapshot.rsi.toFixed(0)} (neutral)`}
+
+═══ MARKNAD ═══
+RSI(14) 1h: ${marketSnapshot.rsi.toFixed(1)}
+Bearish patterns 1h: ${marketSnapshot.patterns1h.join(", ") || "inga"}
+Bearish patterns 4h: ${marketSnapshot.patterns4h.join(", ") || "inga"}
+
+Senaste 20 1h-candles (t/o/h/l/c/v):
+${recentCandles.map(c => `${c.t} ${c.o}/${c.h}/${c.l}/${c.c} vol=${c.v}`).join("\n")}
+
+═══ MIKE'S LÄRDOMAR (senaste sells) ═══
+${lessons.length > 0 ? JSON.stringify(lessons, null, 2) : "Ingen historik än — bygg sample."}
+
+═══ DITT BESLUT ═══
+Ska vi sälja ${asset} NU? Använd formatet:
+VERDICT: APPROVE / VETO
+REASONING: ...`;
+
+  try {
+    const reply = await anthropic.messages.create({
+      model: "claude-opus-4-7",
+      max_tokens: 500,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userMsg }],
+    });
+    const text = reply.content.filter(b => b.type === "text").map(b => (b as Anthropic.TextBlock).text).join("");
+    const verdictMatch = text.match(/VERDICT:\s*(APPROVE|VETO)/i);
+    const reasoningMatch = text.match(/REASONING:\s*([\s\S]+?)(?:\n\n|$)/i);
+    const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : "APPROVE";
+    const reasoning = reasoningMatch ? reasoningMatch[1].trim().slice(0, 400) : text.slice(0, 400);
+    return { approve: verdict === "APPROVE", verdict, reasoning };
+  } catch (e) {
+    log.warn(`[Advisor] verifikation fail: ${e instanceof Error ? e.message : String(e)} — defaultar till APPROVE`);
+    return { approve: true, verdict: "APPROVE_API_FAIL", reasoning: "Advisor API fail, regelbaserat beslut används." };
+  }
+}
+
 // Beräkna RSI(14) från klines
 function computeRSI(closes: number[]): number {
   if (closes.length < 15) return 50;
@@ -99,26 +204,43 @@ function computeRSI(closes: number[]): number {
   return 100 - (100 / (1 + rs));
 }
 
-// Analysera EN position och returnera SELL-beslut
+// Analysera EN position och returnera SELL-beslut + full marknadssnapshot för Advisor
+interface PositionDecision {
+  shouldSell: boolean;
+  reason: string;
+  currentPrice: number;
+  entryPrice: number | null;
+  pnlPct: number | null;
+  symbol: string;
+  klines1h: Candle[];
+  klines4h: Candle[];
+  rsi: number;
+  patterns1h: string[];
+  patterns4h: string[];
+  holdMinutes: number;
+  ruleSignals: { tpSl: string; pattern: string; rsi: string };
+}
+
 async function analyzePosition(
   asset: string,
   qty: number,
   marketClient: BinanceClient,
   mode: "testnet" | "live",
-): Promise<{ shouldSell: boolean; reason: string; currentPrice: number; entryPrice: number | null; pnlPct: number | null } | null> {
-  // Försök USDC först (Mike's LIVE-quote), sen USDT (TESTNET-quote)
+): Promise<PositionDecision | null> {
   const candidateSymbols = [`${asset}USDC`, `${asset}USDT`];
   let symbol: string | null = null;
   let currentPrice = 0;
   let klines: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }> = [];
+  let klines4h: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }> = [];
   for (const s of candidateSymbols) {
     try {
-      const [price, k] = await Promise.all([
+      const [price, k1, k4] = await Promise.all([
         marketClient.getPrice(s),
         marketClient.getKlines(s, "1h", 50),
+        marketClient.getKlines(s, "4h", 50),
       ]);
-      if (price > 0 && k.length >= 20) {
-        symbol = s; currentPrice = price; klines = k; break;
+      if (price > 0 && k1.length >= 20) {
+        symbol = s; currentPrice = price; klines = k1; klines4h = k4; break;
       }
     } catch { /* try next */ }
   }
@@ -127,52 +249,58 @@ async function analyzePosition(
   const entry = state.positionEntries.get(`${mode}-${asset}`);
   const entryPrice = entry?.entryPrice ?? null;
   const pnlPct = entryPrice ? ((currentPrice - entryPrice) / entryPrice) * 100 : null;
+  const holdMinutes = entry ? (Date.now() - entry.openedAt) / 60_000 : 999;
 
   // Min hold-tid skydd
-  if (entry && (Date.now() - entry.openedAt) < MIN_HOLD_MINUTES * 60_000) {
-    return { shouldSell: false, reason: "Min hold-tid (10 min) ej uppfylld", currentPrice, entryPrice, pnlPct };
+  if (entry && holdMinutes < MIN_HOLD_MINUTES) {
+    return null;
   }
 
-  // Signal 1: TP eller SL
-  let tpSlSignal = false;
-  let tpSlReason = "";
+  let tpSlSignal = false; let tpSlReason = "";
   if (pnlPct !== null) {
     if (pnlPct >= TAKE_PROFIT_PCT) { tpSlSignal = true; tpSlReason = `TP +${pnlPct.toFixed(1)}%`; }
     else if (pnlPct <= STOP_LOSS_PCT) { tpSlSignal = true; tpSlReason = `SL ${pnlPct.toFixed(1)}%`; }
   }
 
-  // Signal 2: Bearish chart-pattern (på senaste 5 candles)
-  let patternSignal = false;
-  let patternReason = "";
+  let patterns1h: string[] = []; let patterns4h: string[] = [];
   try {
-    const candles: Candle[] = klines.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
-    const allPatterns = detectAllPatterns(candles);
-    const recentBearish = allPatterns.filter(p => BEARISH_PATTERNS.includes(p.type) && p.candle.time >= klines[klines.length - 5].time);
-    if (recentBearish.length > 0) {
-      patternSignal = true;
-      patternReason = recentBearish.map(p => p.type).join("+");
-    }
-  } catch { /* pattern detection optional */ }
+    const candles1h: Candle[] = klines.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+    patterns1h = detectAllPatterns(candles1h).filter(p => BEARISH_PATTERNS.includes(p.type) && p.candle.time >= klines[klines.length - 5].time).map(p => p.type);
+  } catch {}
+  try {
+    const candles4hC: Candle[] = klines4h.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+    patterns4h = detectAllPatterns(candles4hC).filter(p => BEARISH_PATTERNS.includes(p.type)).slice(-3).map(p => p.type);
+  } catch {}
 
-  // Signal 3: RSI överköpt
   const closes = klines.map(k => k.close);
   const rsi = computeRSI(closes);
   const rsiSignal = rsi >= RSI_OVERBOUGHT;
+  const patternSignal = patterns1h.length > 0;
 
-  // 2 av 3 signaler krävs (eller hard SL/TP ensamt räcker)
-  const signals = [tpSlSignal, patternSignal, rsiSignal];
-  const signalCount = signals.filter(Boolean).length;
+  const signalCount = [tpSlSignal, patternSignal, rsiSignal].filter(Boolean).length;
   const hardTriggerSL = pnlPct !== null && pnlPct <= STOP_LOSS_PCT;
   const hardTriggerTP = pnlPct !== null && pnlPct >= TAKE_PROFIT_PCT;
   const shouldSell = hardTriggerSL || hardTriggerTP || signalCount >= 2;
 
   const reasonParts: string[] = [];
   if (tpSlSignal) reasonParts.push(tpSlReason);
-  if (patternSignal) reasonParts.push(`pattern: ${patternReason}`);
+  if (patternSignal) reasonParts.push(`pattern: ${patterns1h.join("+")}`);
   if (rsiSignal) reasonParts.push(`RSI ${rsi.toFixed(0)}`);
-  const reason = reasonParts.length > 0 ? reasonParts.join(", ") : `inga starka signaler (RSI ${rsi.toFixed(0)})`;
+  const reason = reasonParts.length > 0 ? reasonParts.join(", ") : "inga starka signaler";
 
-  return { shouldSell, reason, currentPrice, entryPrice, pnlPct };
+  const candles1h: Candle[] = klines.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+  const candles4hOut: Candle[] = klines4h.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+
+  return {
+    shouldSell, reason, currentPrice, entryPrice, pnlPct,
+    symbol, klines1h: candles1h, klines4h: candles4hOut, rsi,
+    patterns1h, patterns4h, holdMinutes,
+    ruleSignals: {
+      tpSl: tpSlReason,
+      pattern: patternSignal ? patterns1h.join("+") : "",
+      rsi: rsiSignal ? `${rsi.toFixed(0)} (överköpt)` : "",
+    },
+  };
 }
 
 // Kör en check-cykel — anropas av setInterval
@@ -204,13 +332,38 @@ async function runCheckCycle(testnetCreds: BinanceCredentials | null, liveCreds:
         const decision = await analyzePosition(pos.asset, pos.qty, marketClient, mode);
         if (!decision || !decision.shouldSell) continue;
 
-        // SELL — hitta rätt symbol via exchangeInfo
+        // ADVISOR-VERIFIKATION (LIVE ALLTID, TESTNET vid SL/TP-trigger för cost-control)
+        let advisorVerdict = "REGEL_AUTO";
+        let advisorReasoning = "Regelbaserat (Advisor ej konsulterad)";
+        const needAdvisor = (mode === "live" && state.requireAdvisorOnLive) ||
+                            (mode === "testnet" && (decision.ruleSignals.tpSl || decision.patterns1h.length > 0));
+        if (needAdvisor) {
+          const verify = await verifyWithAdvisor(
+            pos.asset, decision.symbol, mode,
+            { currentPrice: decision.currentPrice, klines1h: decision.klines1h, klines4h: decision.klines4h,
+              rsi: decision.rsi, patterns1h: decision.patterns1h, patterns4h: decision.patterns4h },
+            { entryPrice: decision.entryPrice, pnlPct: decision.pnlPct, holdMinutes: decision.holdMinutes,
+              qty: pos.qty, valueUsdt: pos.valueUsdt },
+            decision.ruleSignals,
+          );
+          advisorVerdict = verify.verdict;
+          advisorReasoning = verify.reasoning;
+          if (!verify.approve) {
+            log.info(`[PositionMonitor] ${mode} ${decision.symbol} — Advisor VETO: ${verify.reasoning.slice(0,150)}`);
+            // Telegram-notis även vid VETO så Mike ser att Advisor jobbar
+            const modeTag = mode === "live" ? "💚 LIVE" : "🧪 TESTNET";
+            await sendTelegramMessage(
+              `🟡 <b>Advisor VETO ${modeTag}</b>\n\n<b>${decision.symbol}</b> — sell-signal triggad men Advisor håller positionen.\n\nRegel-signaler: ${decision.reason}\nAdvisor: ${verify.reasoning.slice(0,300)}`,
+              { parseMode: "HTML" }
+            );
+            await new Promise(r => setTimeout(r, 500));
+            continue; // Hoppa över sell
+          }
+        }
+
         const symbols = await userClient.getTradableSymbols(["USDC", "USDT"]);
         const symInfo = symbols.find(s => s.baseAsset === pos.asset);
-        if (!symInfo) {
-          log.warn(`[PositionMonitor] Ingen tradable pair för ${pos.asset}, skippar`);
-          continue;
-        }
+        if (!symInfo) { log.warn(`[PositionMonitor] Ingen tradable pair för ${pos.asset}`); continue; }
         const stepSize = symInfo.stepSize || 0.000001;
         const qtyRounded = Math.floor(pos.qty / stepSize) * stepSize;
         if (qtyRounded <= 0) continue;
@@ -222,34 +375,34 @@ async function runCheckCycle(testnetCreds: BinanceCredentials | null, liveCreds:
           const sellValue = parseFloat(fill.cummulativeQuoteQty);
           const realizedPnl = decision.entryPrice ? (fillPrice - decision.entryPrice) * parseFloat(fill.executedQty) : 0;
 
+          // LÄRDOMS-LOGG: full kontext sparas så Advisor kan referera till tidigare sells
           state.recentSales.push({
-            symbol: symInfo.symbol,
-            mode,
-            pnl: realizedPnl,
-            reason: decision.reason,
-            time: Date.now(),
-            orderId: fill.orderId,
+            symbol: symInfo.symbol, mode, pnl: realizedPnl, pnlPct: decision.pnlPct,
+            reason: decision.reason, advisorVerdict, advisorReasoning,
+            holdMinutes: decision.holdMinutes, rsi: decision.rsi, patterns: decision.patterns1h,
+            time: Date.now(), orderId: fill.orderId,
           });
+          // Behåll bara senaste 100 sales för minne-effektivitet
+          if (state.recentSales.length > 100) state.recentSales = state.recentSales.slice(-100);
 
-          // Telegram-notis
           const emoji = realizedPnl >= 0 ? "🟢" : "🔴";
           const modeTag = mode === "live" ? "💚 LIVE" : "🧪 TESTNET";
           const pnlStr = decision.pnlPct !== null ? `${decision.pnlPct >= 0 ? "+" : ""}${decision.pnlPct.toFixed(1)}%` : "(okänt entry)";
+          const advisorTag = advisorVerdict === "APPROVE" ? "✅ Advisor godkände" : (advisorVerdict === "REGEL_AUTO" ? "Regelbaserat" : `Advisor: ${advisorVerdict}`);
           const msg = `${emoji} <b>Auto-sell ${modeTag}</b>\n\n` +
             `<b>${symInfo.symbol}</b> qty ${qtyRounded.toFixed(4)}\n` +
             `Sålt @ $${fillPrice.toFixed(6)} = $${sellValue.toFixed(2)}\n` +
             `PnL: ${realizedPnl >= 0 ? "+" : ""}$${realizedPnl.toFixed(2)} (${pnlStr})\n` +
             `Orsak: ${decision.reason}\n` +
+            `${advisorTag}\n` +
             `OrderID: ${fill.orderId}`;
           await sendTelegramMessage(msg, { parseMode: "HTML" });
-          log.ok(`[PositionMonitor] AUTO-SELL ${mode} ${symInfo.symbol} qty=${qtyRounded} pnl=$${realizedPnl.toFixed(2)} reason=${decision.reason}`);
-          // Rensa entry-tracking
+          log.ok(`[PositionMonitor] AUTO-SELL ${mode} ${symInfo.symbol} qty=${qtyRounded} pnl=$${realizedPnl.toFixed(2)} reason=${decision.reason} advisor=${advisorVerdict}`);
           state.positionEntries.delete(`${mode}-${pos.asset}`);
         } catch (e) {
           log.warn(`[PositionMonitor] SELL fail ${symInfo.symbol}: ${e instanceof Error ? e.message : String(e)}`);
         }
 
-        // Mellanrum mellan calls för att inte rate-limit:a
         await new Promise(r => setTimeout(r, 500));
       }
     } catch (e) {
