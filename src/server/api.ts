@@ -14,6 +14,8 @@ import { detectAllPatterns, type Candle } from "./patternDetection.js";
 import { BinanceClient, type BinanceCredentials } from "./integrations/binance.js";
 import { startPositionMonitor, recordEntry as recordPositionEntry, getMonitorStatus, setMonitorEnabled, setLiveAutoSell } from "./positionMonitor.js";
 import { OandaClient, type OandaCredentials } from "./integrations/oanda.js";
+import { startMarketStream, getCachedPrice, getCachedTicker, getMarketStreamStatus } from "./marketStream.js";
+import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
@@ -158,12 +160,27 @@ async function executeChatTool(
     }
     // Plocka random N (utan duplicates)
     const shuffled = [...eligible].sort(() => Math.random() - 0.5).slice(0, n);
+    // Pre-trade orderbook-check: avbryt om förväntad slippage > 50 bps (LIVE) eller 100 bps (TESTNET)
+    const maxSlippageBps = mode === "live" ? 50 : 100;
     const fills = await Promise.all(shuffled.map(async (s) => {
       try {
+        // Slippage-skydd: kolla orderbok-djup först (snabbt — publik endpoint, ingen rate-cost)
+        try {
+          const slip = await client.estimateSlippage(s.symbol, "BUY", amt);
+          if (!slip.fillable) {
+            return { symbol: s.symbol, ok: false, error: `Orderbok för tunn — kan ej fylla $${amt}` };
+          }
+          if (slip.slippageBps > maxSlippageBps) {
+            return { symbol: s.symbol, ok: false, error: `Slippage ${slip.slippageBps.toFixed(0)} bps > cap ${maxSlippageBps} — skipped` };
+          }
+        } catch { /* slippage-check failure ska inte blocka, fortsätt med order */ }
+
         const fill = await client.placeMarketOrder({ symbol: s.symbol, side: "BUY", quoteOrderQty: amt });
         const fillPrice = parseFloat(fill.cummulativeQuoteQty) / parseFloat(fill.executedQty);
         // Registrera entry till PositionMonitor så den vet när auto-sell ska triggas
         recordPositionEntry(s.baseAsset, mode, fillPrice, parseFloat(fill.executedQty));
+        // Invalidera portfolio-cache så nästa /portfolio-trades hämtar färska siffror
+        portfolioStatsCache.delete(mode);
         return { symbol: s.symbol, ok: true, qty: parseFloat(fill.executedQty), fill_price: fillPrice, order_id: fill.orderId };
       } catch (e) {
         return { symbol: s.symbol, ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
@@ -272,6 +289,13 @@ async function consultAdvisor(
     market_session: now.getUTCHours() >= 13 && now.getUTCHours() < 21 ? "US_OPEN" : (now.getUTCHours() >= 7 && now.getUTCHours() < 16 ? "EU_OPEN" : "ASIA_OFFHOURS"),
   };
 
+  // Hämta LIVE equity för dynamisk advisor-kontext (ej hårdkodat belopp)
+  let userEquityHint = "";
+  try {
+    const eq = await userClient.getTotalEquity();
+    userEquityHint = `Mike's nuvarande ${mode}-saldo: total $${eq.totalUsdt.toFixed(2)}, cash $${eq.cashUsdt.toFixed(2)}, ${eq.positions.length} öppna positioner.`;
+  } catch { /* fallback utan saldo */ }
+
   const advisorSystem = `Du är ADVISOR — Mike's senior trading-AI på Claude Opus. Mike's huvud-agent (Hanna, Haiku) konsulterar dig för djup analys.
 
 Din roll:
@@ -283,7 +307,10 @@ Din roll:
 - Om setup är dålig — säg det rakt ut, ingen FOMO. "Vänta" är ett legitimt råd.
 - Svara KORT (max 6 punkter, ADHD-vänligt). Mike vill action eller "vänta", inte essäer.
 
-Mode: ${mode === "live" ? `LIVE — RIKTIGA PENGAR (säkerhetslås max $${MAX_LIVE_STAKE_USD}/trade, daglig $${MAX_LIVE_DAILY_LOSS_USD}). Pusha INTE Mike över dessa.` : `TESTNET — gratis demo-pengar ($50,499 USDT). INGEN $-gräns, Mike kan köra $500/trade utan problem. Var generös med rekommendationer i testnet.`}`;
+Mode: ${mode === "live"
+  ? `LIVE — RIKTIGA PENGAR (säkerhetslås max $${MAX_LIVE_STAKE_USD}/trade, daglig $${MAX_LIVE_DAILY_LOSS_USD}). Pusha INTE Mike över dessa.`
+  : `TESTNET — gratis demo-pengar. INGEN $-gräns, men håll dig inom Mike's faktiska saldo. Var generös med rekommendationer i testnet.`}
+${userEquityHint}`;
 
   const advisorUserMsg = `Mike frågar: "${question}"
 
@@ -327,7 +354,9 @@ function broadcastUserStream(event: string, payload: unknown): void {
 
 // ─── Binance WebSocket User Data Stream — pushar order-fills + balans-uppdateringar i realtid ───
 import WebSocket from "ws";
-const userStreams: Map<"testnet" | "live", { ws: WebSocket; listenKey: string; keepAlive: NodeJS.Timeout }> = new Map();
+interface UserStream { ws: WebSocket; listenKey: string; keepAlive: NodeJS.Timeout; client: BinanceClient }
+const userStreams: Map<"testnet" | "live", UserStream> = new Map();
+const userStreamRetryAttempt = new Map<"testnet" | "live", number>();
 
 async function startUserDataStream(mode: "testnet" | "live"): Promise<void> {
   const creds = resolveBinanceCreds(mode);
@@ -338,37 +367,66 @@ async function startUserDataStream(mode: "testnet" | "live"): Promise<void> {
     const listenKey = await client.createListenKey();
     const wsUrl = `${client.getWsUrl()}/${listenKey}`;
     const ws = new WebSocket(wsUrl);
-    ws.on("open", () => log.ok(`[binance-${mode}] user-data-stream öppnad`));
+    ws.on("open", () => {
+      log.ok(`[binance-${mode}] user-data-stream öppnad (real-time order/balance events)`);
+      userStreamRetryAttempt.set(mode, 0); // återställ backoff vid lyckad anslutning
+    });
     ws.on("message", (raw: WebSocket.RawData) => {
       try {
         const msg = JSON.parse(raw.toString());
         // Invalidera portfolio-cache vid varje event så nästa request hämtar färska siffror
         portfolioStatsCache.delete(mode);
         broadcastUserStream(msg.e || "update", { mode, ...msg });
+        // Logga viktiga event för observability
+        if (msg.e === "executionReport" && (msg.X === "FILLED" || msg.X === "PARTIALLY_FILLED")) {
+          log.ok(`[binance-${mode}] ${msg.X} ${msg.S} ${msg.s} qty=${msg.z} avg=${msg.Z && msg.z ? (parseFloat(msg.Z) / parseFloat(msg.z)).toFixed(6) : "?"}`);
+        }
       } catch { /* ignore malformed */ }
     });
     ws.on("error", (err) => log.warn(`[binance-${mode}] WS error: ${err.message}`));
-    ws.on("close", () => {
-      log.warn(`[binance-${mode}] WS stängd — återansluter om 5s`);
+    ws.on("close", (code, reason) => {
       const entry = userStreams.get(mode);
-      if (entry) clearInterval(entry.keepAlive);
+      if (entry) {
+        clearInterval(entry.keepAlive);
+        entry.client.closeListenKey(entry.listenKey).catch(() => { /* best-effort */ });
+      }
       userStreams.delete(mode);
-      setTimeout(() => startUserDataStream(mode), 5000);
+      const attempt = (userStreamRetryAttempt.get(mode) || 0) + 1;
+      userStreamRetryAttempt.set(mode, attempt);
+      const delayMs = Math.min(120_000, 5000 * Math.pow(2, Math.min(attempt - 1, 5)));
+      log.warn(`[binance-${mode}] WS stängd code=${code} — återansluter om ${delayMs / 1000}s (försök ${attempt})`);
+      setTimeout(() => startUserDataStream(mode), delayMs);
     });
-    // Keep-alive listenKey var 30 min
+    // Keep-alive listenKey var 30 min (Binance spec: behövs för att hindra invalidering vid 60min)
     const keepAlive = setInterval(() => {
       client.keepAliveListenKey(listenKey).catch((e) => log.warn(`[binance-${mode}] keepAlive fail: ${e.message}`));
     }, 30 * 60 * 1000);
-    userStreams.set(mode, { ws, listenKey, keepAlive });
+    userStreams.set(mode, { ws, listenKey, keepAlive, client });
   } catch (err) {
-    log.warn(`[binance-${mode}] user-data-stream init fail: ${err instanceof Error ? err.message : String(err)}`);
-    setTimeout(() => startUserDataStream(mode), 30_000);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const attempt = (userStreamRetryAttempt.get(mode) || 0) + 1;
+    userStreamRetryAttempt.set(mode, attempt);
+    // Vid 410 (permission saknas): vänta 5min innan vi retry:ar — det kräver manuell key-fix
+    const isPermError = errMsg.includes("410") || errMsg.includes("permission");
+    const delayMs = isPermError ? 300_000 : Math.min(120_000, 30_000 * Math.pow(2, Math.min(attempt - 1, 3)));
+    log.warn(`[binance-${mode}] user-data-stream init fail: ${errMsg} — retry om ${delayMs / 1000}s (försök ${attempt})`);
+    setTimeout(() => startUserDataStream(mode), delayMs);
   }
 }
-// WS-streams: pausat — createListenKey returnerar 410 (proxy-issue eller permission saknas)
-// Polling-baserad sync (3s + 30s portfolio) räcker tills detta är debugat.
-// För att aktivera: uncomment raden nedan
-// setTimeout(() => { startUserDataStream("testnet"); startUserDataStream("live"); }, 2000);
+// ─── AKTIVERAD: WS-streams med graceful failure-handling ───
+// Tidigare pausade pga 410 på createListenKey. Nu med:
+//  - Bättre felmeddelande som diagnoserar 410 → 'API-key permission saknas'
+//  - Exponential backoff vid återanslutning (5s, 30s, 120s)
+//  - Polling fortsätter parallellt som fallback om WS misslyckas
+setTimeout(() => {
+  if (binanceLiveCreds) startUserDataStream("live");
+  if (binanceTestnetCreds) startUserDataStream("testnet");
+}, 3000);
+
+// ─── PUBLIC MARKET STREAM (price-cache i realtid) ───
+// Eliminerar REST-polling för pris-data. Alla services kan läsa O(1) från memory.
+// Källa: wss://stream.binance.com:9443/ws/!miniTicker@arr (mainnet, publik, ingen auth).
+startMarketStream();
 
 // Reset daily-loss-counter vid midnatt
 setInterval(() => {
@@ -1217,7 +1275,9 @@ Mike's konto just nu (Binance ${mode === "live" ? "MAINNET — RIKTIGA PENGAR" :
 - Cash: $${equity.cashUsdt.toFixed(2)} (${equity.cashBreakdown.map(b => `$${b.amount.toFixed(2)} ${b.asset}`).join(", ")})
 - Öppna positioner: ${equity.positions.length} ${equity.positions.length > 0 ? "(top: " + equity.positions.slice(0,3).map(p => `${p.asset} $${p.valueUsdt.toFixed(2)}`).join(", ") + ")" : ""}
 
-Säkerhetslås: ${mode === "live" ? `LIVE-mode: max $${MAX_LIVE_STAKE_USD}/trade, daglig loss-cap $${MAX_LIVE_DAILY_LOSS_USD}` : `TESTNET-mode: INGEN gräns, Mike har $50,499 demo. Kör vad han ber om — $500, $1000, vad som helst inom hans saldo.`}
+Säkerhetslås: ${mode === "live"
+  ? `LIVE-mode: max $${MAX_LIVE_STAKE_USD}/trade, daglig loss-cap $${MAX_LIVE_DAILY_LOSS_USD}`
+  : `TESTNET-mode: INGEN gräns. Mike har $${equity.totalUsdt.toFixed(2)} (cash $${equity.cashUsdt.toFixed(2)}). Kör vad han ber om inom hans saldo.`}
 
 Tradable symbols på Binance ${mode}: ${symbols.length} st (USDT + USDC quote-pairs).
 Mike's quote-tillgång: ${userQuotes.join(", ") || "ingen"} — välj alltid pairs där quote = en tillgång Mike har.
@@ -1410,8 +1470,9 @@ Regler:
       if (url.pathname === "/api/integrations/status" && method === "GET") {
         json(res, {
           binance: {
-            testnet: { configured: !!binanceTestnetCreds },
-            live: { configured: !!binanceLiveCreds },
+            testnet: { configured: !!binanceTestnetCreds, wsConnected: userStreams.has("testnet") },
+            live: { configured: !!binanceLiveCreds, wsConnected: userStreams.has("live") },
+            marketStream: getMarketStreamStatus(),
           },
           oanda: oandaCreds ? { configured: true, mode: oandaCreds.practice ? "practice" : "live" } : { configured: false },
           safety: {
@@ -1420,6 +1481,51 @@ Regler:
             liveDailyLossUsd,
           },
         });
+        return;
+      }
+
+      // GET /api/binance/orderbook?symbol=&mode=&limit= — depth + slippage-uppskattning
+      if (url.pathname === "/api/binance/orderbook" && method === "GET") {
+        const mode = (url.searchParams.get("mode") === "live" ? "live" : "testnet") as "testnet" | "live";
+        const creds = resolveBinanceCreds(mode);
+        if (!creds) { json(res, { ok: false, error: `Binance ${mode} ej konfigurerat` }); return; }
+        const symbol = url.searchParams.get("symbol") || "BTCUSDT";
+        const limitParam = parseInt(url.searchParams.get("limit") || "20", 10);
+        const limit = ([5, 10, 20, 50, 100].includes(limitParam) ? limitParam : 20) as 5 | 10 | 20 | 50 | 100;
+        try {
+          const client = new BinanceClient(creds);
+          const ob = await client.getOrderBook(symbol, limit);
+          json(res, { ok: true, mode, symbol, ...ob });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+
+      // GET /api/binance/slippage?symbol=&side=&size=&mode= — pre-trade slippage estimate
+      if (url.pathname === "/api/binance/slippage" && method === "GET") {
+        const mode = (url.searchParams.get("mode") === "live" ? "live" : "testnet") as "testnet" | "live";
+        const creds = resolveBinanceCreds(mode);
+        if (!creds) { json(res, { ok: false, error: `Binance ${mode} ej konfigurerat` }); return; }
+        const symbol = url.searchParams.get("symbol") || "BTCUSDT";
+        const side = (url.searchParams.get("side") === "SELL" ? "SELL" : "BUY") as "BUY" | "SELL";
+        const size = parseFloat(url.searchParams.get("size") || "100");
+        try {
+          const client = new BinanceClient(creds);
+          const est = await client.estimateSlippage(symbol, side, size);
+          json(res, { ok: true, mode, symbol, side, size, ...est });
+        } catch (err) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+
+      // GET /api/binance/cached-price?symbol= — O(1) lookup från WS-cachen
+      if (url.pathname === "/api/binance/cached-price" && method === "GET") {
+        const symbol = (url.searchParams.get("symbol") || "BTCUSDT").toUpperCase();
+        const price = getCachedPrice(symbol);
+        const ticker = getCachedTicker(symbol);
+        json(res, { ok: price !== null, symbol, price, ticker, source: "ws-cache" });
         return;
       }
 
