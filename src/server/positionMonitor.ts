@@ -16,6 +16,8 @@ import { detectAllPatterns, type Candle, type PatternType } from "./patternDetec
 import { sendMessage as sendTelegramMessage } from "./telegram.js";
 import { log } from "../logger.js";
 import Anthropic from "@anthropic-ai/sdk";
+import { atr as computeATR } from "../indicators/ta.js";
+import { trailingStop } from "../risk/eliteRisk.js";
 
 const CHECK_INTERVAL_MS = 5 * 60_000;
 const TAKE_PROFIT_PCT = 10;
@@ -23,6 +25,11 @@ const STOP_LOSS_PCT = -5;
 const RSI_OVERBOUGHT = 75;
 const MAX_AUTO_SELLS_PER_DAY = 20;
 const MIN_HOLD_MINUTES = 10;
+// SELL-slippage-cap: avbryt SELL om orderbok-djup ger > 75 bps slippage
+const MAX_SELL_SLIPPAGE_BPS = 75;
+// ATR-trail aktiveras när position är +5% i vinst (skyddar profits)
+const TRAIL_ACTIVATE_PCT = 5;
+const TRAIL_DISTANCE_PCT = 2.5;
 
 // Bearish-mönster som triggar SELL
 const BEARISH_PATTERNS: PatternType[] = [
@@ -34,13 +41,24 @@ const BEARISH_PATTERNS: PatternType[] = [
   "shooting_star",
 ];
 
+interface PositionEntry {
+  entryPrice: number;
+  qty: number;
+  openedAt: number;
+  mode: "testnet" | "live";
+  // Trailing stop: aktiveras när position är +TRAIL_ACTIVATE_PCT
+  trailingStopPrice?: number;
+  // Highest seen price (för trail-uppdatering)
+  highWatermark?: number;
+}
+
 interface MonitorState {
   enabled: boolean;
   liveEnabled: boolean;
   autoSellsToday: { testnet: number; live: number };
   lastResetDay: number;
   // Track entry-pris per position (sym → { entryPrice, qty, openedAt })
-  positionEntries: Map<string, { entryPrice: number; qty: number; openedAt: number; mode: "testnet" | "live" }>;
+  positionEntries: Map<string, PositionEntry>;
   // Sales-log för audit + LÄRDOMS-LOOP (Advisor läser denna inför nästa beslut)
   recentSales: Array<{
     symbol: string; mode: string; pnl: number; pnlPct: number | null;
@@ -262,6 +280,20 @@ async function analyzePosition(
     else if (pnlPct <= STOP_LOSS_PCT) { tpSlSignal = true; tpSlReason = `SL ${pnlPct.toFixed(1)}%`; }
   }
 
+  // ── ATR-baserad trailing stop ──
+  // Aktiveras vid +TRAIL_ACTIVATE_PCT — höjer SL i takt med pris för att låsa profit.
+  // Triggas SL-sell om priset faller till trail-nivån.
+  if (entry && pnlPct !== null && pnlPct >= TRAIL_ACTIVATE_PCT) {
+    const newHigh = Math.max(entry.highWatermark ?? entry.entryPrice, currentPrice);
+    entry.highWatermark = newHigh;
+    const newTrail = trailingStop(newHigh, entry.trailingStopPrice ?? entry.entryPrice * 0.95, "BUY", TRAIL_DISTANCE_PCT);
+    entry.trailingStopPrice = newTrail;
+    if (currentPrice <= newTrail) {
+      tpSlSignal = true;
+      tpSlReason = `TRAIL @ $${newTrail.toFixed(6)} (high $${newHigh.toFixed(6)}, +${pnlPct.toFixed(1)}%)`;
+    }
+  }
+
   let patterns1h: string[] = []; let patterns4h: string[] = [];
   try {
     const candles1h: Candle[] = klines.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
@@ -367,6 +399,18 @@ async function runCheckCycle(testnetCreds: BinanceCredentials | null, liveCreds:
         const stepSize = symInfo.stepSize || 0.000001;
         const qtyRounded = Math.floor(pos.qty / stepSize) * stepSize;
         if (qtyRounded <= 0) continue;
+
+        // Slippage-skydd: kolla att orderboken är djup nog för att SELL utan stor slippage.
+        // Skip om > MAX_SELL_SLIPPAGE_BPS — Mike förlorar mer på slippage än vad signalen sparar.
+        // Undantag: om vi är i hard-SL (≤-5%) — då säljer vi ändå för att begränsa förlust.
+        const isHardSL = decision.pnlPct !== null && decision.pnlPct <= STOP_LOSS_PCT;
+        try {
+          const slip = await marketClient.estimateSlippage(symInfo.symbol, "SELL", qtyRounded * decision.currentPrice);
+          if (slip.fillable && slip.slippageBps > MAX_SELL_SLIPPAGE_BPS && !isHardSL) {
+            log.warn(`[PositionMonitor] ${symInfo.symbol} SELL skipped — slippage ${slip.slippageBps.toFixed(0)} bps > cap ${MAX_SELL_SLIPPAGE_BPS}`);
+            continue;
+          }
+        } catch { /* slippage-fail ska inte blocka critical SL-exits */ }
 
         try {
           const fill = await userClient.placeMarketOrder({ symbol: symInfo.symbol, side: "SELL", quantity: qtyRounded });

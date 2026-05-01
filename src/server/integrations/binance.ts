@@ -46,21 +46,40 @@ export class BinanceClient {
     method: "GET" | "POST" | "DELETE",
     path: string,
     params: Record<string, string | number | boolean> = {},
+    attempt = 0,
   ): Promise<T> {
     const timestamp = Date.now();
-    const recvWindow = 5000;
+    // recvWindow höjt till 10s för att hantera proxy-latency utan att tappa sign-validering
+    const recvWindow = 10000;
     const allParams = { ...params, timestamp, recvWindow };
     const queryString = Object.entries(allParams)
       .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
       .join("&");
     const signature = this.sign(queryString);
     const url = `${this.baseUrl}${path}?${queryString}&signature=${signature}`;
-    const r = await fetch(url, {
-      method,
-      headers: { "X-MBX-APIKEY": this.apiKey },
-    });
+    let r: Response;
+    try {
+      r = await fetch(url, {
+        method,
+        headers: { "X-MBX-APIKEY": this.apiKey },
+      });
+    } catch (e) {
+      // Network error — retry max 2 ggr med expo backoff (200ms, 800ms)
+      if (attempt < 2) {
+        await new Promise((res) => setTimeout(res, 200 * Math.pow(4, attempt)));
+        return this.signedRequest<T>(method, path, params, attempt + 1);
+      }
+      throw new Error(`Binance ${method} ${path} network-fail: ${e instanceof Error ? e.message : String(e)}`);
+    }
     if (!r.ok) {
       const errText = await r.text();
+      // Retry på server-fel (5xx) + 418/429 rate-limit — INTE på 4xx (auth/sign-fel)
+      if ((r.status >= 500 || r.status === 418 || r.status === 429) && attempt < 3) {
+        const delayMs = 500 * Math.pow(2, attempt) + Math.random() * 200;
+        log.warn(`[binance-${this.mode}] ${r.status} på ${path} — retry om ${delayMs.toFixed(0)}ms (försök ${attempt + 1}/3)`);
+        await new Promise((res) => setTimeout(res, delayMs));
+        return this.signedRequest<T>(method, path, params, attempt + 1);
+      }
       throw new Error(`Binance ${method} ${path} → ${r.status}: ${errText.slice(0, 300)}`);
     }
     return r.json() as Promise<T>;
@@ -162,6 +181,67 @@ export class BinanceClient {
     return this.signedRequest("DELETE", "/api/v3/order", { symbol, orderId });
   }
 
+  // ─── ORDER BOOK DEPTH (publik, ingen auth) ───
+  // Används pre-trade för slippage-uppskattning och likviditets-bedömning.
+  async getOrderBook(symbol: string, limit: 5 | 10 | 20 | 50 | 100 = 20): Promise<{
+    lastUpdateId: number;
+    bids: Array<[number, number]>; // [price, qty]
+    asks: Array<[number, number]>;
+    spreadBps: number;
+    bidDepthUsd: number;
+    askDepthUsd: number;
+  }> {
+    const r = await fetch(`${this.baseUrl}/api/v3/depth?symbol=${symbol}&limit=${limit}`);
+    if (!r.ok) throw new Error(`depth ${r.status}`);
+    const data = (await r.json()) as { lastUpdateId: number; bids: Array<[string, string]>; asks: Array<[string, string]> };
+    const bids = data.bids.map(([p, q]) => [parseFloat(p), parseFloat(q)] as [number, number]);
+    const asks = data.asks.map(([p, q]) => [parseFloat(p), parseFloat(q)] as [number, number]);
+    const bestBid = bids[0]?.[0] || 0;
+    const bestAsk = asks[0]?.[0] || 0;
+    const mid = (bestBid + bestAsk) / 2 || 1;
+    const spreadBps = bestBid && bestAsk ? ((bestAsk - bestBid) / mid) * 10000 : 0;
+    const bidDepthUsd = bids.reduce((s, [p, q]) => s + p * q, 0);
+    const askDepthUsd = asks.reduce((s, [p, q]) => s + p * q, 0);
+    return { lastUpdateId: data.lastUpdateId, bids, asks, spreadBps, bidDepthUsd, askDepthUsd };
+  }
+
+  // Beräkna förväntad slippage för en order av storlek `quoteUsd`.
+  // Walks orderbook (asks vid BUY, bids vid SELL) tills size är fyllt.
+  // Returnerar slippage i bps mot best-price.
+  async estimateSlippage(symbol: string, side: "BUY" | "SELL", quoteUsd: number): Promise<{
+    avgFillPrice: number;
+    bestPrice: number;
+    slippageBps: number;
+    fillable: boolean;
+  }> {
+    const ob = await this.getOrderBook(symbol, 50);
+    const levels = side === "BUY" ? ob.asks : ob.bids;
+    const bestPrice = levels[0]?.[0] || 0;
+    if (!bestPrice) return { avgFillPrice: 0, bestPrice: 0, slippageBps: 0, fillable: false };
+    let remainingUsd = quoteUsd;
+    let totalQty = 0;
+    let totalCost = 0;
+    for (const [p, q] of levels) {
+      const levelUsd = p * q;
+      if (remainingUsd <= levelUsd) {
+        const take = remainingUsd / p;
+        totalQty += take;
+        totalCost += remainingUsd;
+        remainingUsd = 0;
+        break;
+      }
+      totalQty += q;
+      totalCost += levelUsd;
+      remainingUsd -= levelUsd;
+    }
+    if (remainingUsd > 0 || totalQty === 0) {
+      return { avgFillPrice: bestPrice, bestPrice, slippageBps: 9999, fillable: false };
+    }
+    const avg = totalCost / totalQty;
+    const slip = side === "BUY" ? ((avg - bestPrice) / bestPrice) * 10000 : ((bestPrice - avg) / bestPrice) * 10000;
+    return { avgFillPrice: avg, bestPrice, slippageBps: Math.abs(slip), fillable: true };
+  }
+
   // ─── EXCHANGE INFO + MIN_NOTIONAL (publik endpoint, ingen auth) ───
   // Returnerar metadata för alla symbols: minimum order size, status, filters
   async getExchangeInfo(): Promise<{
@@ -227,14 +307,28 @@ export class BinanceClient {
   }
 
   // ─── WebSocket User Data Stream ───
-  // Skapa listenKey (giltig 60 min, måste pingas var 30 min)
+  // Skapa listenKey (giltig 60 min, måste pingas var 30 min).
+  // Endpoint: POST /api/v3/userDataStream — kräver bara X-MBX-APIKEY (INGEN signature).
+  // Vanliga 410-orsaker: API-key saknar "Enable Spot Trading" eller är expired.
   async createListenKey(): Promise<string> {
     const r = await fetch(`${this.baseUrl}/api/v3/userDataStream`, {
       method: "POST",
-      headers: { "X-MBX-APIKEY": this.apiKey },
+      headers: {
+        "X-MBX-APIKEY": this.apiKey,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
     });
-    if (!r.ok) throw new Error(`createListenKey ${r.status}: ${await r.text()}`);
+    if (!r.ok) {
+      const body = await r.text();
+      const ctype = r.headers.get("content-type") || "";
+      const hint = r.status === 410 ? " (key kan sakna 'Enable Spot & Margin Trading' permission)"
+                 : r.status === 401 ? " (ogiltig API-key)"
+                 : r.status === 418 ? " (IP-banned)"
+                 : "";
+      throw new Error(`createListenKey ${r.status}${hint} content-type=${ctype} body=${body.slice(0, 200)}`);
+    }
     const data = (await r.json()) as { listenKey: string };
+    if (!data.listenKey) throw new Error(`createListenKey: respons saknar listenKey-fält`);
     return data.listenKey;
   }
 
@@ -243,7 +337,16 @@ export class BinanceClient {
       method: "PUT",
       headers: { "X-MBX-APIKEY": this.apiKey },
     });
-    if (!r.ok) throw new Error(`keepAliveListenKey ${r.status}`);
+    if (!r.ok) throw new Error(`keepAliveListenKey ${r.status}: ${await r.text().catch(() => "")}`);
+  }
+
+  async closeListenKey(listenKey: string): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/api/v3/userDataStream?listenKey=${listenKey}`, {
+        method: "DELETE",
+        headers: { "X-MBX-APIKEY": this.apiKey },
+      });
+    } catch { /* best-effort cleanup */ }
   }
 
   getWsUrl(): string {
