@@ -19,7 +19,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { atr as computeATR } from "../indicators/ta.js";
 import { trailingStop } from "../risk/eliteRisk.js";
 
-const CHECK_INTERVAL_MS = 5 * 60_000;
+// Mike's krav: 'agera på millisekunder', 'event-driven'. 1 min är säkraste tradeoff
+// mot rate-limit (var 5:e min var för slö för Mike). Public klines API har ingen
+// per-IP weight på max 1200/min — 1 min × 7 positions = ~14 weight, helt OK.
+const CHECK_INTERVAL_MS = 60_000;
 const TAKE_PROFIT_PCT = 10;
 const STOP_LOSS_PCT = -5;
 const RSI_OVERBOUGHT = 75;
@@ -140,25 +143,39 @@ async function verifyWithAdvisor(
     reason: s.reason, advisor: s.advisorVerdict, patterns: s.patterns.join(","), rsi_at_sell: s.rsi.toFixed(0),
   }));
 
-  // Senaste 20 candles för att Advisor ska se närbild av marknaden
+  // Senaste 20 candles + volym-ratio (senaste 5 vs snitt)
   const recentCandles = marketSnapshot.klines1h.slice(-20).map(k => ({
     t: new Date(k.time * 1000).toISOString().slice(5,16),
     o: k.open.toFixed(6), h: k.high.toFixed(6), l: k.low.toFixed(6), c: k.close.toFixed(6),
     v: k.volume.toFixed(0),
   }));
+  // Volym-confirmation: senaste 5 candles vs snitt av senaste 20
+  const allVols = marketSnapshot.klines1h.slice(-20).map(k => k.volume);
+  const recent5Vol = allVols.slice(-5).reduce((s,v) => s+v, 0) / 5;
+  const avg20Vol = allVols.reduce((s,v) => s+v, 0) / Math.max(1, allVols.length);
+  const volRatio = avg20Vol > 0 ? (recent5Vol / avg20Vol) : 1;
+  // 4h trend (sista 5 4h-candles)
+  const last4h = marketSnapshot.klines4h.slice(-5);
+  const trend4h = last4h.length >= 2 ? (last4h[last4h.length-1].close > last4h[0].close ? "UPTREND" : "DOWNTREND") : "UNCLEAR";
 
-  const systemPrompt = `Du är ADVISOR — Mike's senior trading-AI på Claude Opus, och du är sista instans innan en RIKTIG SELL-order läggs på Binance ${mode === "live" ? "MAINNET (riktiga pengar)" : "TESTNET"}.
+  const systemPrompt = `Du är ADVISOR — Mike's senior trading-AI på Claude Opus, sista instans innan RIKTIG SELL-order på Binance ${mode === "live" ? "MAINNET (riktiga pengar)" : "TESTNET"}.
 
-Din uppgift: läs marknadsdata + Mike's lärdomar och avgör om regelbaserade signalerna verkligen indikerar SELL eller om du ser annan kontext (volym-spike, support-håller, falsk-pattern).
+ELITE TRADER LOGIC — Mike's krav: 'agenterna ska bara lägga resultat på trades där de känner sig säkra på vinst grundat på djupanalys, chart-mönster och marknaden'.
 
-Svara med EXAKT format:
+VETO-bias som default. APPROVE bara när alla 3 av följande är true:
+1. **Trend-confirmation**: 4h-trend stödjer SELL (nedåt eller bekräftad reversal). Bullish 4h + bearish 1h = VETO (intraday noise).
+2. **Volym-confirmation**: Senaste candles har volym ≥ 1.2x snitt. Låg volym = svag signal = VETO.
+3. **Pattern-clarity**: Bearish pattern är inte överlappande/motsägs av bullish. Två motstridiga patterns = VETO.
+
+Hard rules som ALLTID approver:
+- Stop-loss träffad (SL ${STOP_LOSS_PCT}% eller värre) → APPROVE oavsett, kapitalbevarande > timing.
+- Take-profit träffad (TP +${TAKE_PROFIT_PCT}% eller bättre) → APPROVE för att låsa vinst.
+
+Svara EXAKT format:
 VERDICT: APPROVE eller VETO
-REASONING: 2-3 meningar varför.
+REASONING: 2-3 meningar med SIFFROR (RSI, %, volym-ratio, pattern-namn).
 
-Approve = SELL körs. Veto = position behålls (Mike förlorar ev. winning-trade men du anser signalerna är svaga eller riskabla).
-
-Var data-driven. Referera direkt till siffror. Om patterns motsäger varandra (ex bullish 4h + bearish 1h) — väg in det.
-Om Mike's tidigare lärdomar visar att liknande exits PNL'ade dåligt — viktig signal.`;
+Var disciplinerad. 'Vänta' är ett legitimt svar. Mike förlorar hellre en vinst-bana än tar förlust på falsk signal.`;
 
   const userMsg = `═══ POSITION ═══
 Symbol: ${symbol} (asset ${asset})
@@ -177,6 +194,8 @@ Hold-tid: ${position.holdMinutes.toFixed(0)} min
 
 ═══ MARKNAD ═══
 RSI(14) 1h: ${marketSnapshot.rsi.toFixed(1)}
+Trend 4h: ${trend4h}
+Volym-ratio (senaste 5 vs snitt 20): ${volRatio.toFixed(2)}x ${volRatio >= 1.2 ? "(hög, signal-bekräftande)" : volRatio < 0.8 ? "(låg, svag signal)" : "(normal)"}
 Bearish patterns 1h: ${marketSnapshot.patterns1h.join(", ") || "inga"}
 Bearish patterns 4h: ${marketSnapshot.patterns4h.join(", ") || "inga"}
 

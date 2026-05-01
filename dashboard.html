@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-04-30-mode-tag">
+<meta name="version" content="v2026-05-01-elite">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-04-30-mode-tag inte är samma → reload
-  const expectedVer = "v2026-04-30-mode-tag";
+  // Tvinga ny version: om v2026-05-01-elite inte är samma → reload
+  const expectedVer = "v2026-05-01-elite";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -6815,9 +6815,108 @@ async function refreshBinanceSync(){
 function startBinanceSync(){
   if(binanceSyncInterval) return;
   refreshBinanceSync();
-  binanceSyncInterval = setInterval(refreshBinanceSync, 3000); // var 3s polling baseline
-  // SSE: pushar order-fills + balansändringar i realtid (Binance user-data-stream)
+  binanceSyncInterval = setInterval(refreshBinanceSync, 3000); // var 3s polling baseline för balans
+  // PUBLIC WEBSOCKET för realtid pris-stream (millisekund-uppdateringar)
+  startBinanceMarketStream();
+  // SSE för backend-events (order-fills från positionMonitor)
   startBinanceUserStream();
+}
+
+// ─── BINANCE MARKET WEBSOCKET — realtid-priser för aktiva positioner ───
+// Mike's krav: 'event-driven, inte manuell'. Binance public WS ger millisekund-precision.
+let binanceMarketWS = null;
+let binanceMarketSyms = new Set();
+let binanceMarketReconnect = null;
+
+function buildMarketStreamUrl(symbols){
+  // Combined stream: en connection för alla symbols
+  const streams = symbols.map(s => s.toLowerCase() + "@ticker").join("/");
+  return `wss://stream.binance.com:9443/stream?streams=${streams}`;
+}
+
+function startBinanceMarketStream(){
+  // Byggs upp dynamiskt baserat på aktiva positioner
+  setTimeout(updateMarketStreamSubs, 5000); // efter första balans-poll
+  setInterval(updateMarketStreamSubs, 30000); // re-sync var 30s om positions ändras
+}
+
+function updateMarketStreamSubs(){
+  // Vilka symbols har vi nu?
+  const targetSyms = new Set();
+  if(STATE.tradePositions){
+    for(const p of STATE.tradePositions){
+      if(!p.sym) continue;
+      // p.sym kan vara 'NEIRO' (asset) eller 'NEIROUSDC' (full symbol)
+      const s = p.sym.endsWith("USDC") || p.sym.endsWith("USDT") ? p.sym : (p.sym + (currentUiMode === "live" ? "USDC" : "USDT"));
+      targetSyms.add(s);
+    }
+  }
+  // Lägg alltid till BTC + ETH för referens
+  targetSyms.add(currentUiMode === "live" ? "BTCUSDC" : "BTCUSDT");
+  targetSyms.add(currentUiMode === "live" ? "ETHUSDC" : "ETHUSDT");
+
+  // Är subscription samma som nu? Skip
+  const same = targetSyms.size === binanceMarketSyms.size && [...targetSyms].every(s => binanceMarketSyms.has(s));
+  if(same && binanceMarketWS && binanceMarketWS.readyState === 1) return;
+
+  // Stäng gammal connection och starta ny med nya symbols
+  if(binanceMarketWS){ try { binanceMarketWS.close(); } catch(_){} }
+  binanceMarketSyms = targetSyms;
+  if(targetSyms.size === 0) return;
+
+  const url = buildMarketStreamUrl([...targetSyms]);
+  try {
+    const ws = new WebSocket(url);
+    binanceMarketWS = ws;
+    ws.onopen = () => console.log("[Binance WS] Connected:", targetSyms.size, "symbols");
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        const data = msg.data;
+        if(data && data.s && data.c){
+          // s = symbol, c = current price
+          const sym = data.s; // ex 'NEIROUSDC'
+          const price = parseFloat(data.c);
+          STATE.livePrices[sym] = price;
+          // Också lägg under base-asset så p.sym = 'NEIRO' funkar
+          const base = sym.replace(/USDC$|USDT$/, "");
+          STATE.livePrices[base] = price;
+          // Triggar PnL-uppdatering om vi är på Trades-sidan
+          if(STATE.activeTab === "trades") updateLivePnLDisplay();
+        }
+      } catch(_){}
+    };
+    ws.onerror = () => { /* tyst — onclose hanterar reconnect */ };
+    ws.onclose = () => {
+      console.log("[Binance WS] Disconnected — reconnect om 5s");
+      if(binanceMarketReconnect) clearTimeout(binanceMarketReconnect);
+      binanceMarketReconnect = setTimeout(updateMarketStreamSubs, 5000);
+    };
+  } catch(e){
+    console.warn("[Binance WS] init fail:", e.message);
+  }
+}
+
+// Light-weight PnL-uppdaterare (anropas från WS onmessage, max 1x per 100ms throttled)
+let _lastPnLUpdate = 0;
+function updateLivePnLDisplay(){
+  const now = Date.now();
+  if(now - _lastPnLUpdate < 100) return;
+  _lastPnLUpdate = now;
+  const positions = STATE.tradePositions || [];
+  for(const p of positions){
+    const cur = STATE.livePrices[p.sym] ?? p.entry;
+    const pnl = (cur - p.entry) * (p.qty || 0) * (p.side === "BUY" ? 1 : -1);
+    const pnlPct = p.entry > 0 ? ((cur - p.entry) / p.entry) * 100 * (p.side === "BUY" ? 1 : -1) : 0;
+    const row = document.querySelector(`[data-id="${p.id}"]`);
+    if(row){
+      const pnlCell = row.querySelector(".tt-pnl");
+      if(pnlCell){
+        pnlCell.innerHTML = `${pnl>=0?'+':''}$${pnl.toFixed(4)}<br><span style="font-size:10px;font-weight:500">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%</span>`;
+        pnlCell.className = `tt-pnl ${pnl>=0?'up':'down'}`;
+      }
+    }
+  }
 }
 
 // Throttlad Binance trade-data hämtning (decisions + history) — speglar Binance 1:1
