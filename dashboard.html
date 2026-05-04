@@ -5,11 +5,11 @@
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="version" content="v2026-05-01-elite">
+<meta name="version" content="v2026-05-04-learning">
 <script>
 (function(){
-  // Tvinga ny version: om v2026-05-01-elite inte är samma → reload
-  const expectedVer = "v2026-05-01-elite";
+  // Tvinga ny version: om v2026-05-04-learning inte är samma → reload
+  const expectedVer = "v2026-05-04-learning";
   const lastVer = localStorage.getItem("__app_version");
   if(lastVer !== expectedVer){
     localStorage.setItem("__app_version", expectedVer);
@@ -1578,6 +1578,12 @@ body.app-state-onboard .fc-panel{display:none !important}
     <div class="card">
       <h3>📊 Stängda trades <span class="tag" style="margin-left:auto;font-size:9px;color:var(--label);font-weight:500">FIFO realized PnL · auto-uppdateras</span></h3>
       <div id="trade-history-table"></div>
+    </div>
+
+    <div class="card">
+      <h3>🧠 Agent Learnings <span id="learnings-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span> <span class="tag" style="font-size:9px;color:var(--label);font-weight:500">persistent · överlever restart</span></h3>
+      <div id="learnings-summary" style="font-size:11px;color:var(--label);margin-bottom:10px;line-height:1.5">Agenterna lär sig av varje stängd trade. Edge per symbol visas när du har ≥1 sell.</div>
+      <div id="learnings-edges"></div>
     </div>
   </div>
 </section>
@@ -5534,6 +5540,8 @@ function renderTradesPage(){
   // BINANCE-SPEGLING: hämta riktiga positions/decisions/trades från Binance
   // Throttlad så vi inte spammar API:et
   maybeRefreshBinanceTradeData();
+  // Agent Learnings: persistent lärdoms-panel
+  refreshAgentLearnings();
   const positions = STATE.tradePositions || [];
   const decisions = STATE.tradeDecisions || [];
   const history = STATE.tradeHistory || [];
@@ -6917,6 +6925,55 @@ function updateLivePnLDisplay(){
       }
     }
   }
+}
+
+// Throttlad Agent Learnings hämtning (var 30s)
+const _lastLearningsFetch = { ts: 0 };
+async function refreshAgentLearnings(){
+  const now = Date.now();
+  if(now - _lastLearningsFetch.ts < 30000) return;
+  _lastLearningsFetch.ts = now;
+  try {
+    const r = await fetch("/api/monitor/lessons");
+    const d = await r.json();
+    if(!d.ok) return;
+    const countEl = document.getElementById("learnings-count");
+    const summEl = document.getElementById("learnings-summary");
+    const edgesEl = document.getElementById("learnings-edges");
+    if(countEl) countEl.textContent = `${d.totalLessons} sales`;
+    if(summEl){
+      if(d.totalLessons === 0){
+        summEl.innerHTML = `Agenterna lär sig av varje stängd trade. <b>Bygg sample:</b> 30+ sells = pålitlig edge per symbol.`;
+      } else {
+        const totalPnl = (d.symbolEdges || []).reduce((s,e) => s + e.totalPnl, 0);
+        const totalWins = (d.symbolEdges || []).reduce((s,e) => s + e.wins, 0);
+        const totalTrades = (d.symbolEdges || []).reduce((s,e) => s + e.trades, 0);
+        const overallWR = totalTrades > 0 ? Math.round((totalWins / totalTrades) * 100) : 0;
+        summEl.innerHTML = `📈 <b>Total: ${totalTrades} sells · ${overallWR}% win-rate · ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} PnL</b> · agenterna refererar till denna data inför varje sell-beslut.`;
+      }
+    }
+    if(edgesEl){
+      const edges = d.symbolEdges || [];
+      if(edges.length === 0){
+        edgesEl.innerHTML = `<div class="tt-empty">Ingen edge-data än. När Position Monitor säljer en position byggs lärdomar upp här.</div>`;
+      } else {
+        edgesEl.innerHTML = `<div class="tt-tbl">${edges.slice(0, 10).map(e => {
+          const wrColor = e.winRatePct >= 60 ? 'var(--green)' : e.winRatePct >= 40 ? 'var(--yellow,#f0b90b)' : 'var(--red)';
+          const pnlColor = e.totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+          return `<div class="tt-row" style="grid-template-columns:90px 1fr 80px 80px 100px">
+            <span class="tt-sym">${e.symbol}</span>
+            <div>
+              <div class="tt-meta" style="font-weight:700">${e.wins}W / ${e.losses}L</div>
+              <div class="tt-meta" style="font-size:10px">avg hold ${e.avgHoldMin}min · bästa: ${e.bestPattern || '—'}</div>
+            </div>
+            <span style="color:${wrColor};font-weight:800">${e.winRatePct}%</span>
+            <span style="color:${pnlColor};font-weight:700">${e.totalPnl >= 0 ? '+' : ''}$${e.totalPnl.toFixed(2)}</span>
+            <span class="tt-meta" style="font-size:10px">$${e.avgPnl.toFixed(2)}/trade</span>
+          </div>`;
+        }).join("")}</div>`;
+      }
+    }
+  } catch(_){}
 }
 
 // Throttlad Binance trade-data hämtning (decisions + history) — speglar Binance 1:1

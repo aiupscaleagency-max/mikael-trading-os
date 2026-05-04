@@ -18,6 +18,7 @@ import { log } from "../logger.js";
 import Anthropic from "@anthropic-ai/sdk";
 import { atr as computeATR } from "../indicators/ta.js";
 import { trailingStop } from "../risk/eliteRisk.js";
+import { loadLessons, saveLessons, loadEntries, saveEntries, aggregateLessonsBySymbol, type SaleLesson, type PersistedEntry } from "../memory/lessons.js";
 
 // Mike's krav: 'agera på millisekunder', 'event-driven'. 1 min är säkraste tradeoff
 // mot rate-limit (var 5:e min var för slö för Mike). Public klines API har ingen
@@ -93,19 +94,50 @@ export function setLiveAutoSell(enabled: boolean): void {
   log.info(`[PositionMonitor] LIVE auto-sell ${enabled ? "AKTIVERAD" : "PAUSAD"}`);
 }
 
-export function getMonitorStatus(): { enabled: boolean; liveEnabled: boolean; salesToday: typeof state.autoSellsToday; recentSales: typeof state.recentSales } {
+export function getMonitorStatus(): { enabled: boolean; liveEnabled: boolean; salesToday: typeof state.autoSellsToday; recentSales: typeof state.recentSales; totalLessons: number; symbolEdges: ReturnType<typeof aggregateLessonsBySymbol> } {
   return {
     enabled: state.enabled,
     liveEnabled: state.liveEnabled,
     salesToday: state.autoSellsToday,
     recentSales: state.recentSales.slice(-20),
+    totalLessons: state.recentSales.length,
+    symbolEdges: aggregateLessonsBySymbol(state.recentSales),
   };
+}
+
+// Ladda persisterad state vid boot (Mike-krav: agenter ska komma ihåg över restarts)
+export async function initLessonsFromDisk(): Promise<void> {
+  const [lessons, entries] = await Promise.all([loadLessons(), loadEntries()]);
+  state.recentSales = lessons;
+  state.positionEntries.clear();
+  for (const e of entries) {
+    state.positionEntries.set(e.key, {
+      entryPrice: e.entryPrice,
+      qty: e.qty,
+      openedAt: e.openedAt,
+      mode: e.mode,
+      trailingStopPrice: e.trailingStopPrice,
+      highWatermark: e.highWatermark,
+    });
+  }
+  log.ok(`[lessons] Laddade ${lessons.length} sales + ${entries.length} entries från disk`);
+}
+
+// Persistera entries till disk (anropas vid varje recordEntry / SELL)
+async function persistEntries(): Promise<void> {
+  const arr: PersistedEntry[] = [];
+  for (const [key, e] of state.positionEntries) {
+    arr.push({ key, ...e });
+  }
+  await saveEntries(arr);
 }
 
 // Registrera entry när Hanna lägger en BUY (anropas från api.ts efter place_market_orders)
 export function recordEntry(symbol: string, mode: "testnet" | "live", entryPrice: number, qty: number): void {
   state.positionEntries.set(`${mode}-${symbol}`, { entryPrice, qty, openedAt: Date.now(), mode });
   log.info(`[PositionMonitor] Entry registrerad: ${mode} ${symbol} @ $${entryPrice.toFixed(6)} qty ${qty}`);
+  // Persistera till disk så det överlever container-restart
+  persistEntries().catch(() => {});
 }
 
 function resetDailyCounters(): void {
@@ -135,13 +167,16 @@ async function verifyWithAdvisor(
   }
   const anthropic = new Anthropic({ apiKey });
 
-  // LÄRDOMAR: senaste 10 sales på samma symbol + 5 övriga
+  // LÄRDOMAR: senaste 10 sales på samma symbol + 5 övriga + aggregerad edge per symbol
   const symbolSpecific = state.recentSales.filter(s => s.symbol === symbol).slice(-10);
   const otherRecent = state.recentSales.filter(s => s.symbol !== symbol).slice(-5);
   const lessons = [...symbolSpecific, ...otherRecent].map(s => ({
     symbol: s.symbol, hold_min: s.holdMinutes, pnl: s.pnl.toFixed(2), pnl_pct: s.pnlPct?.toFixed(1) || "?",
     reason: s.reason, advisor: s.advisorVerdict, patterns: s.patterns.join(","), rsi_at_sell: s.rsi.toFixed(0),
   }));
+  // Edge-aggregat per symbol — agenten ser direkt sin "track record": win-rate, avg-PnL, bästa pattern
+  const edges = aggregateLessonsBySymbol(state.recentSales);
+  const thisSymbolEdge = edges.find(e => e.symbol === symbol) || null;
 
   // Senaste 20 candles + volym-ratio (senaste 5 vs snitt)
   const recentCandles = marketSnapshot.klines1h.slice(-20).map(k => ({
@@ -202,7 +237,15 @@ Bearish patterns 4h: ${marketSnapshot.patterns4h.join(", ") || "inga"}
 Senaste 20 1h-candles (t/o/h/l/c/v):
 ${recentCandles.map(c => `${c.t} ${c.o}/${c.h}/${c.l}/${c.c} vol=${c.v}`).join("\n")}
 
-═══ MIKE'S LÄRDOMAR (senaste sells) ═══
+═══ DIN EDGE PÅ ${symbol} (aggregerad track record) ═══
+${thisSymbolEdge
+  ? `${thisSymbolEdge.trades} trades · ${thisSymbolEdge.wins}W/${thisSymbolEdge.losses}L · WIN-RATE ${thisSymbolEdge.winRatePct}% · avg PnL $${thisSymbolEdge.avgPnl.toFixed(2)} · avg hold ${thisSymbolEdge.avgHoldMin}min · bästa pattern: ${thisSymbolEdge.bestPattern || "ingen tydlig"}`
+  : "Ingen tidigare ${symbol}-historik — du opererar utan edge här. Var extra konservativ."}
+
+═══ ALLA SYMBOL-EDGES (top 5) ═══
+${edges.slice(0, 5).map(e => `${e.symbol}: ${e.wins}W/${e.losses}L (${e.winRatePct}%) avg $${e.avgPnl.toFixed(2)}`).join("\n") || "Ingen historik än"}
+
+═══ SENASTE SELLS (raw lessons) ═══
 ${lessons.length > 0 ? JSON.stringify(lessons, null, 2) : "Ingen historik än — bygg sample."}
 
 ═══ DITT BESLUT ═══
@@ -462,6 +505,11 @@ async function runCheckCycle(testnetCreds: BinanceCredentials | null, liveCreds:
           await sendTelegramMessage(msg, { parseMode: "HTML" });
           log.ok(`[PositionMonitor] AUTO-SELL ${mode} ${symInfo.symbol} qty=${qtyRounded} pnl=$${realizedPnl.toFixed(2)} reason=${decision.reason} advisor=${advisorVerdict}`);
           state.positionEntries.delete(`${mode}-${pos.asset}`);
+          // PERSISTERA: lessons + entries till disk så agenten kommer ihåg vid restart
+          await Promise.all([
+            saveLessons(state.recentSales),
+            persistEntries(),
+          ]);
         } catch (e) {
           log.warn(`[PositionMonitor] SELL fail ${symInfo.symbol}: ${e instanceof Error ? e.message : String(e)}`);
         }

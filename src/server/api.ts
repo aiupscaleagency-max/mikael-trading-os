@@ -12,7 +12,7 @@ import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessag
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
 import { detectAllPatterns, type Candle } from "./patternDetection.js";
 import { BinanceClient, type BinanceCredentials } from "./integrations/binance.js";
-import { startPositionMonitor, recordEntry as recordPositionEntry, getMonitorStatus, setMonitorEnabled, setLiveAutoSell } from "./positionMonitor.js";
+import { startPositionMonitor, recordEntry as recordPositionEntry, getMonitorStatus, setMonitorEnabled, setLiveAutoSell, initLessonsFromDisk } from "./positionMonitor.js";
 import { OandaClient, type OandaCredentials } from "./integrations/oanda.js";
 import { startMarketStream, getCachedPrice, getCachedTicker, getMarketStreamStatus } from "./marketStream.js";
 import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
@@ -66,9 +66,14 @@ function initIntegrationsFromEnv(): void {
 }
 initIntegrationsFromEnv();
 
-// Starta autonom Position Monitor (TESTNET-only första 7 dagarna)
-// LIVE auto-sell aktiveras via /api/monitor/live-enable när Mike är redo
-startPositionMonitor(binanceTestnetCreds, binanceLiveCreds);
+// Starta autonom Position Monitor — ladda lärdomar + entries från disk FÖRST
+// så agenten kommer ihåg över restarts
+initLessonsFromDisk()
+  .then(() => startPositionMonitor(binanceTestnetCreds, binanceLiveCreds))
+  .catch(err => {
+    log.warn(`[lessons] init fail: ${err instanceof Error ? err.message : String(err)}`);
+    startPositionMonitor(binanceTestnetCreds, binanceLiveCreds);
+  });
 
 // ─── Portfolio-stats cache (60s TTL för att inte spam:a Binance API) ───
 type PortfolioStats = Awaited<ReturnType<BinanceClient["getPortfolioTradeStats"]>>;
@@ -1404,6 +1409,17 @@ Regler:
         const { enabled } = JSON.parse(body) as { enabled: boolean };
         setMonitorEnabled(!!enabled);
         json(res, { ok: true, enabled: !!enabled });
+        return;
+      }
+      // GET /api/monitor/lessons — full lärdoms-historik + symbol-edges (för UI Agent Learnings-panel)
+      if (url.pathname === "/api/monitor/lessons" && method === "GET") {
+        const status = getMonitorStatus();
+        json(res, {
+          ok: true,
+          totalLessons: status.totalLessons,
+          symbolEdges: status.symbolEdges,
+          recentSales: status.recentSales,
+        });
         return;
       }
       // POST /api/monitor/live-enable { enabled: boolean } — aktivera LIVE auto-sell
