@@ -7,3 +7,7 @@ node_modules/
 .DS_Store
 dist/
 *.tsbuildinfo
+
+# Claude Code per-projekt-state (privat, per-dator)
+.claude/
+graphify-out/
