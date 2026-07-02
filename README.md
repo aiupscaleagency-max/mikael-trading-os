@@ -1,3 +1,7 @@
+---
+summary: En autonom krypto-trading-agent driven av Claude (Anthropic) mot Binance spot.
+---
+
 # trading-agent
 
 En autonom krypto-trading-agent driven av Claude (Anthropic) mot Binance spot.
