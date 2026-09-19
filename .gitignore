@@ -11,3 +11,13 @@ dist/
 # Claude Code per-projekt-state (privat, per-dator)
 .claude/
 graphify-out/
+
+# ── Säkerhet: infra-uppgifter och hemligheter hålls UTANFÖR git ──
+HANDOVER.md
+*secret*
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*.p12
+credentials*
