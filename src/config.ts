@@ -117,12 +117,24 @@ const schema = z.object({
   // ── Ensemble (2-modell-omröstning innan risk manager) ──
   // MODEL_A = modellen som FÖRESLÅR traden (Head Trader).
   // MODEL_B = den oberoende andra-åsikten som måste hålla med.
-  // Default: två OLIKA Claude-modeller så vi får genuint skilda perspektiv.
+  // Två OLIKA modeller — helst från olika leverantörer — ger genuint skilda
+  // perspektiv istället för samma blinda fläckar.
+  // MODEL_A: Claude (Head Trader). MODEL_B: granskaren — default GPT-6 Astra
+  // via OpenAI, med Claude som fallback om OpenAI-vägen inte går att använda.
   MODEL_A: z.string().default("claude-sonnet-4-6"),
-  MODEL_B: z.string().default("claude-opus-4-6"),
-  // Provider för MODEL_B. "anthropic" idag; "openrouter"/"openai" är
-  // förberedda men inte implementerade (se secondOpinion.ts).
-  MODEL_B_PROVIDER: z.enum(["anthropic", "openrouter", "openai"]).default("anthropic"),
+  MODEL_B: z.string().default("gpt-6-astra"),
+  // Provider för MODEL_B. "anthropic" och "openai" är implementerade;
+  // "openrouter" är förberedd men inte byggd (se secondOpinion.ts).
+  MODEL_B_PROVIDER: z.enum(["anthropic", "openrouter", "openai"]).default("openai"),
+  // Claude-modell som röstar om MODEL_B-leverantören inte kan användas
+  // (saknad nyckel, 401/403, slut kvot, okänd modell).
+  ENSEMBLE_FALLBACK_MODEL: z.string().default("claude-opus-4-6"),
+
+  // ── OpenAI (MODEL_B) — EGEN nyckel, aldrig ANTHROPIC_API_KEY ──
+  OPENAI_API_KEY: z.string().default(""),
+  OPENAI_BASE_URL: z.string().default("https://api.openai.com/v1"),
+  // Valfritt. Skickas bara om satt (low/medium/high/xhigh på Astra).
+  OPENAI_REASONING_EFFORT: z.string().default(""),
   ENSEMBLE_REQUIRE_AGREEMENT: z
     .string()
     .default("true")
@@ -175,6 +187,22 @@ if (!hasAlpaca && !hasBlofin && !hasBinance && !hasOanda) {
     "❌ Ingen broker konfigurerad. Fyll i minst Alpaca ELLER Blofin ELLER Binance-nycklar i .env.",
   );
   process.exit(1);
+}
+
+// Ensemble: varna tydligt vid start om MODEL_B-vägen inte är körbar.
+// Vi stoppar inte igång — grinden faller tillbaka på Claude-B per granskning —
+// men Mike ska se det direkt i loggen, inte först vid första trade-förslaget.
+if (env.MODEL_B_PROVIDER === "openai" && !env.OPENAI_API_KEY) {
+  console.warn(
+    `⚠ MODEL_B_PROVIDER=openai men OPENAI_API_KEY saknas. Granskaren (${env.MODEL_B}) ` +
+      `kan inte anropas — ensemblen faller tillbaka på ${env.ENSEMBLE_FALLBACK_MODEL} (Claude). ` +
+      `Lägg OPENAI_API_KEY i .env (egen nyckel — återanvänd ALDRIG ANTHROPIC_API_KEY).`,
+  );
+}
+if (env.MODEL_B_PROVIDER === "openrouter") {
+  console.warn(
+    `⚠ MODEL_B_PROVIDER=openrouter är inte implementerad — ensemblen faller tillbaka på ${env.ENSEMBLE_FALLBACK_MODEL}.`,
+  );
 }
 
 export const config = {
@@ -267,6 +295,12 @@ export const config = {
     failOpen: env.ENSEMBLE_FAIL_OPEN,
     gateExits: env.ENSEMBLE_GATE_EXITS,
     timeoutMs: env.ENSEMBLE_TIMEOUT_MS,
+    fallbackModel: env.ENSEMBLE_FALLBACK_MODEL,
+    openai: {
+      apiKey: env.OPENAI_API_KEY,
+      baseUrl: env.OPENAI_BASE_URL,
+      reasoningEffort: env.OPENAI_REASONING_EFFORT || undefined,
+    },
   },
 
   loopIntervalSeconds: env.LOOP_INTERVAL_SECONDS,

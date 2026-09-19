@@ -330,6 +330,8 @@ export const TOOLS: Record<string, ToolDef> = {
               confidence: ensembleVerdict.modelB.confidence,
               reasoning: ensembleVerdict.modelB.reasoning,
               model: ensembleVerdict.modelB.model,
+              provider: ensembleVerdict.modelB.provider,
+              fallbackFrom: ensembleVerdict.modelB.fallbackFrom,
             },
           },
           hint:
@@ -375,6 +377,8 @@ export const TOOLS: Record<string, ToolDef> = {
               confidence: ensembleVerdict.modelB.confidence,
               reasoning: ensembleVerdict.modelB.reasoning,
               model: ensembleVerdict.modelB.model,
+              provider: ensembleVerdict.modelB.provider,
+              fallbackFrom: ensembleVerdict.modelB.fallbackFrom,
             },
           },
           proposedOrder: finalOrder,
@@ -400,7 +404,9 @@ export const TOOLS: Record<string, ToolDef> = {
             skipped: ensembleVerdict.skipped,
             modelA: ensembleVerdict.modelA.model,
             modelB: ensembleVerdict.modelB.model,
+            modelBProvider: ensembleVerdict.modelB.provider,
             modelBConfidence: ensembleVerdict.modelB.confidence,
+            fallbackFrom: ensembleVerdict.modelB.fallbackFrom,
           },
         };
       } catch (err) {

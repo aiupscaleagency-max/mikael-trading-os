@@ -113,14 +113,26 @@ Varje trade granskas av en oberoende andra modell innan risk managern. Grinden
 kan bara **stoppa** trades — den kan aldrig kringgå risk managerns veto eller
 position-sizing-låsen.
 
+Granskaren är **GPT-6 Astra via OpenAI** — en modell från en annan leverantör
+har andra blinda fläckar än Claude, vilket är hela poängen med ensemblen.
+
 ```
-MODEL_A=claude-sonnet-4-6        # föreslår (Head Trader)
-MODEL_B=claude-opus-4-6          # granskar, oberoende
-MODEL_B_PROVIDER=anthropic       # openrouter/openai förberedda, ej implementerade
-ENSEMBLE_REQUIRE_AGREEMENT=true  # båda måste säga "agree"
-ENSEMBLE_FAIL_OPEN=false         # MODEL_B nere ⇒ ingen trade (fail-closed)
-ENSEMBLE_GATE_EXITS=false        # exits gatas inte — vi låser aldrig in oss
+MODEL_A=claude-sonnet-4-6           # föreslår (Head Trader, Claude)
+MODEL_B=gpt-6-astra                 # granskar, oberoende
+MODEL_B_PROVIDER=openai             # anthropic | openai (openrouter ej byggd)
+OPENAI_API_KEY=sk-...               # EGEN nyckel — aldrig ANTHROPIC_API_KEY
+ENSEMBLE_FALLBACK_MODEL=claude-opus-4-6  # röstar om OpenAI-vägen är nere
+ENSEMBLE_REQUIRE_AGREEMENT=true     # båda måste säga "agree"
+ENSEMBLE_FAIL_OPEN=false            # transient fel ⇒ ingen trade (fail-closed)
+ENSEMBLE_GATE_EXITS=false           # exits gatas inte — vi låser aldrig in oss
 ```
+
+**Om OpenAI-vägen inte går att använda** — `OPENAI_API_KEY` saknas, 401/403,
+`insufficient_quota` eller okänd modellsträng — loggas ett tydligt fel och
+`ENSEMBLE_FALLBACK_MODEL` (Claude) röstar istället för den granskningen.
+Systemet kör aldrig blint vidare utan andra-åsikt: saknas även Claude-nyckeln
+blir det fail-closed `disagree`, alltså ingen trade. Transienta fel (timeout,
+5xx, rate limit) byter *inte* modell — de fail-closed:ar direkt.
 
 Se grinden i aktion utan nycklar och utan riktiga ordrar (paper + approve):
 
@@ -128,7 +140,10 @@ Se grinden i aktion utan nycklar och utan riktiga ordrar (paper + approve):
 npm run ensemble:demo
 ```
 
-Byte av MODEL_B till GPT/OpenRouter: se `TODO(model-b-provider)` i
+Demon visar tre fall: GPT-6 Astra röstar `agree`, GPT-6 Astra röstar
+`disagree`, och OpenAI svarar `insufficient_quota` → fallback till Claude-B.
+
+OpenRouter som MODEL_B-väg: se `TODO(model-b-provider)` i
 `src/orchestrator/secondOpinion.ts`.
 
 ## Från paper till live (när du är redo)

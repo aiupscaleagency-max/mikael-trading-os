@@ -1,6 +1,7 @@
 import { TOOLS, type ToolContext } from "../agent/tools.js";
 import { RiskManager } from "../risk/riskManager.js";
 import {
+  ProviderUnavailableError,
   setSecondOpinionTransport,
   type EnsembleConfig,
   type ModelProvider,
@@ -20,23 +21,33 @@ import { log } from "../logger.js";
 //  en testnet-broker-stub. Inga riktiga ordrar, inga nycklar krävs, inga
 //  broker-anrop utanför stubben.
 //
+//  MODEL_A = Claude (Head Trader), MODEL_B = GPT-6 Astra via OpenAI.
+//
 //  MODEL_B:
-//    - Utan ANTHROPIC_API_KEY körs en SIMULERAD MODEL_B (offline) så att hela
-//      kedjan — förslag → grind → risk manager → propose — kan visas.
-//    - Med ANTHROPIC_API_KEY satt körs riktiga modell-anrop istället
-//      (sätt ENSEMBLE_DEMO_LIVE=true).
+//    - Som default körs SIMULERADE modell-svar (offline) så att hela kedjan —
+//      förslag → grind → risk manager → propose — kan visas utan nycklar.
+//      Stubben är provider-medveten: den vet om den anropas som gpt-6-astra
+//      (openai) eller som Claude-fallback (anthropic).
+//    - Med ENSEMBLE_DEMO_LIVE=true körs riktiga anrop: GPT-6 Astra via
+//      OPENAI_API_KEY, Claude-fallback via ANTHROPIC_API_KEY.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const LIVE = !!process.env.ANTHROPIC_API_KEY && process.env.ENSEMBLE_DEMO_LIVE === "true";
+const LIVE = process.env.ENSEMBLE_DEMO_LIVE === "true";
 
 const ensemble: EnsembleConfig = {
   modelA: process.env.MODEL_A ?? "claude-sonnet-4-6",
-  modelB: process.env.MODEL_B ?? "claude-opus-4-6",
-  modelBProvider: (process.env.MODEL_B_PROVIDER as ModelProvider) ?? "anthropic",
+  modelB: process.env.MODEL_B ?? "gpt-6-astra",
+  modelBProvider: (process.env.MODEL_B_PROVIDER as ModelProvider) ?? "openai",
   requireAgreement: (process.env.ENSEMBLE_REQUIRE_AGREEMENT ?? "true").toLowerCase() !== "false",
   failOpen: (process.env.ENSEMBLE_FAIL_OPEN ?? "false").toLowerCase() === "true",
   gateExits: (process.env.ENSEMBLE_GATE_EXITS ?? "false").toLowerCase() === "true",
   timeoutMs: 45_000,
+  fallbackModel: process.env.ENSEMBLE_FALLBACK_MODEL ?? "claude-opus-4-6",
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY ?? "",
+    baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
+    reasoningEffort: process.env.OPENAI_REASONING_EFFORT || undefined,
+  },
 };
 
 // ── Demo-config: paper + approve. Riskramarna är .env.example-defaults. ──
@@ -105,29 +116,49 @@ Positionsstorlek: max 100 USD
 Outlook: BULLISH | Marknadscykel: markup
 Contrarian: Drivet är 3 dagar gammalt — risk att vi köper sista benet.`;
 
-// ── Simulerad MODEL_B (offline). Röstar på förslagets faktiska innehåll. ──
-function simulatedModelB(userMessage: string): Promise<string> {
+// ── Simulerade modell-svar (offline), provider-medvetna. ──
+//
+// Stubben används bara i demon. Den efterliknar två saker:
+//   1. gpt-6-astra (openai) som granskare — röstar på förslagets innehåll.
+//   2. Ett trasigt OpenAI-konto: kastar ProviderUnavailableError precis som
+//      askOpenAI gör vid 401/insufficient_quota, så att den RIKTIGA
+//      fallback-logiken i secondOpinion.ts körs på riktigt i demon.
+let simulateOpenAiFailure: string | null = null;
+
+function simulatedTransport(
+  userMessage: string,
+  target: { model: string; provider: ModelProvider },
+): Promise<string> {
+  if (target.provider === "openai" && simulateOpenAiFailure) {
+    return Promise.reject(new ProviderUnavailableError(simulateOpenAiFailure));
+  }
+
   // Enkel heuristik enbart för demon: en motivering med konkreta nivåer och
   // flera samstämmiga tidsramar godkänns; en tunn tes avslås.
   const hasLevels = /\b\d{4,}\b/.test(userMessage) && /SL|stop|TP/i.test(userMessage);
   const multiTimeframe = (userMessage.match(/\b(1h|4h|1d|15m)\b/g) ?? []).length >= 3;
   const thin = /känsla|momentum ser bra ut|alla pratar om|FOMO/i.test(userMessage);
-
   const agree = hasLevels && multiTimeframe && !thin;
+
+  const who = target.provider === "openai" ? "GPT-granskaren" : "Claude-granskaren";
   return Promise.resolve(
     JSON.stringify(
       agree
         ? {
             verdict: "agree",
-            confidence: 0.72,
+            confidence: target.provider === "openai" ? 0.74 : 0.69,
             reasoning:
-              "Tesen är förankrad i data: 1h/4h/1d pekar åt samma håll, entry ligger nära EMA20 och stoppen är definierad på 65900 (~2,3% risk). Storleken ryms i riskramen och portföljen är tom, så ingen korrelationsrisk tillkommer.",
+              `${who}: tesen är förankrad i data — 1h/4h/1d pekar åt samma håll, entry ligger nära EMA20 ` +
+              "och stoppen är definierad på 65900 (~2,3% risk). Storleken ryms i riskramen och portföljen " +
+              "är tom, så ingen korrelationsrisk tillkommer.",
           }
         : {
             verdict: "disagree",
-            confidence: 0.81,
+            confidence: target.provider === "openai" ? 0.83 : 0.78,
             reasoning:
-              "Motiveringen saknar konkreta nivåer och samstämmiga tidsramar — den beskriver ett narrativ, inte en setup. Utan definierad stop går risken inte att kvantifiera. Att avstå kostar noll; tveksam ⇒ disagree.",
+              `${who}: motiveringen saknar konkreta nivåer och samstämmiga tidsramar — den beskriver ett ` +
+              "narrativ, inte en setup. Utan definierad stop går risken inte att kvantifiera. Att avstå " +
+              "kostar noll; tveksam ⇒ disagree.",
           },
     ),
   );
@@ -160,7 +191,11 @@ async function scenario(title: string, input: Record<string, unknown>): Promise<
     const { modelA, modelB, approved } = vote.verdict;
     log.agent(`  MODEL_A  ${modelA.model.padEnd(22)} röst=agree`);
     log.agent(`           motivering: ${modelA.reasoning}`);
-    log.agent(`  MODEL_B  ${modelB.model.padEnd(22)} röst=${modelB.verdict} (confidence ${modelB.confidence.toFixed(2)}, ${modelB.latencyMs}ms${modelB.degraded ? ", DEGRADERAD" : ""})`);
+    const role = modelB.fallbackFrom ? "FALLBACK" : "MODEL_B ";
+    log.agent(`  ${role} ${modelB.model.padEnd(22)} (${modelB.provider}) röst=${modelB.verdict} (confidence ${modelB.confidence.toFixed(2)}, ${modelB.latencyMs}ms${modelB.degraded ? ", DEGRADERAD" : ""})`);
+    if (modelB.fallbackFrom) {
+      log.agent(`           ⚠ ${modelB.fallbackFrom.model} (${modelB.fallbackFrom.provider}) föll bort: ${modelB.fallbackFrom.reason}`);
+    }
     log.agent(`           motivering: ${modelB.reasoning}`);
     log.agent(`  GRIND    → ${approved ? "GODKÄND — går vidare till risk manager" : "SKIPPAD — når aldrig risk managern"}`);
   }
@@ -182,12 +217,12 @@ async function main(): Promise<void> {
   log.info("");
 
   if (!LIVE) {
-    // Injicera den simulerade MODEL_B i grinden. Produktionsvägen är orörd —
-    // utan detta anrop görs riktiga modell-anrop.
-    setSecondOpinionTransport(simulatedModelB);
+    // Injicera de simulerade modell-svaren. Produktionsvägen är orörd —
+    // utan detta anrop görs riktiga anrop mot OpenAI respektive Anthropic.
+    setSecondOpinionTransport(simulatedTransport);
   }
 
-  await scenario("Stark setup — båda modellerna röstar AGREE", {
+  await scenario("Claude föreslår, GPT-6 Astra röstar AGREE — grinden öppnar", {
     symbol: "BTCUSDT",
     side: "BUY",
     type: "MARKET",
@@ -196,7 +231,7 @@ async function main(): Promise<void> {
       "BTCUSDT bullish på 1h/4h/1d: pris 67450 över EMA20 på samtliga, RSI14 58 (ej överköpt), MACD-kors uppåt på 4h. Entry 67450, SL 65900 (-2,3%), TP1 69000. Karin vol=medium, Rasmus risk=low, portföljen tom. Storlek 50 USD = DEFAULT.",
   });
 
-  await scenario("Tunn tes — MODEL_B röstar DISAGREE, traden skippas", {
+  await scenario("Tunn tes — GPT-6 Astra röstar DISAGREE, traden skippas", {
     symbol: "BTCUSDT",
     side: "BUY",
     type: "MARKET",
@@ -205,7 +240,24 @@ async function main(): Promise<void> {
       "Momentum ser bra ut och alla pratar om BTC just nu. Känslan är att vi ska upp — jag vill inte missa draget.",
   });
 
-  log.ok("Demo klar. Inga ordrar lades, inga nycklar användes, inga config-lås rördes.");
+  // ── Fallback-vägen: OpenAI-kontot svarar 401/insufficient_quota ──
+  // Här körs den riktiga fallback-logiken i secondOpinion.ts; bara HTTP-svaret
+  // är simulerat. Poängen: vi kör aldrig blint vidare utan andra-åsikt.
+  if (!LIVE) {
+    simulateOpenAiFailure =
+      'OpenAI-kontot är utan kvot — HTTP 429 (insufficient_quota): You exceeded your current quota.';
+  }
+  await scenario("OpenAI svarar insufficient_quota — tydligt fel + fallback till Claude-B", {
+    symbol: "BTCUSDT",
+    side: "BUY",
+    type: "MARKET",
+    quote_qty: 50,
+    reasoning:
+      "BTCUSDT bullish på 1h/4h/1d: pris 67450 över EMA20 på samtliga, RSI14 58, MACD-kors uppåt på 4h. Entry 67450, SL 65900 (-2,3%), TP1 69000. Storlek 50 USD = DEFAULT.",
+  });
+  simulateOpenAiFailure = null;
+
+  log.ok("Demo klar. Inga ordrar lades, inga riktiga nycklar användes, inga config-lås rördes.");
   log.info("Oenigheten ovan är loggad till data/decisions.jsonl som action=hold.");
 }
 

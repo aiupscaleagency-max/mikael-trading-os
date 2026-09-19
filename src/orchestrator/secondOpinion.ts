@@ -35,12 +35,18 @@ export type Verdict = "agree" | "disagree";
  * (src/scripts/ensembleDemo.ts) för att köra hela kedjan utan API-nycklar.
  * null i produktion = riktiga anrop.
  */
-let transportOverride: ((userMessage: string) => Promise<string>) | null = null;
+export type SecondOpinionTransport = (
+  userMessage: string,
+  target: { model: string; provider: ModelProvider },
+) => Promise<string>;
 
-/** ENDAST för demo/test. Sätt null för att återgå till riktiga modell-anrop. */
-export function setSecondOpinionTransport(
-  fn: ((userMessage: string) => Promise<string>) | null,
-): void {
+let transportOverride: SecondOpinionTransport | null = null;
+
+/**
+ * ENDAST för demo/test. Sätt null för att återgå till riktiga modell-anrop.
+ * En stub kan kasta ProviderUnavailableError för att öva fallback-vägen.
+ */
+export function setSecondOpinionTransport(fn: SecondOpinionTransport | null): void {
   transportOverride = fn;
 }
 
@@ -95,6 +101,12 @@ export interface SecondOpinion {
   latencyMs: number;
   /** true = verdict kommer från fallback (fel/timeout/parse-miss), inte modellen. */
   degraded: boolean;
+  /**
+   * Satt när den konfigurerade MODEL_B inte kunde användas och en Claude-modell
+   * röstade i dess ställe. Innehåller den modell/provider som föll bort och
+   * varför — rösten nedan är alltså fallback-modellens, inte MODEL_B:s.
+   */
+  fallbackFrom?: { model: string; provider: ModelProvider; reason: string };
 }
 
 export interface EnsembleVerdict {
@@ -116,6 +128,20 @@ export interface EnsembleConfig {
   failOpen: boolean;
   gateExits: boolean;
   timeoutMs: number;
+  /**
+   * Claude-modell att falla tillbaka på om MODEL_B-leverantören inte går att
+   * använda (saknad nyckel, 401/403, slut kvot, okänd modell). Vi kör ALDRIG
+   * blint vidare — antingen röstar fallback-modellen, eller så blir det
+   * fail-closed "disagree".
+   */
+  fallbackModel: string;
+  openai: {
+    /** EGEN nyckel (OPENAI_API_KEY). Aldrig ANTHROPIC_API_KEY. */
+    apiKey: string;
+    baseUrl: string;
+    /** Valfri. Utelämnas som default — skickas bara om satt. */
+    reasoningEffort?: string;
+  };
 }
 
 const SECOND_OPINION_SYSTEM_PROMPT = `Du är en oberoende RISK-GRANSKARE i ett AI-trading-team. En annan modell har föreslagit en trade. Ditt jobb är INTE att vara artig eller att bekräfta — ditt jobb är att avgöra om förslaget håller.
@@ -236,49 +262,167 @@ async function askAnthropic(params: {
     .join("");
 }
 
-// TODO(model-b-provider): byt MODEL_B till GPT/OpenRouter.
-// Kontraktet är redan neutralt — allt som behövs är en funktion som tar
-// (system, user) och returnerar text. Implementera en av dessa och
-// registrera den i askModelB nedan:
-//
-//   async function askOpenRouter({ apiKey, model, userMessage, timeoutMs }) {
-//     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-//       method: "POST",
-//       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-//       body: JSON.stringify({
-//         model,                                  // t.ex. "openai/gpt-5" eller "google/gemini-..."
-//         messages: [
-//           { role: "system", content: SECOND_OPINION_SYSTEM_PROMPT },
-//           { role: "user", content: userMessage },
-//         ],
-//         max_tokens: 1024,
-//       }),
-//       signal: AbortSignal.timeout(timeoutMs),
-//     });
-//     const json = await res.json();
-//     return json.choices[0].message.content as string;
-//   }
-//
-// Nyckeln läses då från en EGEN env-variabel (OPENROUTER_API_KEY /
-// OPENAI_API_KEY) i config.ts — ANTHROPIC_API_KEY ska ALDRIG skickas till
-// en annan leverantör. Kostnadsspårningen (trackClaudeCall) behöver en
-// motsvarande PRICING-rad i cost/tracker.ts för den modellen.
+/**
+ * Fel som betyder "OpenAI-vägen är inte användbar just nu av konfig-/konto-skäl"
+ * — saknad nyckel, 401/403, eller slut på kvot. Dessa (och BARA dessa) triggar
+ * fallback till Claude-B. Timeouts, 5xx och vanlig rate limit gör det INTE —
+ * de är transienta och ska fail-closed:a som vanligt.
+ */
+export class ProviderUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderUnavailableError";
+  }
+}
+
+interface OpenAiErrorBody {
+  error?: { message?: string; type?: string; code?: string };
+}
+
+/**
+ * OpenAI-vägen (MODEL_B_PROVIDER=openai). Används för GPT-6 Astra m.fl.
+ *
+ * Nyckel: OPENAI_API_KEY — en EGEN variabel. ANTHROPIC_API_KEY skickas
+ * ALDRIG hit; funktionen tar bara emot openaiApiKey och kan inte nå den andra.
+ *
+ * Endpoint: Chat Completions räcker (vi gör text in / JSON ut, inga tools).
+ * Parametrar anpassade efter Astra: `max_completion_tokens` (inte `max_tokens`)
+ * och INGEN `temperature`/`top_p` — de ger 400 på reasoning-modellerna.
+ */
+async function askOpenAI(params: {
+  openaiApiKey: string;
+  baseUrl: string;
+  model: string;
+  reasoningEffort?: string;
+  userMessage: string;
+  timeoutMs: number;
+}): Promise<string> {
+  if (!params.openaiApiKey) {
+    throw new ProviderUnavailableError(
+      "OPENAI_API_KEY saknas. Sätt den i .env (egen nyckel — återanvänd ALDRIG ANTHROPIC_API_KEY).",
+    );
+  }
+
+  const body: Record<string, unknown> = {
+    model: params.model,
+    messages: [
+      { role: "system", content: SECOND_OPINION_SYSTEM_PROMPT },
+      { role: "user", content: params.userMessage },
+    ],
+    // Astra ignorerar max_tokens; max_completion_tokens är rätt parameter.
+    max_completion_tokens: 1024,
+    // Structured output — vi vill ha ren JSON tillbaka, inte prosa.
+    response_format: { type: "json_object" },
+  };
+  // temperature/top_p skickas medvetet INTE — 400 på reasoning-modeller.
+  if (params.reasoningEffort) body.reasoning_effort = params.reasoningEffort;
+
+  let res: Response;
+  try {
+    res = await fetch(`${params.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${params.openaiApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(params.timeoutMs),
+    });
+  } catch (err) {
+    // Nätverksfel/timeout = transient → fail-closed, inte fallback.
+    throw new Error(
+      `OpenAI-anrop misslyckades (nätverk/timeout): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (!res.ok) {
+    const raw = await res.text().catch(() => "");
+    let parsed: OpenAiErrorBody = {};
+    try {
+      parsed = JSON.parse(raw) as OpenAiErrorBody;
+    } catch {
+      /* icke-JSON felsvar — raw duger */
+    }
+    const code = parsed.error?.code ?? parsed.error?.type ?? "";
+    const message = parsed.error?.message ?? raw.slice(0, 300) ?? "(inget felmeddelande)";
+    const detail = `HTTP ${res.status}${code ? ` (${code})` : ""}: ${message}`;
+
+    // Konfig-/kontofel → fallback till Claude-B.
+    if (res.status === 401 || res.status === 403 || code === "invalid_api_key") {
+      throw new ProviderUnavailableError(`OpenAI avvisade nyckeln — ${detail}`);
+    }
+    if (code === "insufficient_quota" || /insufficient[_ ]quota/i.test(message)) {
+      throw new ProviderUnavailableError(`OpenAI-kontot är utan kvot — ${detail}`);
+    }
+    if (res.status === 404 || code === "model_not_found") {
+      throw new ProviderUnavailableError(
+        `OpenAI känner inte igen MODEL_B="${params.model}" — ${detail}. Kontrollera modellsträngen.`,
+      );
+    }
+    // Rate limit (429 utan quota-kod), 5xx m.m. = transient → fail-closed.
+    throw new Error(`OpenAI-anrop misslyckades — ${detail}`);
+  }
+
+  const json = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+  };
+
+  // Kostnadsspårning: samma logg som Claude-anropen (agent="second_opinion").
+  // OBS: cost/tracker.ts saknar PRICING-rad för GPT-modeller, så kostnaden
+  // beräknas med den konservativa default-taxan tills en riktig rad läggs in.
+  if (json.usage) {
+    trackClaudeCall("second_opinion", params.model, {
+      input_tokens: json.usage.prompt_tokens ?? 0,
+      output_tokens: json.usage.completion_tokens ?? 0,
+    }).catch(() => {});
+  }
+
+  const content = json.choices?.[0]?.message?.content;
+  if (!content) throw new Error("OpenAI svarade utan innehåll i choices[0].message.content.");
+  return content;
+}
+
+// TODO(model-b-provider): OpenRouter är kvar som framtida väg.
+// Kontraktet är neutralt — en funktion som tar (system, user) och returnerar
+// text. Implementera askOpenRouter() analogt med askOpenAI ovan (samma
+// Chat-Completions-form, base URL https://openrouter.ai/api/v1), läs nyckeln
+// från en EGEN env-variabel (OPENROUTER_API_KEY) och registrera den i
+// askModelB. ANTHROPIC_API_KEY ska ALDRIG skickas till en annan leverantör.
 // Resten av kedjan (grind, loggning, risk manager) är oförändrad.
 
 async function askModelB(params: {
-  apiKey: string;
   model: string;
   provider: ModelProvider;
   userMessage: string;
   timeoutMs: number;
+  /** Anthropic-nyckel — används BARA av anthropic-vägen. */
+  anthropicApiKey: string;
+  /** OpenAI-nyckel — används BARA av openai-vägen. */
+  openaiApiKey: string;
+  openaiBaseUrl: string;
+  openaiReasoningEffort?: string;
 }): Promise<string> {
   switch (params.provider) {
     case "anthropic":
-      return askAnthropic(params);
-    case "openrouter":
+      return askAnthropic({
+        apiKey: params.anthropicApiKey,
+        model: params.model,
+        userMessage: params.userMessage,
+        timeoutMs: params.timeoutMs,
+      });
     case "openai":
-      throw new Error(
-        `MODEL_B_PROVIDER=${params.provider} är inte implementerad ännu (se TODO(model-b-provider) i secondOpinion.ts). Använd "anthropic" tills vidare.`,
+      return askOpenAI({
+        openaiApiKey: params.openaiApiKey,
+        baseUrl: params.openaiBaseUrl,
+        model: params.model,
+        reasoningEffort: params.openaiReasoningEffort,
+        userMessage: params.userMessage,
+        timeoutMs: params.timeoutMs,
+      });
+    case "openrouter":
+      throw new ProviderUnavailableError(
+        `MODEL_B_PROVIDER=openrouter är inte implementerad ännu (se TODO(model-b-provider) i secondOpinion.ts).`,
       );
   }
 }
@@ -298,7 +442,7 @@ export async function getSecondOpinion(params: {
    * Byt ut modell-anropet mot en egen funktion. Används av demo-/test-körningar
    * för att köra hela grinden utan API-nycklar. Produktion lämnar den tom.
    */
-  transport?: (userMessage: string) => Promise<string>;
+  transport?: SecondOpinionTransport;
 }): Promise<SecondOpinion> {
   const { apiKey, proposal, context, ensemble } = params;
   const started = Date.now();
@@ -313,25 +457,66 @@ export async function getSecondOpinion(params: {
     "Rösta agree eller disagree på förslaget ovan. Svara bara med JSON.",
   ].join("\n");
 
-  try {
-    const transport = params.transport ?? transportOverride;
+  const transport = params.transport ?? transportOverride;
+
+  // Ett försök med en given modell/provider. Returnerar rösten, eller kastar.
+  const attempt = async (
+    model: string,
+    provider: ModelProvider,
+    fallbackFrom?: SecondOpinion["fallbackFrom"],
+  ): Promise<SecondOpinion> => {
     const text = transport
-      ? await transport(userMessage)
+      ? await transport(userMessage, { model, provider })
       : await askModelB({
-          apiKey,
-          model: ensemble.modelB,
-          provider: ensemble.modelBProvider,
+          model,
+          provider,
           userMessage,
           timeoutMs: ensemble.timeoutMs,
+          // Varje väg får BARA sin egen nyckel.
+          anthropicApiKey: apiKey,
+          openaiApiKey: ensemble.openai.apiKey,
+          openaiBaseUrl: ensemble.openai.baseUrl,
+          openaiReasoningEffort: ensemble.openai.reasoningEffort,
         });
 
     const parsed = parseOpinion(text);
     if (!parsed) {
-      log.warn(`[Ensemble] MODEL_B (${ensemble.modelB}) gav oparsbart svar — räknas som disagree.`);
+      log.warn(`[Ensemble] MODEL_B (${model}) gav oparsbart svar — räknas som disagree.`);
       return {
         verdict: "disagree",
         confidence: 0,
-        reasoning: `Kunde inte tolka svaret från MODEL_B. Rå-svar: ${text.slice(0, 200)}`,
+        reasoning: `Kunde inte tolka svaret från MODEL_B (${model}). Rå-svar: ${text.slice(0, 200)}`,
+        model,
+        provider,
+        latencyMs: Date.now() - started,
+        degraded: true,
+        fallbackFrom,
+      };
+    }
+
+    return {
+      ...parsed,
+      model,
+      provider,
+      latencyMs: Date.now() - started,
+      degraded: false,
+      fallbackFrom,
+    };
+  };
+
+  try {
+    return await attempt(ensemble.modelB, ensemble.modelBProvider);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+
+    // Transient fel (timeout, 5xx, rate limit) → fail-closed direkt.
+    // Vi kör aldrig blint vidare, och vi byter inte modell i onödan.
+    if (!(err instanceof ProviderUnavailableError)) {
+      log.error(`[Ensemble] MODEL_B (${ensemble.modelB}) misslyckades: ${msg}`);
+      return {
+        verdict: "disagree",
+        confidence: 0,
+        reasoning: `MODEL_B ej tillgänglig: ${msg}`,
         model: ensemble.modelB,
         provider: ensemble.modelBProvider,
         latencyMs: Date.now() - started,
@@ -339,25 +524,56 @@ export async function getSecondOpinion(params: {
       };
     }
 
-    return {
-      ...parsed,
+    // Konfig-/kontofel hos MODEL_B-leverantören → tydligt fel + fallback till
+    // Claude-B. Vi vill ALDRIG tyst köra vidare utan andra-åsikt.
+    log.error(
+      `╔══ MODEL_B (${ensemble.modelB} via ${ensemble.modelBProvider}) KAN INTE ANVÄNDAS ══╗\n` +
+      `  ${msg}\n` +
+      `  → Faller tillbaka till Claude-B (${ensemble.fallbackModel}) för denna granskning.\n` +
+      `  Åtgärda OPENAI_API_KEY/kvot/MODEL_B i .env för att få tillbaka ${ensemble.modelB}.`,
+    );
+
+    const fallbackFrom = {
       model: ensemble.modelB,
       provider: ensemble.modelBProvider,
-      latencyMs: Date.now() - started,
-      degraded: false,
+      reason: msg,
     };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error(`[Ensemble] MODEL_B (${ensemble.modelB}) misslyckades: ${msg}`);
-    return {
-      verdict: "disagree",
-      confidence: 0,
-      reasoning: `MODEL_B ej tillgänglig: ${msg}`,
-      model: ensemble.modelB,
-      provider: ensemble.modelBProvider,
-      latencyMs: Date.now() - started,
-      degraded: true,
-    };
+
+    if (!apiKey) {
+      log.error("[Ensemble] Ingen ANTHROPIC_API_KEY för fallback heller → fail-closed disagree.");
+      return {
+        verdict: "disagree",
+        confidence: 0,
+        reasoning: `MODEL_B ej tillgänglig (${msg}) och ingen fallback-modell kunde köras. Ingen andra-åsikt ⇒ ingen trade.`,
+        model: ensemble.modelB,
+        provider: ensemble.modelBProvider,
+        latencyMs: Date.now() - started,
+        degraded: true,
+        fallbackFrom,
+      };
+    }
+
+    try {
+      const opinion = await attempt(ensemble.fallbackModel, "anthropic", fallbackFrom);
+      log.warn(
+        `[Ensemble] Fallback-röst från ${ensemble.fallbackModel}: ${opinion.verdict} ` +
+        `(confidence ${opinion.confidence.toFixed(2)})`,
+      );
+      return opinion;
+    } catch (fallbackErr) {
+      const fbMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      log.error(`[Ensemble] Fallback-modellen (${ensemble.fallbackModel}) misslyckades också: ${fbMsg}`);
+      return {
+        verdict: "disagree",
+        confidence: 0,
+        reasoning: `MODEL_B ej tillgänglig (${msg}). Fallback (${ensemble.fallbackModel}) misslyckades också: ${fbMsg}. Ingen andra-åsikt ⇒ ingen trade.`,
+        model: ensemble.fallbackModel,
+        provider: "anthropic",
+        latencyMs: Date.now() - started,
+        degraded: true,
+        fallbackFrom,
+      };
+    }
   }
 }
 
@@ -374,7 +590,7 @@ export async function evaluateEnsemble(params: {
   context: MarketContext;
   ensemble: EnsembleConfig;
   /** Se getSecondOpinion — bara för demo/test. */
-  transport?: (userMessage: string) => Promise<string>;
+  transport?: SecondOpinionTransport;
 }): Promise<EnsembleVerdict> {
   const { proposal, ensemble } = params;
 
@@ -412,21 +628,28 @@ export async function evaluateEnsemble(params: {
   }
 
   log.agent(
-    `[Ensemble] ${proposal.side} ${proposal.symbol}: MODEL_A (${ensemble.modelA}) föreslår — frågar MODEL_B (${ensemble.modelB})…`,
+    `[Ensemble] ${proposal.side} ${proposal.symbol}: MODEL_A (${ensemble.modelA}) föreslår — ` +
+    `frågar MODEL_B (${ensemble.modelB} via ${ensemble.modelBProvider})…`,
   );
 
   const modelB = await getSecondOpinion(params);
+
+  // Röstade en fallback-modell i MODEL_B:s ställe? Det ska synas i loggen,
+  // i decisions-loggen och i svaret till Head Trader.
+  const fallbackNote = modelB.fallbackFrom
+    ? ` [FALLBACK: ${modelB.fallbackFrom.model} (${modelB.fallbackFrom.provider}) kunde inte användas — ${modelB.fallbackFrom.reason}. ${modelB.model} röstade istället.]`
+    : "";
 
   // Fail-open-undantaget gäller BARA degraderade svar (fel/timeout/parse-miss),
   // aldrig ett riktigt "disagree" från modellen.
   const failedOpen = modelB.degraded && ensemble.failOpen;
   const approved = modelB.verdict === "agree" || failedOpen;
 
-  const summary = failedOpen
+  const summary = (failedOpen
     ? `MODEL_B (${modelB.model}) svarade inte — ENSEMBLE_FAIL_OPEN=true släpper igenom. ${modelB.reasoning}`
     : approved
       ? `BÅDA ENSE: MODEL_A (${modelA.model}) föreslog, MODEL_B (${modelB.model}) höll med (confidence ${modelB.confidence.toFixed(2)}). ${modelB.reasoning}`
-      : `OENIGHET: MODEL_A (${modelA.model}) föreslog ${proposal.side} ${proposal.symbol}, MODEL_B (${modelB.model}) sa disagree (confidence ${modelB.confidence.toFixed(2)}). ${modelB.reasoning}`;
+      : `OENIGHET: MODEL_A (${modelA.model}) föreslog ${proposal.side} ${proposal.symbol}, MODEL_B (${modelB.model}) sa disagree (confidence ${modelB.confidence.toFixed(2)}). ${modelB.reasoning}`) + fallbackNote;
 
   if (approved) {
     log.ok(`[Ensemble] ✓ ${proposal.side} ${proposal.symbol}: båda överens → vidare till risk manager.`);
