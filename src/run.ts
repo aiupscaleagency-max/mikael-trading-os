@@ -188,6 +188,30 @@ async function runOnce(
       ...result.reports,
       timing: result.timingMs,
     });
+
+    // Ensemble-omröstningar (2-modell-grinden) — visa både godkända och nekade.
+    for (const vote of result.headTrader.ensembleVotes) {
+      const v = vote.verdict;
+      log.agent(
+        `[Ensemble] ${vote.proposal.side} ${vote.proposal.symbol}: ` +
+        `${v.modelA.model}=agree, ${v.modelB.model}=${v.modelB.verdict} ` +
+        `(${v.modelB.confidence.toFixed(2)}) → ${v.approved ? "GODKÄND" : "SKIPPAD"}`,
+      );
+    }
+    if (result.headTrader.ensembleVotes.length > 0) {
+      broadcastEvent("ensemble-votes", {
+        votes: result.headTrader.ensembleVotes.map((vote) => ({
+          symbol: vote.proposal.symbol,
+          side: vote.proposal.side,
+          approved: vote.verdict.approved,
+          modelA: vote.verdict.modelA.model,
+          modelB: vote.verdict.modelB.model,
+          verdictB: vote.verdict.modelB.verdict,
+          confidenceB: vote.verdict.modelB.confidence,
+          summary: vote.verdict.summary,
+        })),
+      });
+    }
   } else {
     // ── Single-agent fallback ──
     const turn = await runAgentTurn({

@@ -8,6 +8,8 @@ import { searchNews, getRedditTop } from "../data/news.js";
 import type { OrderRequest, OrderResult, Position } from "../types.js";
 import type { Config } from "../config.js";
 import { log } from "../logger.js";
+import { evaluateEnsemble, type EnsembleVerdict } from "../orchestrator/secondOpinion.js";
+import { appendDecision } from "../memory/store.js";
 
 // Verktygen som Claude kan anropa. Varje verktyg har en JSON-schema-
 // definition som skickas till API:et, plus en handler som faktiskt kör.
@@ -27,10 +29,24 @@ export interface ToolContext {
   state: AgentState;
   /** Registrerade strategi-motorer */
   engines: StrategyEngine[];
+  /**
+   * Marknadskontexten MODEL_A fattade sitt beslut på (specialist-briefingen).
+   * Skickas vidare till MODEL_B i ensemblen så båda modellerna dömer på
+   * SAMMA underlag. Valfri — utan den får MODEL_B bara konto/positions-data.
+   */
+  marketContext?: string;
+  /**
+   * Modellen som faktiskt föreslår trades i denna kontext (MODEL_A-rollen).
+   * Används bara för korrekt etikettering i ensemble-loggen; faller tillbaka
+   * på config.ensemble.modelA.
+   */
+  proposedByModel?: string;
   // Fylls i av handlers när order läggs — run.ts läser och persisterar.
   sideEffects: {
     placedOrders: Array<{ request: OrderRequest; result: OrderResult }>;
     killSwitchToggled: boolean;
+    /** Varje ensemble-omröstning i denna turn (både enighet och oenighet). */
+    ensembleVotes?: Array<{ proposal: OrderRequest; verdict: EnsembleVerdict }>;
   };
 }
 
@@ -177,7 +193,7 @@ export const TOOLS: Record<string, ToolDef> = {
     definition: {
       name: "place_order",
       description:
-        "Lägger en riktig order mot brokern. Detta verktyg går genom risk managern som kan blockera eller skala ner ordern. För BUY: specificera `quote_qty` (hur många USDT du vill spendera). För SELL: specificera `base_qty` (hur mycket av tokenen du vill sälja). Ange alltid en kort `reasoning` som förklarar varför.",
+        "Lägger en riktig order mot brokern. Förslaget granskas FÖRST av en oberoende andra modell (ensemble-grind) — bara om båda modellerna säger 'agree' går ordern vidare till risk managern, som i sin tur kan blockera eller skala ner den. För BUY: specificera `quote_qty` (hur många USDT du vill spendera). För SELL: specificera `base_qty` (hur mycket av tokenen du vill sälja). Ange alltid en kort `reasoning` som förklarar varför.",
       input_schema: {
         type: "object",
         properties: {
@@ -222,12 +238,106 @@ export const TOOLS: Record<string, ToolDef> = {
         price: limitPrice,
       };
 
-      // Risk-koll. Vi behöver färsk data för detta.
+      // Färsk data — används av både ensemble-grinden och risk managern.
       const [account, positions, ticker] = await Promise.all([
         ctx.broker.getAccount(),
         ctx.broker.getPositions(),
         ctx.broker.getTicker(symbol),
       ]);
+
+      // ── ENSEMBLE-GRIND ──────────────────────────────────────────────
+      // Här är traden FÖRESLAGEN av MODEL_A men ännu inte skickad till
+      // riskManager. MODEL_B får förslaget + samma marknadskontext och
+      // röstar. Bara om BÅDA säger "agree" går ordern vidare nedåt.
+      // Grinden kan bara stoppa trades — risk managerns veto ligger kvar
+      // oförändrat efter den.
+      const ensembleVerdict = await evaluateEnsemble({
+        apiKey: ctx.config.anthropicApiKey,
+        proposal: {
+          symbol,
+          side,
+          type,
+          quoteOrderQty: quoteQty,
+          quantity: baseQty,
+          limitPrice,
+          reasoning,
+        },
+        context: {
+          lastPrice: ticker.price,
+          accountValueUsdt: account.totalValueUsdt,
+          freeUsdt: account.balances.find((b) => b.asset === "USDT")?.free ?? 0,
+          openPositions: positions.map((p) => ({
+            symbol: p.symbol,
+            quantity: p.quantity,
+            avgEntryPrice: p.avgEntryPrice,
+            currentPrice: p.currentPrice,
+            unrealizedPnlUsdt: p.unrealizedPnlUsdt,
+          })),
+          dailyRealizedPnlUsdt: ctx.state.dailyRealizedPnlUsdt,
+          killSwitchActive: ctx.state.killSwitchActive,
+          mode: ctx.config.mode,
+          executionMode: ctx.config.executionMode,
+          riskFrame: {
+            minPositionUsd: ctx.config.risk.minPositionUsd,
+            defaultPositionUsd: ctx.config.risk.defaultPositionUsd,
+            maxPositionUsd: ctx.config.risk.maxPositionUsd,
+            maxTotalExposureUsd: ctx.config.risk.maxTotalExposureUsd,
+            maxDailyLossUsd: ctx.config.risk.maxDailyLossUsd,
+            maxOpenPositions: ctx.config.risk.maxOpenPositions,
+          },
+          briefing: ctx.marketContext,
+        },
+        ensemble: {
+          ...ctx.config.ensemble,
+          modelA: ctx.proposedByModel || ctx.config.ensemble.modelA,
+        },
+      });
+
+      (ctx.sideEffects.ensembleVotes ??= []).push({
+        proposal: orderReq,
+        verdict: ensembleVerdict,
+      });
+
+      if (!ensembleVerdict.approved) {
+        // Logga oenigheten till decisions-loggen så den syns i historiken
+        // och i Hannas "past performance"-kontext nästa turn.
+        await appendDecision({
+          timestamp: Date.now(),
+          mode: ctx.config.mode,
+          action: "hold",
+          symbol,
+          reasoning: `[ENSEMBLE-OENIGHET] ${ensembleVerdict.summary}`,
+          toolCalls: [
+            {
+              name: "ensemble_second_opinion",
+              input: { proposal: orderReq, proposedBy: ensembleVerdict.modelA.model, reasoning },
+              output: ensembleVerdict,
+            },
+          ],
+        }).catch((err) => {
+          log.error(
+            `Kunde inte logga ensemble-oenighet: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+
+        return {
+          accepted: false,
+          reason: `Ensemble-oenighet: MODEL_B (${ensembleVerdict.modelB.model}) sa "disagree". ${ensembleVerdict.modelB.reasoning}`,
+          ensemble: {
+            modelA: ensembleVerdict.modelA,
+            modelB: {
+              verdict: ensembleVerdict.modelB.verdict,
+              confidence: ensembleVerdict.modelB.confidence,
+              reasoning: ensembleVerdict.modelB.reasoning,
+              model: ensembleVerdict.modelB.model,
+            },
+          },
+          hint:
+            "Traden skippades och är loggad. Argumentera inte emot granskaren och lägg inte om samma order — " +
+            "antingen hittar du en setup som håller för båda modellerna, eller så rapporterar du HOLD.",
+        };
+      }
+
       const check = ctx.risk.checkOrder(orderReq, {
         state: ctx.state,
         account,
@@ -255,7 +365,18 @@ export const TOOLS: Record<string, ToolDef> = {
         return {
           accepted: true,
           executed: false,
-          reason: "Order godkänd av risk manager men väntar på mänsklig bekräftelse (EXECUTION_MODE=approve).",
+          reason: "Order godkänd av ensemble + risk manager men väntar på mänsklig bekräftelse (EXECUTION_MODE=approve).",
+          ensemble: {
+            approved: true,
+            skipped: ensembleVerdict.skipped,
+            modelA: ensembleVerdict.modelA,
+            modelB: {
+              verdict: ensembleVerdict.modelB.verdict,
+              confidence: ensembleVerdict.modelB.confidence,
+              reasoning: ensembleVerdict.modelB.reasoning,
+              model: ensembleVerdict.modelB.model,
+            },
+          },
           proposedOrder: finalOrder,
           instructions:
             "Användaren kommer att se detta förslag och antingen bekräfta eller avvisa. Fortsätt inte anta att den faktiskt har exekverats.",
@@ -268,12 +389,19 @@ export const TOOLS: Record<string, ToolDef> = {
         ctx.sideEffects.placedOrders.push({ request: finalOrder, result });
         log.trade(
           `${result.side} ${result.executedQty} ${result.symbol} @ ${result.avgFillPrice.toFixed(4)} (${result.cummulativeQuoteQty.toFixed(2)} USDT)`,
-          { orderId: result.orderId, reasoning },
+          { orderId: result.orderId, reasoning, ensemble: ensembleVerdict.summary },
         );
         return {
           accepted: true,
           executed: true,
           result,
+          ensemble: {
+            approved: true,
+            skipped: ensembleVerdict.skipped,
+            modelA: ensembleVerdict.modelA.model,
+            modelB: ensembleVerdict.modelB.model,
+            modelBConfidence: ensembleVerdict.modelB.confidence,
+          },
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

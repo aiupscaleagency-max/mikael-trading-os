@@ -21,6 +21,7 @@ import type {
 } from "./types.js";
 import { log } from "../logger.js";
 import type { OrderRequest, OrderResult } from "../types.js";
+import type { EnsembleVerdict } from "./secondOpinion.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Head Trader — teamets beslutsfattare.
@@ -32,7 +33,9 @@ import type { OrderRequest, OrderResult } from "../types.js";
 //  inte räcker.)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const HEAD_TRADER_MODEL = "claude-sonnet-4-6";
+// MODEL_A i ensemblen — modellen som FÖRESLÅR trades. Styrs av MODEL_A i .env
+// (default claude-sonnet-4-6, oförändrat mot tidigare beteende).
+const HEAD_TRADER_MODEL_FALLBACK = "claude-sonnet-4-6";
 
 export interface AllReports {
   macro: MacroReport;
@@ -51,6 +54,8 @@ export interface HeadTraderResult {
   toolCalls: Array<{ name: string; input: unknown; output: unknown }>;
   placedOrders: Array<{ request: OrderRequest; result: OrderResult }>;
   killSwitchToggled: boolean;
+  /** Ensemble-omröstningarna i denna turn — både godkända och nekade. */
+  ensembleVotes: Array<{ proposal: OrderRequest; verdict: EnsembleVerdict }>;
 }
 
 export async function runHeadTrader(params: {
@@ -68,6 +73,8 @@ export async function runHeadTrader(params: {
 
   const performance = await summarizePastPerformance();
 
+  const headTraderModel = config.ensemble.modelA || HEAD_TRADER_MODEL_FALLBACK;
+
   const systemPrompt = buildHeadTraderPrompt(config, state, performance);
   const briefingContent = formatAllReports(reports);
 
@@ -78,7 +85,11 @@ export async function runHeadTrader(params: {
     config,
     state,
     engines,
-    sideEffects: { placedOrders: [], killSwitchToggled: false },
+    // Samma underlag som Hanna dömer på skickas vidare till MODEL_B när hon
+    // föreslår en trade — annars jämför vi äpplen med päron.
+    marketContext: briefingContent,
+    proposedByModel: headTraderModel,
+    sideEffects: { placedOrders: [], killSwitchToggled: false, ensembleVotes: [] },
   };
 
   const recordedToolCalls: Array<{ name: string; input: unknown; output: unknown }> = [];
@@ -99,7 +110,7 @@ export async function runHeadTrader(params: {
     // Cache TTL = 5 min, perfekt för tool-use-loopen (alla iterationer inom sek).
     // Read: 90% billigare input. Write: +25% på första anropet. Net win efter 2+ iter.
     const response = await client.messages.create({
-      model: HEAD_TRADER_MODEL,
+      model: headTraderModel,
       max_tokens: 4096,
       system: [
         { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } },
@@ -107,7 +118,7 @@ export async function runHeadTrader(params: {
       tools: toolDefinitions(),
       messages,
     });
-    trackClaudeCall("head", HEAD_TRADER_MODEL, response.usage).catch(() => {});
+    trackClaudeCall("head", headTraderModel, response.usage).catch(() => {});
 
     messages.push({ role: "assistant", content: response.content });
 
@@ -136,6 +147,7 @@ export async function runHeadTrader(params: {
         toolCalls: recordedToolCalls,
         placedOrders: toolCtx.sideEffects.placedOrders,
         killSwitchToggled: toolCtx.sideEffects.killSwitchToggled,
+        ensembleVotes: toolCtx.sideEffects.ensembleVotes ?? [],
       };
     }
 
@@ -169,6 +181,7 @@ export async function runHeadTrader(params: {
     toolCalls: recordedToolCalls,
     placedOrders: toolCtx.sideEffects.placedOrders,
     killSwitchToggled: toolCtx.sideEffects.killSwitchToggled,
+    ensembleVotes: toolCtx.sideEffects.ensembleVotes ?? [],
   };
 }
 
@@ -236,6 +249,17 @@ ${performance}
 6. Kolla portföljen (get_all_positions) om du inte redan sett den.
 7. Lägg order via place_order om tydlig setup. Risk managern kontrollerar.
 
+═══ ENSEMBLE-GRIND (2-modell-omröstning) ═══
+Varje trade du föreslår via place_order granskas FÖRST av en oberoende andra
+modell (MODEL_B) som ser exakt samma underlag som du. Bara om BÅDA säger
+"agree" går ordern vidare till risk managern.
+- Får du tillbaka "Ensemble-oenighet": traden är redan skippad och loggad.
+  Lägg INTE om samma order och försök inte övertala granskaren. Antingen
+  hittar du en setup som håller för båda modellerna, eller så rapporterar du
+  HOLD och skriver kort varför granskaren sa nej.
+- Praktisk konsekvens: motivera dina förslag i FAKTA ur rapporterna
+  (nivåer, tidsramar, siffror). Tunna teser faller i grinden.
+
 ═══ OUTPUT-FORMAT ═══
 Avsluta alltid med en "Rule of 3"-sammanfattning:
 
@@ -244,7 +268,7 @@ Avsluta alltid med en "Rule of 3"-sammanfattning:
 [3] Bevaka: ...
 
 ═══ ABSOLUTA REGLER ═══
-- Du kan INTE kringgå risk managern.
+- Du kan INTE kringgå risk managern eller ensemble-grinden.
 - Risk-analytiker + Advisor har VETO. Respektera dem.
 - Hellre HOLD än en osäker trade. Kapitalbevarande > avkastning.
 - Mikael bestämmer insatserna (via config). Du bestämmer timing och exit.`;

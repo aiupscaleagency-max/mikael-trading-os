@@ -113,6 +113,33 @@ const schema = z.object({
 
   // ── Morning briefing (UTC-timme) ──
   BRIEFING_HOUR_UTC: z.coerce.number().int().min(0).max(23).default(7),
+
+  // ── Ensemble (2-modell-omröstning innan risk manager) ──
+  // MODEL_A = modellen som FÖRESLÅR traden (Head Trader).
+  // MODEL_B = den oberoende andra-åsikten som måste hålla med.
+  // Default: två OLIKA Claude-modeller så vi får genuint skilda perspektiv.
+  MODEL_A: z.string().default("claude-sonnet-4-6"),
+  MODEL_B: z.string().default("claude-opus-4-6"),
+  // Provider för MODEL_B. "anthropic" idag; "openrouter"/"openai" är
+  // förberedda men inte implementerade (se secondOpinion.ts).
+  MODEL_B_PROVIDER: z.enum(["anthropic", "openrouter", "openai"]).default("anthropic"),
+  ENSEMBLE_REQUIRE_AGREEMENT: z
+    .string()
+    .default("true")
+    .transform((v) => v.toLowerCase() !== "false"),
+  // Om MODEL_B kraschar/timeout:ar — ska traden släppas igenom?
+  // Default false = fail-closed (ingen andra-åsikt ⇒ ingen trade).
+  ENSEMBLE_FAIL_OPEN: z
+    .string()
+    .default("false")
+    .transform((v) => v.toLowerCase() === "true"),
+  // Ska grinden även gälla EXITS (SELL)? Default false — vi vill aldrig
+  // att en andra modell kan låsa in oss i en förlorande position.
+  ENSEMBLE_GATE_EXITS: z
+    .string()
+    .default("false")
+    .transform((v) => v.toLowerCase() === "true"),
+  ENSEMBLE_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -230,6 +257,16 @@ export const config = {
     underlyings: env.WHEEL_UNDERLYINGS,
     putDelta: env.WHEEL_PUT_DELTA,
     profitTargetPct: env.WHEEL_PROFIT_TARGET_PCT,
+  },
+
+  ensemble: {
+    modelA: env.MODEL_A,
+    modelB: env.MODEL_B,
+    modelBProvider: env.MODEL_B_PROVIDER,
+    requireAgreement: env.ENSEMBLE_REQUIRE_AGREEMENT,
+    failOpen: env.ENSEMBLE_FAIL_OPEN,
+    gateExits: env.ENSEMBLE_GATE_EXITS,
+    timeoutMs: env.ENSEMBLE_TIMEOUT_MS,
   },
 
   loopIntervalSeconds: env.LOOP_INTERVAL_SECONDS,

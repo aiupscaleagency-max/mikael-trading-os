@@ -10,6 +10,10 @@ import { log } from "../logger.js";
 import type { OrderRequest, OrderResult } from "../types.js";
 import type { StrategyEngine } from "../strategies/types.js";
 
+// Single-agent-fallbacken kör sin egen modell (oförändrad). MODEL_A i .env
+// styr Head Trader i team-läget, som är standardvägen.
+const SINGLE_AGENT_MODEL = "claude-opus-4-6";
+
 export interface AgentTurnResult {
   finalText: string;
   toolCalls: Array<{ name: string; input: unknown; output: unknown }>;
@@ -40,9 +44,11 @@ export async function runAgentTurn(params: {
     config,
     state,
     engines,
+    proposedByModel: SINGLE_AGENT_MODEL,
     sideEffects: {
       placedOrders: [],
       killSwitchToggled: false,
+      ensembleVotes: [],
     },
   };
 
@@ -63,7 +69,7 @@ export async function runAgentTurn(params: {
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
     const response = await client.messages.create({
-      model: "claude-opus-4-6",
+      model: SINGLE_AGENT_MODEL,
       max_tokens: 4096,
       system: systemPrompt,
       tools: toolDefinitions(),

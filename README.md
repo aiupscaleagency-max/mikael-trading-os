@@ -100,9 +100,36 @@ npm run kill -- off     # Återställ
 2. Claude får en system prompt med aktuella riskramar + historik + performance-sammanfattning
 3. Claude anropar verktyg: `get_account`, `get_positions`, `get_ticker`, `get_indicators`
 4. Claude fattar beslut: BUY / SELL / HOLD
-5. Om BUY/SELL: `place_order` går via risk manager som kan blockera eller skala ner
-6. I `auto`-läge exekveras ordern. I `approve`-läge förbereds den för din bekräftelse.
-7. State och beslut persisteras i `data/`
+5. Om BUY/SELL: `place_order` skickar först förslaget till **ensemble-grinden** —
+   en andra modell (MODEL_B) röstar agree/disagree på samma underlag
+6. Bara om BÅDA modellerna säger "agree" går ordern vidare till risk managern,
+   som fortfarande kan blockera eller skala ner. Oenighet loggas som `hold`.
+7. I `auto`-läge exekveras ordern. I `approve`-läge förbereds den för din bekräftelse.
+8. State och beslut persisteras i `data/`
+
+### Ensemble: 2-modell-omröstning
+
+Varje trade granskas av en oberoende andra modell innan risk managern. Grinden
+kan bara **stoppa** trades — den kan aldrig kringgå risk managerns veto eller
+position-sizing-låsen.
+
+```
+MODEL_A=claude-sonnet-4-6        # föreslår (Head Trader)
+MODEL_B=claude-opus-4-6          # granskar, oberoende
+MODEL_B_PROVIDER=anthropic       # openrouter/openai förberedda, ej implementerade
+ENSEMBLE_REQUIRE_AGREEMENT=true  # båda måste säga "agree"
+ENSEMBLE_FAIL_OPEN=false         # MODEL_B nere ⇒ ingen trade (fail-closed)
+ENSEMBLE_GATE_EXITS=false        # exits gatas inte — vi låser aldrig in oss
+```
+
+Se grinden i aktion utan nycklar och utan riktiga ordrar (paper + approve):
+
+```bash
+npm run ensemble:demo
+```
+
+Byte av MODEL_B till GPT/OpenRouter: se `TODO(model-b-provider)` i
+`src/orchestrator/secondOpinion.ts`.
 
 ## Från paper till live (när du är redo)
 
