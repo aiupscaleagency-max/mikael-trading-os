@@ -107,6 +107,7 @@ export function createDefaultSchedule(config: Config): {
   positionScan: Omit<ScheduledTask, "execute">;
   morningBriefing: Omit<ScheduledTask, "execute">;
   dailyPnl: Omit<ScheduledTask, "execute">;
+  signalResolve: Omit<ScheduledTask, "execute">;
 } {
   // KRITISKT: lastRun = NU vid boot (inte 0).
   // Annars skulle elapsed = (now - 0) / 1000 = enormous → alla tasks
@@ -136,6 +137,13 @@ export function createDefaultSchedule(config: Config): {
       intervalSeconds: null,
       runAtHourUtc: 21, // 21:00 UTC ≈ 23:00 CET, efter US-stängning
       lastRun: 0,
+    },
+    // Lärloopen: avgör öppna signaler mot faktisk prisdata. Gör inga
+    // Claude-anrop och lägger inga order — ingen kostnad, ingen risk.
+    signalResolve: {
+      name: "Signal-avgörning (lärloop)",
+      intervalSeconds: config.learning.resolveIntervalSeconds,
+      lastRun: bootTime,
     },
   };
 }

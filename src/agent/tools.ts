@@ -10,6 +10,8 @@ import type { Config } from "../config.js";
 import { log } from "../logger.js";
 import { evaluateEnsemble, type EnsembleVerdict } from "../orchestrator/secondOpinion.js";
 import { appendDecision } from "../memory/store.js";
+import { journalProposal } from "../learning/signalIngest.js";
+import type { TechnicalReport } from "../orchestrator/types.js";
 
 // Verktygen som Claude kan anropa. Varje verktyg har en JSON-schema-
 // definition som skickas till API:et, plus en handler som faktiskt kör.
@@ -41,6 +43,12 @@ export interface ToolContext {
    * på config.ensemble.modelA.
    */
   proposedByModel?: string;
+  /**
+   * Teknikerns analyser (entry/SL/TP-zoner per symbol). Används av lärloopens
+   * journal som fallback när Head Trader inte anger nivåer själv. Påverkar
+   * ingenting i orderflödet.
+   */
+  technicalAnalyses?: TechnicalReport["analyses"];
   // Fylls i av handlers när order läggs — run.ts läser och persisterar.
   sideEffects: {
     placedOrders: Array<{ request: OrderRequest; result: OrderResult }>;
@@ -212,6 +220,16 @@ export const TOOLS: Record<string, ToolDef> = {
             type: "number",
             description: "Endast för LIMIT: priset per enhet",
           },
+          stop_loss: {
+            type: "number",
+            description:
+              "Nivån där tesen är fel. LOGGAS för uppföljning — den skickas INTE till brokern och lägger ingen stop-order. Ange den ändå: utan den går traden inte att utvärdera i efterhand.",
+          },
+          take_profit: {
+            type: "number",
+            description:
+              "Första målnivån (TP1). LOGGAS för uppföljning — ingen order läggs på den. Ange den ändå.",
+          },
           reasoning: {
             type: "string",
             description: "Din motivering för varför denna trade ska tas",
@@ -228,6 +246,10 @@ export const TOOLS: Record<string, ToolDef> = {
       const quoteQty = optNum(input, "quote_qty");
       const baseQty = optNum(input, "base_qty");
       const limitPrice = optNum(input, "limit_price");
+      // Journal-fält för lärloopen. Skickas ALDRIG till brokern och skapar
+      // inga stop-ordrar — exekveringen är oförändrad.
+      const stopLossLevel = optNum(input, "stop_loss");
+      const takeProfitLevel = optNum(input, "take_profit");
 
       const orderReq: OrderRequest = {
         symbol,
@@ -296,6 +318,29 @@ export const TOOLS: Record<string, ToolDef> = {
       (ctx.sideEffects.ensembleVotes ??= []).push({
         proposal: orderReq,
         verdict: ensembleVerdict,
+      });
+
+      // ── LÄRLOOPENS JOURNAL (shadow) ──────────────────────────────────
+      // Skrivs här, efter rösten men före risk managern, så att BÅDE enighet
+      // och oenighet fångas på exakt ett ställe. Nedröstade trades avgörs
+      // ändå mot prisdata — det är så vi får veta om grinden lönar sig.
+      // Får aldrig blockera orderflödet: allt går genom .catch().
+      await journalProposal({
+        symbol,
+        side,
+        orderType: type,
+        entryPrice: limitPrice ?? ticker.price,
+        stopLoss: stopLossLevel,
+        takeProfit: takeProfitLevel,
+        reasoning,
+        verdict: ensembleVerdict,
+        config: ctx.config,
+        broker: ctx.broker,
+        technical: ctx.technicalAnalyses,
+      }).catch((err) => {
+        log.warn(
+          `[Lärloop] Kunde inte journalföra förslaget: ${err instanceof Error ? err.message : String(err)}`,
+        );
       });
 
       if (!ensembleVerdict.approved) {

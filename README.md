@@ -146,6 +146,51 @@ Demon visar tre fall: GPT-6 Astra röstar `agree`, GPT-6 Astra röstar
 OpenRouter som MODEL_B-väg: se `TODO(model-b-provider)` i
 `src/orchestrator/secondOpinion.ts`.
 
+## Lärloop: signal-journal och automatisk avgörning (Fas 1)
+
+Systemet minns numera vad som hände med sina egna förslag. Varje riktat
+orderförslag journalförs vid `place_order` — med **båda** ensemble-rösterna —
+och avgörs sedan automatiskt mot faktisk prisdata.
+
+**Allt är shadow-läge.** Journalen observerar och mäter. Den lägger aldrig
+order, rör inga nycklar, och ett journalfel kan aldrig påverka ett
+orderbeslut.
+
+```
+place_order → ensemble-grind → JOURNAL → risk manager → broker
+                                  ↓
+                      data/learning.db (SQLite)
+                                  ↓
+                 avgörningsjobb var 15:e min → TP / SL / utgången / likviderad
+```
+
+Det viktigaste i tabellen är att **även nedröstade förslag journalförs och
+avgörs**. Raderna med `ensemble_approved = 0` svarar på den fråga som annars
+är omöjlig att besvara: räddade grinden pengar, eller kostade den pengar?
+
+Avgörningen följer genomgående värsta rimliga fall, eftersom vi bara har OHLC
+och inte tick-ordning:
+
+- TP och SL i samma candle → **SL antas**, och tvetydigheten loggas i
+  `ambiguous_bar` så Fas 3 kan mäta hur mycket statistik som vilar på antagandet
+- Endast candles **efter** signalens tidsstämpel används (strikt `>` på
+  `openTime` — en bar som redan var påbörjad räknas inte)
+- Vid hävstång prövas **likvidation före stop loss**; en likvidation är total
+  förlust av insatsen oavsett var SL låg
+- Gap förbi SL fylls på öppningskursen, inte på SL-nivån
+
+`stop_loss` och `take_profit` i `place_order` är **journal-fält**. De skickas
+inte till brokern och skapar inga stop-ordrar.
+
+```bash
+npm test               # 41 tester, inga nätverksanrop och inga nycklar
+npm run journal:resolve  # avgör öppna signaler + sammanfattning per tillgångsklass
+```
+
+Statistiken hålls alltid isär per tillgångsklass — krypto med 5x hävstång och
+aktier är inte jämförbara storheter. Fas 1 ger rå räkning; kalibrering,
+expectancy med konfidensintervall och baslinjer kommer i Fas 3.
+
 ## Från paper till live (när du är redo)
 
 **Gör inte detta innan du kört minst några veckor på testnet och sett en

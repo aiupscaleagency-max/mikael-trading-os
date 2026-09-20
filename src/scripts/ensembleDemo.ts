@@ -11,6 +11,7 @@ import type { AgentState } from "../memory/store.js";
 import type { Account, Kline, OrderRequest, OrderResult, Position, Ticker } from "../types.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { log } from "../logger.js";
+import { openLearningDb } from "../learning/db.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ENSEMBLE-DEMO — kör 2-modell-grinden i propose/testnet-läge.
@@ -68,6 +69,20 @@ const demoConfig = {
     maxOpenPositions: 5,
   },
   ensemble,
+  // Lärloopen är på i demon så hela kedjan syns: förslag → grind → journal.
+  // Skriver till data/learning.db (gitignorerad).
+  learning: {
+    enabled: true,
+    feeBps: { crypto: 10, aktie: 1, forex: 0 },
+    slippageBps: 5,
+    fundingBpsPer8h: 1,
+    mmr: 0.005,
+    liqBufferPct: 0.002,
+    resolveIntervalSeconds: 900,
+    maxResolveAttempts: 10,
+    horizonBars: { crypto: 18, aktie: 10, forex: 24 },
+  },
+  oanda: { symbols: [] },
 } as unknown as Config;
 
 const demoState: AgentState = {
@@ -97,7 +112,17 @@ const stubBroker: BrokerAdapter = {
     return { symbol, price: PRICE, changePct24h: 3.1, volume24h: 12_500 };
   },
   async getKlines(): Promise<Kline[]> {
-    return [];
+    // Syntetisk uppåttrend så regim-härledningen har något att arbeta med.
+    const BAR = 4 * 60 * 60 * 1000;
+    return Array.from({ length: 120 }, (_, i) => ({
+      openTime: Date.now() - (120 - i) * BAR,
+      closeTime: Date.now() - (119 - i) * BAR - 1,
+      open: PRICE * (0.85 + i * 0.0012),
+      high: PRICE * (0.86 + i * 0.0012),
+      low: PRICE * (0.84 + i * 0.0012),
+      close: PRICE * (0.85 + i * 0.0012),
+      volume: 100,
+    }));
   },
   async placeOrder(order: OrderRequest): Promise<OrderResult> {
     throw new Error(`Demo-brokern lägger aldrig ordrar (försökte: ${order.side} ${order.symbol})`);
@@ -227,6 +252,8 @@ async function main(): Promise<void> {
     side: "BUY",
     type: "MARKET",
     quote_qty: 50,
+    stop_loss: 65900,
+    take_profit: 69000,
     reasoning:
       "BTCUSDT bullish på 1h/4h/1d: pris 67450 över EMA20 på samtliga, RSI14 58 (ej överköpt), MACD-kors uppåt på 4h. Entry 67450, SL 65900 (-2,3%), TP1 69000. Karin vol=medium, Rasmus risk=low, portföljen tom. Storlek 50 USD = DEFAULT.",
   });
@@ -252,13 +279,41 @@ async function main(): Promise<void> {
     side: "BUY",
     type: "MARKET",
     quote_qty: 50,
+    stop_loss: 65900,
+    take_profit: 69000,
     reasoning:
       "BTCUSDT bullish på 1h/4h/1d: pris 67450 över EMA20 på samtliga, RSI14 58, MACD-kors uppåt på 4h. Entry 67450, SL 65900 (-2,3%), TP1 69000. Storlek 50 USD = DEFAULT.",
   });
   simulateOpenAiFailure = null;
 
+  // ── Lärloopens journal ──
+  // Varje förslag ovan skrevs till data/learning.db med BÅDA rösterna, även
+  // det nedröstade. Det är så vi senare kan mäta om grinden lönar sig.
+  log.info("─".repeat(72));
+  log.info("LÄRLOOPENS JOURNAL (data/learning.db)");
+  log.info("─".repeat(72));
+  const rader = openLearningDb()
+    .prepare(
+      `SELECT symbol, direction, entry, stop_loss, take_profit, regime, confidence,
+              model_a, model_b, model_b_verdict, ensemble_approved, resolution_status
+         FROM signal_journal ORDER BY rowid`,
+    )
+    .all();
+  for (const r of rader) {
+    log.info(
+      `  ${r.direction} ${r.symbol} @ ${r.entry} | SL ${r.stop_loss ?? "–"} TP ${r.take_profit ?? "–"} ` +
+      `| regim=${r.regime} conf=${Number(r.confidence).toFixed(2)}`,
+    );
+    log.info(
+      `      A=${r.model_a} vs B=${r.model_b} (${r.model_b_verdict}) ` +
+      `→ approved=${r.ensemble_approved} | ${r.resolution_status}`,
+    );
+  }
+  log.info("");
+
   log.ok("Demo klar. Inga ordrar lades, inga riktiga nycklar användes, inga config-lås rördes.");
   log.info("Oenigheten ovan är loggad till data/decisions.jsonl som action=hold.");
+  log.info("Signalerna är journalförda i data/learning.db — kör `npm run journal:resolve` för att avgöra dem.");
 }
 
 main().catch((err) => {

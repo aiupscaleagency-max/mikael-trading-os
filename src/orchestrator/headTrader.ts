@@ -89,6 +89,8 @@ export async function runHeadTrader(params: {
     // föreslår en trade — annars jämför vi äpplen med päron.
     marketContext: briefingContent,
     proposedByModel: headTraderModel,
+    // Teknikerns nivåer följer med som fallback till lärloopens journal.
+    technicalAnalyses: reports.technical.analyses,
     sideEffects: { placedOrders: [], killSwitchToggled: false, ensembleVotes: [] },
   };
 

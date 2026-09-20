@@ -46,6 +46,22 @@ interface BinanceTicker24h {
   quoteVolume: string;
 }
 
+// Binance returnerar candles som arrayer av arrayer. En enda mappning delas
+// av getKlines och getKlinesRange.
+type RawKline = [number, string, string, string, string, string, number, ...unknown[]];
+
+function mapRawKline(k: RawKline): Kline {
+  return {
+    openTime: k[0],
+    open: Number(k[1]),
+    high: Number(k[2]),
+    low: Number(k[3]),
+    close: Number(k[4]),
+    volume: Number(k[5]),
+    closeTime: k[6],
+  };
+}
+
 export class BinanceBroker implements BrokerAdapter {
   readonly name = "binance";
   readonly mode: "paper" | "live";
@@ -193,22 +209,51 @@ export class BinanceBroker implements BrokerAdapter {
   }
 
   async getKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
-    // Binance returnerar en array av arrays. Vi mappar till struct-form.
-    type RawKline = [number, string, string, string, string, string, number, ...unknown[]];
     const raw = await this.publicRequest<RawKline[]>("/api/v3/klines", {
       symbol,
       interval,
       limit,
     });
-    return raw.map((k) => ({
-      openTime: k[0],
-      open: Number(k[1]),
-      high: Number(k[2]),
-      low: Number(k[3]),
-      close: Number(k[4]),
-      volume: Number(k[5]),
-      closeTime: k[6],
-    }));
+    return raw.map(mapRawKline);
+  }
+
+  /**
+   * Candles inom ett TIDSINTERVALL — används av lärloopens avgörningsjobb för
+   * att se vad som hände efter att en signal gavs.
+   *
+   * Publikt endpoint, ingen API-nyckel. Binance ger max 1000 barer per anrop,
+   * så vi paginerar framåt på closeTime. Hård sidgräns som skydd mot en
+   * oändlig loop om börsen returnerar något oväntat.
+   */
+  async getKlinesRange(
+    symbol: string,
+    interval: string,
+    startTime: number,
+    endTime: number,
+  ): Promise<Kline[]> {
+    const MAX_PER_CALL = 1000;
+    const MAX_PAGES = 20;
+    const out: Kline[] = [];
+    let cursor = startTime;
+
+    for (let page = 0; page < MAX_PAGES && cursor < endTime; page++) {
+      const raw = await this.publicRequest<RawKline[]>("/api/v3/klines", {
+        symbol,
+        interval,
+        startTime: cursor,
+        endTime,
+        limit: MAX_PER_CALL,
+      });
+      if (raw.length === 0) break;
+
+      out.push(...raw.map(mapRawKline));
+      const lastClose = out[out.length - 1]!.closeTime;
+      if (lastClose <= cursor) break; // ingen framdrift — avbryt hellre än att loopa
+      cursor = lastClose + 1;
+
+      if (raw.length < MAX_PER_CALL) break; // sista sidan
+    }
+    return out;
   }
 
   async placeOrder(order: OrderRequest): Promise<OrderResult> {

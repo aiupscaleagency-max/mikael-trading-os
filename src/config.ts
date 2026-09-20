@@ -89,7 +89,7 @@ const schema = z.object({
   MAX_WEEKLY_SPEND_USD: z.coerce.number().positive().default(10),
 
   // ── Symbol-listor per motor ──
-  CRYPTO_SYMBOLS: csvList.default("BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,DOGEUSDT,DOTUSDT,LINKUSDT,MATICUSDT,UNIUSDT,LTCUSDT,ATOMUSDT,NEARUSDT"),
+  CRYPTO_SYMBOLS: csvList.default("BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,DOGEUSDT,DOTUSDT,LINKUSDT,POLUSDT,UNIUSDT,LTCUSDT,ATOMUSDT,NEARUSDT"),
   STOCK_SYMBOLS: csvList.default("TSLA,NVDA,AAPL,MSFT"),
   WHEEL_UNDERLYINGS: csvList.default("TSLA,NVDA"),
   FOREX_SYMBOLS: csvList.default("EUR_USD,GBP_USD,USD_JPY,USD_CHF,AUD_USD,USD_CAD,EUR_GBP"),
@@ -152,6 +152,34 @@ const schema = z.object({
     .default("false")
     .transform((v) => v.toLowerCase() === "true"),
   ENSEMBLE_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
+
+  // ── Lärloop (signal-journal + automatisk avgörning) ──
+  // SHADOW-LÄGE: journalen observerar och mäter. Den lägger aldrig order och
+  // påverkar aldrig ett orderbeslut. Defaults är medvetet konservativa —
+  // hellre för pessimistisk statistik än en som lurar oss.
+  LEARNING_ENABLED: z
+    .string()
+    .default("true")
+    .transform((v) => v.toLowerCase() !== "false"),
+  // Taker-avgift per sida, baspunkter.
+  LEARNING_FEE_BPS_CRYPTO: z.coerce.number().nonnegative().default(10),
+  LEARNING_FEE_BPS_STOCK: z.coerce.number().nonnegative().default(1),
+  LEARNING_FEE_BPS_FOREX: z.coerce.number().nonnegative().default(0),
+  // Antagen slippage per sida, baspunkter.
+  LEARNING_SLIPPAGE_BPS: z.coerce.number().nonnegative().default(5),
+  // Funding per 8h för perps, baspunkter. Antas alltid betald (konservativt).
+  LEARNING_FUNDING_BPS_PER_8H: z.coerce.number().nonnegative().default(1),
+  // Underhållsmarginalgrad för likvidationsberäkning (0.005 = 0,5 %).
+  LEARNING_MMR: z.coerce.number().nonnegative().default(0.005),
+  // Krymper likvidationsavståndet konservativt (0.002 = 0,2 %).
+  LEARNING_LIQ_BUFFER_PCT: z.coerce.number().nonnegative().default(0.002),
+  LEARNING_RESOLVE_INTERVAL_SECONDS: z.coerce.number().int().positive().default(900),
+  // Hur många försök innan en rad ges upp som ej avgörbar.
+  LEARNING_MAX_RESOLVE_ATTEMPTS: z.coerce.number().int().positive().default(10),
+  // Horisont i barer per tillgångsklass. 18 barer à 4h ≈ 3 dygn.
+  SIGNAL_HORIZON_BARS_CRYPTO: z.coerce.number().int().positive().default(18),
+  SIGNAL_HORIZON_BARS_STOCK: z.coerce.number().int().positive().default(10),
+  SIGNAL_HORIZON_BARS_FOREX: z.coerce.number().int().positive().default(24),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -300,6 +328,26 @@ export const config = {
       apiKey: env.OPENAI_API_KEY,
       baseUrl: env.OPENAI_BASE_URL,
       reasoningEffort: env.OPENAI_REASONING_EFFORT || undefined,
+    },
+  },
+
+  learning: {
+    enabled: env.LEARNING_ENABLED,
+    feeBps: {
+      crypto: env.LEARNING_FEE_BPS_CRYPTO,
+      aktie: env.LEARNING_FEE_BPS_STOCK,
+      forex: env.LEARNING_FEE_BPS_FOREX,
+    },
+    slippageBps: env.LEARNING_SLIPPAGE_BPS,
+    fundingBpsPer8h: env.LEARNING_FUNDING_BPS_PER_8H,
+    mmr: env.LEARNING_MMR,
+    liqBufferPct: env.LEARNING_LIQ_BUFFER_PCT,
+    resolveIntervalSeconds: env.LEARNING_RESOLVE_INTERVAL_SECONDS,
+    maxResolveAttempts: env.LEARNING_MAX_RESOLVE_ATTEMPTS,
+    horizonBars: {
+      crypto: env.SIGNAL_HORIZON_BARS_CRYPTO,
+      aktie: env.SIGNAL_HORIZON_BARS_STOCK,
+      forex: env.SIGNAL_HORIZON_BARS_FOREX,
     },
   },
 

@@ -12,6 +12,7 @@ import {
 } from "./agent/prompt.js";
 import { loadState, saveState, appendDecision } from "./memory/store.js";
 import { Scheduler, createDefaultSchedule } from "./scheduler.js";
+import { runResolveJob } from "./learning/resolveJob.js";
 import { runOrchestratedTurn } from "./orchestrator/orchestrator.js";
 import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback } from "./server/api.js";
 import { log } from "./logger.js";
@@ -363,6 +364,23 @@ async function main(): Promise<void> {
     ...schedule.agentLoop,
     execute: () => runOnce(brokers, engines),
   });
+
+  // Lärloopen: avgör öppna signaler mot faktisk prisdata (shadow-läge).
+  // Inga Claude-anrop, inga order — kan därför köras ofta utan kostnad.
+  if (config.learning.enabled) {
+    scheduler.addTask({
+      ...schedule.signalResolve,
+      execute: async () => {
+        const res = await runResolveJob({ config, brokers });
+        if (res.examined > 0) {
+          log.info(
+            `[Lärloop] Avgörning: ${res.resolved} avgjorda, ${res.stillOpen} öppna, ` +
+            `${res.unresolvable} ej avgörbara, ${res.failed} misslyckade (av ${res.examined}).`,
+          );
+        }
+      },
+    });
+  }
 
   // LEGACY position-scan (trailing stops) DISABLED — ersatt av positionMonitor.ts
   // Den spammade 437 testnet-positioner med trailing-stop-notiser till Telegram.
