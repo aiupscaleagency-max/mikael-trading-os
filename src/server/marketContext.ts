@@ -12,7 +12,10 @@ import { detectAllPatterns, type DetectedPattern } from "./patternDetection.js";
 // Cache: 60s TTL för att inte spam:a Binance
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "MATICUSDT"];
+// OBS: MATIC avlistades från Binance 2024-09-10 och ersattes av POL. En
+// avlistad symbol ger 400 från börsen och degraderar underlaget för HELA
+// teamet, eftersom denna lista injiceras i agenternas prompt.
+const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "POLUSDT"];
 const CACHE_TTL_MS = 60_000;
 
 interface MarketSnapshot {

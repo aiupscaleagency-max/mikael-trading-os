@@ -64,6 +64,11 @@ export async function runResolveJob(params: {
   const candidates = listOpenSignals(db, {
     olderThanTs: now - 60 * 60 * 1000,
     limit: params.limit ?? 200,
+    // FAS 1: bara krypto avgörs. Aktie- och forexrader ligger kvar orörda som
+    // 'open' tills deras fas byggs (de kräver öppettider och gap-hantering mot
+    // Alpaca/OANDA). De ska varken bränna försök i onödan eller tränga ut
+    // kryptorader ur radbudgeten. Ta bort filtret när den fasen är på plats.
+    assetClass: "crypto",
   });
   result.examined = candidates.length;
   if (candidates.length === 0) return result;

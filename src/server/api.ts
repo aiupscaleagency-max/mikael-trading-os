@@ -1007,7 +1007,8 @@ export function startServer(
 
       // ── Binance public prices (för PROPOSE-mode — riktiga marknadspriser, ingen auth) ──
       if (url.pathname === "/api/binance/prices" && method === "GET") {
-        const symbolsParam = url.searchParams.get("symbols") || "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,MATICUSDT";
+        // POLUSDT, inte MATICUSDT — MATIC avlistades från Binance 2024-09-10.
+        const symbolsParam = url.searchParams.get("symbols") || "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,POLUSDT";
         const symbols = symbolsParam.split(",").map((s) => s.trim());
         try {
           const url2 = "https://api.binance.com/api/v3/ticker/price";

@@ -115,16 +115,40 @@ test("nätverksfel lämnar raden öppen och räknar upp försöken", async () =>
   assert.equal(efter.resolve_attempts, 1);
 });
 
-test("broker utan getKlinesRange ger inte upp raden (forex/aktier senare fas)", async () => {
+test("FAS 1: bara krypto plockas upp — aktie/forex lämnas helt orörda", async () => {
   const db = openLearningDb(":memory:");
   const ts = Date.now() - 10 * 24 * 60 * 60 * 1000;
-  const r = rad(ts, { asset_class: "aktie", symbol: "AAPL", venue: "alpaca" });
+  const aktie = rad(ts, { asset_class: "aktie", symbol: "AAPL", venue: "alpaca" });
+  const forex = rad(ts, { asset_class: "forex", symbol: "EUR_USD", venue: "oanda" });
+  const krypto = rad(ts);
+  insertSignal(db, aktie);
+  insertSignal(db, forex);
+  insertSignal(db, krypto);
+
+  const res = await runResolveJob({ config: cfg, brokers: { binance: tpBroker(ts) }, db });
+
+  assert.equal(res.examined, 1, "bara krypto-raden ska granskas");
+  assert.equal(res.resolved, 1);
+
+  for (const r of [aktie, forex]) {
+    const efter = getSignal(db, r.id)!;
+    assert.equal(efter.resolution_status, "open", "raden ska ligga kvar till sin fas byggs");
+    assert.equal(efter.resolve_attempts, 0, "inga försök ska brännas på den");
+    assert.equal(efter.resolve_error, null);
+    assert.equal(efter.model_b, "gpt-6-astra", "ensemble-rösten är bevarad");
+  }
+});
+
+test("krypto-broker utan getKlinesRange ger inte upp raden", async () => {
+  const db = openLearningDb(":memory:");
+  const ts = Date.now() - 10 * 24 * 60 * 60 * 1000;
+  const r = rad(ts);
   insertSignal(db, r);
 
-  const utanStöd = { name: "alpaca", mode: "paper" } as unknown as BrokerAdapter;
-  const res = await runResolveJob({ config: cfg, brokers: { alpaca: utanStöd }, db });
+  const utanStöd = { name: "binance", mode: "paper" } as unknown as BrokerAdapter;
+  const res = await runResolveJob({ config: cfg, brokers: { binance: utanStöd }, db });
 
-  assert.equal(res.unresolvable, 0, "saknat stöd är inte samma sak som omöjlig");
+  assert.equal(res.unresolvable, 0, "saknat brokerstöd är inte samma sak som omöjlig");
   const efter = getSignal(db, r.id)!;
   assert.equal(efter.resolution_status, "open");
 });

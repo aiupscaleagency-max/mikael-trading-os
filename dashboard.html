@@ -1840,7 +1840,8 @@ const sb = (typeof window !== "undefined" && window.supabase && SUPABASE_URL)
 const useSupabase = !!sb;
 
 const SYMBOLS = {
-  crypto: ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT","DOTUSDT","MATICUSDT","LINKUSDT","UNIUSDT","LTCUSDT","ATOMUSDT","NEARUSDT"],
+  // POLUSDT ersatte MATICUSDT — MATIC avlistades från Binance 2024-09-10.
+  crypto: ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT","DOTUSDT","POLUSDT","LINKUSDT","UNIUSDT","LTCUSDT","ATOMUSDT","NEARUSDT"],
   cross: ["BTC/ETH","ETH/BTC","SOL/BTC","SOL/ETH","BNB/BTC","XRP/BTC"],
   forex: ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/GBP","EUR/JPY","GBP/JPY"],
   stocks: ["TSLA","NVDA","AAPL","MSFT","AMZN","META","GOOGL","AMD","NFLX","DIS"],
@@ -1849,9 +1850,12 @@ const SYMBOLS = {
 };
 const ALL_SYMS = Object.values(SYMBOLS).flat();
 
+// SIMULERAD fallback-data för demoläget — INTE riktiga marknadspriser.
+// Hela tabellen är stale (BTC står i 67500 här). POLUSDT-värdet är en
+// platshållare som ärvts från MATIC-raden, inte ett påstående om POL:s kurs.
 const BASE_PRICES = {
   BTCUSDT:67500, ETHUSDT:3450, SOLUSDT:178, BNBUSDT:580, XRPUSDT:0.62, ADAUSDT:0.45,
-  AVAXUSDT:38, DOGEUSDT:0.165, DOTUSDT:7.8, MATICUSDT:0.74, LINKUSDT:14.2, UNIUSDT:9.5,
+  AVAXUSDT:38, DOGEUSDT:0.165, DOTUSDT:7.8, POLUSDT:0.74, LINKUSDT:14.2, UNIUSDT:9.5,
   LTCUSDT:84, ATOMUSDT:8.4, NEARUSDT:5.6,
   "BTC/ETH":19.6, "ETH/BTC":0.051, "SOL/BTC":0.0026, "SOL/ETH":0.052, "BNB/BTC":0.0086, "XRP/BTC":0.0000092,
   "EUR/USD":1.0850, "GBP/USD":1.2680, "USD/JPY":149.50, "USD/CHF":0.8830,
@@ -6056,7 +6060,8 @@ let binanceLastUpdate = null;
 // Poll riktiga Binance-priser när PROPOSE-mode är aktivt
 async function pollBinancePrices(){
   try {
-    const symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","MATICUSDT","BNBUSDT","TRXUSDT"];
+    // POLUSDT, inte MATICUSDT (avlistad från Binance 2024-09-10).
+    const symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","POLUSDT","BNBUSDT","TRXUSDT"];
     const r = await fetch(`/api/binance/prices?symbols=${symbols.join(",")}`);
     if(!r.ok) return;
     const data = await r.json();
