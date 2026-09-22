@@ -41,8 +41,8 @@ cp .env.example .env
 3. Klicka "Generate HMAC_SHA256 Key"
 4. Kopiera API Key och Secret Key till `.env`:
    ```
-   BINANCE_API_KEY=din_testnet_key
-   BINANCE_API_SECRET=din_testnet_secret
+   BINANCE_TESTNET_API_KEY=din_testnet_key
+   BINANCE_TESTNET_API_SECRET=din_testnet_secret
    ```
 5. Testnet ger dig automatiskt ett startsaldo på ~100 000 USDT att leka med.
 
@@ -70,8 +70,6 @@ ALLOWED_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT
 
 ```
 EXECUTION_MODE=approve    # Claude föreslår, du bekräftar (rekommenderat att börja med)
-# eller:
-EXECUTION_MODE=auto       # Claude lägger orders själv (inom riskramarna)
 ```
 
 ## Användning
@@ -119,7 +117,18 @@ positiv track record.** När du är redo:
    BINANCE_LIVE_API_SECRET=...
    ```
 4. Börja med **mycket** låga riskramar (t.ex. `MAX_POSITION_USD=20`).
-5. Kör `EXECUTION_MODE=approve` de första dagarna så du ser varje trade innan den går.
+5. Dashboardens LIVE-läge kräver lägeschecklistan och separat bekräftelse för varje order.
+   Agenternas automatiska orderläge är avstängt och LIVE-order från chatten blockeras.
+
+Dashboarden visar **TEST** för Binance Testnet och **LIVE** för Binance Mainnet.
+`BINANCE_API_KEY` / `BINANCE_API_SECRET` accepteras endast som äldre TESTNET-alias,
+aldrig som Mainnet-nycklar. Håll Testnet- och Mainnet-nycklar separata.
+
+### Neural Trader (research/backtest)
+
+Projektet låser `neural-trader@2.8.11` som utvecklingsberoende, utanför orderflödet.
+Installationsskript kördes inte. Native CLI-delar är inte validerade på denna Mac;
+använd inte paketet för orderexekvering.
 
 ## Vad detta projektet INTE är
 

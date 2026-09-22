@@ -2663,11 +2663,16 @@ function executeConfirmedTrade(c){
 // Smart trade-router — väljer watch eller direkt-execute beroende på session
 // Routing: TEST = paper-sim, PROPOSE/TESTNET = Binance Testnet, LIVE = Binance Mainnet
 async function executeBinanceOrder(sym, side, amount, mode){
+  // Varje mainnet-order måste godkännas separat efter att orderdetaljerna visas.
+  if(mode === "live"){
+    const ok = window.confirm(`⚠️ LIVE — RIKTIGA PENGAR\n\n${side} ${sym}\nBelopp: $${Number(amount).toFixed(2)}\n\nSkicka denna order till Binance Mainnet?`);
+    if(!ok) return null;
+  }
   try {
     const r = await fetch("/api/binance/order", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({mode, symbol: sym, side, quoteOrderQty: amount})
+      body: JSON.stringify({mode, symbol: sym, side, quoteOrderQty: amount, liveOrderConfirmed: mode === "live"})
     });
     const data = await r.json();
     if(!data.ok){

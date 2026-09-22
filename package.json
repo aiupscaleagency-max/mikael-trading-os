@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.12.0",
+    "neural-trader": "2.8.11",
     "typescript": "^5.4.0"
   }
 }

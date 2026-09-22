@@ -44,6 +44,8 @@ const schema = z.object({
   // ── Binance (Krypto spot, valfritt fallback) ──
   BINANCE_API_KEY: z.string().default(""),
   BINANCE_API_SECRET: z.string().default(""),
+  BINANCE_TESTNET_API_KEY: z.string().default(""),
+  BINANCE_TESTNET_API_SECRET: z.string().default(""),
   BINANCE_LIVE_API_KEY: z.string().default(""),
   BINANCE_LIVE_API_SECRET: z.string().default(""),
 
@@ -109,7 +111,7 @@ const schema = z.object({
   // ── Timing ──
   LOOP_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
   SCAN_INTERVAL_SECONDS: z.coerce.number().int().positive().default(900),
-  EXECUTION_MODE: z.enum(["auto", "approve"]).default("auto"),
+  EXECUTION_MODE: z.enum(["auto", "approve"]).default("approve"),
 
   // ── Morning briefing (UTC-timme) ──
   BRIEFING_HOUR_UTC: z.coerce.number().int().min(0).max(23).default(7),
@@ -138,8 +140,9 @@ if (env.MODE === "live" && !env.LIVE_TRADING_CONFIRMED) {
 // Minst en broker måste vara konfigurerad.
 const hasAlpaca = !!(env.ALPACA_KEY_ID && env.ALPACA_SECRET_KEY);
 const hasBlofin = !!(env.BLOFIN_API_KEY && env.BLOFIN_API_SECRET && env.BLOFIN_PASSPHRASE);
-const hasBinance = !!(env.BINANCE_API_KEY && env.BINANCE_API_SECRET) ||
-  !!(env.BINANCE_LIVE_API_KEY && env.BINANCE_LIVE_API_SECRET);
+const hasBinance = env.MODE === "live"
+  ? !!(env.BINANCE_LIVE_API_KEY && env.BINANCE_LIVE_API_SECRET)
+  : !!((env.BINANCE_TESTNET_API_KEY || env.BINANCE_API_KEY) && (env.BINANCE_TESTNET_API_SECRET || env.BINANCE_API_SECRET));
 const hasOanda = !!(env.OANDA_API_KEY && env.OANDA_ACCOUNT_ID);
 const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 
@@ -153,7 +156,8 @@ if (!hasAlpaca && !hasBlofin && !hasBinance && !hasOanda) {
 export const config = {
   anthropicApiKey: env.ANTHROPIC_API_KEY,
   mode: env.MODE as Mode,
-  executionMode: env.EXECUTION_MODE as ExecutionMode,
+  // LIVE-start ska alltid kräva mänskligt godkännande, även om .env är gammal.
+  executionMode: (env.MODE === "live" ? "approve" : env.EXECUTION_MODE) as ExecutionMode,
 
   engines: env.ENGINES as string[],
 
@@ -175,8 +179,8 @@ export const config = {
 
   binance: {
     enabled: hasBinance,
-    apiKey: env.MODE === "live" ? env.BINANCE_LIVE_API_KEY : env.BINANCE_API_KEY,
-    apiSecret: env.MODE === "live" ? env.BINANCE_LIVE_API_SECRET : env.BINANCE_API_SECRET,
+    apiKey: env.MODE === "live" ? env.BINANCE_LIVE_API_KEY : (env.BINANCE_TESTNET_API_KEY || env.BINANCE_API_KEY),
+    apiSecret: env.MODE === "live" ? env.BINANCE_LIVE_API_SECRET : (env.BINANCE_TESTNET_API_SECRET || env.BINANCE_API_SECRET),
     baseUrl:
       env.MODE === "live" ? "https://api.binance.com" : "https://testnet.binance.vision",
   },

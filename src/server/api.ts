@@ -35,23 +35,18 @@ function resolveBinanceCreds(mode: "testnet" | "live"): BinanceCredentials | nul
 
 function initIntegrationsFromEnv(): void {
   // Live-keys (binance.com / mainnet)
-  const liveKey = process.env.BINANCE_API_KEY;
-  const liveSecret = process.env.BINANCE_API_SECRET;
-  const explicitTestnet = process.env.BINANCE_TESTNET === "true";
-  if (liveKey && liveSecret && !explicitTestnet) {
+  const liveKey = process.env.BINANCE_LIVE_API_KEY;
+  const liveSecret = process.env.BINANCE_LIVE_API_SECRET;
+  const testnetKey = process.env.BINANCE_TESTNET_API_KEY || process.env.BINANCE_API_KEY;
+  const testnetSecret = process.env.BINANCE_TESTNET_API_SECRET || process.env.BINANCE_API_SECRET;
+  if (liveKey && liveSecret) {
     binanceLiveCreds = { apiKey: liveKey, apiSecret: liveSecret, testnet: false };
     log.ok(`Binance LIVE auto-init (mainnet)`);
   }
   // Testnet-keys (separat så båda kan köras parallellt)
-  const tnKey = process.env.BINANCE_TESTNET_API_KEY;
-  const tnSecret = process.env.BINANCE_TESTNET_API_SECRET;
-  if (tnKey && tnSecret) {
-    binanceTestnetCreds = { apiKey: tnKey, apiSecret: tnSecret, testnet: true };
+  if (testnetKey && testnetSecret) {
+    binanceTestnetCreds = { apiKey: testnetKey, apiSecret: testnetSecret, testnet: true };
     log.ok(`Binance TESTNET auto-init (parallellt med live)`);
-  } else if (liveKey && liveSecret && explicitTestnet) {
-    // Bakåtkompat: om gamla BINANCE_TESTNET=true → använd som testnet
-    binanceTestnetCreds = { apiKey: liveKey, apiSecret: liveSecret, testnet: true };
-    log.ok(`Binance TESTNET auto-init (fallback från BINANCE_TESTNET=true)`);
   }
 
   log.info(`Säkerhetslås LIVE: max stake $${MAX_LIVE_STAKE_USD} · daily loss-cap $${MAX_LIVE_DAILY_LOSS_USD}`);
@@ -97,6 +92,11 @@ async function executeChatTool(
   symbols: Array<{ symbol: string; baseAsset: string; quoteAsset: string; minNotional: number; minQty: number; stepSize: number }>,
   userQuotes: string[],
 ): Promise<unknown> {
+  // Chat-agentens verktyg har ingen ordergranskning i UI:t. Spärra därför
+  // alla orderrelaterade LIVE-verktyg; LIVE får bara gå via orderdialogen.
+  if (mode === "live" && ["place_market_orders", "close_all_positions"].includes(toolName)) {
+    return { ok: false, error: "LIVE-order stoppad. Granska och bekräfta varje order separat i handelsvyn." };
+  }
   if (toolName === "get_account_status") {
     const eq = await client.getTotalEquity();
     return {
@@ -717,7 +717,9 @@ export function startServer(
 
         // Mappa UI-läge → config
         const newMode = uiMode === "paper" ? "paper" : "live";
-        const newExecMode = uiMode === "propose" ? "approve" : "auto";
+        // Autonom exekvering är avstängd i samtliga UI-lägen; LIVE kräver
+        // separat orderbekräftelse och TEST ska aldrig ärva live-nycklar.
+        const newExecMode = "approve";
 
         // Mutera in-memory config — alla framtida agent-anrop använder nya värden
         (config as { mode: string }).mode = newMode;
@@ -725,7 +727,7 @@ export function startServer(
 
         // Persistera till .env så det överlever restart
         try {
-          const envPath = "/root/mikael-trading-os/.env";
+          const envPath = `${process.cwd()}/.env`;
           const envContent = await fs.readFile(envPath, "utf8").catch(() => "");
           let updated = envContent;
           updated = updated.includes("\nMODE=")
@@ -1108,9 +1110,25 @@ export function startServer(
       // POST /api/binance/order — lägg riktig MARKET-order MED SÄKERHETSLÅS
       if (url.pathname === "/api/binance/order" && method === "POST") {
         const body = await readBody(req);
-        const { mode = "testnet", symbol, side, quoteOrderQty, clientOrderId } = JSON.parse(body) as { mode?: "testnet" | "live"; symbol: string; side: "BUY" | "SELL"; quoteOrderQty: number; clientOrderId?: string };
+        const { mode = "testnet", symbol, side, quoteOrderQty, clientOrderId, liveOrderConfirmed } = JSON.parse(body) as { mode?: "testnet" | "live"; symbol: string; side: "BUY" | "SELL"; quoteOrderQty: number; clientOrderId?: string; liveOrderConfirmed?: boolean };
+        if (!/^[A-Z0-9]{5,20}$/.test(symbol) || !["BUY", "SELL"].includes(side) || !Number.isFinite(quoteOrderQty) || quoteOrderQty <= 0) {
+          res.writeHead(400);
+          json(res, { ok: false, error: "Ogiltig symbol, sida eller orderstorlek." });
+          return;
+        }
+        const marketStatus = getMarketStreamStatus();
+        if (!marketStatus.connected || marketStatus.lastFrameMs < 0 || marketStatus.lastFrameMs > 30_000) {
+          res.writeHead(503);
+          json(res, { ok: false, error: "Order stoppad: Binance live-marknadsström saknas eller är för gammal. Vänta tills WS är ansluten och färsk." });
+          return;
+        }
         const creds = resolveBinanceCreds(mode);
         if (!creds) { res.writeHead(400); json(res, { error: `Binance ${mode} ej konfigurerat` }); return; }
+        if (mode === "live" && liveOrderConfirmed !== true) {
+          res.writeHead(400);
+          json(res, { ok: false, error: "LIVE-order nekad: separat manuell bekräftelse krävs för varje order." });
+          return;
+        }
         // SÄKERHETSLÅS — bara för LIVE-mode (testnet = ingen risk)
         if (mode === "live") {
           if (quoteOrderQty > MAX_LIVE_STAKE_USD) {
