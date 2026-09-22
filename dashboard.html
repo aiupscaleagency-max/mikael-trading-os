@@ -7194,5 +7194,78 @@ function initApp(){
 
 document.addEventListener("DOMContentLoaded", boot);
 </script>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     AUTH-GATE — inloggning
+     API:et kräver en giltig Supabase-session. Istället för att skriva om
+     varje fetch-anrop wrappas fetch en gång: svarar servern 401 visas
+     inloggningen. Cookien är httpOnly och skickas automatiskt eftersom
+     dashboarden är same-origin — därför behöver inget anrop ändras.
+     ══════════════════════════════════════════════════════════════════════ -->
+<div id="authOverlay" style="display:none;position:fixed;inset:0;z-index:99999;
+     background:#0b0e14;color:#e6e6e6;align-items:center;justify-content:center;
+     font-family:system-ui,-apple-system,sans-serif">
+  <form id="authForm" style="width:min(360px,90vw);padding:32px;background:#151a23;
+        border:1px solid #2a3140;border-radius:12px">
+    <h2 style="margin:0 0 4px;font-size:19px">Mikael Trading OS</h2>
+    <p style="margin:0 0 20px;color:#8b95a7;font-size:13px">Logga in för att fortsätta</p>
+    <input id="authEmail" type="email" required placeholder="E-post" autocomplete="username"
+           style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:11px;
+                  background:#0b0e14;border:1px solid #2a3140;border-radius:7px;color:#e6e6e6">
+    <input id="authPassword" type="password" required placeholder="Lösenord" autocomplete="current-password"
+           style="width:100%;box-sizing:border-box;margin-bottom:16px;padding:11px;
+                  background:#0b0e14;border:1px solid #2a3140;border-radius:7px;color:#e6e6e6">
+    <button type="submit" style="width:100%;padding:11px;background:#f0b90b;border:0;
+            border-radius:7px;color:#0b0e14;font-weight:600;cursor:pointer">Logga in</button>
+    <p id="authError" style="display:none;margin:14px 0 0;color:#ff6b6b;font-size:13px"></p>
+  </form>
+</div>
+<script>
+(function () {
+  var overlay = document.getElementById("authOverlay");
+  var errorEl = document.getElementById("authError");
+  var shown = false;
+
+  function showLogin() {
+    if (shown) return;
+    shown = true;
+    overlay.style.display = "flex";
+  }
+
+  // Wrappa fetch en gång. 401 = ingen giltig session. 403 = kontot finns men
+  // är suspenderat/avslutat — då hjälper ingen ny inloggning, så det svaret
+  // får gå vidare till anroparen istället för att visa formuläret.
+  var nativeFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    return nativeFetch(input, init).then(function (res) {
+      var url = typeof input === "string" ? input : (input && input.url) || "";
+      if (res.status === 401 && url.indexOf("/api/") !== -1) showLogin();
+      return res;
+    });
+  };
+
+  document.getElementById("authForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    errorEl.style.display = "none";
+    nativeFetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: document.getElementById("authEmail").value,
+        password: document.getElementById("authPassword").value,
+      }),
+    }).then(function (res) {
+      if (res.ok) { location.reload(); return; }
+      errorEl.textContent = res.status === 401
+        ? "Fel e-post eller lösenord."
+        : "Inloggningen misslyckades (" + res.status + ").";
+      errorEl.style.display = "block";
+    }).catch(function () {
+      errorEl.textContent = "Kunde inte nå servern.";
+      errorEl.style.display = "block";
+    });
+  });
+})();
+</script>
 </body>
 </html>

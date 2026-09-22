@@ -16,6 +16,7 @@ import { startPositionMonitor, recordEntry as recordPositionEntry, getMonitorSta
 import { OandaClient, type OandaCredentials } from "./integrations/oanda.js";
 import { startMarketStream, getCachedPrice, getCachedTicker, getMarketStreamStatus } from "./marketStream.js";
 import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
+import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
@@ -27,6 +28,45 @@ const MAX_LIVE_STAKE_USD = parseFloat(process.env.MAX_LIVE_STAKE_USD || "5");
 const MAX_LIVE_DAILY_LOSS_USD = parseFloat(process.env.MAX_LIVE_DAILY_LOSS_USD || "10");
 let liveDailyLossUsd = 0; // resettas vid midnatt
 let lastResetDay = new Date().getUTCDate();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  AUTH-GATE
+//
+//  Allt under /api/ kräver en giltig Supabase-session, levererad som
+//  httpOnly-cookie. Tre undantag, och bara tre:
+//   - /api/auth/login + /api/auth/logout  (annars går det inte att logga in)
+//   - /api/telegram/webhook               (Telegram kan inte skicka cookies —
+//                                          verifieras mot Telegrams egen
+//                                          secret-token istället)
+//
+//  Fail-closed: saknas Supabase-konfiguration returnerar verifyAccessToken
+//  null, och då nekas requesten. Ingen väg genom den här koden får släppa
+//  igenom trafik när auth inte kan verifieras.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const SESSION_COOKIE = "tos_session";
+
+const AUTH_EXEMPT_PATHS = new Set([
+  "/api/auth/login",
+  "/api/auth/logout",
+]);
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    out[part.slice(0, eq).trim()] = decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return out;
+}
+
+// json() svarar alltid 200 — den här behövs för fel-koder.
+function jsonStatus(res: http.ServerResponse, code: number, data: unknown): void {
+  res.writeHead(code, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(data));
+}
 
 // Helper: välj rätt creds baserat på mode-param ("testnet" default)
 function resolveBinanceCreds(mode: "testnet" | "live"): BinanceCredentials | null {
@@ -555,13 +595,87 @@ export function startServer(
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
     const method = req.method ?? "GET";
 
-    // CORS
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    // CORS — wildcard är oförenligt med cookies (och skulle låta vilken sida
+    // som helst anropa API:et med användarens session). Dashboarden är
+    // same-origin, så bara en explicit konfigurerad origin tillåts.
+    const allowedOrigin = process.env.PUBLIC_URL;
+    if (allowedOrigin && req.headers.origin === allowedOrigin) {
+      res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+    }
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     try {
+      // ── AUTH-GATE (före all routing) ──
+      if (url.pathname === "/api/telegram/webhook") {
+        // Telegram signerar inte requests men skickar en delad secret-token
+        // i en header när webhooken registrerats med den. Saknas den i miljön
+        // är webhooken osäker och stängs helt hellre än att lämnas öppen.
+        const expected = process.env.TELEGRAM_WEBHOOK_SECRET;
+        const provided = req.headers["x-telegram-bot-api-secret-token"];
+        if (!expected || provided !== expected) {
+          log.warn("Telegram-webhook avvisad: saknad eller felaktig secret-token");
+          jsonStatus(res, 401, { error: "unauthorized" });
+          return;
+        }
+      } else if (url.pathname.startsWith("/api/") && !AUTH_EXEMPT_PATHS.has(url.pathname)) {
+        const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+        const session = await verifyAccessToken(token);
+        if (!session) {
+          jsonStatus(res, 401, { error: "unauthorized" });
+          return;
+        }
+        if (session.status !== "active") {
+          // Kontot finns men får inte handla (suspenderat/avslutat). Tas
+          // nästa request, så en suspendering slår igenom direkt utan att
+          // vi behöver återkalla token hos Supabase.
+          log.warn(`Nekade request från konto med status=${session.status}`);
+          jsonStatus(res, 403, { error: "account_not_active", status: session.status });
+          return;
+        }
+      }
+
+      // ── Login: sätter sessionen som httpOnly-cookie ──
+      if (url.pathname === "/api/auth/login" && method === "POST") {
+        let email = "", password = "";
+        try {
+          ({ email, password } = JSON.parse(await readBody(req)) as { email: string; password: string });
+        } catch {
+          jsonStatus(res, 400, { error: "invalid_body" });
+          return;
+        }
+        if (!email || !password) {
+          jsonStatus(res, 400, { error: "email + password krävs" });
+          return;
+        }
+        const signed = await signInWithPassword(email, password);
+        if (!signed) {
+          // Medvetet ospecifikt: avslöja inte om adressen finns.
+          log.warn(`Misslyckad inloggning för ${email.slice(0, 3)}***`);
+          jsonStatus(res, 401, { error: "invalid_credentials" });
+          return;
+        }
+        // Token går ALDRIG ut i bodyn — bara som cookie JavaScript inte når.
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Set-Cookie":
+            `${SESSION_COOKIE}=${encodeURIComponent(signed.accessToken)}` +
+            `; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${signed.expiresIn}`,
+        });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
+      if (url.pathname === "/api/auth/logout" && method === "POST") {
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Set-Cookie": `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`,
+        });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
       // ── SSE stream ──
       if (url.pathname === "/api/events" && method === "GET") {
         res.writeHead(200, {
