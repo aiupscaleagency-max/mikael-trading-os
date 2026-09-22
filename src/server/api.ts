@@ -16,6 +16,7 @@ import { startPositionMonitor, recordEntry as recordPositionEntry, getMonitorSta
 import { OandaClient, type OandaCredentials } from "./integrations/oanda.js";
 import { startMarketStream, getCachedPrice, getCachedTicker, getMarketStreamStatus } from "./marketStream.js";
 import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
+import { verifyAccessToken } from "../auth/supabase.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
@@ -24,9 +25,38 @@ let oandaCreds: OandaCredentials | null = null;
 
 // Säkerhetslås för LIVE-mode (riktiga pengar)
 const MAX_LIVE_STAKE_USD = parseFloat(process.env.MAX_LIVE_STAKE_USD || "5");
-const MAX_LIVE_DAILY_LOSS_USD = parseFloat(process.env.MAX_LIVE_DAILY_LOSS_USD || "10");
-let liveDailyLossUsd = 0; // resettas vid midnatt
-let lastResetDay = new Date().getUTCDate();
+const LIVE_ORDER_LOCK_REASON = "LIVE-exekvering är tillfälligt låst tills daglig förlust kan mätas och återställas säkert över omstarter.";
+
+const SESSION_COOKIE = "tos_session";
+const AUTH_EXEMPT_PATHS = new Set(["/api/auth/session", "/api/auth/logout"]);
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  for (const part of (header ?? "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0) {
+      try { cookies[part.slice(0, eq).trim()] = decodeURIComponent(part.slice(eq + 1).trim()); }
+      catch { /* Ogiltig cookie ignoreras och sessionen nekas */ }
+    }
+  }
+  return cookies;
+}
+
+function jsonStatus(res: http.ServerResponse, status: number, data: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+  res.end(JSON.stringify(data));
+}
+
+function sessionCookie(token: string, maxAge: number): string {
+  const secure = process.env.NODE_ENV === "production" || process.env.PUBLIC_URL?.startsWith("https://") ? "; Secure" : "";
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=${maxAge}`;
+}
+
+function isOwnerSession(session: { userId: string; isAdmin: boolean }): boolean {
+  const configuredOwner = config.supabase.userId;
+  // DB-flaggar inte ägare: den måste matcha ett server-side UUID i .env.
+  return !!configuredOwner && session.userId === configuredOwner;
+}
 
 // Helper: välj rätt creds baserat på mode-param ("testnet" default)
 function resolveBinanceCreds(mode: "testnet" | "live"): BinanceCredentials | null {
@@ -49,7 +79,7 @@ function initIntegrationsFromEnv(): void {
     log.ok(`Binance TESTNET auto-init (parallellt med live)`);
   }
 
-  log.info(`Säkerhetslås LIVE: max stake $${MAX_LIVE_STAKE_USD} · daily loss-cap $${MAX_LIVE_DAILY_LOSS_USD}`);
+  log.info(`Säkerhetslås LIVE: max stake $${MAX_LIVE_STAKE_USD}; orderexekvering låst tills PnL-skydd finns.`);
 
   const ot = process.env.OANDA_API_KEY || process.env.OANDA_API_TOKEN;
   const oa = process.env.OANDA_ACCOUNT_ID;
@@ -152,9 +182,6 @@ async function executeChatTool(
     if (mode === "live" && amt > MAX_LIVE_STAKE_USD) {
       return { ok: false, error: `LIVE-säkerhetslås: max $${MAX_LIVE_STAKE_USD}/trade. Du försökte $${amt}.` };
     }
-    if (mode === "live" && liveDailyLossUsd >= MAX_LIVE_DAILY_LOSS_USD) {
-      return { ok: false, error: `Daglig loss-cap nådd ($${liveDailyLossUsd.toFixed(2)} / $${MAX_LIVE_DAILY_LOSS_USD}). Trading pausad.` };
-    }
     // Filtrera symbols
     const skipBases = new Set(["EUR", "GBP", "JPY", "TRY", "BRL", "ARS", "RON", "ZAR", "UAH", "NGN"]);
     const eligible = symbols.filter(s => s.quoteAsset === quotePref && amt >= s.minNotional && !skipBases.has(s.baseAsset));
@@ -248,12 +275,17 @@ async function consultAdvisor(
       const len = closes.length;
       const sma20 = closes.slice(-Math.min(20, len)).reduce((s,c) => s+c, 0) / Math.min(20, len);
       const sma50 = closes.slice(-Math.min(50, len)).reduce((s,c) => s+c, 0) / Math.min(50, len);
-      const change24h = ((closes[len-1] - closes[Math.max(0, len-25)]) / closes[Math.max(0, len-25)]) * 100;
+      const latestClose = closes[len - 1] ?? price;
+      const baseClose = closes[Math.max(0, len - 25)] ?? latestClose;
+      const change24h = baseClose > 0 ? ((latestClose - baseClose) / baseClose) * 100 : 0;
       // RSI (14)
       let gains = 0, losses = 0;
       const rsiStart = Math.max(1, len-15);
       for (let i = rsiStart; i < len; i++) {
-        const diff = closes[i] - closes[i-1];
+        const currentClose = closes[i];
+        const previousClose = closes[i - 1];
+        if (currentClose === undefined || previousClose === undefined) continue;
+        const diff = currentClose - previousClose;
         if (diff > 0) gains += diff; else losses -= diff;
       }
       const rs = gains / (losses || 1);
@@ -313,7 +345,7 @@ Din roll:
 - Svara KORT (max 6 punkter, ADHD-vänligt). Mike vill action eller "vänta", inte essäer.
 
 Mode: ${mode === "live"
-  ? `LIVE — RIKTIGA PENGAR (säkerhetslås max $${MAX_LIVE_STAKE_USD}/trade, daglig $${MAX_LIVE_DAILY_LOSS_USD}). Pusha INTE Mike över dessa.`
+  ? `LIVE — RIKTIGA PENGAR, ENDAST LÄSNING. Orderflödet är låst: ${LIVE_ORDER_LOCK_REASON}`
   : `TESTNET — gratis demo-pengar. INGEN $-gräns, men håll dig inom Mike's faktiska saldo. Var generös med rekommendationer i testnet.`}
 ${userEquityHint}`;
 
@@ -433,16 +465,6 @@ setTimeout(() => {
 // Källa: wss://stream.binance.com:9443/ws/!miniTicker@arr (mainnet, publik, ingen auth).
 startMarketStream();
 
-// Reset daily-loss-counter vid midnatt
-setInterval(() => {
-  const today = new Date().getUTCDate();
-  if (today !== lastResetDay) {
-    log.info(`Daglig loss-cap resettad ($${liveDailyLossUsd.toFixed(2)} → $0)`);
-    liveDailyLossUsd = 0;
-    lastResetDay = today;
-  }
-}, 60000);
-
 // ═══════════════════════════════════════════════════════════════════════════
 //  HTTP API + Dashboard server
 //
@@ -555,13 +577,70 @@ export function startServer(
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
     const method = req.method ?? "GET";
 
-    // CORS
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    // API är same-origin. Tillåt credentialed CORS endast för den explicita URL:en.
+    const allowedOrigin = process.env.PUBLIC_URL?.replace(/\/$/, "");
+    if (allowedOrigin && req.headers.origin === allowedOrigin) {
+      res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+      res.setHeader("Vary", "Origin");
+    }
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     try {
+      if (method === "POST" && url.pathname.startsWith("/api/") && req.headers.origin) {
+        const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim();
+        const forwardedHost = String(req.headers["x-forwarded-host"] ?? "").split(",")[0]?.trim();
+        const localOrigin = `${forwardedProto === "https" ? "https" : "http"}://${forwardedHost || req.headers.host}`;
+        const expectedOrigin = allowedOrigin || (process.env.NODE_ENV === "production" ? "" : localOrigin);
+        if (!expectedOrigin || req.headers.origin !== expectedOrigin) {
+          jsonStatus(res, 403, { error: "origin_not_allowed" });
+          return;
+        }
+      }
+
+      // API stängs helt om sessionen saknas, Supabase inte svarar eller kontot saknar ägarbehörighet.
+      if (url.pathname === "/api/telegram/webhook") {
+        const expected = process.env.TELEGRAM_WEBHOOK_SECRET;
+        const supplied = req.headers["x-telegram-bot-api-secret-token"];
+        if (!expected || supplied !== expected) {
+          jsonStatus(res, 401, { error: "unauthorized" });
+          return;
+        }
+      } else if (url.pathname.startsWith("/api/") && !AUTH_EXEMPT_PATHS.has(url.pathname)) {
+        const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+        const session = await verifyAccessToken(token);
+        if (!session || session.status !== "active" || !isOwnerSession(session)) {
+          jsonStatus(res, session?.status === "active" ? 403 : 401, { error: "unauthorized" });
+          return;
+        }
+      }
+
+      if (url.pathname === "/api/auth/session" && method === "POST") {
+        let input: { accessToken?: string };
+        try { input = JSON.parse(await readBody(req)) as { accessToken?: string }; }
+        catch { jsonStatus(res, 400, { error: "invalid_body" }); return; }
+        const session = await verifyAccessToken(input.accessToken);
+        if (!session || session.status !== "active" || !isOwnerSession(session)) {
+          jsonStatus(res, 403, { error: "account_not_authorized" });
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+          "Set-Cookie": sessionCookie(input.accessToken!, 3600),
+        });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
+      if (url.pathname === "/api/auth/logout" && method === "POST") {
+        res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": sessionCookie("", 0) });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
       // ── SSE stream ──
       if (url.pathname === "/api/events" && method === "GET") {
         res.writeHead(200, {
@@ -1111,13 +1190,18 @@ export function startServer(
       if (url.pathname === "/api/binance/order" && method === "POST") {
         const body = await readBody(req);
         const { mode = "testnet", symbol, side, quoteOrderQty, clientOrderId, liveOrderConfirmed } = JSON.parse(body) as { mode?: "testnet" | "live"; symbol: string; side: "BUY" | "SELL"; quoteOrderQty: number; clientOrderId?: string; liveOrderConfirmed?: boolean };
+        if (mode !== "testnet" && mode !== "live") {
+          res.writeHead(400);
+          json(res, { ok: false, error: "Läge måste vara testnet eller live." });
+          return;
+        }
         if (!/^[A-Z0-9]{5,20}$/.test(symbol) || !["BUY", "SELL"].includes(side) || !Number.isFinite(quoteOrderQty) || quoteOrderQty <= 0) {
           res.writeHead(400);
           json(res, { ok: false, error: "Ogiltig symbol, sida eller orderstorlek." });
           return;
         }
         const marketStatus = getMarketStreamStatus();
-        if (!marketStatus.connected || marketStatus.lastFrameMs < 0 || marketStatus.lastFrameMs > 30_000) {
+        if (!marketStatus.connected || marketStatus.lastFrameMs < 0 || marketStatus.lastFrameMs > 30_000 || getCachedPrice(symbol) === null) {
           res.writeHead(503);
           json(res, { ok: false, error: "Order stoppad: Binance live-marknadsström saknas eller är för gammal. Vänta tills WS är ansluten och färsk." });
           return;
@@ -1135,10 +1219,9 @@ export function startServer(
             json(res, { ok: false, error: `🛡 Säkerhetslås: max stake $${MAX_LIVE_STAKE_USD}/trade i LIVE-mode (du försökte $${quoteOrderQty})` });
             return;
           }
-          if (liveDailyLossUsd >= MAX_LIVE_DAILY_LOSS_USD) {
-            json(res, { ok: false, error: `🛡 Säkerhetslås: daglig förlust-cap $${MAX_LIVE_DAILY_LOSS_USD} uppnådd. Trading pausad till midnatt UTC.` });
-            return;
-          }
+          res.writeHead(503);
+          json(res, { ok: false, error: LIVE_ORDER_LOCK_REASON });
+          return;
         }
         try {
           const client = new BinanceClient(creds);
@@ -1299,7 +1382,7 @@ Mike's konto just nu (Binance ${mode === "live" ? "MAINNET — RIKTIGA PENGAR" :
 - Öppna positioner: ${equity.positions.length} ${equity.positions.length > 0 ? "(top: " + equity.positions.slice(0,3).map(p => `${p.asset} $${p.valueUsdt.toFixed(2)}`).join(", ") + ")" : ""}
 
 Säkerhetslås: ${mode === "live"
-  ? `LIVE-mode: max $${MAX_LIVE_STAKE_USD}/trade, daglig loss-cap $${MAX_LIVE_DAILY_LOSS_USD}`
+  ? `LIVE-mode är läsning-only; order är avstängda. ${LIVE_ORDER_LOCK_REASON}`
   : `TESTNET-mode: INGEN gräns. Mike har $${equity.totalUsdt.toFixed(2)} (cash $${equity.cashUsdt.toFixed(2)}). Kör vad han ber om inom hans saldo.`}
 
 Tradable symbols på Binance ${mode}: ${symbols.length} st (USDT + USDC quote-pairs).
@@ -1442,19 +1525,20 @@ Regler:
       }
       // POST /api/monitor/live-enable { enabled: boolean } — aktivera LIVE auto-sell
       if (url.pathname === "/api/monitor/live-enable" && method === "POST") {
-        const body = await readBody(req);
-        const { enabled } = JSON.parse(body) as { enabled: boolean };
-        setLiveAutoSell(!!enabled);
-        json(res, { ok: true, liveEnabled: !!enabled });
+        setLiveAutoSell(false);
+        jsonStatus(res, 423, { ok: false, liveEnabled: false, error: LIVE_ORDER_LOCK_REASON });
         return;
       }
       // GET /api/binance/safety — visa nuvarande säkerhetslås-status
       if (url.pathname === "/api/binance/safety" && method === "GET") {
         json(res, {
           maxLiveStakeUsd: MAX_LIVE_STAKE_USD,
-          maxLiveDailyLossUsd: MAX_LIVE_DAILY_LOSS_USD,
-          liveDailyLossUsd,
-          tradingAllowed: liveDailyLossUsd < MAX_LIVE_DAILY_LOSS_USD,
+          maxLiveDailyLossUsd: null,
+          liveDailyLossUsd: null,
+          dailyLossTrackingAvailable: false,
+          tradingAllowed: false,
+          liveOrdersEnabled: false,
+          lockReason: LIVE_ORDER_LOCK_REASON,
         });
         return;
       }
@@ -1464,11 +1548,12 @@ Regler:
         const body = await readBody(req);
         const { apiToken, accountId, practice } = JSON.parse(body) as { apiToken: string; accountId: string; practice: boolean };
         if (!apiToken || !accountId) { res.writeHead(400); json(res, { error: "apiToken + accountId krävs" }); return; }
+        if (practice === false) { jsonStatus(res, 423, { ok: false, error: "Oanda LIVE är låst. Endast Practice/Test får konfigureras." }); return; }
         try {
-          const client = new OandaClient({ apiToken, accountId, practice: practice !== false });
+          const client = new OandaClient({ apiToken, accountId, practice: true });
           const hc = await client.healthCheck();
           if (!hc.ok) { json(res, { ok: false, error: hc.details }); return; }
-          oandaCreds = { apiToken, accountId, practice: practice !== false };
+          oandaCreds = { apiToken, accountId, practice: true };
           json(res, { ok: true, details: hc.details });
         } catch (err) {
           json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -1489,6 +1574,7 @@ Regler:
       }
       if (url.pathname === "/api/oanda/order" && method === "POST") {
         if (!oandaCreds) { res.writeHead(400); json(res, { error: "Oanda ej konfigurerat" }); return; }
+        if (!oandaCreds.practice) { jsonStatus(res, 423, { ok: false, error: "Oanda LIVE-order är låsta." }); return; }
         const body = await readBody(req);
         const { symbol, side, units, clientOrderId } = JSON.parse(body) as { symbol: string; side: "BUY" | "SELL"; units: number; clientOrderId?: string };
         try {
@@ -1511,8 +1597,12 @@ Regler:
           oanda: oandaCreds ? { configured: true, mode: oandaCreds.practice ? "practice" : "live" } : { configured: false },
           safety: {
             maxLiveStakeUsd: MAX_LIVE_STAKE_USD,
-            maxLiveDailyLossUsd: MAX_LIVE_DAILY_LOSS_USD,
-            liveDailyLossUsd,
+            maxLiveDailyLossUsd: null,
+            liveDailyLossUsd: null,
+            dailyLossTrackingAvailable: false,
+            tradingAllowed: false,
+            liveOrdersEnabled: false,
+            lockReason: LIVE_ORDER_LOCK_REASON,
           },
         });
         return;

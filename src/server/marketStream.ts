@@ -41,13 +41,14 @@ const bookCache = new Map<string, BookTickerSnapshot>();
 const subscribers: Set<(symbol: string, snap: TickerSnapshot) => void> = new Set();
 
 let ws: WebSocket | null = null;
+let manuallyStopped = false;
 let reconnectAttempt = 0;
 let reconnectTimer: NodeJS.Timeout | null = null;
 let lastMessageAt = 0;
 let watchdog: NodeJS.Timeout | null = null;
 
 function scheduleReconnect(): void {
-  if (reconnectTimer) return;
+  if (manuallyStopped || reconnectTimer) return;
   const delayMs = Math.min(30_000, 1000 * Math.pow(2, reconnectAttempt));
   reconnectAttempt++;
   log.warn(`[market-stream] återansluter om ${delayMs}ms (attempt ${reconnectAttempt})`);
@@ -58,20 +59,23 @@ function scheduleReconnect(): void {
 }
 
 function connect(): void {
+  if (manuallyStopped) return;
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  let socket: WebSocket;
   try {
-    ws = new WebSocket(`${WS_BASE}/!miniTicker@arr`);
+    socket = new WebSocket(`${WS_BASE}/!miniTicker@arr`);
+    ws = socket;
   } catch (e) {
     log.warn(`[market-stream] connect fail: ${e instanceof Error ? e.message : String(e)}`);
     scheduleReconnect();
     return;
   }
-  ws.on("open", () => {
+  socket.on("open", () => {
     reconnectAttempt = 0;
     lastMessageAt = Date.now();
     log.ok("[market-stream] !miniTicker@arr ansluten");
   });
-  ws.on("message", (raw: WebSocket.RawData) => {
+  socket.on("message", (raw: WebSocket.RawData) => {
     lastMessageAt = Date.now();
     try {
       const arr = JSON.parse(raw.toString()) as Array<{
@@ -99,18 +103,19 @@ function connect(): void {
       }
     } catch { /* malformed frame, ignore */ }
   });
-  ws.on("error", (err) => {
+  socket.on("error", (err) => {
     log.warn(`[market-stream] WS error: ${err.message}`);
   });
-  ws.on("close", (code, reason) => {
+  socket.on("close", (code, reason) => {
     log.warn(`[market-stream] stängd code=${code} reason=${reason.toString().slice(0, 100)}`);
-    ws = null;
-    scheduleReconnect();
+    if (ws === socket) ws = null;
+    if (!manuallyStopped && ws === null) scheduleReconnect();
   });
 }
 
 export function startMarketStream(): void {
   if (ws) return;
+  manuallyStopped = false;
   connect();
   // Watchdog: om vi inte fått frame på 60s → tvinga reconnect
   if (!watchdog) {
@@ -124,9 +129,10 @@ export function startMarketStream(): void {
 }
 
 export function stopMarketStream(): void {
+  manuallyStopped = true;
   if (watchdog) { clearInterval(watchdog); watchdog = null; }
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  if (ws) { try { ws.close(); } catch {} ws = null; }
+  if (ws) { const socket = ws; ws = null; try { socket.close(); } catch {} }
   tickerCache.clear();
   bookCache.clear();
 }

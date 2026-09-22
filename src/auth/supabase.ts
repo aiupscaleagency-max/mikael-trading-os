@@ -83,3 +83,27 @@ export async function getActiveUsers(): Promise<Array<{ id: string; email: strin
   }
   return data || [];
 }
+
+export interface VerifiedSession {
+  userId: string;
+  status: string;
+  isAdmin: boolean;
+}
+
+/** Verifiera token mot Supabase och neka automatiskt om profil saknas. */
+export async function verifyAccessToken(token: string | null | undefined): Promise<VerifiedSession | null> {
+  if (!token) return null;
+  const sb = getSupabase();
+  if (!sb) return null;
+  try {
+    const { data, error } = await sb.auth.getUser(token);
+    if (error || !data.user) return null;
+    const { data: profile, error: profileError } = await sb
+      .from("profiles").select("status, is_admin").eq("id", data.user.id).single();
+    if (profileError || !profile) return null;
+    return { userId: data.user.id, status: profile.status ?? "suspended", isAdmin: profile.is_admin === true };
+  } catch (err) {
+    log.warn(`[Supabase] Tokenverifiering misslyckades: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}

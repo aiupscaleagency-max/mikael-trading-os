@@ -102,33 +102,26 @@ npm run kill -- off     # Återställ
 6. I `auto`-läge exekveras ordern. I `approve`-läge förbereds den för din bekräftelse.
 7. State och beslut persisteras i `data/`
 
-## Från paper till live (när du är redo)
+## LIVE-status
 
-**Gör inte detta innan du kört minst några veckor på testnet och sett en
-positiv track record.** När du är redo:
-
-1. Skaffa live-nycklar på https://www.binance.com/en/my/settings/api-management
-2. **Slå AV withdrawal-permissions på nyckeln.** Enable bara "Enable Spot & Margin Trading".
-3. I `.env`:
-   ```
-   MODE=live
-   LIVE_TRADING_CONFIRMED=true
-   BINANCE_LIVE_API_KEY=...
-   BINANCE_LIVE_API_SECRET=...
-   ```
-4. Börja med **mycket** låga riskramar (t.ex. `MAX_POSITION_USD=20`).
-5. Dashboardens LIVE-läge kräver lägeschecklistan och separat bekräftelse för varje order.
-   Agenternas automatiska orderläge är avstängt och LIVE-order från chatten blockeras.
+LIVE är för närvarande **endast läsning**. Riktiga Binance- och Oanda-order är
+server-side låsta eftersom tillförlitlig daglig förlustmätning ännu inte finns.
+Manuell bekräftelse finns kvar som ett extra skydd men kan inte kringgå låset.
+Testnet-order kan användas separat. Aktivera aldrig LIVE-handel genom att ändra
+env-variabler; först krävs implementerad och verifierad PnL-spärr.
 
 Dashboarden visar **TEST** för Binance Testnet och **LIVE** för Binance Mainnet.
 `BINANCE_API_KEY` / `BINANCE_API_SECRET` accepteras endast som äldre TESTNET-alias,
 aldrig som Mainnet-nycklar. Håll Testnet- och Mainnet-nycklar separata.
+API:et kräver en giltig Supabase-session och `SUPABASE_USER_ID` måste vara
+ägarens Auth UUID. Kör migration `supabase/migrations/0004_lock_profile_privileges.sql`
+innan åtkomst öppnas; den låser profilens adminfält mot ändring från klienten.
 
 ### Neural Trader (research/backtest)
 
-Projektet låser `neural-trader@2.8.11` som utvecklingsberoende, utanför orderflödet.
-Installationsskript kördes inte. Native CLI-delar är inte validerade på denna Mac;
-använd inte paketet för orderexekvering.
+`neural-trader@2.8.11` utvärderades men ingår inte i beroendena: npm rapporterade
+en kritisk och tio höga sårbarheter i dess beroendeträd. Backtest ska hållas
+frikopplat från live-order; använd OHLCV-data med stängda ljus som utbytesformat.
 
 ## Vad detta projektet INTE är
 

@@ -64,6 +64,11 @@ export async function setupWebhook(publicUrl: string): Promise<boolean> {
     log.warn("TELEGRAM_BOT_TOKEN saknas — webhook ej konfigurerad");
     return false;
   }
+  const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (!webhookSecret || !/^[A-Za-z0-9_-]{1,256}$/.test(webhookSecret)) {
+    log.warn("TELEGRAM_WEBHOOK_SECRET saknas eller är ogiltig — webhook ej konfigurerad");
+    return false;
+  }
   const webhookUrl = `${publicUrl.replace(/\/$/, "")}/api/telegram/webhook`;
   try {
     const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
@@ -71,6 +76,7 @@ export async function setupWebhook(publicUrl: string): Promise<boolean> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         url: webhookUrl,
+        secret_token: webhookSecret,
         allowed_updates: ["message", "callback_query"],
         drop_pending_updates: false,
       }),

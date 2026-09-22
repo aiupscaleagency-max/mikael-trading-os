@@ -20,7 +20,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Mikael Trading OS — Inference Dashboard</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.105.0/dist/umd/supabase.min.js"></script>
 <style>
 :root{
   --bg:#000000;          /* becksvart bakgrund */
@@ -1126,7 +1126,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
     <p class="onboard-footer">
-      🔒 Nycklar lagras krypterat i din browser (AES-256). I Fas 2 → krypteras i Supabase med <code>row-level security</code>.
+      🔒 Nycklar skickas till Supabase och lagras inte i browserns localStorage.
       <br>Du kan ändra dem senare från <code>Settings</code>.
     </p>
   </div>
@@ -1745,12 +1745,12 @@ body.app-state-onboard .fc-panel{display:none !important}
   <div class="live-modal">
     <h2>⚠ LIVE-LÄGE AKTIVERAS</h2>
     <div class="warning" style="font-size:14px;line-height:1.6">
-      Du växlar till <b>LIVE</b>. Alla trades blir <b>RIKTIGA orders</b> med <b>RIKTIGA pengar</b> på din Binance.<br><br>
-      Säkerhetslås: <b>max $50/trade</b> · daglig loss-cap <b>$10</b> · kill-switch tillgänglig längst ner i sidomenyn.
+      LIVE visar ditt riktiga Binance-konto och marknadsdata. <b>Order är avstängda</b> tills säker daglig förlustmätning finns.<br><br>
+      Du kan inte handla riktiga pengar i denna version. Använd TEST för simulering eller Testnet.
     </div>
     <div class="actions">
       <button class="cancel" id="live-cancel">Avbryt</button>
-      <button class="confirm" id="live-confirm">💚 Aktivera LIVE</button>
+      <button class="confirm" id="live-confirm">Visa LIVE-konto (endast läsning)</button>
     </div>
   </div>
 </div>
@@ -3612,6 +3612,7 @@ function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
    ====================================================================== */
 let authMode = "login"; // "login" | "signup"
 let currentUser = null;
+let userKeysMemory = {};
 
 function setAppState(state){
   // state: "landing" | "auth" | "app"
@@ -3675,12 +3676,6 @@ function showError(msg){
   el.classList.add("on");
 }
 
-// Admin-genväg: hardkodat email + lösenord skippar Supabase auth helt.
-// För tidig fas där Supabase email-confirmation strular. Senare bygger
-// vi proper admin-flow via backend service-role.
-const ADMIN_EMAILS = new Set(["aiupscaleagency@gmail.com","mikael@aiupscaleagency.com"]);
-const ADMIN_BYPASS_PASSWORD = "Trading2026!";
-
 async function submitAuth(){
   const email = document.getElementById("auth-email").value.trim().toLowerCase();
   const password = document.getElementById("auth-password").value;
@@ -3695,22 +3690,10 @@ async function submitAuth(){
   btn.textContent = authMode === "signup" ? "Skapar..." : "Loggar in...";
 
   const isNewSignup = authMode === "signup";
-
-  // ── ADMIN BYPASS ──
-  // Om email matchar admin-listan och lösenord stämmer → skippa Supabase
-  if(ADMIN_EMAILS.has(email) && password === ADMIN_BYPASS_PASSWORD){
-    saveUser({
-      email,
-      name: name || "Mike",
-      tier: "enterprise",
-      isAdmin: true,
-      onboardingComplete: true,
-      createdAt: Date.now(),
-    });
+  if(!useSupabase){
+    showError("Supabase-inloggning saknas. Åtkomst nekas.");
     btn.disabled = false;
     btn.textContent = isNewSignup ? "Skapa konto" : "Logga in";
-    setAppState("app");
-    if(typeof postLoginInit === "function") postLoginInit();
     return;
   }
 
@@ -3731,6 +3714,11 @@ async function submitAuth(){
           btn.disabled = false; btn.textContent = "Skapa konto";
           return;
         }
+        const apiSession = await fetch("/api/auth/session", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ accessToken: data.session.access_token }),
+        });
+        if(!apiSession.ok) throw new Error("Kontot saknar aktiv ägaråtkomst.");
         // Hämta profil — triggers har möjligen markerat user som admin
         let profile = null;
         try {
@@ -3748,6 +3736,11 @@ async function submitAuth(){
       } else {
         const { data, error } = await sb.auth.signInWithPassword({ email, password });
         if(error) throw error;
+        const apiSession = await fetch("/api/auth/session", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ accessToken: data.session?.access_token }),
+        });
+        if(!apiSession.ok) throw new Error("Kontot saknar aktiv ägaråtkomst.");
         // Hämta profil-info
         const { data: profile } = await sb.from("profiles").select("*").eq("id", data.user.id).single();
         saveUser({
@@ -3760,14 +3753,6 @@ async function submitAuth(){
           createdAt: profile?.created_at ? new Date(profile.created_at).getTime() : Date.now(),
         });
       }
-    } else {
-      // ── DEMO-LÄGE (utan Supabase) ──
-      await new Promise(r=>setTimeout(r, 600));
-      saveUser({
-        email, name: name || email.split("@")[0],
-        tier: "family", createdAt: Date.now(),
-        onboardingComplete: !isNewSignup,
-      });
     }
   } catch (err) {
     showError(err.message || "Något gick fel — försök igen.");
@@ -3806,13 +3791,13 @@ async function loadKeysFromBackend(){
       }
     } catch(_){}
   }
-  return getUserKeys(); // fallback localStorage
+  return getUserKeys();
 }
 
 async function saveKeysToBackend(keys){
-  if(useSupabase && currentUser?.id){
-    try {
-      await sb.from("api_keys").upsert({
+  if(!useSupabase || !currentUser?.id) throw new Error("Nycklar kräver aktiv Supabase-inloggning.");
+  {
+      const { error } = await sb.from("api_keys").upsert({
         user_id: currentUser.id,
         anthropic: keys.anthropic || null,
         binance_key: keys.binance_key || null,
@@ -3822,17 +3807,17 @@ async function saveKeysToBackend(keys){
         oanda_account: keys.oanda_account || null,
         updated_at: new Date().toISOString(),
       });
-    } catch(err){
-      console.warn("Failed to save keys to Supabase:", err);
-    }
+      if(error) throw error;
   }
-  saveUserKeys(keys); // alltid cacha lokalt också
+  saveUserKeys(keys);
 }
 
 async function logout(){
+  try{ await fetch("/api/auth/logout", { method: "POST" }); }catch(_){}
   if(useSupabase){
     try{ await sb.auth.signOut(); }catch(_){}
   }
+  userKeysMemory = {};
   clearUser();
   setAppState("landing");
 }
@@ -3861,12 +3846,11 @@ function showOnboardStep(n){
 }
 
 function getUserKeys(){
-  try{ return JSON.parse(localStorage.getItem("trading_keys") || "{}"); }
-  catch(_){ return {}; }
+  return { ...userKeysMemory };
 }
 function saveUserKeys(keys){
-  // OBS: i demo-läge sparas i localStorage. Fas 2 → AES-256 i Supabase.
-  try{ localStorage.setItem("trading_keys", JSON.stringify(keys)); }catch(_){}
+  // Nycklar hålls endast i browser-minnet och hämtas från Supabase efter inloggning.
+  userKeysMemory = { ...keys };
 }
 
 function validateOnboardStep(){
@@ -6474,6 +6458,11 @@ async function boot(){
     try{
       const { data: { session } } = await sb.auth.getSession();
       if(session?.user){
+        const apiSession = await fetch("/api/auth/session", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ accessToken: session.access_token }),
+        });
+        if(!apiSession.ok) throw new Error("API-session nekades");
         // Hämta profil + sätt currentUser
         const { data: profile } = await sb.from("profiles").select("*").eq("id", session.user.id).single();
         saveUser({
@@ -6497,15 +6486,9 @@ async function boot(){
     }
   }
 
-  // Fallback: localStorage-user (demo-läge)
-  const user = loadUser();
-  if(user){
-    setAppState("app");
-    updateUserChip();
-    initApp();
-  } else {
-    setAppState("landing");
-  }
+  // Ingen localStorage- eller demo-auth får öppna dashboarden.
+  clearUser();
+  setAppState("landing");
 }
 
 // Initieras EFTER inloggning (DOM-element i app-shell finns då)
@@ -6576,7 +6559,7 @@ async function saveKeysFromSettings(){
   try {
     await saveKeysToBackend(keys);
     if(status){
-      status.textContent = useSupabase ? "✓ Sparat i Supabase (krypterat)" : "✓ Sparat lokalt";
+      status.textContent = "✓ Sparat i Supabase";
       status.style.color = "var(--green)";
       setTimeout(()=>{ status.textContent = ""; }, 2500);
     }
@@ -6811,7 +6794,7 @@ async function refreshBinanceSync(){
     if(timeTag) timeTag.textContent = "uppdaterat " + new Date().toLocaleTimeString().slice(0,8);
     const safetyHtml = `
       <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:5px;padding:8px 12px;margin-bottom:10px;font-size:11px">
-        🛡 <b>LIVE-säkerhetslås:</b> max stake <b>$${safety.maxLiveStakeUsd}</b>/trade · daglig loss-cap <b>$${safety.maxLiveDailyLossUsd}</b> · använt idag: <b style="color:${safety.liveDailyLossUsd > 0 ? 'var(--red)' : 'var(--green)'}">$${safety.liveDailyLossUsd.toFixed(2)}</b> ${safety.tradingAllowed ? "" : "<span style='color:var(--red);font-weight:700'>· TRADING PAUSAD</span>"}
+        🛡 <b>LIVE endast läsning:</b> order är avstängda. ${safety.lockReason || "Daglig förlustmätning saknas."}
       </div>
     `;
     body.innerHTML = safetyHtml + `
@@ -7196,6 +7179,16 @@ function initApp(){
   }
   if(CFG.mode === "live"){ loadFromBackend(); startSSE(); loadCurrentMode(); }
 }
+
+// Session löper ut → återgå till Supabase-inloggning; API:t nekar ändå direkt.
+(() => {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => nativeFetch(input, init).then((res) => {
+    const requestUrl = typeof input === "string" ? input : input?.url || "";
+    if(res.status === 401 && requestUrl.includes("/api/") && !requestUrl.includes("/api/auth/session")) showAuth("login");
+    return res;
+  });
+})();
 
 document.addEventListener("DOMContentLoaded", boot);
 </script>

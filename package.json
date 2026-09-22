@@ -14,17 +14,16 @@
     "demo": "tsx src/scripts/demo.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.80.0",
+    "@anthropic-ai/sdk": "0.91.1",
     "@supabase/supabase-js": "^2.45.0",
     "@types/ws": "^8.18.1",
     "dotenv": "^17.3.1",
     "tsx": "^4.21.0",
-    "ws": "^8.20.0",
+    "ws": "8.21.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^20.12.0",
-    "neural-trader": "2.8.11",
     "typescript": "^5.4.0"
   }
 }
