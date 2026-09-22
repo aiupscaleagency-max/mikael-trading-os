@@ -1,5 +1,12 @@
 # Agent logg
 
+## 2026-09-22 — Diagramvy LIVE/SIMULERAD
+
+- Lade till flera staplade valutaparsdiagram med valbar symbol, borttagning, tidsintervall, insats och procentförändring.
+- LIVE-diagram hämtar historik från befintligt Binance-klines-API och tar emot OHLC-uppdateringar via Binance WebSocket; SIMULERAD-vyn använder lokala simulerade candles.
+- Lade till responsiv layout och återanslutningsskydd mot gamla WebSocket-anslutningar. Ingen orderlogik ändrad.
+- `git diff --check` passerade. UI kunde inte öppnas i den här sessionens webbläsarpanel; ingen LIVE-anslutning eller order skickad.
+
 ## 2026-09-22 — TEST/LIVE-routing och Neural Trader
 
 - Gjorde Binance credential-routing entydig: Mainnet kräver `BINANCE_LIVE_*`; TESTNET använder `BINANCE_TESTNET_*` (äldre generiska `BINANCE_*` är endast TESTNET-alias).

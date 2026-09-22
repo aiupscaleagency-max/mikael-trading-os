@@ -351,6 +351,19 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .price-row{display:flex;gap:16px;flex-wrap:wrap;font-size:11px;margin-bottom:8px}
 .price-row .lbl{color:var(--dim)}
 #chart{height:480px;background:var(--card2);border-radius:4px;position:relative}
+.chart-meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;margin:8px 0;background:var(--border);border:1px solid var(--border);border-radius:5px;overflow:hidden}
+.chart-meta-cell{background:var(--card2);padding:7px 10px;min-width:0}
+.chart-meta-cell small{display:block;color:var(--dim);font-size:9px;text-transform:uppercase;letter-spacing:.4px}
+.chart-meta-cell b{display:block;margin-top:2px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pair-charts{display:flex;flex-direction:column;gap:10px;margin-top:10px}
+.pair-chart-card{background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:8px}
+.pair-chart-head{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;font-weight:700}
+.pair-chart-remove{color:var(--dim);padding:2px 8px;border:1px solid var(--border);border-radius:4px}
+.pair-chart-canvas{height:280px;width:100%;min-width:0;margin-top:6px}
+.pair-chart-error{height:280px;display:grid;place-items:center;color:var(--red);text-align:center;padding:20px}
+.pair-chart-error[hidden]{display:none}
+.chart-feed-message{position:absolute;inset:0;display:none;place-items:center;padding:16px;color:var(--red);background:rgba(5,5,7,.88);text-align:center;z-index:3}
+.add-pair-btn{padding:6px 9px;border:1px solid var(--cyan);border-radius:4px;color:var(--cyan);font-size:10px;font-weight:700;white-space:nowrap}
 #rsi-pane,#macd-pane,#vol-pane{height:80px;background:var(--card2);border-radius:4px;margin-top:6px;display:none}
 #rsi-pane.on,#macd-pane.on,#vol-pane.on{display:block}
 
@@ -809,6 +822,8 @@ body.app-state-onboard .fc-panel{display:none !important}
   /* Layout — allt stackat */
   main{grid-template-columns:1fr;gap:8px;padding:8px}
   #chart{height:240px}
+  .chart-meta{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .pair-chart-canvas,.pair-chart-error{height:220px}
   .agent-grid{grid-template-columns:1fr;gap:6px}
   .agent{min-height:64px;padding:8px 10px}
   .agent .avatar{width:36px;height:36px;font-size:13px}
@@ -1309,6 +1324,7 @@ body.app-state-onboard .fc-panel{display:none !important}
             <option value="commod">Råvaror</option>
           </select>
           <select id="sym-select"></select>
+          <button id="chart-add-pair" class="add-pair-btn" type="button">＋ Lägg till par</button>
         </div>
         <span class="cur-price" id="cur-price">--</span>
         <span id="cur-chg" class="ch">--</span>
@@ -1343,10 +1359,12 @@ body.app-state-onboard .fc-panel{display:none !important}
         <span><span class="lbl">Low:</span> <b id="d-lo">--</b></span>
         <span><span class="lbl">Vol:</span> <b id="d-vol">--</b></span>
       </div>
+      <div id="main-chart-meta" class="chart-meta"></div>
       <div id="chart"></div>
       <div id="vol-pane"></div>
       <div id="rsi-pane"></div>
       <div id="macd-pane"></div>
+      <div id="pair-charts" class="pair-charts"></div>
     </div>
 
     <div class="card" id="ai-team-card" style="scroll-margin-top:70px">
@@ -1875,10 +1893,13 @@ function symCategory(sym){
    ====================================================================== */
 const STATE = {
   symbol:"BTCUSDT", tf:"1h",
+  chartSymbols: (()=>{ try { const saved=JSON.parse(localStorage.getItem("tos_chart_symbols")||"[]"); return Array.isArray(saved) ? saved.filter(s=>SYMBOLS.crypto.includes(s)).slice(0,12) : []; } catch(_){ return []; } })(),
   betSym:"BTCUSDT", betTf:300, betAmt:10,
   indicators:{sma20:false,sma50:false,sma200:false,ema9:false,ema21:false,bb:false,vwap:false,rsi:false,macd:false,vol:false},
   positions:[], history:[],
   candleData:{},  // { "BTCUSDT|1h": [{time,open,high,low,close,volume}, ...] }
+  chartDataSource:{},
+  chartUpdatedAt:{},
   livePrices:{},
   killActive:false,
   agents:{},
@@ -2708,6 +2729,7 @@ function requestTradeExecution(sym, side, amount, timeframeSec){
    CHART
    ====================================================================== */
 let chart, candleSeries, volSeries, rsiChart, rsiSeries, macdChart, macdLine, macdSig, macdHist, indicatorSeries={};
+const pairCharts = new Map();
 
 function initChart(){
   chart = LightweightCharts.createChart(document.getElementById("chart"),{
@@ -2723,7 +2745,7 @@ function initChart(){
     borderUpColor:"#10b981", borderDownColor:"#ef4444",
     wickUpColor:"#10b981", wickDownColor:"#ef4444"
   });
-  window.addEventListener("resize",()=>{ chart.applyOptions({width:document.getElementById("chart").clientWidth}); });
+  window.addEventListener("resize",()=>{ chart.applyOptions({width:document.getElementById("chart").clientWidth}); for(const item of pairCharts.values()){ const host=item.card.querySelector(".pair-chart-canvas"); if(host)item.chart.applyOptions({width:Math.max(200,host.clientWidth)}); } });
 }
 
 function genCandles(sym, tf, n=300){
@@ -2750,13 +2772,133 @@ function genCandles(sym, tf, n=300){
   return out;
 }
 
-function loadCandles(sym, tf){
+function chartIsLiveSymbol(sym){ return SYMBOLS.crypto.includes(sym) && /USDT$|USDC$/.test(sym); }
+
+function chartMetaHtml(sym){
+  const data=STATE.candleData[sym+"|"+STATE.tf]||[];
+  const last=data[data.length-1];
+  const first=data[0];
+  const price=STATE.livePrices[sym] ?? last?.close;
+  const pct=first?.close && price ? ((price-first.close)/first.close)*100 : null;
+  const pctColor=pct===null?"var(--dim)":pct>=0?"var(--green)":"var(--red)";
+  const updated=STATE.chartUpdatedAt?.[sym];
+  const stake=document.getElementById("bet-amt")?.value || STATE.betAmt;
+  return `<div class="chart-meta-cell"><small>Valutapar</small><b>${sym}</b></div><div class="chart-meta-cell"><small>Tid / uppdaterad</small><b>${STATE.tf} · ${updated?new Date(updated).toLocaleTimeString():"—"}</b></div><div class="chart-meta-cell"><small>Insats</small><b>$${Number(stake||0).toFixed(2)}</b></div><div class="chart-meta-cell"><small>Förändring</small><b style="color:${pctColor}">${pct===null?"—":`${pct>=0?"+":""}${pct.toFixed(2)}%`}</b></div>`;
+}
+
+function refreshChartMeta(sym){
+  const html=chartMetaHtml(sym);
+  if(sym===STATE.symbol){ const el=document.getElementById("main-chart-meta"); if(el) el.innerHTML=html; }
+  const item=pairCharts.get(sym);
+  if(item){ const meta=item.card.querySelector(".chart-meta"); if(meta) meta.innerHTML=html; }
+}
+
+async function loadCandles(sym, tf){
   const key = sym+"|"+tf;
+  if(currentUiMode === "live"){
+    if(!chartIsLiveSymbol(sym)){
+      document.getElementById("data-source-indicator").innerHTML='<span style="color:var(--red)">●</span> LIVE saknas för detta valutapar';
+      candleSeries.setData([]);
+      showChartFeedMessage(`LIVE-diagram finns inte för ${sym}. Välj ett Binance crypto-par.`);
+      return;
+    }
+    try{
+      const r=await fetch(`/api/binance/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(tf)}&limit=300`,{cache:"no-store"});
+      const payload=await r.json();
+      if(sym!==STATE.symbol || tf!==STATE.tf || currentUiMode!=="live") return;
+      if(!r.ok || !Array.isArray(payload.candles) || !payload.candles.length) throw new Error(payload.error||"Binance candle-data saknas");
+      STATE.candleData[key]=payload.candles;
+      STATE.chartDataSource[key]="live";
+      STATE.livePrices[sym]=payload.candles[payload.candles.length-1].close;
+      STATE.chartUpdatedAt ||= {}; STATE.chartUpdatedAt[sym]=Date.now();
+      document.getElementById("data-source-indicator").innerHTML='<span style="color:var(--green)">●</span> LIVE Binance · WebSocket ansluter';
+    }catch(e){
+      document.getElementById("data-source-indicator").innerHTML=`<span style="color:var(--red)">●</span> LIVE-datafel: ${e.message}`;
+      const chartEl=document.getElementById("chart"); if(chartEl) chartEl.dataset.feedError="1";
+      candleSeries.setData([]);
+      showChartFeedMessage(`LIVE candles saknas: ${e.message}`);
+      return;
+    }
+  }else if(!STATE.candleData[key] || STATE.chartDataSource[key]!=="simulated"){
+    STATE.candleData[key] = genCandles(sym,tf,300);
+    STATE.chartDataSource[key]="simulated";
+    STATE.livePrices[sym]=STATE.candleData[key][STATE.candleData[key].length-1]?.close ?? BASE_PRICES[sym] ?? 100;
+  }
+  if(currentUiMode!=="live") document.getElementById("data-source-indicator").innerHTML='<span style="color:var(--yellow)">●</span> SIMULERAD · virtuella priser';
   if(!STATE.candleData[key]) STATE.candleData[key] = genCandles(sym,tf,300);
   const data = STATE.candleData[key];
+  const chartEl=document.getElementById("chart"); if(chartEl) delete chartEl.dataset.feedError;
+  showChartFeedMessage("");
   candleSeries.setData(data.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
   applyIndicators(data);
   updatePriceHeader(data);
+  refreshChartMeta(sym);
+  await renderPairCharts();
+}
+
+async function renderPairCharts(){
+  const root=document.getElementById("pair-charts"); if(!root) return;
+  const symbols=(STATE.chartSymbols||[]).filter(s=>s!==STATE.symbol).slice(0,12);
+  for(const [sym,item] of pairCharts){ if(!symbols.includes(sym)){ item.chart.remove(); item.card.remove(); pairCharts.delete(sym); } }
+  for(const sym of symbols){
+    let item=pairCharts.get(sym);
+    if(!item){
+      const card=document.createElement("section"); card.className="pair-chart-card";
+      const id="pair-chart-"+sym.replace(/[^A-Z0-9]/g,"");
+      card.innerHTML=`<div class="pair-chart-head"><button type="button" class="pair-chart-focus">${sym} · öppna i huvuddiagram</button><button type="button" class="pair-chart-remove" title="Ta bort paret">Ta bort</button></div><div class="chart-meta"></div><div class="pair-chart-error" hidden></div><div id="${id}" class="pair-chart-canvas"></div>`;
+      root.appendChild(card);
+      const instance=LightweightCharts.createChart(card.querySelector(".pair-chart-canvas"),{layout:{background:{color:"#050507"},textColor:"#cbd5e1",fontFamily:"SF Mono,monospace"},grid:{vertLines:{color:"#1e293b"},horzLines:{color:"#1e293b"}},rightPriceScale:{borderColor:"#1e293b"},timeScale:{borderColor:"#1e293b",timeVisible:true,secondsVisible:false},height:280,width:Math.max(200,card.querySelector(".pair-chart-canvas").clientWidth)});
+      const series=instance.addCandlestickSeries({upColor:"#10b981",downColor:"#ef4444",borderUpColor:"#10b981",borderDownColor:"#ef4444",wickUpColor:"#10b981",wickDownColor:"#ef4444"});
+      item={card,chart:instance,series}; pairCharts.set(sym,item);
+      card.querySelector(".pair-chart-focus").onclick=()=>{ STATE.symbol=sym; document.getElementById("cat-select").value="crypto"; fillSymbols(); document.getElementById("sym-select").value=sym; loadCandles(sym,STATE.tf); };
+      card.querySelector(".pair-chart-remove").onclick=()=>{ STATE.chartSymbols=STATE.chartSymbols.filter(s=>s!==sym); persistChartSymbols(); renderPairCharts(); updateMarketStreamSubs(); };
+    }
+    const key=sym+"|"+STATE.tf;
+    if(currentUiMode==="live" && STATE.chartDataSource[key]!=="live"){
+      if(!chartIsLiveSymbol(sym)){ const e=item.card.querySelector(".pair-chart-error"); e.hidden=false; e.textContent=`LIVE-diagram stöds inte för ${sym}.`; item.card.querySelector(".pair-chart-canvas").hidden=true; continue; }
+      try{ const requestedTf=STATE.tf; const r=await fetch(`/api/binance/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(requestedTf)}&limit=300`,{cache:"no-store"}); const p=await r.json(); if(currentUiMode!=="live"||requestedTf!==STATE.tf||!STATE.chartSymbols.includes(sym))continue; if(!r.ok||!p.candles?.length) throw new Error(p.error||"Binance svar saknar candles"); STATE.candleData[key]=p.candles; STATE.chartDataSource[key]="live"; STATE.livePrices[sym]=p.candles[p.candles.length-1].close; STATE.chartUpdatedAt[sym]=Date.now(); }
+      catch(e){ const err=item.card.querySelector(".pair-chart-error"); err.hidden=false; err.textContent=`LIVE-data saknas för ${sym}: ${e.message}`; item.card.querySelector(".pair-chart-canvas").hidden=true; continue; }
+    }else if(currentUiMode!=="live" && STATE.chartDataSource[key]!=="simulated"){ STATE.candleData[key]=genCandles(sym,STATE.tf,300); STATE.chartDataSource[key]="simulated"; STATE.livePrices[sym]=STATE.candleData[key].at(-1)?.close ?? BASE_PRICES[sym] ?? 100; }
+    item.card.querySelector(".pair-chart-error").hidden=true; item.card.querySelector(".pair-chart-canvas").hidden=false;
+    item.series.setData((STATE.candleData[key]||[]).map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
+    refreshChartMeta(sym);
+  }
+  updateMarketStreamSubs();
+}
+
+function persistChartSymbols(){ try{ localStorage.setItem("tos_chart_symbols",JSON.stringify(STATE.chartSymbols)); }catch(_){} }
+
+function showChartFeedMessage(message){
+  const host=document.getElementById("chart"); if(!host) return;
+  let overlay=host.querySelector(".chart-feed-message");
+  if(!overlay){ overlay=document.createElement("div"); overlay.className="chart-feed-message"; host.appendChild(overlay); }
+  overlay.textContent=message; overlay.style.display=message?"grid":"none";
+}
+
+function updateLiveChartPrice(sym,price){
+  if(!Number.isFinite(price)) return;
+  if(sym===STATE.symbol){ const el=document.getElementById("cur-price"); if(el) el.textContent=formatPrice(price,sym); }
+  STATE.chartUpdatedAt[sym]=Date.now();
+  refreshChartMeta(sym);
+}
+
+function applyLiveKline(sym,k){
+  if(currentUiMode!=="live" || !chartIsLiveSymbol(sym)) return;
+  const candle={time:Math.floor(Number(k.t)/1000),open:Number(k.o),high:Number(k.h),low:Number(k.l),close:Number(k.c),volume:Number(k.v)};
+  if(![candle.time,candle.open,candle.high,candle.low,candle.close].every(Number.isFinite)) return;
+  const key=sym+"|"+STATE.tf;
+  let data=STATE.candleData[key];
+  if(!data) data=STATE.candleData[key]=[];
+  STATE.chartDataSource[key]="live";
+  const last=data[data.length-1];
+  if(last && candle.time<last.time) return;
+  if(last?.time===candle.time) data[data.length-1]=candle;
+  else if(!last || candle.time>last.time){ data.push(candle); if(data.length>500)data.shift(); }
+  else { const idx=data.findIndex(c=>c.time===candle.time); if(idx>=0)data[idx]=candle; else return; }
+  STATE.livePrices[sym]=candle.close; STATE.chartUpdatedAt[sym]=Date.now();
+  if(sym===STATE.symbol){ candleSeries.update({time:candle.time,open:candle.open,high:candle.high,low:candle.low,close:candle.close}); updatePriceHeader(data); }
+  const item=pairCharts.get(sym); if(item)item.series.update({time:candle.time,open:candle.open,high:candle.high,low:candle.low,close:candle.close});
+  refreshChartMeta(sym);
 }
 
 function applyIndicators(data){
@@ -2954,24 +3096,18 @@ function fillBetSymbols(){
    LIVE TICK SIMULATOR (every 2s)
    ====================================================================== */
 function tick(){
-  // update last candle for current symbol/tf and live prices for all
-  ALL_SYMS.forEach(sym=>{
-    const cat = symCategory(sym);
-    const vol = VOL[cat];
-    const cur = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
-    const next = cur * (1 + (Math.random()-.5)*vol*0.15);
-    STATE.livePrices[sym] = next;
-  });
-
-  const key = STATE.symbol+"|"+STATE.tf;
-  const data = STATE.candleData[key];
-  if(data && data.length){
-    const last = data[data.length-1];
-    last.close = STATE.livePrices[STATE.symbol];
-    last.high = Math.max(last.high, last.close);
-    last.low = Math.min(last.low, last.close);
-    candleSeries.update({time:last.time, open:last.open, high:last.high, low:last.low, close:last.close});
-    document.getElementById("cur-price").textContent = formatPrice(last.close, STATE.symbol);
+  // Endast SIMULERAD-läget får skapa slumpmässiga priser. LIVE kommer från WebSocket.
+  if(currentUiMode !== "live"){
+    const watched = new Set([STATE.symbol,...(STATE.chartSymbols||[])]);
+    for(const sym of watched){
+      const vol=VOL[symCategory(sym)], cur=STATE.livePrices[sym]??BASE_PRICES[sym]??100;
+      const next=cur*(1+(Math.random()-.5)*vol*.15); STATE.livePrices[sym]=next; STATE.chartUpdatedAt[sym]=Date.now();
+      const key=sym+"|"+STATE.tf, data=STATE.candleData[key];
+      if(data?.length){ const last=data[data.length-1]; last.close=next; last.high=Math.max(last.high,next); last.low=Math.min(last.low,next); }
+      if(sym===STATE.symbol && data?.length){ const last=data[data.length-1]; candleSeries.update({time:last.time,open:last.open,high:last.high,low:last.low,close:last.close}); document.getElementById("cur-price").textContent=formatPrice(last.close,sym); }
+      const item=pairCharts.get(sym); if(item&&data?.length){ const last=data[data.length-1]; item.series.update({time:last.time,open:last.open,high:last.high,low:last.low,close:last.close}); }
+      refreshChartMeta(sym);
+    }
   }
 
   // evaluate active positions (READ-ONLY: live PnL för rendering)
@@ -6129,6 +6265,9 @@ function setActiveMode(uiMode){
   } else {
     stopBinancePolling();
   }
+  loadCandles(STATE.symbol,STATE.tf);
+  renderPairCharts();
+  updateMarketStreamSubs();
 }
 
 // Uppdaterar header-taggen i chat-panelen så Mike ALLTID ser om TESTNET eller LIVE
@@ -6256,6 +6395,15 @@ async function loadFromBackend(){
 function wire(){
   document.getElementById("cat-select").addEventListener("change",()=>{ fillSymbols(); STATE.symbol=document.getElementById("sym-select").value; loadCandles(STATE.symbol,STATE.tf); });
   document.getElementById("sym-select").addEventListener("change", e=>{ STATE.symbol = e.target.value; loadCandles(STATE.symbol,STATE.tf); });
+  document.getElementById("chart-add-pair").addEventListener("click",()=>{
+    const sym=document.getElementById("sym-select").value;
+    if(!SYMBOLS.crypto.includes(sym)){ pushInAppAlert("Välj ett Binance crypto-par för att lägga till ett LIVE-diagram.",5000); return; }
+    if(!STATE.chartSymbols.includes(sym)){
+      if(STATE.chartSymbols.length>=12){ pushInAppAlert("Du kan visa högst 12 extra valutapar samtidigt.",5000); return; }
+      STATE.chartSymbols.push(sym);
+    }
+    persistChartSymbols(); renderPairCharts(); updateMarketStreamSubs();
+  });
 
   document.getElementById("tf-group").addEventListener("click", e=>{
     if(!e.target.dataset.tf) return;
@@ -6263,6 +6411,7 @@ function wire(){
     e.target.classList.add("active");
     STATE.tf = e.target.dataset.tf;
     loadCandles(STATE.symbol, STATE.tf);
+    updateMarketStreamSubs();
   });
 
   document.getElementById("ind-toggles").addEventListener("click", e=>{
@@ -6327,6 +6476,7 @@ function wire(){
   document.getElementById("bet-amt").addEventListener("input", e=>{
     const v = parseFloat(e.target.value)||0;
     document.getElementById("bet-win").textContent = "$"+(v*0.85).toFixed(2);
+    refreshChartMeta(STATE.symbol); for(const sym of pairCharts.keys()) refreshChartMeta(sym);
   });
   // 2% auto-size knapp
   document.getElementById("bet-auto-2pct")?.addEventListener("click", ()=>{
@@ -6823,10 +6973,11 @@ function startBinanceSync(){
 let binanceMarketWS = null;
 let binanceMarketSyms = new Set();
 let binanceMarketReconnect = null;
+let binanceMarketTf = "";
 
 function buildMarketStreamUrl(symbols){
-  // Combined stream: en connection för alla symbols
-  const streams = symbols.map(s => s.toLowerCase() + "@ticker").join("/");
+  // Ticker håller priset färskt; kline ger rätt OHLC för valt tidsintervall.
+  const streams = symbols.flatMap(s => [s.toLowerCase()+"@ticker",s.toLowerCase()+"@kline_"+STATE.tf]).join("/");
   return `wss://stream.binance.com:9443/stream?streams=${streams}`;
 }
 
@@ -6850,33 +7001,47 @@ function updateMarketStreamSubs(){
   // Lägg alltid till BTC + ETH för referens
   targetSyms.add(currentUiMode === "live" ? "BTCUSDC" : "BTCUSDT");
   targetSyms.add(currentUiMode === "live" ? "ETHUSDC" : "ETHUSDT");
+  (STATE.chartSymbols||[]).filter(chartIsLiveSymbol).forEach(s=>targetSyms.add(s));
+  if(chartIsLiveSymbol(STATE.symbol)) targetSyms.add(STATE.symbol);
 
   // Är subscription samma som nu? Skip
   const same = targetSyms.size === binanceMarketSyms.size && [...targetSyms].every(s => binanceMarketSyms.has(s));
-  if(same && binanceMarketWS && binanceMarketWS.readyState === 1) return;
+  if(same && binanceMarketTf===STATE.tf && binanceMarketWS && binanceMarketWS.readyState === 1) return;
 
   // Stäng gammal connection och starta ny med nya symbols
   if(binanceMarketWS){ try { binanceMarketWS.close(); } catch(_){} }
   binanceMarketSyms = targetSyms;
+  binanceMarketTf = STATE.tf;
   if(targetSyms.size === 0) return;
 
   const url = buildMarketStreamUrl([...targetSyms]);
   try {
     const ws = new WebSocket(url);
     binanceMarketWS = ws;
-    ws.onopen = () => console.log("[Binance WS] Connected:", targetSyms.size, "symbols");
+    ws.onopen = () => {
+      if(binanceMarketWS!==ws) return;
+      console.log("[Binance WS] Connected:", targetSyms.size, "symbols ·", STATE.tf);
+      if(currentUiMode==="live") document.getElementById("data-source-indicator").innerHTML='<span style="color:var(--green)">●</span> LIVE Binance · WebSocket ansluten';
+    };
     ws.onmessage = (ev) => {
+      if(binanceMarketWS!==ws) return;
       try {
         const msg = JSON.parse(ev.data);
         const data = msg.data;
-        if(data && data.s && data.c){
+        if(data?.e==="kline" && data.k){
+          applyLiveKline(data.s,data.k);
+        }else if(data && data.s && data.c){
           // s = symbol, c = current price
           const sym = data.s; // ex 'NEIROUSDC'
           const price = parseFloat(data.c);
           STATE.livePrices[sym] = price;
+          STATE.chartUpdatedAt[sym]=Date.now();
           // Också lägg under base-asset så p.sym = 'NEIRO' funkar
           const base = sym.replace(/USDC$|USDT$/, "");
           STATE.livePrices[base] = price;
+          if(currentUiMode==="live" && (sym===STATE.symbol || pairCharts.has(sym))){
+            updateLiveChartPrice(sym,price);
+          }
           // Triggar PnL-uppdatering om vi är på Trades-sidan
           if(STATE.activeTab === "trades") updateLivePnLDisplay();
         }
@@ -6884,7 +7049,9 @@ function updateMarketStreamSubs(){
     };
     ws.onerror = () => { /* tyst — onclose hanterar reconnect */ };
     ws.onclose = () => {
+      if(binanceMarketWS!==ws) return;
       console.log("[Binance WS] Disconnected — reconnect om 5s");
+      if(binanceMarketWS===ws && currentUiMode==="live") document.getElementById("data-source-indicator").innerHTML='<span style="color:var(--red)">●</span> LIVE WebSocket frånkopplad · återansluter';
       if(binanceMarketReconnect) clearTimeout(binanceMarketReconnect);
       binanceMarketReconnect = setTimeout(updateMarketStreamSubs, 5000);
     };
