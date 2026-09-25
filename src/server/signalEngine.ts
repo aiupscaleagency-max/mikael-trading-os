@@ -66,49 +66,85 @@ function key(symbol: string, interval: string): string {
  */
 function scoreIndicators(ind: ReturnType<typeof computeIndicators>): { score: number; reasons: string[] } {
   const reasons: string[] = [];
-  let score = 0;
 
-  // Trend: pris mot glidande medelvärden
+  // ── Trend (max ±40) ───────────────────────────────────────────────────
+  // Beräknas separat och FÖRE allt annat, så att "finns en trend?" är ett
+  // oberoende svar. Tidigare byggde den bedömningen på ett löpande score
+  // som redan innehöll momentum och RSI — då blev resultatet beroende av i
+  // vilken ordning delarna råkade räknas.
+  let trendScore = 0;
+
   if (ind.sma20 !== null && ind.sma50 !== null) {
     if (ind.sma20 > ind.sma50) {
-      score += 25;
+      trendScore += 25;
       reasons.push(`SMA20 över SMA50 — stigande trend (+25)`);
     } else if (ind.sma20 < ind.sma50) {
-      score -= 25;
+      trendScore -= 25;
       reasons.push(`SMA20 under SMA50 — fallande trend (−25)`);
     }
   }
 
   if (ind.ema20 !== null && ind.lastClose > 0) {
     if (ind.lastClose > ind.ema20) {
-      score += 15;
+      trendScore += 15;
       reasons.push(`Pris över EMA20 (+15)`);
     } else {
-      score -= 15;
+      trendScore -= 15;
       reasons.push(`Pris under EMA20 (−15)`);
     }
   }
 
-  // Momentum: MACD-histogram
-  if (ind.macd?.histogram != null) {
-    if (ind.macd.histogram > 0) {
-      score += 20;
-      reasons.push(`MACD-histogram positivt — momentum uppåt (+20)`);
-    } else if (ind.macd.histogram < 0) {
+  const trendStrong = Math.abs(trendScore) >= 35;
+  let score = trendScore;
+
+  // ── Momentum (max ±25) ────────────────────────────────────────────────
+  // MACD-LINJEN bär riktningen: under noll = fallande, över = stigande.
+  //
+  // Histogrammet gör det INTE. I en stadig nedgång blir histogrammet
+  // positivt, eftersom nedgången bromsar in i absoluta tal medan priset
+  // närmar sig noll. Testet mot genererade ljus visade det: en ren nedgång
+  // fick +20 för "momentum uppåt" och landade i NEUTRAL där SHORT var rätt.
+  //
+  // Histogrammet är alltså en acceleration, inte en riktning, och väger
+  // därefter — en femtedel av linjens vikt.
+  if (ind.macd) {
+    if (ind.macd.macd < 0) {
       score -= 20;
-      reasons.push(`MACD-histogram negativt — momentum nedåt (−20)`);
+      reasons.push(`MACD-linjen under noll — fallande momentum (−20)`);
+    } else if (ind.macd.macd > 0) {
+      score += 20;
+      reasons.push(`MACD-linjen över noll — stigande momentum (+20)`);
+    }
+    if (ind.macd.histogram > 0) {
+      score += 5;
+      reasons.push(`MACD-histogram positivt — accelererar uppåt (+5)`);
+    } else if (ind.macd.histogram < 0) {
+      score -= 5;
+      reasons.push(`MACD-histogram negativt — accelererar nedåt (−5)`);
     }
   }
 
-  // RSI: överköpt/översålt drar ÅT MOTSATT håll — extremer är varningar,
-  // inte bekräftelser.
+  // ── RSI (max ±15) ─────────────────────────────────────────────────────
+  // I en STARK trend är extremer bekräftelse, inte varning. Priset kan
+  // ligga överköpt i veckor medan trenden håller, och att shorta för att
+  // RSI är 75 i en stigande marknad är en klassisk förlustkälla.
+  //
+  // Utan stark trend är extremen däremot en rekylvarning.
   if (ind.rsi14 !== null) {
     if (ind.rsi14 > 70) {
-      score -= 20;
-      reasons.push(`RSI ${ind.rsi14.toFixed(1)} — överköpt, risk för rekyl (−20)`);
+      if (trendStrong && trendScore > 0) {
+        reasons.push(`RSI ${ind.rsi14.toFixed(1)} — överköpt, men trenden bekräftar (0)`);
+      } else {
+        score -= 15;
+        reasons.push(`RSI ${ind.rsi14.toFixed(1)} — överköpt utan stark trend, rekylrisk (−15)`);
+      }
     } else if (ind.rsi14 < 30) {
-      score += 20;
-      reasons.push(`RSI ${ind.rsi14.toFixed(1)} — översålt, studsläge (+20)`);
+      if (trendStrong && trendScore < 0) {
+        reasons.push(`RSI ${ind.rsi14.toFixed(1)} — översålt, men trenden bekräftar (0)`);
+      } else {
+        score += 15;
+        reasons.push(`RSI ${ind.rsi14.toFixed(1)} — översålt utan stark trend, studsläge (+15)`);
+      }
     } else if (ind.rsi14 > 55) {
       score += 10;
       reasons.push(`RSI ${ind.rsi14.toFixed(1)} — styrka utan överköp (+10)`);
@@ -136,7 +172,33 @@ export function buildSignal(symbol: string, interval: string, candles: Candle[])
     return null;
   }
 
-  const direction: Direction = score >= MIN_SCORE ? "LONG" : score <= -MIN_SCORE ? "SHORT" : "NEUTRAL";
+  // ── Brus-spärr ──────────────────────────────────────────────────────
+  // Indikatorer ger utslag även i en marknad som står stilla: några ljus
+  // upp i rad räcker för att SMA, EMA och MACD ska peka åt samma håll,
+  // och scoret blir högt utan att något faktiskt hänt.
+  //
+  // Testet mot genererade ljus visade det svart på vitt: en helt sidledes
+  // marknad gav LONG med score +60. En stark köpsignal där ingen edge finns
+  // är precis vad som förlorar pengar.
+  //
+  // Kravet: nettorörelsen över lookback-fönstret måste överstiga en ATR.
+  // Rör sig priset mindre än sin egen normala svängning finns ingen riktning
+  // att handla på, oavsett vad indikatorerna säger.
+  const LOOKBACK = 20;
+  const past = candles[candles.length - 1 - LOOKBACK]?.close ?? entry;
+  const netMove = Math.abs(entry - past);
+  const isNoise = netMove < ind.atr14;
+
+  let direction: Direction =
+    score >= MIN_SCORE ? "LONG" : score <= -MIN_SCORE ? "SHORT" : "NEUTRAL";
+
+  if (isNoise && direction !== "NEUTRAL") {
+    reasons.push(
+      `Nettorörelse ${netMove.toFixed(2)} understiger ATR ${ind.atr14.toFixed(2)} — `
+      + `riktningen är brus, inte trend`,
+    );
+    direction = "NEUTRAL";
+  }
 
   const stopDistance = ind.atr14 * ATR_STOP_MULTIPLIER;
   const targetDistance = ind.atr14 * ATR_TARGET_MULTIPLIER;
