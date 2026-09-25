@@ -12,10 +12,11 @@
     "kill": "tsx src/scripts/kill.ts",
     "ui": "DASHBOARD_PORT=3939 tsx src/run.ts --once",
     "demo": "tsx src/scripts/demo.ts",
-    "build": "tsc --outDir dist || true",
+    "build": "tsc --outDir dist > .tsc.log 2>&1; n=$(grep -c 'error TS' .tsc.log || true); [ \"$n\" -gt 0 ] && echo \"  ($n sedan tidigare typfel — npm run build:verbose för detaljer)\"; test -f dist/server/signalEngine.js",
     "verify": "npm run build && node scripts/verify-live.mjs",
     "test:signal": "npm run build && node scripts/test-signal-engine.mjs",
-    "export:candles": "npm run build && node scripts/export-candles.mjs"
+    "export:candles": "npm run build && node scripts/export-candles.mjs",
+    "build:verbose": "tsc --outDir dist || true"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
