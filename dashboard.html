@@ -1295,6 +1295,164 @@ body.app-state-onboard .fc-panel{display:none !important}
 <section class="page active" id="page-trade">
 <div class="page-header"><span class="ph-ico">📊</span>Trade<span class="ph-sub">— chart, snabb-trade, AI-team</span></div>
 <main>
+<!-- ══════════════════════════════════════════════════════════════════════
+     SIGNALPANEL — valutapar, indikatorer, LONG/SHORT
+     Läser /api/signals. Varje rad bygger på STÄNGDA ljus; nedräkningen
+     visar hur lång tid som återstår innan nästa ljus stänger och siffrorna
+     räknas om.
+     Riktning visas med symbol OCH text — aldrig enbart färg, eftersom en
+     förväxlad riktning betyder en felaktig trade.
+     ══════════════════════════════════════════════════════════════════════ -->
+<section id="signalPanel" style="margin:24px auto;max-width:1400px;padding:0 16px;
+         font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
+  <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px">
+    <h2 style="margin:0;font-size:17px;font-weight:600">Signaler</h2>
+    <span id="sigMode" style="font-size:11px;font-weight:700;letter-spacing:.6px;
+          padding:3px 9px;border-radius:4px;background:#3a2f0b;color:#f0b90b;
+          border:1px solid #5c4a10">PAPER — INGA RIKTIGA ORDRAR</span>
+    <label style="font-size:12px;color:#8b95a7;margin-left:auto">
+      Intervall
+      <select id="sigInterval" style="margin-left:6px;padding:5px 8px;background:#0b0e14;
+              color:#e6e6e6;border:1px solid #2a3140;border-radius:6px;font-size:12px">
+        <option value="1m">1 min</option><option value="5m">5 min</option>
+        <option value="15m">15 min</option><option value="1h">1 tim</option>
+        <option value="4h">4 tim</option>
+      </select>
+    </label>
+    <span id="sigStream" style="font-size:12px;color:#8b95a7"></span>
+  </div>
+
+  <div style="overflow-x:auto;border:1px solid #2a3140;border-radius:10px;background:#151a23">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1100px">
+      <thead>
+        <tr style="text-align:left;color:#8b95a7;font-size:11px;letter-spacing:.4px;
+                   text-transform:uppercase;background:#11161f">
+          <th style="padding:11px 12px">Par</th>
+          <th style="padding:11px 12px">Riktning</th>
+          <th style="padding:11px 12px;text-align:right">Score</th>
+          <th style="padding:11px 12px;text-align:right">Entry</th>
+          <th style="padding:11px 12px;text-align:right">Stop-loss</th>
+          <th style="padding:11px 12px;text-align:right">Target</th>
+          <th style="padding:11px 12px;text-align:right">R:R</th>
+          <th style="padding:11px 12px;text-align:right">Risk</th>
+          <th style="padding:11px 12px;text-align:right">RSI</th>
+          <th style="padding:11px 12px">Nästa ljus</th>
+          <th style="padding:11px 12px">Åtgärd</th>
+        </tr>
+      </thead>
+      <tbody id="sigRows">
+        <tr><td colspan="11" style="padding:26px 12px;color:#8b95a7;text-align:center">
+          Väntar på första ljusstängningen…
+        </td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p id="sigReasons" style="margin:12px 2px 0;font-size:12px;color:#8b95a7;line-height:1.6"></p>
+</section>
+
+<script>
+(function () {
+  // Statusfärger är reserverade och paras alltid med symbol + text.
+  var DIR = {
+    LONG:    { sym: "▲", text: "LONG",    color: "#3fb950", bg: "#0d2a14" },
+    SHORT:   { sym: "▼", text: "SHORT",   color: "#f85149", bg: "#2d1114" },
+    NEUTRAL: { sym: "—", text: "AVVAKTA", color: "#8b95a7", bg: "#1a1f29" },
+  };
+
+  var rowsEl    = document.getElementById("sigRows");
+  var streamEl  = document.getElementById("sigStream");
+  var reasonsEl = document.getElementById("sigReasons");
+  var intervalEl= document.getElementById("sigInterval");
+  var latest    = [];
+
+  function num(v, d) {
+    if (v === null || v === undefined || isNaN(v)) return "–";
+    return Number(v).toLocaleString("sv-SE", { minimumFractionDigits: d, maximumFractionDigits: d });
+  }
+
+  function countdown(ms) {
+    if (ms === null || ms === undefined) return "–";
+    var s = Math.max(0, Math.round(ms / 1000));
+    return (s >= 60 ? Math.floor(s / 60) + "m " + (s % 60) + "s" : s + "s");
+  }
+
+  function render() {
+    if (!latest.length) {
+      rowsEl.innerHTML = '<tr><td colspan="11" style="padding:26px 12px;color:#8b95a7;'
+        + 'text-align:center">Inga signaler än — strömmen behöver minst 50 stängda ljus.</td></tr>';
+      return;
+    }
+    rowsEl.innerHTML = latest.map(function (s, i) {
+      var d = DIR[s.direction] || DIR.NEUTRAL;
+      var actionable = s.direction !== "NEUTRAL";
+      var td = "padding:11px 12px;border-top:1px solid #222834";
+      var right = td + ";text-align:right;font-variant-numeric:tabular-nums";
+      return '<tr data-i="' + i + '" style="cursor:pointer">'
+        + '<td style="' + td + ';font-weight:600">' + s.symbol + '</td>'
+        + '<td style="' + td + '"><span style="display:inline-flex;align-items:center;gap:6px;'
+          + 'padding:3px 9px;border-radius:5px;background:' + d.bg + ';color:' + d.color
+          + ';font-weight:700;font-size:12px">' + d.sym + " " + d.text + '</span></td>'
+        + '<td style="' + right + '">' + (s.score > 0 ? "+" : "") + s.score + '</td>'
+        + '<td style="' + right + '">' + num(s.entry, 2) + '</td>'
+        + '<td style="' + right + ';color:#f85149">' + num(s.stopLoss, 2) + '</td>'
+        + '<td style="' + right + ';color:#3fb950">' + num(s.target, 2) + '</td>'
+        + '<td style="' + right + '">' + num(s.riskReward, 2) + '</td>'
+        + '<td style="' + right + '">' + num(s.riskPct, 2) + '%</td>'
+        + '<td style="' + right + '">' + num(s.indicators && s.indicators.rsi14, 1) + '</td>'
+        + '<td style="' + td + ';font-variant-numeric:tabular-nums">'
+          + countdown(s.msUntilNextClose) + '</td>'
+        + '<td style="' + td + '">'
+          + (actionable
+              ? '<button data-act="' + s.direction + '" data-sym="' + s.symbol + '" style="padding:5px 12px;'
+                + 'border:1px solid ' + d.color + ';background:' + d.bg + ';color:' + d.color
+                + ';border-radius:6px;font-weight:700;font-size:12px;cursor:pointer">'
+                + d.sym + " " + d.text + '</button>'
+              : '<span style="color:#8b95a7;font-size:12px">–</span>')
+        + '</td></tr>';
+    }).join("");
+  }
+
+  rowsEl.addEventListener("click", function (e) {
+    var btn = e.target.closest("button[data-act]");
+    if (btn) {
+      // Paper-läge: ingen order läggs. Knappen bekräftar valet, inget annat.
+      alert("PAPER-läge\n\n" + btn.dataset.act + " " + btn.dataset.sym
+        + "\n\nIngen order har lagts. Exekvering kopplas in när du valt mäklare.");
+      return;
+    }
+    var tr = e.target.closest("tr[data-i]");
+    if (!tr) return;
+    var s = latest[+tr.dataset.i];
+    if (!s) return;
+    reasonsEl.innerHTML = "<strong style='color:#e6e6e6'>" + s.symbol + "</strong> — "
+      + (s.reasons || []).join(" · ");
+  });
+
+  async function poll() {
+    try {
+      var res = await fetch("/api/signals");
+      if (!res.ok) return;
+      var data = await res.json();
+      latest = (data.signals || []).filter(function (s) {
+        return s.interval === intervalEl.value;
+      });
+      var st = data.stream || {};
+      streamEl.textContent = st.connected
+        ? "● Ansluten · " + (st.symbols || []).length + " par"
+        : "○ Ej ansluten";
+      streamEl.style.color = st.connected ? "#3fb950" : "#f85149";
+      render();
+    } catch (_) { /* servern nere — behåll senaste vyn */ }
+  }
+
+  intervalEl.addEventListener("change", poll);
+  poll();
+  setInterval(poll, 2000);   // nedräkningen ska kännas levande
+})();
+</script>
+
+
   <!-- LEFT: CHART + AGENTS -->
   <div class="left">
     <div class="card">
@@ -7193,163 +7351,6 @@ function initApp(){
 }
 
 document.addEventListener("DOMContentLoaded", boot);
-</script>
-
-<!-- ══════════════════════════════════════════════════════════════════════
-     SIGNALPANEL — valutapar, indikatorer, LONG/SHORT
-     Läser /api/signals. Varje rad bygger på STÄNGDA ljus; nedräkningen
-     visar hur lång tid som återstår innan nästa ljus stänger och siffrorna
-     räknas om.
-     Riktning visas med symbol OCH text — aldrig enbart färg, eftersom en
-     förväxlad riktning betyder en felaktig trade.
-     ══════════════════════════════════════════════════════════════════════ -->
-<section id="signalPanel" style="margin:24px auto;max-width:1400px;padding:0 16px;
-         font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
-  <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px">
-    <h2 style="margin:0;font-size:17px;font-weight:600">Signaler</h2>
-    <span id="sigMode" style="font-size:11px;font-weight:700;letter-spacing:.6px;
-          padding:3px 9px;border-radius:4px;background:#3a2f0b;color:#f0b90b;
-          border:1px solid #5c4a10">PAPER — INGA RIKTIGA ORDRAR</span>
-    <label style="font-size:12px;color:#8b95a7;margin-left:auto">
-      Intervall
-      <select id="sigInterval" style="margin-left:6px;padding:5px 8px;background:#0b0e14;
-              color:#e6e6e6;border:1px solid #2a3140;border-radius:6px;font-size:12px">
-        <option value="1m">1 min</option><option value="5m">5 min</option>
-        <option value="15m">15 min</option><option value="1h">1 tim</option>
-        <option value="4h">4 tim</option>
-      </select>
-    </label>
-    <span id="sigStream" style="font-size:12px;color:#8b95a7"></span>
-  </div>
-
-  <div style="overflow-x:auto;border:1px solid #2a3140;border-radius:10px;background:#151a23">
-    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1100px">
-      <thead>
-        <tr style="text-align:left;color:#8b95a7;font-size:11px;letter-spacing:.4px;
-                   text-transform:uppercase;background:#11161f">
-          <th style="padding:11px 12px">Par</th>
-          <th style="padding:11px 12px">Riktning</th>
-          <th style="padding:11px 12px;text-align:right">Score</th>
-          <th style="padding:11px 12px;text-align:right">Entry</th>
-          <th style="padding:11px 12px;text-align:right">Stop-loss</th>
-          <th style="padding:11px 12px;text-align:right">Target</th>
-          <th style="padding:11px 12px;text-align:right">R:R</th>
-          <th style="padding:11px 12px;text-align:right">Risk</th>
-          <th style="padding:11px 12px;text-align:right">RSI</th>
-          <th style="padding:11px 12px">Nästa ljus</th>
-          <th style="padding:11px 12px">Åtgärd</th>
-        </tr>
-      </thead>
-      <tbody id="sigRows">
-        <tr><td colspan="11" style="padding:26px 12px;color:#8b95a7;text-align:center">
-          Väntar på första ljusstängningen…
-        </td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <p id="sigReasons" style="margin:12px 2px 0;font-size:12px;color:#8b95a7;line-height:1.6"></p>
-</section>
-
-<script>
-(function () {
-  // Statusfärger är reserverade och paras alltid med symbol + text.
-  var DIR = {
-    LONG:    { sym: "▲", text: "LONG",    color: "#3fb950", bg: "#0d2a14" },
-    SHORT:   { sym: "▼", text: "SHORT",   color: "#f85149", bg: "#2d1114" },
-    NEUTRAL: { sym: "—", text: "AVVAKTA", color: "#8b95a7", bg: "#1a1f29" },
-  };
-
-  var rowsEl    = document.getElementById("sigRows");
-  var streamEl  = document.getElementById("sigStream");
-  var reasonsEl = document.getElementById("sigReasons");
-  var intervalEl= document.getElementById("sigInterval");
-  var latest    = [];
-
-  function num(v, d) {
-    if (v === null || v === undefined || isNaN(v)) return "–";
-    return Number(v).toLocaleString("sv-SE", { minimumFractionDigits: d, maximumFractionDigits: d });
-  }
-
-  function countdown(ms) {
-    if (ms === null || ms === undefined) return "–";
-    var s = Math.max(0, Math.round(ms / 1000));
-    return (s >= 60 ? Math.floor(s / 60) + "m " + (s % 60) + "s" : s + "s");
-  }
-
-  function render() {
-    if (!latest.length) {
-      rowsEl.innerHTML = '<tr><td colspan="11" style="padding:26px 12px;color:#8b95a7;'
-        + 'text-align:center">Inga signaler än — strömmen behöver minst 50 stängda ljus.</td></tr>';
-      return;
-    }
-    rowsEl.innerHTML = latest.map(function (s, i) {
-      var d = DIR[s.direction] || DIR.NEUTRAL;
-      var actionable = s.direction !== "NEUTRAL";
-      var td = "padding:11px 12px;border-top:1px solid #222834";
-      var right = td + ";text-align:right;font-variant-numeric:tabular-nums";
-      return '<tr data-i="' + i + '" style="cursor:pointer">'
-        + '<td style="' + td + ';font-weight:600">' + s.symbol + '</td>'
-        + '<td style="' + td + '"><span style="display:inline-flex;align-items:center;gap:6px;'
-          + 'padding:3px 9px;border-radius:5px;background:' + d.bg + ';color:' + d.color
-          + ';font-weight:700;font-size:12px">' + d.sym + " " + d.text + '</span></td>'
-        + '<td style="' + right + '">' + (s.score > 0 ? "+" : "") + s.score + '</td>'
-        + '<td style="' + right + '">' + num(s.entry, 2) + '</td>'
-        + '<td style="' + right + ';color:#f85149">' + num(s.stopLoss, 2) + '</td>'
-        + '<td style="' + right + ';color:#3fb950">' + num(s.target, 2) + '</td>'
-        + '<td style="' + right + '">' + num(s.riskReward, 2) + '</td>'
-        + '<td style="' + right + '">' + num(s.riskPct, 2) + '%</td>'
-        + '<td style="' + right + '">' + num(s.indicators && s.indicators.rsi14, 1) + '</td>'
-        + '<td style="' + td + ';font-variant-numeric:tabular-nums">'
-          + countdown(s.msUntilNextClose) + '</td>'
-        + '<td style="' + td + '">'
-          + (actionable
-              ? '<button data-act="' + s.direction + '" data-sym="' + s.symbol + '" style="padding:5px 12px;'
-                + 'border:1px solid ' + d.color + ';background:' + d.bg + ';color:' + d.color
-                + ';border-radius:6px;font-weight:700;font-size:12px;cursor:pointer">'
-                + d.sym + " " + d.text + '</button>'
-              : '<span style="color:#8b95a7;font-size:12px">–</span>')
-        + '</td></tr>';
-    }).join("");
-  }
-
-  rowsEl.addEventListener("click", function (e) {
-    var btn = e.target.closest("button[data-act]");
-    if (btn) {
-      // Paper-läge: ingen order läggs. Knappen bekräftar valet, inget annat.
-      alert("PAPER-läge\n\n" + btn.dataset.act + " " + btn.dataset.sym
-        + "\n\nIngen order har lagts. Exekvering kopplas in när du valt mäklare.");
-      return;
-    }
-    var tr = e.target.closest("tr[data-i]");
-    if (!tr) return;
-    var s = latest[+tr.dataset.i];
-    if (!s) return;
-    reasonsEl.innerHTML = "<strong style='color:#e6e6e6'>" + s.symbol + "</strong> — "
-      + (s.reasons || []).join(" · ");
-  });
-
-  async function poll() {
-    try {
-      var res = await fetch("/api/signals");
-      if (!res.ok) return;
-      var data = await res.json();
-      latest = (data.signals || []).filter(function (s) {
-        return s.interval === intervalEl.value;
-      });
-      var st = data.stream || {};
-      streamEl.textContent = st.connected
-        ? "● Ansluten · " + (st.symbols || []).length + " par"
-        : "○ Ej ansluten";
-      streamEl.style.color = st.connected ? "#3fb950" : "#f85149";
-      render();
-    } catch (_) { /* servern nere — behåll senaste vyn */ }
-  }
-
-  intervalEl.addEventListener("change", poll);
-  poll();
-  setInterval(poll, 2000);   // nedräkningen ska kännas levande
-})();
 </script>
 
 <!-- ══════════════════════════════════════════════════════════════════════
