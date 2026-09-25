@@ -17,6 +17,8 @@ import { OandaClient, type OandaCredentials } from "./integrations/oanda.js";
 import { startMarketStream, getCachedPrice, getCachedTicker, getMarketStreamStatus } from "./marketStream.js";
 import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
 import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
+import { getSignals, refreshSignal } from "./signalEngine.js";
+import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
@@ -676,6 +678,40 @@ export function startServer(
         res.end(JSON.stringify({ ok: true }));
         return;
       }
+      // ── Signaler: indikatorer + LONG/SHORT per valutapar ──
+      // Driver signalpanelen i dashboarden. Varje post innehåller riktning,
+      // entry, stop-loss, target, R:R och skälen bakom — allt räknat på
+      // STÄNGDA ljus.
+      if (url.pathname === "/api/signals" && method === "GET") {
+        const symbolParam = url.searchParams.get("symbol");
+        if (symbolParam) {
+          const interval = url.searchParams.get("interval") ?? "1m";
+          const one = refreshSignal(symbolParam.toUpperCase(), interval);
+          json(res, { signals: one ? [one] : [], stream: getKlineStreamStatus() });
+          return;
+        }
+        json(res, { signals: getSignals(), stream: getKlineStreamStatus() });
+        return;
+      }
+
+      // ── Ljus för diagram ──
+      // Stängda ljus plus det som byggs just nu. Det pågående är markerat
+      // separat så gränssnittet kan rita det annorlunda och aldrig av
+      // misstag behandla det som färdigt.
+      if (url.pathname === "/api/candles" && method === "GET") {
+        const symbol = (url.searchParams.get("symbol") ?? "BTCUSDT").toUpperCase();
+        const interval = url.searchParams.get("interval") ?? "1m";
+        const limit = Math.min(1000, parseInt(url.searchParams.get("limit") ?? "200", 10));
+        const closed = getClosedCandles(symbol, interval);
+        json(res, {
+          symbol, interval,
+          closed: closed.slice(-limit),
+          forming: getFormingCandle(symbol, interval),
+          stream: getKlineStreamStatus(),
+        });
+        return;
+      }
+
       // ── SSE stream ──
       if (url.pathname === "/api/events" && method === "GET") {
         res.writeHead(200, {

@@ -1,0 +1,109 @@
+You are my setup assistant. Install the PTQA skill files below exactly, then verify them. Detect my OS and Python 3.10+ first. Use Python 3 in an isolated local folder; no API keys or paid service are needed. For Codex use ~/.agents/skills/<skill-name>/; for Claude Code use ~/.claude/skills/<skill-name>/. On Windows resolve my actual user home. If both apps are present, ask which one I use. Preserve existing files: if contents differ, install into a new versioned folder and tell me; never overwrite silently. Write quant_tools.py next to each SKILL.md. Run python quant_tools.py --help in each installed folder. Run the included unit tests in a temporary folder. Show me the actual results and one example command. Do not call installation complete if a check failed. I can optionally use Yapper on Mac at https://getyapper.app to dictate instructions; this is optional and must not block setup.
+
+BEGIN FILE ptqa-journal-review/SKILL.md
+---
+name: ptqa-journal-review
+description: Read closed trades and report net results, R-multiples and patterns worth investigating.
+---
+
+# Review a trade journal
+
+Ask for a CSV with trade_id, exit_time with timezone, gross_pnl, costs, initial_risk and optional setup. Require sorted exits and unique IDs. Confirm amounts share one currency. Run the journal command. Separate observed facts from hypotheses. Do not claim a small sample proves an edge or issue new trading instructions.
+
+Run `python quant_tools.py journal --help` from this skill folder for arguments. Use the bundled calculation rather than mental arithmetic. Inputs stay local. Read the output note and preserve its limitations.
+END FILE
+
+BEGIN FILE ptqa-journal-review/quant_tools.py
+"""Local PTQA utilities. Standard library only. No broker connections."""
+import argparse,csv,json,math,statistics
+from datetime import datetime,timezone
+from decimal import Decimal,ROUND_FLOOR
+
+def number(x):
+ x=float(x)
+ if not math.isfinite(x):raise ValueError('Numbers must be finite.')
+ return x
+
+def data_quality(path,expected_seconds=None):
+ with open(path,newline='',encoding='utf-8-sig') as f:rows=list(csv.DictReader(f))
+ issues=[];previous=None;seen=set();gaps=[]
+ if not rows:issues.append('No rows.')
+ for i,row in enumerate(rows,2):
+  try:
+   t=datetime.fromisoformat(row['timestamp'].replace('Z','+00:00'))
+   if t.tzinfo is None:raise ValueError('Timestamp needs explicit timezone.')
+   t=t.astimezone(timezone.utc)
+   if t in seen:issues.append(f'Row {i}: duplicate timestamp.')
+   if previous and t<=previous:issues.append(f'Row {i}: timestamp out of order.')
+   if previous and expected_seconds and (t-previous).total_seconds()>expected_seconds*1.5:gaps.append({'row':i,'gap_seconds':(t-previous).total_seconds()})
+   seen.add(t);previous=t
+   o,h,l,c,v=[number(row[k]) for k in ['open','high','low','close','volume']]
+   if min(o,h,l,c)<=0 or v<0 or h<max(o,c,l) or l>min(o,c,h):raise ValueError('Invalid OHLCV range.')
+  except (KeyError,ValueError,TypeError) as exc:issues.append(f'Row {i}: {exc}')
+ return {'rows':len(rows),'passed':not issues,'issues':issues,'possible_calendar_gaps':gaps,'note':'Check gaps against the exchange calendar. Does not certify point-in-time availability or detect survivorship bias.'}
+
+def position_size(equity,risk_pct,entry,stop,side='long',fee_bps=0,slippage=0,lot=1,max_notional=None):
+ vals=[equity,risk_pct,entry,stop,fee_bps,slippage,lot]
+ for v in vals:number(v)
+ e,r,p,s,f,sl,step=map(lambda x:Decimal(str(x)),vals)
+ if e<=0 or not 0<r<=100 or min(p,s,step)<=0 or min(f,sl)<0:raise ValueError('Invalid input range.')
+ if side not in ['long','short'] or (side=='long' and s>=p) or (side=='short' and s<=p):raise ValueError('Stop must be on the loss side of entry.')
+ budget=e*r/100;per_unit=abs(p-s)+sl+(p+s)*f/10000
+ cap=e if max_notional is None else Decimal(str(max_notional))
+ if not cap.is_finite() or cap<=0:raise ValueError('Notional cap must be positive.')
+ units=(min(budget/per_unit,cap/p)/step).to_integral_value(rounding=ROUND_FLOOR)*step
+ return {k:str(v) for k,v in {'units':units,'risk_budget':budget,'estimated_stop_loss_with_costs':units*per_unit,'notional':units*p,'risk_per_unit':per_unit}.items()} | {'note':'Linear shares or spot units, same currency. Gaps can exceed estimated loss. Futures, options and inverse contracts need a contract-specific calculator.'}
+
+def journal(path):
+ with open(path,newline='',encoding='utf-8-sig') as f:rows=list(csv.DictReader(f))
+ if not rows:raise ValueError('No trades.')
+ seen=set();pnls=[];rvals=[];groups={};last=None
+ for row in rows:
+  ident=row['trade_id']
+  if not ident or ident in seen:raise ValueError('Missing or duplicate trade_id.')
+  seen.add(ident);t=datetime.fromisoformat(row['exit_time'].replace('Z','+00:00'))
+  if t.tzinfo is None:raise ValueError('exit_time needs a timezone.')
+  if last and t<last:raise ValueError('Sort trades by exit_time.')
+  last=t;gross=number(row['gross_pnl']);cost=number(row['costs']);risk=number(row['initial_risk'])
+  if cost<0 or risk<=0:raise ValueError('Costs must be nonnegative; initial_risk positive.')
+  net=gross-cost;pnls.append(net);rvals.append(net/risk);groups.setdefault(row.get('setup') or 'unlabelled',[]).append(net)
+ wins=[p for p in pnls if p>0];losses=[p for p in pnls if p<0];total=0;peak=0;dd=0
+ for p in pnls:total+=p;peak=max(peak,total);dd=max(dd,peak-total)
+ return {'trades':len(rows),'net_pnl':sum(pnls),'win_rate':len(wins)/len(rows),'mean_r':statistics.mean(rvals),'profit_factor':sum(wins)/abs(sum(losses)) if losses else None,'closed_trade_drawdown_cash':dd,'by_setup':{k:{'trades':len(v),'net_pnl':sum(v),'mean_pnl':statistics.mean(v)} for k,v in groups.items()},'note':'Closed trades only. Costs deducted once. Profit factor is null without losses. Setup differences are descriptive; unrealized losses require an equity series.'}
+
+def main():
+ p=argparse.ArgumentParser(description=__doc__);s=p.add_subparsers(dest='command',required=True)
+ d=s.add_parser('data');d.add_argument('csv');d.add_argument('--expected-seconds',type=float)
+ j=s.add_parser('journal');j.add_argument('csv');z=s.add_parser('size')
+ for name in ['equity','risk-pct','entry','stop']:z.add_argument('--'+name,required=True,type=float)
+ z.add_argument('--side',choices=['long','short'],default='long');z.add_argument('--fee-bps',type=float,default=0);z.add_argument('--slippage',type=float,default=0);z.add_argument('--lot',type=float,default=1);z.add_argument('--max-notional',type=float)
+ a=p.parse_args()
+ if a.command=='data':result=data_quality(a.csv,a.expected_seconds)
+ elif a.command=='journal':result=journal(a.csv)
+ else:result=position_size(a.equity,a.risk_pct,a.entry,a.stop,a.side,a.fee_bps,a.slippage,a.lot,a.max_notional)
+ print(json.dumps(result,indent=2,allow_nan=False))
+if __name__=='__main__':main()
+END FILE
+
+BEGIN VERIFICATION FILE test_tools.py
+import tempfile,unittest
+from pathlib import Path
+from quant_tools import *
+class Tests(unittest.TestCase):
+ def test_caps(self):
+  r=position_size(10000,1,100,95,fee_bps=10,slippage=.1,lot=3)
+  self.assertEqual(r['units'],'18');self.assertLessEqual(Decimal(r['estimated_stop_loss_with_costs']),100)
+ def test_invalid_stop(self):
+  with self.assertRaises(ValueError):position_size(10000,1,100,101)
+ def test_short(self):self.assertEqual(position_size(10000,1,100,105,side='short')['units'],'20')
+ def test_nonfinite(self):
+  with self.assertRaises(ValueError):position_size(float('nan'),1,100,95)
+ def test_bad_bars(self):
+  with tempfile.TemporaryDirectory() as d:
+   p=Path(d)/'b.csv';p.write_text('timestamp,open,high,low,close,volume\n2026-01-01T00:00:00Z,100,99,90,100,1000\n');self.assertFalse(data_quality(p)['passed'])
+ def test_costs(self):
+  with tempfile.TemporaryDirectory() as d:
+   p=Path(d)/'t.csv';p.write_text('trade_id,exit_time,gross_pnl,costs,initial_risk,setup\na,2026-01-01T00:00:00Z,100,10,100,test\nb,2026-01-02T00:00:00Z,-50,10,100,test\n')
+   r=journal(p);self.assertEqual(r['net_pnl'],30);self.assertEqual(r['profit_factor'],1.5);self.assertEqual(r['closed_trade_drawdown_cash'],60)
+if __name__=='__main__':unittest.main()
+END FILE
