@@ -15,7 +15,8 @@
     "build": "tsc --outDir dist",
     "verify": "npm run build && node scripts/verify-live.mjs",
     "test:signal": "npm run build && node scripts/test-signal-engine.mjs",
-    "export:candles": "npm run build && node scripts/export-candles.mjs"
+    "export:candles": "npm run build && node scripts/export-candles.mjs",
+    "serve": "tsx src/run.ts --serve"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

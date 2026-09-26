@@ -281,13 +281,17 @@ async function runOnce(
 
 // ── CLI ──
 
-function parseArgs(): { once: boolean; propose: boolean; instruction?: string } {
+function parseArgs(): { once: boolean; serve: boolean; propose: boolean; instruction?: string } {
   const args = process.argv.slice(2);
   const once = args.includes("--once");
+  // --serve: håll dashboard och marknadsströmmar igång utan att köra
+  // agent-loopen. Det är läget för en alltid-på-tjänst: systemet ska gå att
+  // nå när som helst utan att varje omstart kostar LLM-anrop.
+  const serve = args.includes("--serve");
   const propose = args.includes("--propose");
   const instArg = args.find((a) => a.startsWith("--instruction="));
   const instruction = instArg ? instArg.slice("--instruction=".length) : undefined;
-  return { once, propose, instruction };
+  return { once, serve, propose, instruction };
 }
 
 async function main(): Promise<void> {
@@ -339,6 +343,15 @@ async function main(): Promise<void> {
   // Registrera API-nyckel + run-callback för manuella agent-frågor och dashboard-triggar
   setApiKey(config.anthropicApiKey);
   setRunAgentCallback((instruction?: string) => runOnce(brokers, engines, instruction));
+
+  // Serve-läge: bara dashboard och strömmar. Ingen agent-körning, inga
+  // LLM-anrop vid start.
+  if (args.serve) {
+    log.ok(`Serve-läge — dashboard på http://localhost:${DASHBOARD_PORT}`);
+    log.info("Agent-loopen körs inte. Använd dashboarden eller --once för en körning.");
+    await new Promise(() => {});
+    return;
+  }
 
   // Engångs-körning
   if (args.once || args.propose) {
