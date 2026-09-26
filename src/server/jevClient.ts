@@ -130,20 +130,47 @@ function keyFromKeychain(service: string): string | null {
 /** Keychain-posten coachens skript skriver till. */
 const KEYCHAIN_SERVICE = "aiupscale.typesafe.api-key";
 
-function resolveRoute(): { url: string; key: string; model: string; mode: JevMode } | null {
-  // .env vinner om den är satt — den är explicit.
+interface JevRoute { url: string; key: string; model: string; mode: JevMode }
+
+const asDirect = (key: string): JevRoute =>
+  ({ url: TYPESAFE_DIRECT_URL, key, model: "jev-latest", mode: "direct" });
+const asGateway = (key: string): JevRoute =>
+  ({ url: GATEWAY_URL, key, model: "typesafe-ai/jev", mode: "gateway" });
+
+/**
+ * Alla rutter värda att prova, i tur och ordning.
+ *
+ * En nyckel bär inte med sig vilken tjänst som utfärdade den: en TypeSafe-nyckel
+ * och en Vercel AI Gateway-nyckel ser likadana ut. Gissar vi fel svarar servern
+ * 401, vilket är omöjligt att skilja från en ogiltig nyckel. Därför provas båda
+ * rutterna med samma nyckel innan vi påstår att nyckeln är fel.
+ */
+function resolveRoutes(): JevRoute[] {
+  const routes: JevRoute[] = [];
+  const seen = new Set<string>();
+  const add = (route: JevRoute): void => {
+    const id = `${route.mode}:${route.key}`;
+    if (!seen.has(id)) { seen.add(id); routes.push(route); }
+  };
+
+  // .env vinner om den är satt — den är explicit. Namnet på variabeln avgör
+  // bara vilken rutt som provas först, inte vilken som är tillåten.
   const direct = process.env.TYPESAFE_API_KEY;
-  if (direct) return { url: TYPESAFE_DIRECT_URL, key: direct, model: "jev-latest", mode: "direct" };
+  if (direct) { add(asDirect(direct)); add(asGateway(direct)); }
 
   const gw = process.env.AI_GATEWAY_API_KEY;
-  if (gw) return { url: GATEWAY_URL, key: gw, model: "typesafe-ai/jev", mode: "gateway" };
+  if (gw) { add(asGateway(gw)); add(asDirect(gw)); }
 
   // Annars: samma Keychain-post som coachens jev-verktyg använder.
   const fromKeychain = keyFromKeychain(KEYCHAIN_SERVICE);
-  if (fromKeychain) {
-    return { url: TYPESAFE_DIRECT_URL, key: fromKeychain, model: "jev-latest", mode: "direct" };
-  }
-  return null;
+  if (fromKeychain) { add(asDirect(fromKeychain)); add(asGateway(fromKeychain)); }
+
+  return routes;
+}
+
+/** Nyckeln avvisades av en rutt. Säger inget om de andra rutterna. */
+class AuthRejected extends Error {
+  constructor() { super("JEV: HTTP 401 — nyckeln avvisades av den här rutten"); }
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -166,15 +193,10 @@ async function postWithRetry(
 
       if (res.ok) return await res.json() as { answers: Record<string, JevAnswer>; model?: string };
 
-      // 401 betyder att nyckeln avvisades — inte att tjänsten är nere.
-      // Vanligaste orsaken: en Gateway-nyckel satt som TYPESAFE_API_KEY
-      // (eller tvärtom). De två rutterna tar olika nycklar.
-      if (res.status === 401) {
-        throw new Error(
-          "JEV: HTTP 401 — nyckeln avvisades. Är det en Vercel AI Gateway-nyckel? " +
-          "Flytta den i så fall till AI_GATEWAY_API_KEY.",
-        );
-      }
+      // 401 betyder att nyckeln avvisades av *den här* rutten — inte att
+      // tjänsten är nere och inte nödvändigtvis att nyckeln är ogiltig.
+      // Anroparen provar nästa rutt innan den drar någon slutsats.
+      if (res.status === 401) throw new AuthRejected();
       if (res.status === 403) {
         const txt = await res.text().catch(() => "");
         if (txt.includes("customer_verification_required")) {
@@ -216,8 +238,8 @@ export async function askJev(
   state: Record<string, unknown>,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<JevVerdict> {
-  const route = resolveRoute();
-  if (!route) {
+  const routes = resolveRoutes();
+  if (routes.length === 0) {
     return offlineVerdict(
       "Ingen nyckel hittad — varken i .env eller i Keychain "
       + `(${KEYCHAIN_SERVICE})`,
@@ -228,37 +250,55 @@ export async function askJev(
   }
 
   const t0 = Date.now();
-  try {
-    const data = await postWithRetry(
-      route.url, route.key,
-      { state, model: route.model, questions: buildQuestions() },
-      timeoutMs,
-    );
-    failureCount = 0;
-    return {
-      mode: route.mode,
-      available: true,
-      answers: data.answers ?? {},
-      latencyMs: Date.now() - t0,
-      model: data.model ?? route.model,
-      note: "",
-    };
-  } catch (err) {
-    failureCount++;
-    if (failureCount >= CIRCUIT_THRESHOLD) {
-      circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
+  const rejected: JevMode[] = [];
+  let lastMsg = "";
+
+  for (const route of routes) {
+    try {
+      const data = await postWithRetry(
+        route.url, route.key,
+        { state, model: route.model, questions: buildQuestions() },
+        timeoutMs,
+      );
       failureCount = 0;
-      log.warn("[jev] circuit öppnad — pausar anrop i 60s");
+      return {
+        mode: route.mode,
+        available: true,
+        answers: data.answers ?? {},
+        latencyMs: Date.now() - t0,
+        model: data.model ?? route.model,
+        note: rejected.length > 0 ? `avvisad på ${rejected.join(", ")} först` : "",
+      };
+    } catch (err) {
+      // Bara 401 betyder "fel rutt, prova nästa". Allt annat är ett riktigt
+      // fel och ska inte maskeras av ett försök mot en annan tjänst.
+      if (err instanceof AuthRejected) {
+        rejected.push(route.mode);
+        lastMsg = err.message;
+        continue;
+      }
+      lastMsg = err instanceof Error ? err.message : String(err);
+      break;
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    log.warn(`[jev] ${msg} — fortsätter i rules_only`);
-    return offlineVerdict(msg);
   }
+
+  if (rejected.length === routes.length) {
+    lastMsg = `JEV: nyckeln avvisades (401) av både direkt-API och Gateway — nyckeln är inte giltig för någon av tjänsterna`;
+  }
+
+  failureCount++;
+  if (failureCount >= CIRCUIT_THRESHOLD) {
+    circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
+    failureCount = 0;
+    log.warn("[jev] circuit öppnad — pausar anrop i 60s");
+  }
+  log.warn(`[jev] ${lastMsg} — fortsätter i rules_only`);
+  return offlineVerdict(lastMsg);
 }
 
 export function getJevStatus(): { route: JevMode; circuitOpen: boolean } {
   return {
-    route: resolveRoute()?.mode ?? "rules_only",
+    route: resolveRoutes()[0]?.mode ?? "rules_only",
     circuitOpen: Date.now() < circuitOpenUntil,
   };
 }
