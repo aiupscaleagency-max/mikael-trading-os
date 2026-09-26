@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { log } from "../logger.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -102,11 +103,46 @@ function buildQuestions(): Record<string, unknown> {
  *   2. AI_GATEWAY_API_KEY → Vercel AI Gateway
  *   3. Ingen nyckel       → rules_only
  */
+/**
+ * Läser nyckeln ur macOS Keychain.
+ *
+ * Coachens verktyg (tools/jev/set-typesafe-key.sh) lagrar nyckeln där, inte i
+ * en .env. Läser vi samma ställe finns nyckeln på ETT ställe istället för två,
+ * och den kan inte hamna i en fil som råkar committas.
+ *
+ * Returnerar null på allt annat än macOS, och när posten inte finns.
+ */
+function keyFromKeychain(service: string): string | null {
+  if (process.platform !== "darwin") return null;
+  try {
+    const out = execFileSync(
+      "security",
+      ["find-generic-password", "-s", service, "-w"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const key = out.trim();
+    return key.length > 0 ? key : null;
+  } catch {
+    return null; // posten finns inte
+  }
+}
+
+/** Keychain-posten coachens skript skriver till. */
+const KEYCHAIN_SERVICE = "aiupscale.typesafe.api-key";
+
 function resolveRoute(): { url: string; key: string; model: string; mode: JevMode } | null {
+  // .env vinner om den är satt — den är explicit.
   const direct = process.env.TYPESAFE_API_KEY;
   if (direct) return { url: TYPESAFE_DIRECT_URL, key: direct, model: "jev-latest", mode: "direct" };
+
   const gw = process.env.AI_GATEWAY_API_KEY;
   if (gw) return { url: GATEWAY_URL, key: gw, model: "typesafe-ai/jev", mode: "gateway" };
+
+  // Annars: samma Keychain-post som coachens jev-verktyg använder.
+  const fromKeychain = keyFromKeychain(KEYCHAIN_SERVICE);
+  if (fromKeychain) {
+    return { url: TYPESAFE_DIRECT_URL, key: fromKeychain, model: "jev-latest", mode: "direct" };
+  }
   return null;
 }
 
@@ -182,7 +218,10 @@ export async function askJev(
 ): Promise<JevVerdict> {
   const route = resolveRoute();
   if (!route) {
-    return offlineVerdict("Ingen TYPESAFE_API_KEY eller AI_GATEWAY_API_KEY satt");
+    return offlineVerdict(
+      "Ingen nyckel hittad — varken i .env eller i Keychain "
+      + `(${KEYCHAIN_SERVICE})`,
+    );
   }
   if (Date.now() < circuitOpenUntil) {
     return offlineVerdict("Circuit öppen efter upprepade fel — testar igen strax");
