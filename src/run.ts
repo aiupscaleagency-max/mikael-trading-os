@@ -14,6 +14,8 @@ import { loadState, saveState, appendDecision } from "./memory/store.js";
 import { Scheduler, createDefaultSchedule } from "./scheduler.js";
 import { runOrchestratedTurn } from "./orchestrator/orchestrator.js";
 import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback } from "./server/api.js";
+import { startKlineStream } from "./server/klineStream.js";
+import { startSignalEngine } from "./server/signalEngine.js";
 import { log } from "./logger.js";
 import type { DecisionRecord } from "./types.js";
 import type { StrategyEngine } from "./strategies/types.js";
@@ -314,6 +316,25 @@ async function main(): Promise<void> {
   // Starta dashboard-server (alltid, även i once-mode)
   const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? "3939", 10);
   startServer(DASHBOARD_PORT, brokers);
+
+  // ── Kline-ström + signal-motor ──────────────────────────────────────────
+  // Krävs för signalpanelen och diagrammet. Publik marknadsdata — inga
+  // nycklar behövs, så den startar även i vy-läge.
+  //
+  // Startas här och inte i startServer(): servern ska kunna svara på
+  // /api/signals även innan strömmen hunnit fylla på, och panelen visar då
+  // att den väntar istället för att endpointen saknas.
+  const streamSymbols = config.crypto.symbols.slice(0, 8);
+  const streamInterval = process.env.SIGNAL_INTERVAL ?? "1m";
+  startSignalEngine();
+  void startKlineStream(streamSymbols, streamInterval)
+    .then(() => log.ok(
+      `[signal] ${streamSymbols.length} par @ ${streamInterval} — `
+      + `panelen fylls när första ljuset stängt`,
+    ))
+    .catch((err) => log.warn(
+      `[signal] kline-strömmen startade inte: ${err instanceof Error ? err.message : String(err)}`,
+    ));
 
   // Registrera API-nyckel + run-callback för manuella agent-frågor och dashboard-triggar
   setApiKey(config.anthropicApiKey);
