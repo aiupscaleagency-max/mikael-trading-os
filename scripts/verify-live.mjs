@@ -16,6 +16,7 @@ import { startKlineStream, subscribeClosedCandles, getFormingCandle,
          getClosedCandles, msUntilClose, getKlineStreamStatus,
          stopKlineStream } from "../dist/server/klineStream.js";
 import { buildSignal } from "../dist/server/signalEngine.js";
+import { askJev, getJevStatus } from "../dist/server/jevClient.js";
 
 const SYMBOL   = (process.argv[2] ?? "BTCUSDT").toUpperCase();
 const INTERVAL = process.argv[3] ?? "1m";
@@ -112,6 +113,44 @@ if (!hasBinance && !hasAlpaca) {
 } else {
   ok(`Nycklar hittade: ${[hasBinance && "Binance", hasAlpaca && "Alpaca"].filter(Boolean).join(" + ")}`);
   console.log("     Saldo och ordrar testas via servern, inte detta skript.");
+}
+
+// ── 8. JEV ────────────────────────────────────────────────────────────────
+console.log("\n8. JEV — probabilistiskt bedömningslager");
+const jevStatus = getJevStatus();
+if (jevStatus.route === "rules_only") {
+  console.log("  ℹ️  Ingen nyckel satt — systemet kör rules_only.");
+  console.log("     Signalerna fungerar, men utan JEV:s bedömning.");
+  console.log("     Sätt TYPESAFE_API_KEY (eller AI_GATEWAY_API_KEY) i .env.");
+} else {
+  console.log(`     Rutt: ${jevStatus.route === "direct" ? "direkt-API" : "Vercel AI Gateway"}`);
+  const sample = candles.length
+    ? {
+        symbol: SYMBOL, interval: INTERVAL,
+        close: candles[candles.length - 1].close,
+        atr14: null, score: 0, proposed_direction: "NEUTRAL",
+      }
+    : { symbol: SYMBOL, interval: INTERVAL, close: 0 };
+
+  const verdict = await askJev(sample);
+  if (!verdict.available) {
+    bad(`JEV svarade inte: ${verdict.note}`,
+        "Kontrollera nyckeln och att api.typesafe.ai är nåbar.");
+  } else {
+    ok(`Svar på ${verdict.latencyMs} ms från ${verdict.model}`);
+    const answered = Object.keys(verdict.answers);
+    answered.length === 7
+      ? ok(`Alla sju frågorna besvarade`)
+      : bad(`Bara ${answered.length} av 7 frågor besvarade: ${answered.join(", ")}`);
+    for (const [q, a] of Object.entries(verdict.answers)) {
+      const val = a.choice ?? a.noul ?? a.score;
+      const conf = a.confidence != null ? ` (säkerhet ${a.confidence})` : "";
+      console.log(`     · ${q}: ${val}${conf}`);
+    }
+    if ((verdict.latencyMs ?? 0) > 1000) {
+      console.log("     ⚠️  Över 1 s — långsammare än specens ~500 ms.");
+    }
+  }
 }
 
 stopKlineStream();
