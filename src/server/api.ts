@@ -685,6 +685,29 @@ export function startServer(
         res.end(JSON.stringify({ ok: true }));
         return;
       }
+      // ── Chart-biblioteket, serverat lokalt ──
+      // TradingView Lightweight Charts (Apache 2.0) ligger i node_modules och
+      // serveras härifrån istället för via CDN. Systemet ska fungera utan
+      // internetåtkomst till tredjepart — bara börsen behöver nås.
+      if (url.pathname === "/vendor/lightweight-charts.js" && method === "GET") {
+        try {
+          const libPath = path.resolve(
+            import.meta.dirname,
+            "../../node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js",
+          );
+          const js = await fs.readFile(libPath, "utf8");
+          res.writeHead(200, {
+            "Content-Type": "application/javascript; charset=utf-8",
+            "Cache-Control": "public, max-age=86400",
+          });
+          res.end(js);
+        } catch {
+          res.writeHead(404);
+          res.end("// lightweight-charts saknas — kör npm install");
+        }
+        return;
+      }
+
       // ── Signaler: indikatorer + LONG/SHORT per valutapar ──
       // Driver signalpanelen i dashboarden. Varje post innehåller riktning,
       // entry, stop-loss, target, R:R och skälen bakom — allt räknat på

@@ -19,7 +19,7 @@
 </script>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Mikael Trading OS — Inference Dashboard</title>
-<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="/vendor/lightweight-charts.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
 :root{
@@ -1303,6 +1303,113 @@ body.app-state-onboard .fc-panel{display:none !important}
      Riktning visas med symbol OCH text — aldrig enbart färg, eftersom en
      förväxlad riktning betyder en felaktig trade.
      ══════════════════════════════════════════════════════════════════════ -->
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     LIVE-DIAGRAM — TradingView Lightweight Charts (Apache 2.0, gratis)
+     Ritar VÅRA egna ljus från /api/candles — samma ström som är verifierad
+     identisk med Binance. Det pågående ljuset ritas med avvikande färg och
+     är markerat i rubriken, så ett ofärdigt ljus aldrig läses som färdigt.
+     ══════════════════════════════════════════════════════════════════════ -->
+<section id="liveChart" style="margin:20px auto 0;max-width:1400px;padding:0 16px;
+         font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+    <h2 style="margin:0;font-size:17px;font-weight:600">Diagram</h2>
+    <select id="chartSymbol" style="padding:5px 8px;background:#0b0e14;color:#e6e6e6;
+            border:1px solid #2a3140;border-radius:6px;font-size:12px"></select>
+    <span id="chartForming" style="font-size:12px;color:#8b95a7"></span>
+    <span style="margin-left:auto;font-size:11px;color:#5a6374">
+      Egen ström · verifierad mot Binance
+    </span>
+  </div>
+  <div id="chartBox" style="height:380px;border:1px solid #2a3140;border-radius:10px;
+       background:#151a23;overflow:hidden"></div>
+</section>
+
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+(function () {
+  var box = document.getElementById("chartBox");
+  var symSel = document.getElementById("chartSymbol");
+  var formingEl = document.getElementById("chartForming");
+  if (!box || typeof LightweightCharts === "undefined") return;
+
+  var chart = LightweightCharts.createChart(box, {
+    layout: { background: { color: "#151a23" }, textColor: "#8b95a7", fontSize: 11 },
+    grid: { vertLines: { color: "#1e2430" }, horzLines: { color: "#1e2430" } },
+    rightPriceScale: { borderColor: "#2a3140" },
+    timeScale: { borderColor: "#2a3140", timeVisible: true, secondsVisible: false },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    localization: { locale: "sv-SE" },
+  });
+
+  // Stängda ljus. Samma statusfärger som signalpanelen.
+  var series = chart.addCandlestickSeries({
+    upColor: "#3fb950", downColor: "#f85149",
+    borderUpColor: "#3fb950", borderDownColor: "#f85149",
+    wickUpColor: "#3fb950", wickDownColor: "#f85149",
+  });
+
+  // Det pågående ljuset ritas separat och dämpat — det är inte färdigt,
+  // och ska inte se ut som om det vore det.
+  var forming = chart.addCandlestickSeries({
+    upColor: "rgba(63,185,80,.35)", downColor: "rgba(248,81,73,.35)",
+    borderUpColor: "#57694f", borderDownColor: "#6b4744",
+    wickUpColor: "#57694f", wickDownColor: "#6b4744",
+  });
+
+  new ResizeObserver(function () {
+    chart.applyOptions({ width: box.clientWidth, height: box.clientHeight });
+  }).observe(box);
+
+  var current = null;
+
+  function toBar(c) {
+    return { time: Math.floor(c.openTime / 1000), open: c.open,
+             high: c.high, low: c.low, close: c.close };
+  }
+
+  async function load() {
+    if (!current) return;
+    try {
+      var iv = (document.getElementById("sigInterval") || {}).value || "1m";
+      var res = await fetch("/api/candles?symbol=" + current + "&interval=" + iv + "&limit=300");
+      if (!res.ok) return;
+      var d = await res.json();
+      series.setData((d.closed || []).map(toBar));
+      if (d.forming) {
+        forming.setData([toBar(d.forming)]);
+        formingEl.textContent = "Sista ljuset byggs — ingen signal räknas på det";
+      } else {
+        forming.setData([]);
+        formingEl.textContent = "";
+      }
+    } catch (_) { /* servern nere — behåll senaste vyn */ }
+  }
+
+  // Symbollistan hämtas från signalerna så diagram och panel alltid visar
+  // samma par.
+  async function syncSymbols() {
+    try {
+      var res = await fetch("/api/signals");
+      if (!res.ok) return;
+      var syms = ((await res.json()).signals || []).map(function (s) { return s.symbol; });
+      syms = syms.filter(function (v, i, a) { return a.indexOf(v) === i; });
+      if (!syms.length) return;
+      if (symSel.options.length !== syms.length) {
+        symSel.innerHTML = syms.map(function (s) {
+          return '<option value="' + s + '">' + s + "</option>";
+        }).join("");
+      }
+      if (!current || syms.indexOf(current) < 0) { current = syms[0]; symSel.value = current; load(); }
+    } catch (_) {}
+  }
+
+  symSel.addEventListener("change", function () { current = symSel.value; load(); });
+  syncSymbols(); setInterval(syncSymbols, 10000);
+  setInterval(load, 2000);
+})();
+</script>
+
 <section id="signalPanel" style="margin:24px auto;max-width:1400px;padding:0 16px;
          font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
   <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px">
