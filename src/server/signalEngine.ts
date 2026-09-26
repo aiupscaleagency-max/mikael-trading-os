@@ -1,6 +1,7 @@
 import { computeIndicators } from "../indicators/ta.js";
 import { subscribeClosedCandles, getClosedCandles, msUntilClose, type Candle } from "./klineStream.js";
 import { log } from "../logger.js";
+import { askJev, type JevVerdict } from "./jevClient.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Signal-motor — gör indikatorer till LONG/SHORT-förslag
@@ -39,6 +40,14 @@ export interface Signal {
   /** Millisekunder kvar till nästa ljusstängning. Nedräkningen i gränssnittet. */
   msUntilNextClose: number | null;
   generatedAt: number;
+  /**
+   * JEV:s bedömning. Finns alltid — är JEV nere står mode "rules_only" och
+   * available false, och signalen gäller ändå. Ett bedömningslager som kan
+   * stoppa hela systemet när det är nere är farligare än inget alls.
+   */
+  jev?: JevVerdict;
+  /** Sattes riktningen ned av JEV? Skälet står i reasons. */
+  jevDowngraded?: boolean;
 }
 
 /** Under detta förhållande är trejden inte värd risken. */
@@ -225,18 +234,86 @@ export function buildSignal(symbol: string, interval: string, candles: Candle[])
   };
 }
 
+/**
+ * Låter JEV bedöma en färdig signal.
+ *
+ * ── REGELN: JEV KAN BARA SÄNKA ──────────────────────────────────────────
+ * En LONG kan bli AVVAKTA. En AVVAKTA kan ALDRIG bli LONG.
+ *
+ * Siffrorna kommer från kod som går att testa och upprepa. Ett
+ * probabilistiskt lager som kunde skapa signaler skulle kunna hallucinera
+ * fram en trade som ingen beräkning stöder. Som veto är det bara skyddande.
+ *
+ * Tre saker sänker en signal:
+ *   crisis-regim          marknaden är i kris — stå utanför
+ *   toxiskt flöde > 0.7   flödet är informerat, vi handlar mot någon som vet mer
+ *   JEV pekar tvärtom     med hög confidence mot vår riktning
+ */
+export async function applyJevVerdict(signal: Signal): Promise<Signal> {
+  const state = {
+    symbol: signal.symbol,
+    interval: signal.interval,
+    close: signal.entry,
+    rsi14: signal.indicators.rsi14,
+    sma20: signal.indicators.sma20,
+    sma50: signal.indicators.sma50,
+    ema20: signal.indicators.ema20,
+    atr14: signal.indicators.atr14,
+    macd: signal.indicators.macd,
+    score: signal.score,
+    proposed_direction: signal.direction,
+  };
+
+  const jev = await askJev(state);
+  const out: Signal = { ...signal, jev };
+
+  // Utan JEV gäller signalen som den är — rules_only, tydligt märkt.
+  if (!jev.available || signal.direction === "NEUTRAL") return out;
+
+  const regime = jev.answers.regime?.choice;
+  const toxic = jev.answers.toxic_flow?.noul ?? 0;
+  const bias = jev.answers.direction?.choice;
+  const biasConf = jev.answers.direction?.confidence ?? 0;
+
+  const vetoes: string[] = [];
+  if (regime === "crisis") vetoes.push("JEV: krisregim — ingen ny position");
+  if (toxic > 0.7) vetoes.push(`JEV: toxiskt flöde ${toxic.toFixed(2)} — informerad motpart`);
+
+  const opposes =
+    (signal.direction === "LONG" && bias === "down") ||
+    (signal.direction === "SHORT" && bias === "up");
+  if (opposes && biasConf > 0.6) {
+    vetoes.push(`JEV: bedömer riktningen som ${bias} (säkerhet ${biasConf.toFixed(2)})`);
+  }
+
+  if (!vetoes.length) return out;
+
+  log.info(`[signal] ${signal.symbol}: ${signal.direction} sänkt till AVVAKTA — ${vetoes[0]}`);
+  return {
+    ...out,
+    direction: "NEUTRAL",
+    jevDowngraded: true,
+    reasons: [...signal.reasons, ...vetoes],
+  };
+}
+
 /** Startar motorn. Räknar om vid varje stängt ljus. */
 export function startSignalEngine(): () => void {
   log.info("[signal] motorn startad — räknar vid varje ljusstängning");
   return subscribeClosedCandles((symbol, interval, _candle, history) => {
-    const signal = buildSignal(symbol, interval, history);
-    if (!signal) return;
+    const base = buildSignal(symbol, interval, history);
+    if (!base) return;
+    // JEV bedömer varje signal. Anropet är asynkront men blockerar inte
+    // strömmen — signalen publiceras när bedömningen är klar, eller direkt
+    // med rules_only om JEV inte svarar.
+    void applyJevVerdict(base).then((signal) => {
     latest.set(key(symbol, interval), signal);
     for (const cb of subscribers) {
       try { cb(signal); } catch (err) {
         log.warn(`[signal] subscriber kastade: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    });
   });
 }
 
