@@ -144,12 +144,14 @@ export async function getCostSummary(opts: {
   const byAgent: Record<string, { calls: number; costUsd: number }> = {};
   const byModel: Record<string, { calls: number; costUsd: number }> = {};
   for (const e of today) {
-    byAgent[e.agent] ??= { calls: 0, costUsd: 0 };
-    byAgent[e.agent].calls++;
-    byAgent[e.agent].costUsd += e.costUsd;
-    byModel[e.model] ??= { calls: 0, costUsd: 0 };
-    byModel[e.model].calls++;
-    byModel[e.model].costUsd += e.costUsd;
+    // Lokal referens: ??= smalnar inte av typen på en index-access, så
+    // byAgent[e.agent] är fortfarande "möjligen undefined" för TypeScript.
+    const agentEntry = (byAgent[e.agent] ??= { calls: 0, costUsd: 0 });
+    agentEntry.calls++;
+    agentEntry.costUsd += e.costUsd;
+    const modelEntry = (byModel[e.model] ??= { calls: 0, costUsd: 0 });
+    modelEntry.calls++;
+    modelEntry.costUsd += e.costUsd;
   }
 
   // Senaste 50 anrop (kanske från flera dagar — slå ihop senaste 3 dagars filer)

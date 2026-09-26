@@ -34,17 +34,12 @@ import type { OrderRequest, OrderResult } from "../types.js";
 
 const HEAD_TRADER_MODEL = "claude-sonnet-4-6";
 
-export interface AllReports {
-  macro: MacroReport;
-  technical: TechnicalReport;
-  sentiment: SentimentReport;
-  risk: RiskReport;
-  quant: QuantReport;
-  options: OptionsReport;
-  execution: ExecutionReport;
-  portfolio: PortfolioReport;
-  advisor: AdvisorReport;
-}
+// AllReports definieras i orchestrator.ts och importeras därifrån.
+// Den lokala kopian saknade fältet 'research' (Lars/Perplexity), vilket
+// gjorde att destrukturering av det gav typfel trots att fältet finns
+// i objektet som faktiskt skickas in.
+import type { AllReports } from "./orchestrator.js";
+export type { AllReports };
 
 export interface HeadTraderResult {
   decision: HeadTraderDecision;

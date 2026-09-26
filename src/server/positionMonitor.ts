@@ -37,11 +37,15 @@ const TRAIL_DISTANCE_PCT = 2.5;
 
 // Bearish-mönster som triggar SELL
 const BEARISH_PATTERNS: PatternType[] = [
-  "bearish_engulfing",
+  // Namnen måste finnas i PatternType. "bearish_engulfing" och
+  // "dark_cloud_cover" gjorde inte det — den förra heter "bear_engulfing",
+  // den senare finns inte alls och ersätts av "three_crows", som är den
+  // närmaste bearish reversal-formationen detektorn faktiskt känner igen.
+  "bear_engulfing",
   "double_top",
   "head_shoulders",
   "evening_star",
-  "dark_cloud_cover",
+  "three_crows",
   "shooting_star",
 ];
 
@@ -65,7 +69,9 @@ interface MonitorState {
   positionEntries: Map<string, PositionEntry>;
   // Sales-log för audit + LÄRDOMS-LOOP (Advisor läser denna inför nästa beslut)
   recentSales: Array<{
-    symbol: string; mode: string; pnl: number; pnlPct: number | null;
+    // mode är unionen, inte string — annars går listan inte att skicka
+    // till saveLessons()/aggregateLessonsBySymbol() som kräver SaleLesson.
+    symbol: string; mode: "testnet" | "live"; pnl: number; pnlPct: number | null;
     reason: string; advisorVerdict: string; advisorReasoning: string;
     holdMinutes: number; rsi: number; patterns: string[];
     time: number; orderId: number;
@@ -182,16 +188,22 @@ async function verifyWithAdvisor(
   const recentCandles = marketSnapshot.klines1h.slice(-20).map(k => ({
     t: new Date(k.time * 1000).toISOString().slice(5,16),
     o: k.open.toFixed(6), h: k.high.toFixed(6), l: k.low.toFixed(6), c: k.close.toFixed(6),
-    v: k.volume.toFixed(0),
+    v: (k.volume ?? 0).toFixed(0),
   }));
   // Volym-confirmation: senaste 5 candles vs snitt av senaste 20
-  const allVols = marketSnapshot.klines1h.slice(-20).map(k => k.volume);
-  const recent5Vol = allVols.slice(-5).reduce((s,v) => s+v, 0) / 5;
-  const avg20Vol = allVols.reduce((s,v) => s+v, 0) / Math.max(1, allVols.length);
+  // ?? 0 per element: volume är valfritt i Kline, och en enda undefined
+  // skulle annars göra hela summan NaN utan att något syns.
+  const allVols = marketSnapshot.klines1h.slice(-20).map(k => k.volume ?? 0);
+  const recent5Vol = allVols.slice(-5).reduce((sum, v) => sum + v, 0) / 5;
+  const avg20Vol = allVols.reduce((sum, v) => sum + v, 0) / Math.max(1, allVols.length);
   const volRatio = avg20Vol > 0 ? (recent5Vol / avg20Vol) : 1;
   // 4h trend (sista 5 4h-candles)
   const last4h = marketSnapshot.klines4h.slice(-5);
-  const trend4h = last4h.length >= 2 ? (last4h[last4h.length-1].close > last4h[0].close ? "UPTREND" : "DOWNTREND") : "UNCLEAR";
+  const first4h = last4h[0];
+  const latest4h = last4h[last4h.length - 1];
+  const trend4h = first4h && latest4h
+    ? (latest4h.close > first4h.close ? "UPTREND" : "DOWNTREND")
+    : "UNCLEAR";
 
   const systemPrompt = `Du är ADVISOR — Mike's senior trading-AI på Claude Opus, sista instans innan RIKTIG SELL-order på Binance ${mode === "live" ? "MAINNET (riktiga pengar)" : "TESTNET"}.
 
@@ -263,8 +275,8 @@ REASONING: ...`;
     const text = reply.content.filter(b => b.type === "text").map(b => (b as Anthropic.TextBlock).text).join("");
     const verdictMatch = text.match(/VERDICT:\s*(APPROVE|VETO)/i);
     const reasoningMatch = text.match(/REASONING:\s*([\s\S]+?)(?:\n\n|$)/i);
-    const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : "APPROVE";
-    const reasoning = reasoningMatch ? reasoningMatch[1].trim().slice(0, 400) : text.slice(0, 400);
+    const verdict = verdictMatch?.[1]?.toUpperCase() ?? "APPROVE";
+    const reasoning = reasoningMatch?.[1]?.trim().slice(0, 400) ?? text.slice(0, 400);
     return { approve: verdict === "APPROVE", verdict, reasoning };
   } catch (e) {
     log.warn(`[Advisor] verifikation fail: ${e instanceof Error ? e.message : String(e)} — defaultar till APPROVE`);
@@ -276,8 +288,10 @@ REASONING: ...`;
 function computeRSI(closes: number[]): number {
   if (closes.length < 15) return 50;
   let gains = 0, losses = 0;
-  for (let i = closes.length - 14; i < closes.length; i++) {
-    const diff = closes[i] - closes[i-1];
+  for (let i = Math.max(1, closes.length - 14); i < closes.length; i++) {
+    const cur = closes[i], prev = closes[i - 1];
+    if (cur === undefined || prev === undefined) continue;
+    const diff = cur - prev;
     if (diff > 0) gains += diff; else losses -= diff;
   }
   const rs = gains / (losses || 1);
@@ -359,7 +373,13 @@ async function analyzePosition(
   let patterns1h: string[] = []; let patterns4h: string[] = [];
   try {
     const candles1h: Candle[] = klines.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
-    patterns1h = detectAllPatterns(candles1h).filter(p => BEARISH_PATTERNS.includes(p.type) && p.candle.time >= klines[klines.length - 5].time).map(p => p.type);
+    // DetectedPattern har ingen .candle — den pekar med endIdx in i
+    // candle-arrayen. Filtrera på att mönstret slutar bland de fem
+    // senaste ljusen, vilket är det "nyligen" som avsågs.
+    const recentFrom = Math.max(0, candles1h.length - 5);
+    patterns1h = detectAllPatterns(candles1h)
+      .filter(p => BEARISH_PATTERNS.includes(p.type) && p.endIdx >= recentFrom)
+      .map(p => p.type);
   } catch {}
   try {
     const candles4hC: Candle[] = klines4h.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));

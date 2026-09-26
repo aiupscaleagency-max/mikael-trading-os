@@ -290,12 +290,19 @@ async function consultAdvisor(
       const len = closes.length;
       const sma20 = closes.slice(-Math.min(20, len)).reduce((s,c) => s+c, 0) / Math.min(20, len);
       const sma50 = closes.slice(-Math.min(50, len)).reduce((s,c) => s+c, 0) / Math.min(50, len);
-      const change24h = ((closes[len-1] - closes[Math.max(0, len-25)]) / closes[Math.max(0, len-25)]) * 100;
+      // Index plockas ut i lokala variabler: closes är garanterat icke-tom
+      // här (klines1h kontrolleras ovan), men TypeScript ser inte det genom
+      // en index-access, och ?? 0 skulle tyst ge 0 % förändring vid ett fel.
+      const lastClose = closes[len - 1] ?? 0;
+      const baseClose = closes[Math.max(0, len - 25)] ?? lastClose;
+      const change24h = baseClose > 0 ? ((lastClose - baseClose) / baseClose) * 100 : 0;
       // RSI (14)
       let gains = 0, losses = 0;
       const rsiStart = Math.max(1, len-15);
       for (let i = rsiStart; i < len; i++) {
-        const diff = closes[i] - closes[i-1];
+        const cur = closes[i], prev = closes[i - 1];
+        if (cur === undefined || prev === undefined) continue;
+        const diff = cur - prev;
         if (diff > 0) gains += diff; else losses -= diff;
       }
       const rs = gains / (losses || 1);

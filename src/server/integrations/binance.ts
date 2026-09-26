@@ -437,7 +437,10 @@ export class BinanceClient {
       for (let j = 0; j < batch.length; j++) {
         const symbol = batch[j];
         const r = results[j];
-        if (r.status !== "fulfilled") continue;
+        // Både symbol och resultat indexeras ut ur arrayer — TypeScript ser
+        // dem som möjligen undefined. Och .value finns bara på det uppfyllda
+        // fallet, så statuskontrollen måste ske innan den läses.
+        if (!symbol || !r || r.status !== "fulfilled") continue;
         for (const t of r.value) {
           allTrades.push({
             symbol,
@@ -476,6 +479,9 @@ export class BinanceClient {
         let costBasis = 0;
         while (qtyToSell > 0 && s.lots.length > 0) {
           const lot = s.lots[0];
+          // Loopvillkoret garanterar att lots inte är tom, men TypeScript
+          // ser inte det genom en index-access. Bryt hellre än att anta.
+          if (!lot) break;
           const taken = Math.min(qtyToSell, lot.qty);
           costBasis += taken * lot.price;
           lot.qty -= taken;

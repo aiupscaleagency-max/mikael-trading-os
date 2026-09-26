@@ -120,21 +120,29 @@ Svara BARA med JSON.`,
 
   try {
     const parsed = JSON.parse(text) as Omit<RiskReport, "role" | "rawText">;
-    log.agent(`[Risk] Nivå: ${parsed.overallRisk}, Heat: ${parsed.portfolioHeat}%`);
+    log.agent(`[Risk] Nivå: ${parsed.riskLevel}, Heat: ${parsed.portfolioHeatPct}%`);
     return { role: "risk_analyst", ...parsed, rawText: text };
   } catch {
     log.warn("[Risk] Kunde inte parsa JSON, returnerar fallback.");
     return {
       role: "risk_analyst",
-      portfolioHeat: 0,
+      portfolioHeatPct: 0,
       correlationRisk: "medium",
-      correlatedPairs: [],
-      maxDrawdownScenario: "Parsningsfel — manuell granskning krävs",
-      suggestedPositionSize: 0,
-      overallRisk: "aggressive",
+      correlationDetails: "Ej tillgänglig",
+      maxDrawdownScenario: {
+        description: "Parsningsfel — manuell granskning krävs",
+        estimatedLossUsd: 0,
+        estimatedLossPct: 0,
+      },
+      suggestedPositionSizing: {
+        maxNewPositionUsd: 0,
+        reasoning: "Parsningsfel — ingen ny position föreslås",
+      },
+      // riskLevel tillåter low | medium | high | critical. Vid parsningsfel
+      // sätts "high" — det är säkrare att anta hög risk än låg när vi inte vet.
+      riskLevel: "high",
       warnings: ["Parsningsfel — avvakta"],
       recommendation: "Kunde inte analysera risk. Avvakta nya positioner.",
-      confidence: "low",
       rawText: text,
     };
   }
@@ -245,15 +253,15 @@ Svara BARA med JSON.`,
 
   try {
     const parsed = JSON.parse(text) as Omit<QuantReport, "role" | "rawText">;
-    log.agent(`[Kvant] Regim: ${parsed.volatilityRegime}, Sharpe: ${parsed.estimatedSharpe}`);
+    log.agent(`[Kvant] Regim: ${parsed.volatilityRegime}, Sharpe: ${parsed.sharpeEstimate}`);
     return { role: "quant_analyst", ...parsed, rawText: text };
   } catch {
     log.warn("[Kvant] Parsningsfel.");
     return {
       role: "quant_analyst",
       volatilityRegime: "medium",
-      estimatedSharpe: 0,
-      winRate: 0,
+      sharpeEstimate: 0,
+      winRateFromHistory: 0,
       symbolScores: [],
       recommendation: "Kunde inte analysera. Avvakta.",
       confidence: "low",
@@ -356,18 +364,17 @@ Svara BARA med JSON.`,
 
   try {
     const parsed = JSON.parse(text) as Omit<OptionsReport, "role" | "rawText">;
-    log.agent(`[Options] IV-rank: ${parsed.ivRank}, Strategi: ${parsed.optimalStrategy}`);
+    log.agent(`[Options] ${parsed.ivAssessments?.length ?? 0} bedömningar, miljö: ${parsed.overallIvEnvironment}`);
     return { role: "options_strategist", ...parsed, rawText: text };
   } catch {
     log.warn("[Options] Parsningsfel.");
     return {
       role: "options_strategist",
-      ivRank: "normal",
-      optimalStrategy: "none",
-      opportunities: [],
+      ivAssessments: [],
+      overallIvEnvironment: "normal",
       rollOpportunities: [],
+      applicable: false,
       recommendation: "Kunde inte analysera optioner. Avvakta.",
-      confidence: "low",
       rawText: text,
     };
   }
@@ -425,16 +432,15 @@ Svara BARA med JSON.`,
 
   try {
     const parsed = JSON.parse(text) as Omit<ExecutionReport, "role" | "rawText">;
-    log.agent(`[Exekvering] ${parsed.recommendations.length} trades optimerade, marknad: ${parsed.marketConditions}`);
+    log.agent(`[Exekvering] ${parsed.tradeOptimizations?.length ?? 0} trades optimerade, brådska: ${parsed.urgency}`);
     return { role: "execution_optimizer", ...parsed, rawText: text };
   } catch {
     log.warn("[Exekvering] Parsningsfel.");
     return {
       role: "execution_optimizer",
-      recommendations: [],
-      marketConditions: "normal",
-      overallAdvice: "Kunde inte optimera. Använd market orders med försiktighet.",
-      confidence: "low",
+      tradeOptimizations: [],
+      generalAdvice: "Kunde inte optimera. Använd market orders med försiktighet.",
+      urgency: "low",
       rawText: text,
     };
   }
@@ -542,8 +548,8 @@ Svara BARA med JSON.`,
       diversificationScore: 0,
       sectorConcentration: [],
       rebalancingNeeded: false,
-      suggestedChanges: [],
-      assetAllocation: { crypto: 0, stocks: 0, options: 0, cash: 100 },
+      rebalancingActions: [],
+      cashAllocationPct: 100,
       recommendation: "Kunde inte analysera portfölj. Avvakta.",
       confidence: "low",
       rawText: text,

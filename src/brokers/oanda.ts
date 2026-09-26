@@ -76,10 +76,17 @@ export class OandaBroker implements BrokerAdapter {
     const totalValueUsdt = parseFloat(data.account.NAV);
     const cashUsdt = parseFloat(data.account.balance);
 
+    // Account-kontraktet har balances[] och updatedAt — inte cashUsdt/currency.
+    // Oandas kontovaluta läggs som en enda balanspost så den inte går förlorad.
+    const currency = data.account.currency ?? "USD";
     return {
+      balances: [{
+        asset: currency,
+        free: isNaN(cashUsdt) ? 0 : cashUsdt,
+        locked: 0,
+      }],
       totalValueUsdt: isNaN(totalValueUsdt) ? 0 : totalValueUsdt,
-      cashUsdt: isNaN(cashUsdt) ? 0 : cashUsdt,
-      currency: data.account.currency ?? "USD",
+      updatedAt: Date.now(),
     };
   }
 
@@ -99,19 +106,29 @@ export class OandaBroker implements BrokerAdapter {
       if (longQty !== 0) {
         positions.push({
           symbol: p.instrument,
+          // Oanda-instrument har formen EUR_USD — dela på understrecket.
+          baseAsset: p.instrument.split("_")[0] ?? p.instrument,
+          quoteAsset: p.instrument.split("_")[1] ?? "USD",
           quantity: longQty,
           avgEntryPrice: parseFloat(p.long.averagePrice),
           currentPrice: 0, // hämtas separat vid behov
           unrealizedPnlUsdt: parseFloat(p.long.unrealizedPL),
+          // Oanda returnerar ingen öppningstid på aggregerade positioner.
+          openedAt: 0,
         });
       }
       if (shortQty !== 0) {
         positions.push({
           symbol: p.instrument,
+          // Oanda-instrument har formen EUR_USD — dela på understrecket.
+          baseAsset: p.instrument.split("_")[0] ?? p.instrument,
+          quoteAsset: p.instrument.split("_")[1] ?? "USD",
           quantity: shortQty,
           avgEntryPrice: parseFloat(p.short.averagePrice),
           currentPrice: 0,
           unrealizedPnlUsdt: parseFloat(p.short.unrealizedPL),
+          // Oanda returnerar ingen öppningstid på aggregerade positioner.
+          openedAt: 0,
         });
       }
     }
@@ -137,15 +154,14 @@ export class OandaBroker implements BrokerAdapter {
     const ask = parseFloat(p.asks[0]?.price ?? "0");
     const mid = (bid + ask) / 2;
 
+    // Ticker-kontraktet har bara symbol/price/changePct24h/volume24h.
+    // bid och ask finns i mid-priset; behövs de separat hör de hemma i
+    // BookTicker, inte här.
     return {
       symbol,
       price: mid,
-      bid,
-      ask,
-      changePct24h: 0, // Oanda ger inte 24h direkt — kan beräknas från klines vid behov
-      volume24h: 0,
-      high24h: mid,
-      low24h: mid,
+      changePct24h: 0, // Oanda ger inte 24h direkt — kan beräknas från klines
+      volume24h: 0,    // Oanda rapporterar ingen volym på prisströmmen
     };
   }
 
@@ -230,6 +246,7 @@ export class OandaBroker implements BrokerAdapter {
         cummulativeQuoteQty: 0,
         avgFillPrice: 0,
         status: "PENDING",
+        timestamp: Date.now(),
       };
     }
 
@@ -246,6 +263,7 @@ export class OandaBroker implements BrokerAdapter {
       cummulativeQuoteQty: executedQty * fillPrice,
       avgFillPrice: fillPrice,
       status: "FILLED",
+      timestamp: Date.now(),
     };
   }
 

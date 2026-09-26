@@ -32,7 +32,8 @@ interface SymbolSnapshot {
   sma20: number | null;
   sma50: number | null;
   ema20: number | null;
-  macd: { macd: number | null; signal: number | null; histogram: number | null };
+  // null när historiken är för kort för att räkna MACD (kräver 35 ljus).
+  macd: { macd: number | null; signal: number | null; histogram: number | null } | null;
   atr14: number | null;
   trend: string; // "bullish" | "bearish" | "neutral"
   nearResistance: boolean;
@@ -160,7 +161,8 @@ export function formatSnapshotForPrompt(snap: MarketSnapshot): string {
     const rsiStr = s.rsi14 != null ? s.rsi14.toFixed(0) : "–";
     const sma20 = s.sma20 != null ? s.sma20.toFixed(s.price > 1000 ? 0 : 2) : "–";
     const sma50 = s.sma50 != null ? s.sma50.toFixed(s.price > 1000 ? 0 : 2) : "–";
-    const hist = s.macd.histogram != null ? (s.macd.histogram > 0 ? "+" : "") + s.macd.histogram.toFixed(2) : "–";
+    const histVal = s.macd?.histogram;
+    const hist = histVal != null ? (histVal > 0 ? "+" : "") + histVal.toFixed(2) : "–";
     const notes: string[] = [];
     if (s.nearResistance) notes.push("🔼 nära 24h-high");
     if (s.nearSupport) notes.push("🔽 nära 24h-low");
