@@ -130,6 +130,15 @@ async function postWithRetry(
 
       if (res.ok) return await res.json() as { answers: Record<string, JevAnswer>; model?: string };
 
+      // 401 betyder att nyckeln avvisades — inte att tjänsten är nere.
+      // Vanligaste orsaken: en Gateway-nyckel satt som TYPESAFE_API_KEY
+      // (eller tvärtom). De två rutterna tar olika nycklar.
+      if (res.status === 401) {
+        throw new Error(
+          "JEV: HTTP 401 — nyckeln avvisades. Är det en Vercel AI Gateway-nyckel? " +
+          "Flytta den i så fall till AI_GATEWAY_API_KEY.",
+        );
+      }
       if (res.status === 403) {
         const txt = await res.text().catch(() => "");
         if (txt.includes("customer_verification_required")) {
