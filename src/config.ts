@@ -18,7 +18,9 @@ const csvList = z
   );
 
 const schema = z.object({
-  ANTHROPIC_API_KEY: z.string().min(10, "ANTHROPIC_API_KEY saknas"),
+  // Krävs av agent-lagret, men inte för att starta och titta på marknadsdata.
+  // Saknas den loggas det när en agent faktiskt anropas.
+  ANTHROPIC_API_KEY: z.string().default(""),
 
   MODE: z.enum(["paper", "live"]).default("paper"),
   LIVE_TRADING_CONFIRMED: z
@@ -143,15 +145,27 @@ const hasBinance = !!(env.BINANCE_API_KEY && env.BINANCE_API_SECRET) ||
 const hasOanda = !!(env.OANDA_API_KEY && env.OANDA_ACCOUNT_ID);
 const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 
-if (!hasAlpaca && !hasBlofin && !hasBinance && !hasOanda) {
-  console.error(
-    "❌ Ingen broker konfigurerad. Fyll i minst Alpaca ELLER Blofin ELLER Binance-nycklar i .env.",
+// ── Vy-läge ─────────────────────────────────────────────────────────────
+// Utan mäklarnycklar startar systemet ändå, i vy-läge: publik marknadsdata,
+// diagram och signaler fungerar, men ingen order kan läggas eftersom ingen
+// broker finns att lägga den mot.
+//
+// Tidigare avbröts starten här. Det gjorde att man inte kunde titta på
+// systemet utan att först koppla ett riktigt konto — och att koppla ett
+// konto bara för att se ett diagram är fel ordning.
+const viewOnly = !hasAlpaca && !hasBlofin && !hasBinance && !hasOanda;
+if (viewOnly) {
+  console.warn(
+    "⚠️  Ingen broker konfigurerad — startar i VY-LÄGE.\n" +
+    "   Marknadsdata, diagram och signaler fungerar. Inga ordrar kan läggas.\n" +
+    "   Fyll i Alpaca-, Blofin- eller Binance-nycklar i .env för att handla.",
   );
-  process.exit(1);
 }
 
 export const config = {
   anthropicApiKey: env.ANTHROPIC_API_KEY,
+  /** Ingen broker konfigurerad — ordrar är omöjliga, inte bara avstängda. */
+  viewOnly,
   mode: env.MODE as Mode,
   executionMode: env.EXECUTION_MODE as ExecutionMode,
 
