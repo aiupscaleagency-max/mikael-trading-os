@@ -55,7 +55,21 @@ ogiltig nyckel:
 - `TYPESAFE_API_KEY` → `api.typesafe.ai` direkt. Kräver plats av TypeSafes
   väntelista, annars 401.
 
-Fallback-nyckel: macOS Keychain, tjänst `aiupscale.typesafe.api-key`.
+Fallback-nycklar i macOS Keychain: `aiupscale.vercel.gateway-key` (Gateway-rutten
+först) och `aiupscale.typesafe.api-key` (direkt-rutten först).
+
+### En nyckel, alla modeller
+
+Vercel AI Gateway är OpenAI-kompatibel. Samma nyckel och samma bas-URL
+(`https://ai-gateway.vercel.sh/v1`) betjänar JEV, Claude-modeller och
+GPT-modeller — alltså räcker en nyckel för Hermes, jev-loop-skillen och Codex.
+
+`./scripts/set-gateway-key.sh` tar emot nyckeln en gång med dold inmatning och
+lägger den i Keychain, i `.env`, i jev-loop-skillens `.env` och i
+`~/.config/aiupscale/gateway.env`. Den sista exporterar även `OPENAI_API_KEY`
+och `OPENAI_BASE_URL` så att OpenAI-kompatibla verktyg går via gatewayen.
+
+Lägg aldrig in nyckeln för hand och skriv aldrig ut dess värde.
 
 ## Regler för dig som arbetar här
 

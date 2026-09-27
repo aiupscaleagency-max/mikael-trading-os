@@ -130,6 +130,9 @@ function keyFromKeychain(service: string): string | null {
 /** Keychain-posten coachens skript skriver till. */
 const KEYCHAIN_SERVICE = "aiupscale.typesafe.api-key";
 
+/** Keychain-posten scripts/set-gateway-key.sh skriver till. */
+const GATEWAY_KEYCHAIN_SERVICE = "aiupscale.vercel.gateway-key";
+
 interface JevRoute { url: string; key: string; model: string; mode: JevMode }
 
 const asDirect = (key: string): JevRoute =>
@@ -160,6 +163,11 @@ function resolveRoutes(): JevRoute[] {
 
   const gw = process.env.AI_GATEWAY_API_KEY;
   if (gw) { add(asGateway(gw)); add(asDirect(gw)); }
+
+  // Delad Gateway-nyckel i Keychain. Den är utfärdad av Vercel, så
+  // Gateway-rutten provas först.
+  const gwKeychain = keyFromKeychain(GATEWAY_KEYCHAIN_SERVICE);
+  if (gwKeychain) { add(asGateway(gwKeychain)); add(asDirect(gwKeychain)); }
 
   // Annars: samma Keychain-post som coachens jev-verktyg använder.
   const fromKeychain = keyFromKeychain(KEYCHAIN_SERVICE);
