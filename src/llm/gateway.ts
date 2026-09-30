@@ -117,16 +117,31 @@ export function toGatewayModel(model: string): string {
   return model;
 }
 
+/** "anthropic/claude-opus-5.5" → "claude-opus-5-5" för Anthropics eget API. */
+export function toDirectModel(model: string): string {
+  return model.replace(/^anthropic\//, "").replace(/(\d+)\.(\d+)$/, "$1-$2");
+}
+
+function isRetryableElsewhere(err: unknown): boolean {
+  const status = (err as { status?: number } | null)?.status;
+  return status === 429 || status === 529 || (typeof status === "number" && status >= 500);
+}
+
 /**
- * Ersätter `new Anthropic({ apiKey })`. I gateway-läge pekar klienten på
- * Vercel och varje modell-id översätts automatiskt.
+ * Ersätter `new Anthropic({ apiKey })`.
+ *
+ * Med både gateway-nyckel och ANTHROPIC_API_KEY går Claude-modellerna direkt
+ * till Anthropic (inga Vercel-gränser på Opus 5.5), och bara övriga modeller
+ * som GPT-6 Astra går via Vercel. Svarar Anthropic 429/5xx provas samma modell
+ * via Vercel, och stoppar Vercel också tar reserven vid. Sätt
+ * LLM_CLAUDE_DIRECT=false för att skicka allt via Vercel.
  */
 export function createLlmClient(anthropicApiKey?: string | null): Anthropic {
   const key = gatewayKey();
+  const directKey = (anthropicApiKey || process.env.ANTHROPIC_API_KEY || "").trim();
   if (!key) {
-    const direct = anthropicApiKey || process.env.ANTHROPIC_API_KEY;
-    if (!direct) throw new Error("Varken AI_GATEWAY_API_KEY eller ANTHROPIC_API_KEY är satt");
-    return new Anthropic({ apiKey: direct });
+    if (!directKey) throw new Error("Varken AI_GATEWAY_API_KEY eller ANTHROPIC_API_KEY är satt");
+    return new Anthropic({ apiKey: directKey });
   }
 
   const client = new Anthropic({ apiKey: key, baseURL: GATEWAY_BASE_URL });
@@ -134,8 +149,13 @@ export function createLlmClient(anthropicApiKey?: string | null): Anthropic {
     body: Anthropic.MessageCreateParams,
     options?: Anthropic.RequestOptions,
   ) => unknown;
-  client.messages.create = (async (body: Anthropic.MessageCreateParams, options?: Anthropic.RequestOptions) => {
-    const model = toGatewayModel(body.model);
+  const directClient =
+    directKey && process.env.LLM_CLAUDE_DIRECT !== "false" ? new Anthropic({ apiKey: directKey }) : null;
+  const createDirect = directClient
+    ? (directClient.messages.create.bind(directClient.messages) as typeof create)
+    : null;
+
+  const viaGateway = async (body: Anthropic.MessageCreateParams, model: string, options?: Anthropic.RequestOptions) => {
     const fallback = fallbackModel(model);
     if (fallback && (blockedUntil.get(model) ?? 0) > Date.now()) {
       return create({ ...body, model: fallback }, options);
@@ -148,6 +168,19 @@ export function createLlmClient(anthropicApiKey?: string | null): Anthropic {
       log.warn(`[LLM] ${model} stoppades av Vercel (429) — kör reserv ${fallback} i ${FALLBACK_COOLDOWN_MS / 60_000} min`);
       return create({ ...body, model: fallback }, options);
     }
+  };
+
+  client.messages.create = (async (body: Anthropic.MessageCreateParams, options?: Anthropic.RequestOptions) => {
+    const model = toGatewayModel(body.model);
+    if (createDirect && model.startsWith("anthropic/")) {
+      try {
+        return await createDirect({ ...body, model: toDirectModel(model) }, options);
+      } catch (err) {
+        if (!isRetryableElsewhere(err)) throw err;
+        log.warn(`[LLM] Anthropic direkt svarade ${(err as { status?: number }).status} för ${model} — provar via Vercel`);
+      }
+    }
+    return viaGateway(body, model, options);
   }) as typeof client.messages.create;
   return client;
 }
