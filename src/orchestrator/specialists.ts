@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { createLlmClient, modelFor } from "../llm/gateway.js";
+import { createLlmClient, extractJson, modelFor } from "../llm/gateway.js";
 import { getMacroSnapshot } from "../data/macro.js";
 import { searchNews, getRedditTop } from "../data/news.js";
 import { getRecentPoliticianTrades, filterTopPerformers } from "../data/capitol.js";
@@ -48,7 +48,7 @@ export async function runMacroAnalyst(
   const client = createLlmClient(apiKey);
   const response = await client.messages.create({
     model: specialistModel(),
-    max_tokens: 1500,
+    max_tokens: 4000,
     system: `Du är en senior partner på McKinsey Global Institute som rådger sovereign wealth funds om hur makro-trender påverkar marknader. Din uppgift: omsätta makroekonomiska faktorer till konkret crypto/forex trading-action.
 
 ANALYSERA:
@@ -93,7 +93,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<MacroReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<MacroReport, "role" | "rawText">;
     log.agent(`[Makro] Regim: ${parsed.regime}, Confidence: ${parsed.confidence}`);
     return { role: "macro_analyst", ...parsed, rawText: text };
   } catch {
@@ -159,7 +159,7 @@ export async function runTechnicalAnalyst(
   const client = createLlmClient(apiKey);
   const response = await client.messages.create({
     model: specialistModel(),
-    max_tokens: 2000,
+    max_tokens: 4000,
     system: `Du är en senior kvantitativ trader i samma stil som Citadel: kombinerar teknisk analys med statistiska modeller för att tajma in/ut.
 Din uppgift: leverera en fullständig teknisk analys för varje symbol — inte bara siffror, utan tolkning + actionable plan.
 
@@ -220,7 +220,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<TechnicalReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<TechnicalReport, "role" | "rawText">;
     log.agent(`[Teknisk] Top pick: ${parsed.topPick ?? "ingen"}, ${parsed.analyses.length} symboler`);
     return { role: "technical_analyst", ...parsed, rawText: text };
   } catch {
@@ -285,7 +285,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<SentimentReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<SentimentReport, "role" | "rawText">;
     log.agent(`[Sentiment] ${parsed.overallSentiment}, contrary=${parsed.contrarySignal}`);
     return { role: "sentiment_analyst", ...parsed, rawText: text };
   } catch {

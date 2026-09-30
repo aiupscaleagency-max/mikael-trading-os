@@ -223,14 +223,14 @@ export async function runOrchestratedTurn(params: {
   log.info(
     `╠══ Specialister klara på ${(specialistMs / 1000).toFixed(1)}s + exec ${(execMs / 1000).toFixed(1)}s ══╣\n` +
     `  Makro: ${macro.regime} (${macro.confidence})\n` +
-    `  Teknisk: ${technical.analyses.length} symboler, top=${technical.topPick ?? "–"}\n` +
+    `  Teknisk: ${technical.analyses?.length ?? 0} symboler, top=${technical.topPick ?? "–"}\n` +
     `  Sentiment: ${sentiment.overallSentiment}, contrary=${sentiment.contrarySignal}\n` +
     `  Risk: ${riskReport.riskLevel}, heat=${riskReport.portfolioHeatPct}%\n` +
     `  Kvant: vol=${quant.volatilityRegime}, sharpe=${quant.sharpeEstimate}\n` +
     `  Options: IV=${options.overallIvEnvironment}, applicable=${options.applicable}\n` +
     `  Portfölj: diversifiering=${portfolio.diversificationScore}, rebalans=${portfolio.rebalancingNeeded}\n` +
     `  Advisor: ${advisor.strategicOutlook}, cykel=${advisor.marketCyclePhase}\n` +
-    `  Exekvering: ${execution.tradeOptimizations.length} trades, urgency=${execution.urgency}`,
+    `  Exekvering: ${execution.tradeOptimizations?.length ?? 0} trades, urgency=${execution.urgency}`,
   );
 
   const allReports: AllReports = {

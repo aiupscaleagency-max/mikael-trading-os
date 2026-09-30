@@ -246,6 +246,12 @@ Avsluta alltid med en "Rule of 3"-sammanfattning:
 - Mikael bestämmer insatserna (via config). Du bestämmer timing och exit.`;
 }
 
+/** Reservtext när en specialist svarat med andra fält än schemat. */
+function rawReport(name: string, report: { rawText?: string } | undefined): string {
+  const raw = (report?.rawText ?? "").trim().slice(0, 2500);
+  return `── ${name.toUpperCase()} (rådata, avvek från schemat) ──\n${raw || "(tom)"}\n\n`;
+}
+
 function formatAllReports(reports: AllReports): string {
   const { research, macro, technical, sentiment, risk, quant, options, execution, portfolio, advisor } = reports;
 
@@ -262,93 +268,165 @@ function formatAllReports(reports: AllReports): string {
     out += `\n`;
   }
 
-  // 1. Makro
-  out += `── [1/9] MAKRO-ANALYTIKER ──\n`;
-  out += `Regim: ${macro.regime.toUpperCase()} (confidence: ${macro.confidence})\n`;
-  out += `Nyckelfaktorer: ${macro.keyFactors.join(" | ")}\n`;
-  out += `Olja: ${macro.oilSummary} | VIX: ${macro.vixLevel} | Dollar: ${macro.dollarTrend}\n`;
-  out += `Crypto F&G: ${macro.cryptoFearGreed}\n`;
-  out += `Rekommendation: ${macro.recommendation}\n\n`;
-
-  // 2. Teknisk
-  out += `── [2/9] TEKNISK ANALYTIKER ──\n`;
-  out += `Top pick: ${technical.topPick ?? "Ingen"}\n`;
-  for (const a of technical.analyses) {
-    out += `  ${a.symbol}: ${a.bias} (score ${a.score}) — ${a.keySignals.join(", ")}`;
-    if (a.entryZone) out += ` | Entry: ${a.entryZone.price}, SL: ${a.entryZone.stopLoss}`;
-    if (a.targetZone) out += ` | TP: ${a.targetZone.tp1}/${a.targetZone.tp2}/${a.targetZone.tp3}`;
-    out += `\n`;
-  }
-  out += `\n`;
-
-  // 3. Sentiment
-  out += `── [3/9] SENTIMENT-ANALYTIKER ──\n`;
-  out += `Stämning: ${sentiment.overallSentiment}\n`;
-  out += `Narrativ: ${sentiment.topNarratives.join(" | ")}\n`;
-  out += `Politiker: ${sentiment.politicianActivity}\n`;
-  out += `Contrary signal: ${sentiment.contrarySignal ? "JA — möjlig reversal" : "Nej"}\n\n`;
-
-  // 4. Risk
-  out += `── [4/9] RISK-ANALYTIKER ──\n`;
-  out += `Risknivå: ${risk.riskLevel.toUpperCase()} | Portföljhetta: ${risk.portfolioHeatPct}%\n`;
-  out += `Korrelation: ${risk.correlationRisk} — ${risk.correlationDetails}\n`;
-  out += `Max drawdown: ${risk.maxDrawdownScenario.description} (${risk.maxDrawdownScenario.estimatedLossUsd} USD / ${risk.maxDrawdownScenario.estimatedLossPct}%)\n`;
-  out += `Positionsstorlek: max ${risk.suggestedPositionSizing.maxNewPositionUsd} USD — ${risk.suggestedPositionSizing.reasoning}\n`;
-  if (risk.warnings.length > 0) out += `VARNINGAR: ${risk.warnings.join(" | ")}\n`;
-  out += `Rekommendation: ${risk.recommendation}\n\n`;
-
-  // 5. Kvant
-  out += `── [5/9] KVANT-ANALYTIKER ──\n`;
-  out += `Volatilitet: ${quant.volatilityRegime} | Sharpe: ${quant.sharpeEstimate} | Win rate: ${(quant.winRateFromHistory * 100).toFixed(0)}%\n`;
-  for (const s of quant.symbolScores) {
-    out += `  ${s.symbol}: trend=${s.trendScore} meanRev=${s.meanReversionScore} vol=${s.volatilityPct}% regime=${s.regime}\n`;
-  }
-  out += `Rekommendation: ${quant.recommendation}\n\n`;
-
-  // 6. Options
-  out += `── [6/9] OPTIONS-STRATEG ──\n`;
-  if (!options.applicable) {
-    out += `Ej tillämpbar (brokern stödjer inte optioner)\n\n`;
-  } else {
-    out += `IV-miljö: ${options.overallIvEnvironment}\n`;
-    for (const iv of options.ivAssessments) {
-      out += `  ${iv.symbol}: IV=${iv.ivRank} strategi=${iv.optimalStrategy} — ${iv.strategyDetails}\n`;
-    }
-    if (options.rollOpportunities.length > 0) out += `Roll-möjligheter: ${options.rollOpportunities.join(" | ")}\n`;
-    out += `Rekommendation: ${options.recommendation}\n\n`;
-  }
-
-  // 7. Portfölj
-  out += `── [7/9] PORTFÖLJ-STRATEG ──\n`;
-  out += `Diversifiering: ${portfolio.diversificationScore}/100 | Rebalansering: ${portfolio.rebalancingNeeded ? "JA" : "Nej"}\n`;
-  out += `Cash-allokering: ${portfolio.cashAllocationPct}%\n`;
-  for (const s of portfolio.sectorConcentration) {
-    out += `  ${s.sector}: ${s.weightPct}% (risk: ${s.risk})\n`;
-  }
-  if (portfolio.rebalancingActions.length > 0) {
-    out += `Föreslagna ändringar:\n`;
-    for (const a of portfolio.rebalancingActions) {
-      out += `  ${a.action} ${a.symbol}: ${a.currentWeightPct}% → ${a.targetWeightPct}% — ${a.reasoning}\n`;
+  {
+    const mark = out.length;
+    try {
+      // 1. Makro
+      out += `── [1/9] MAKRO-ANALYTIKER ──\n`;
+      out += `Regim: ${macro.regime.toUpperCase()} (confidence: ${macro.confidence})\n`;
+      out += `Nyckelfaktorer: ${macro.keyFactors.join(" | ")}\n`;
+      out += `Olja: ${macro.oilSummary} | VIX: ${macro.vixLevel} | Dollar: ${macro.dollarTrend}\n`;
+      out += `Crypto F&G: ${macro.cryptoFearGreed}\n`;
+      out += `Rekommendation: ${macro.recommendation}\n\n`;
+    } catch {
+      // Rapporten följde inte schemat — ge Head rådatan i stället för att krascha turen
+      out = out.slice(0, mark) + rawReport("macro", macro);
     }
   }
-  out += `Rekommendation: ${portfolio.recommendation}\n\n`;
 
-  // 8. Exekvering
-  out += `── [8/9] EXEKVERINGS-OPTIMERARE ──\n`;
-  out += `Urgency: ${execution.urgency}\n`;
-  for (const t of execution.tradeOptimizations) {
-    out += `  ${t.symbol}: ${t.orderType} ${t.timing} ${t.executionStyle} (splits=${t.dcaSplits}, slippage=${t.expectedSlippageBps}bps) — ${t.reasoning}\n`;
+  {
+    const mark = out.length;
+    try {
+      // 2. Teknisk
+      out += `── [2/9] TEKNISK ANALYTIKER ──\n`;
+      out += `Top pick: ${technical.topPick ?? "Ingen"}\n`;
+      for (const a of technical.analyses) {
+        out += `  ${a.symbol}: ${a.bias} (score ${a.score}) — ${a.keySignals.join(", ")}`;
+        if (a.entryZone) out += ` | Entry: ${a.entryZone.price}, SL: ${a.entryZone.stopLoss}`;
+        if (a.targetZone) out += ` | TP: ${a.targetZone.tp1}/${a.targetZone.tp2}/${a.targetZone.tp3}`;
+        out += `\n`;
+      }
+      out += `\n`;
+    } catch {
+      // Rapporten följde inte schemat — ge Head rådatan i stället för att krascha turen
+      out = out.slice(0, mark) + rawReport("technical", technical);
+    }
   }
-  out += `Råd: ${execution.generalAdvice}\n\n`;
 
-  // 9. Advisor
-  out += `── [9/9] CLAUDE ADVISOR ──\n`;
-  out += `Outlook: ${advisor.strategicOutlook.toUpperCase()} | Marknadscykel: ${advisor.marketCyclePhase}\n`;
-  out += `Insikter: ${advisor.keyInsights.join(" | ")}\n`;
-  if (advisor.blindSpots.length > 0) out += `Blinda fläckar: ${advisor.blindSpots.join(" | ")}\n`;
-  if (advisor.behavioralWarnings.length > 0) out += `Beteende-varningar: ${advisor.behavioralWarnings.join(" | ")}\n`;
-  out += `Contrarian: ${advisor.contrarian}\n`;
-  out += `Portföljråd: ${advisor.portfolioAdvice}\n\n`;
+  {
+    const mark = out.length;
+    try {
+      // 3. Sentiment
+      out += `── [3/9] SENTIMENT-ANALYTIKER ──\n`;
+      out += `Stämning: ${sentiment.overallSentiment}\n`;
+      out += `Narrativ: ${sentiment.topNarratives.join(" | ")}\n`;
+      out += `Politiker: ${sentiment.politicianActivity}\n`;
+      out += `Contrary signal: ${sentiment.contrarySignal ? "JA — möjlig reversal" : "Nej"}\n\n`;
+    } catch {
+      // Rapporten följde inte schemat — ge Head rådatan i stället för att krascha turen
+      out = out.slice(0, mark) + rawReport("sentiment", sentiment);
+    }
+  }
+
+  {
+    const mark = out.length;
+    try {
+      // 4. Risk
+      out += `── [4/9] RISK-ANALYTIKER ──\n`;
+      out += `Risknivå: ${risk.riskLevel.toUpperCase()} | Portföljhetta: ${risk.portfolioHeatPct}%\n`;
+      out += `Korrelation: ${risk.correlationRisk} — ${risk.correlationDetails}\n`;
+      out += `Max drawdown: ${risk.maxDrawdownScenario.description} (${risk.maxDrawdownScenario.estimatedLossUsd} USD / ${risk.maxDrawdownScenario.estimatedLossPct}%)\n`;
+      out += `Positionsstorlek: max ${risk.suggestedPositionSizing.maxNewPositionUsd} USD — ${risk.suggestedPositionSizing.reasoning}\n`;
+      if (risk.warnings.length > 0) out += `VARNINGAR: ${risk.warnings.join(" | ")}\n`;
+      out += `Rekommendation: ${risk.recommendation}\n\n`;
+    } catch {
+      // Rapporten följde inte schemat — ge Head rådatan i stället för att krascha turen
+      out = out.slice(0, mark) + rawReport("risk", risk);
+    }
+  }
+
+  {
+    const mark = out.length;
+    try {
+      // 5. Kvant
+      out += `── [5/9] KVANT-ANALYTIKER ──\n`;
+      out += `Volatilitet: ${quant.volatilityRegime} | Sharpe: ${quant.sharpeEstimate} | Win rate: ${(quant.winRateFromHistory * 100).toFixed(0)}%\n`;
+      for (const s of quant.symbolScores) {
+        out += `  ${s.symbol}: trend=${s.trendScore} meanRev=${s.meanReversionScore} vol=${s.volatilityPct}% regime=${s.regime}\n`;
+      }
+      out += `Rekommendation: ${quant.recommendation}\n\n`;
+    } catch {
+      // Rapporten följde inte schemat — ge Head rådatan i stället för att krascha turen
+      out = out.slice(0, mark) + rawReport("quant", quant);
+    }
+  }
+
+  {
+    const mark = out.length;
+    try {
+      // 6. Options
+      out += `── [6/9] OPTIONS-STRATEG ──\n`;
+      if (!options.applicable) {
+        out += `Ej tillämpbar (brokern stödjer inte optioner)\n\n`;
+      } else {
+        out += `IV-miljö: ${options.overallIvEnvironment}\n`;
+        for (const iv of options.ivAssessments) {
+          out += `  ${iv.symbol}: IV=${iv.ivRank} strategi=${iv.optimalStrategy} — ${iv.strategyDetails}\n`;
+        }
+        if (options.rollOpportunities.length > 0) out += `Roll-möjligheter: ${options.rollOpportunities.join(" | ")}\n`;
+        out += `Rekommendation: ${options.recommendation}\n\n`;
+      }
+    } catch {
+      // Rapporten följde inte schemat — ge Head rådatan i stället för att krascha turen
+      out = out.slice(0, mark) + rawReport("options", options);
+    }
+  }
+
+  {
+    const mark = out.length;
+    try {
+      // 7. Portfölj
+      out += `── [7/9] PORTFÖLJ-STRATEG ──\n`;
+      out += `Diversifiering: ${portfolio.diversificationScore}/100 | Rebalansering: ${portfolio.rebalancingNeeded ? "JA" : "Nej"}\n`;
+      out += `Cash-allokering: ${portfolio.cashAllocationPct}%\n`;
+      for (const s of portfolio.sectorConcentration) {
+        out += `  ${s.sector}: ${s.weightPct}% (risk: ${s.risk})\n`;
+      }
+      if (portfolio.rebalancingActions.length > 0) {
+        out += `Föreslagna ändringar:\n`;
+        for (const a of portfolio.rebalancingActions) {
+          out += `  ${a.action} ${a.symbol}: ${a.currentWeightPct}% → ${a.targetWeightPct}% — ${a.reasoning}\n`;
+        }
+      }
+      out += `Rekommendation: ${portfolio.recommendation}\n\n`;
+    } catch {
+      // Rapporten följde inte schemat — ge Head rådatan i stället för att krascha turen
+      out = out.slice(0, mark) + rawReport("portfolio", portfolio);
+    }
+  }
+
+  {
+    const mark = out.length;
+    try {
+      // 8. Exekvering
+      out += `── [8/9] EXEKVERINGS-OPTIMERARE ──\n`;
+      out += `Urgency: ${execution.urgency}\n`;
+      for (const t of execution.tradeOptimizations) {
+        out += `  ${t.symbol}: ${t.orderType} ${t.timing} ${t.executionStyle} (splits=${t.dcaSplits}, slippage=${t.expectedSlippageBps}bps) — ${t.reasoning}\n`;
+      }
+      out += `Råd: ${execution.generalAdvice}\n\n`;
+    } catch {
+      // Rapporten följde inte schemat — ge Head rådatan i stället för att krascha turen
+      out = out.slice(0, mark) + rawReport("execution", execution);
+    }
+  }
+
+  {
+    const mark = out.length;
+    try {
+      // 9. Advisor
+      out += `── [9/9] CLAUDE ADVISOR ──\n`;
+      out += `Outlook: ${advisor.strategicOutlook.toUpperCase()} | Marknadscykel: ${advisor.marketCyclePhase}\n`;
+      out += `Insikter: ${advisor.keyInsights.join(" | ")}\n`;
+      if (advisor.blindSpots.length > 0) out += `Blinda fläckar: ${advisor.blindSpots.join(" | ")}\n`;
+      if (advisor.behavioralWarnings.length > 0) out += `Beteende-varningar: ${advisor.behavioralWarnings.join(" | ")}\n`;
+      out += `Contrarian: ${advisor.contrarian}\n`;
+      out += `Portföljråd: ${advisor.portfolioAdvice}\n\n`;
+    } catch {
+      // Rapporten följde inte schemat — ge Head rådatan i stället för att krascha turen
+      out = out.slice(0, mark) + rawReport("advisor", advisor);
+    }
+  }
 
   out += `═══ DITT UPPDRAG ═══\n`;
   out += `Syntetisera ALLA 9 rapporter. Vikta risk + advisor högst. Lägg order om tydlig setup, annars HOLD.`;

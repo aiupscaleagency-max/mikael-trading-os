@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { createLlmClient, modelFor } from "../llm/gateway.js";
+import { createLlmClient, extractJson, modelFor } from "../llm/gateway.js";
 import { trackClaudeCall } from "../cost/tracker.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { computeIndicators } from "../indicators/ta.js";
@@ -120,7 +120,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<RiskReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<RiskReport, "role" | "rawText">;
     log.agent(`[Risk] Nivå: ${parsed.riskLevel}, Heat: ${parsed.portfolioHeatPct}%`);
     return { role: "risk_analyst", ...parsed, rawText: text };
   } catch {
@@ -253,7 +253,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<QuantReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<QuantReport, "role" | "rawText">;
     log.agent(`[Kvant] Regim: ${parsed.volatilityRegime}, Sharpe: ${parsed.sharpeEstimate}`);
     return { role: "quant_analyst", ...parsed, rawText: text };
   } catch {
@@ -364,7 +364,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<OptionsReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<OptionsReport, "role" | "rawText">;
     log.agent(`[Options] ${parsed.ivAssessments?.length ?? 0} bedömningar, miljö: ${parsed.overallIvEnvironment}`);
     return { role: "options_strategist", ...parsed, rawText: text };
   } catch {
@@ -432,7 +432,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<ExecutionReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<ExecutionReport, "role" | "rawText">;
     log.agent(`[Exekvering] ${parsed.tradeOptimizations?.length ?? 0} trades optimerade, brådska: ${parsed.urgency}`);
     return { role: "execution_optimizer", ...parsed, rawText: text };
   } catch {
@@ -539,7 +539,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<PortfolioReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<PortfolioReport, "role" | "rawText">;
     log.agent(`[Portfölj] Diversifiering: ${parsed.diversificationScore}/100, Rebalansering: ${parsed.rebalancingNeeded}`);
     return { role: "portfolio_strategist", ...parsed, rawText: text };
   } catch {
