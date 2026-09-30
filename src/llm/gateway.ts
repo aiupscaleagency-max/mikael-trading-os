@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import Anthropic from "@anthropic-ai/sdk";
+import { log } from "../logger.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  LLM-klient — Vercel AI Gateway eller Anthropic direkt.
@@ -29,6 +30,31 @@ const GATEWAY_MODELS: Record<LlmRole, string> = {
   specialist: "anthropic/claude-haiku-4.5",
   monitor: "anthropic/claude-opus-5.5",
 };
+
+// Reserv när Vercel stoppar en modell med 429 ("No access to this model at
+// this time"). Vercel har låga gränser på de nyaste modellerna för vissa
+// konton: första anropet går igenom, nästa stoppas. Då kör turen vidare på
+// reservmodellen i stället för att Head kraschar. Överstyr med
+// LLM_MODEL_FALLBACK, eller stäng av med LLM_MODEL_FALLBACK=off.
+const GATEWAY_FALLBACKS: Record<string, string> = {
+  "anthropic/claude-opus-5.5": "anthropic/claude-opus-4.8",
+};
+// Efter en 429 går modellen direkt till reserven en stund, så att varje
+// iteration i Head-loopen inte först slår i spärren igen.
+const FALLBACK_COOLDOWN_MS = 10 * 60_000;
+const blockedUntil = new Map<string, number>();
+
+export function fallbackModel(model: string): string | undefined {
+  const override = process.env.LLM_MODEL_FALLBACK?.trim();
+  if (override === "off") return undefined;
+  const fallback = GATEWAY_FALLBACKS[model];
+  if (!fallback) return undefined;
+  return override || fallback;
+}
+
+function isRateLimited(err: unknown): boolean {
+  return (err as { status?: number } | null)?.status === 429;
+}
 
 const ENV_OVERRIDE: Record<LlmRole, string> = {
   head: "LLM_MODEL_HEAD",
@@ -108,8 +134,21 @@ export function createLlmClient(anthropicApiKey?: string | null): Anthropic {
     body: Anthropic.MessageCreateParams,
     options?: Anthropic.RequestOptions,
   ) => unknown;
-  client.messages.create = ((body: Anthropic.MessageCreateParams, options?: Anthropic.RequestOptions) =>
-    create({ ...body, model: toGatewayModel(body.model) }, options)) as typeof client.messages.create;
+  client.messages.create = (async (body: Anthropic.MessageCreateParams, options?: Anthropic.RequestOptions) => {
+    const model = toGatewayModel(body.model);
+    const fallback = fallbackModel(model);
+    if (fallback && (blockedUntil.get(model) ?? 0) > Date.now()) {
+      return create({ ...body, model: fallback }, options);
+    }
+    try {
+      return await create({ ...body, model }, options);
+    } catch (err) {
+      if (!fallback || !isRateLimited(err)) throw err;
+      blockedUntil.set(model, Date.now() + FALLBACK_COOLDOWN_MS);
+      log.warn(`[LLM] ${model} stoppades av Vercel (429) — kör reserv ${fallback} i ${FALLBACK_COOLDOWN_MS / 60_000} min`);
+      return create({ ...body, model: fallback }, options);
+    }
+  }) as typeof client.messages.create;
   return client;
 }
 

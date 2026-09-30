@@ -103,7 +103,7 @@ export async function runHeadTrader(params: {
       tools: toolDefinitions(),
       messages,
     });
-    trackClaudeCall("head", headTraderModel(), response.usage).catch(() => {});
+    trackClaudeCall("head", response.model || headTraderModel(), response.usage).catch(() => {});
 
     messages.push({ role: "assistant", content: response.content });
 
