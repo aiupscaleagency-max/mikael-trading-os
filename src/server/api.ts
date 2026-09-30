@@ -54,6 +54,22 @@ const AUTH_EXEMPT_PATHS = new Set([
   "/api/auth/logout",
 ]);
 
+// TILLFÄLLIGT: DASHBOARD_NO_LOGIN=true släpper in dashboarden utan inloggning,
+// men bara från den egna datorn. Tunnlar (X-Forwarded-For), andra värdnamn
+// (DNS-rebinding) och andra webbsidor i webbläsaren (Origin) nekas fortfarande.
+// Ta bort raden i .env för att slå på inloggningen igen.
+function isLocalNoLogin(req: http.IncomingMessage): boolean {
+  if (process.env.DASHBOARD_NO_LOGIN !== "true") return false;
+  const ip = req.socket.remoteAddress ?? "";
+  if (ip !== "127.0.0.1" && ip !== "::1" && ip !== "::ffff:127.0.0.1") return false;
+  if (req.headers["x-forwarded-for"] || req.headers["forwarded"]) return false;
+  const host = (req.headers.host ?? "").replace(/:\d+$/, "");
+  if (host !== "localhost" && host !== "127.0.0.1") return false;
+  const origin = req.headers.origin;
+  if (origin && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return false;
+  return true;
+}
+
 function parseCookies(header: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!header) return out;
@@ -629,7 +645,7 @@ export function startServer(
           jsonStatus(res, 401, { error: "unauthorized" });
           return;
         }
-      } else if (url.pathname.startsWith("/api/") && !AUTH_EXEMPT_PATHS.has(url.pathname)) {
+      } else if (url.pathname.startsWith("/api/") && !AUTH_EXEMPT_PATHS.has(url.pathname) && !isLocalNoLogin(req)) {
         const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
         const session = await verifyAccessToken(token);
         if (!session) {
@@ -1736,6 +1752,9 @@ Regler:
 
   server.listen(port, () => {
     log.ok(`Dashboard: http://localhost:${port}`);
+    if (process.env.DASHBOARD_NO_LOGIN === "true") {
+      log.warn("DASHBOARD_NO_LOGIN=true — dashboarden öppen utan inloggning, bara från den här datorn.");
+    }
     // Sätt upp Telegram-webhook om token finns
     const publicUrl = process.env.PUBLIC_URL || "https://trading.aiupscale.agency";
     if (process.env.TELEGRAM_BOT_TOKEN && publicUrl.startsWith("https://")) {
