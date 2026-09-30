@@ -39,21 +39,12 @@ const GATEWAY_MODELS: Record<LlmRole, string> = {
 const GATEWAY_FALLBACKS: Record<string, string> = {
   "anthropic/claude-opus-5.5": "anthropic/claude-opus-4.8",
 };
-// Efter en 429 går modellen direkt till reserven en stund, så att varje
-// iteration i Head-loopen inte först slår i spärren igen.
-const FALLBACK_COOLDOWN_MS = 10 * 60_000;
-const blockedUntil = new Map<string, number>();
-
 export function fallbackModel(model: string): string | undefined {
   const override = process.env.LLM_MODEL_FALLBACK?.trim();
   if (override === "off") return undefined;
   const fallback = GATEWAY_FALLBACKS[model];
   if (!fallback) return undefined;
   return override || fallback;
-}
-
-function isRateLimited(err: unknown): boolean {
-  return (err as { status?: number } | null)?.status === 429;
 }
 
 const ENV_OVERRIDE: Record<LlmRole, string> = {
@@ -89,8 +80,13 @@ function gatewayKey(): string | undefined {
   return gatewayKeyFromKeychain() ?? undefined;
 }
 
+function openRouterKey(): string | undefined {
+  return process.env.OPENROUTER_API_KEY?.trim() || undefined;
+}
+
+/** True när modellanropen går via en gateway (Vercel eller OpenRouter) med "provider/modell"-id:n. */
 export function usingGateway(): boolean {
-  return gatewayKey() !== undefined;
+  return gatewayKey() !== undefined || openRouterKey() !== undefined;
 }
 
 export function hasLlmCredentials(): boolean {
@@ -122,65 +118,113 @@ export function toDirectModel(model: string): string {
   return model.replace(/^anthropic\//, "").replace(/(\d+)\.(\d+)$/, "$1-$2");
 }
 
-function isRetryableElsewhere(err: unknown): boolean {
-  const status = (err as { status?: number } | null)?.status;
-  return status === 429 || status === 529 || (typeof status === "number" && status >= 500);
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api";
+
+type Create = (body: Anthropic.MessageCreateParams, options?: Anthropic.RequestOptions) => Promise<unknown>;
+
+interface Route {
+  name: string;
+  /** Tar rutten den här modellen? (Anthropic direkt tar bara Claude.) */
+  accepts: (model: string) => boolean;
+  toModel: (model: string) => string;
+  create: Create;
+}
+
+// En rutt som svarat 401/402/403/429 (eller 400 "credit balance too low") på en modell hoppas över en stund, så
+// att varje iteration i Head-loopen inte slår i samma spärr igen.
+const ROUTE_COOLDOWN_MS = 10 * 60_000;
+const routeBlockedUntil = new Map<string, number>();
+
+function statusOf(err: unknown): number | undefined {
+  return (err as { status?: number } | null)?.status;
+}
+
+function bind(client: Anthropic): Create {
+  return client.messages.create.bind(client.messages) as Create;
+}
+
+function buildRoutes(directKey: string): Route[] {
+  const routes: Route[] = [];
+  if (directKey && process.env.LLM_CLAUDE_DIRECT !== "false") {
+    routes.push({
+      name: "anthropic",
+      accepts: (m) => m.startsWith("anthropic/"),
+      toModel: toDirectModel,
+      create: bind(new Anthropic({ apiKey: directKey })),
+    });
+  }
+  const vercel = gatewayKey();
+  if (vercel) {
+    routes.push({
+      name: "vercel",
+      accepts: () => true,
+      toModel: (m) => m,
+      create: bind(new Anthropic({ apiKey: vercel, baseURL: GATEWAY_BASE_URL })),
+    });
+  }
+  const openRouter = openRouterKey();
+  if (openRouter) {
+    routes.push({
+      name: "openrouter",
+      accepts: () => true,
+      toModel: (m) => m,
+      create: bind(new Anthropic({ apiKey: null, authToken: openRouter, baseURL: OPENROUTER_BASE_URL })),
+    });
+  }
+  return routes;
 }
 
 /**
  * Ersätter `new Anthropic({ apiKey })`.
  *
- * Med både gateway-nyckel och ANTHROPIC_API_KEY går Claude-modellerna direkt
- * till Anthropic (inga Vercel-gränser på Opus 5.5), och bara övriga modeller
- * som GPT-6 Astra går via Vercel. Svarar Anthropic 429/5xx provas samma modell
- * via Vercel, och stoppar Vercel också tar reserven vid. Sätt
- * LLM_CLAUDE_DIRECT=false för att skicka allt via Vercel.
+ * Varje anrop provar rutterna i ordning tills en svarar:
+ *   1. Anthropic direkt (bara Claude-modeller, kräver ANTHROPIC_API_KEY med krediter)
+ *   2. Vercel AI Gateway (AI_GATEWAY_API_KEY)
+ *   3. OpenRouter (OPENROUTER_API_KEY)
+ * Stoppar alla rutter en Opus 5.5-förfrågan körs samma kedja med reserven
+ * (Opus 4.8). Saknas både gateway- och OpenRouter-nyckel används Anthropic
+ * direkt precis som förut.
  */
 export function createLlmClient(anthropicApiKey?: string | null): Anthropic {
-  const key = gatewayKey();
   const directKey = (anthropicApiKey || process.env.ANTHROPIC_API_KEY || "").trim();
-  if (!key) {
-    if (!directKey) throw new Error("Varken AI_GATEWAY_API_KEY eller ANTHROPIC_API_KEY är satt");
+  if (!usingGateway()) {
+    if (!directKey) throw new Error("Varken AI_GATEWAY_API_KEY, OPENROUTER_API_KEY eller ANTHROPIC_API_KEY är satt");
     return new Anthropic({ apiKey: directKey });
   }
 
-  const client = new Anthropic({ apiKey: key, baseURL: GATEWAY_BASE_URL });
-  const create = client.messages.create.bind(client.messages) as (
-    body: Anthropic.MessageCreateParams,
-    options?: Anthropic.RequestOptions,
-  ) => unknown;
-  const directClient =
-    directKey && process.env.LLM_CLAUDE_DIRECT !== "false" ? new Anthropic({ apiKey: directKey }) : null;
-  const createDirect = directClient
-    ? (directClient.messages.create.bind(directClient.messages) as typeof create)
-    : null;
+  const routes = buildRoutes(directKey);
+  const client = new Anthropic({ apiKey: "unused", baseURL: GATEWAY_BASE_URL });
 
-  const viaGateway = async (body: Anthropic.MessageCreateParams, model: string, options?: Anthropic.RequestOptions) => {
-    const fallback = fallbackModel(model);
-    if (fallback && (blockedUntil.get(model) ?? 0) > Date.now()) {
-      return create({ ...body, model: fallback }, options);
+  const tryRoutes = async (body: Anthropic.MessageCreateParams, model: string, options?: Anthropic.RequestOptions) => {
+    let lastErr: unknown;
+    for (const route of routes) {
+      if (!route.accepts(model)) continue;
+      const key = `${route.name}:${model}`;
+      if ((routeBlockedUntil.get(key) ?? 0) > Date.now()) continue;
+      try {
+        return await route.create({ ...body, model: route.toModel(model) }, options);
+      } catch (err) {
+        const status = statusOf(err);
+        if (status === undefined) throw err; // nätverksfel i koden, inte ett svar
+        lastErr = err;
+        const noCredits = status === 400 && /credit/i.test(String((err as Error).message));
+        if (noCredits || [401, 402, 403, 429].includes(status)) routeBlockedUntil.set(key, Date.now() + ROUTE_COOLDOWN_MS);
+        log.warn(`[LLM] ${route.name} svarade ${status} för ${model} — provar nästa väg`);
+      }
     }
-    try {
-      return await create({ ...body, model }, options);
-    } catch (err) {
-      if (!fallback || !isRateLimited(err)) throw err;
-      blockedUntil.set(model, Date.now() + FALLBACK_COOLDOWN_MS);
-      log.warn(`[LLM] ${model} stoppades av Vercel (429) — kör reserv ${fallback} i ${FALLBACK_COOLDOWN_MS / 60_000} min`);
-      return create({ ...body, model: fallback }, options);
-    }
+    throw lastErr ?? new Error(`Ingen LLM-väg tar modellen ${model}`);
   };
 
   client.messages.create = (async (body: Anthropic.MessageCreateParams, options?: Anthropic.RequestOptions) => {
     const model = toGatewayModel(body.model);
-    if (createDirect && model.startsWith("anthropic/")) {
-      try {
-        return await createDirect({ ...body, model: toDirectModel(model) }, options);
-      } catch (err) {
-        if (!isRetryableElsewhere(err)) throw err;
-        log.warn(`[LLM] Anthropic direkt svarade ${(err as { status?: number }).status} för ${model} — provar via Vercel`);
-      }
+    try {
+      return await tryRoutes(body, model, options);
+    } catch (err) {
+      const fallback = fallbackModel(model);
+      if (!fallback) throw err;
+      log.warn(`[LLM] Alla vägar stoppade ${model} — kör reserv ${fallback}`);
+      return tryRoutes(body, fallback, options);
     }
-    return viaGateway(body, model, options);
   }) as typeof client.messages.create;
   return client;
 }
