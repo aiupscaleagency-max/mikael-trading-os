@@ -16,6 +16,7 @@ import {
   runPortfolioStrategist,
 } from "./advancedSpecialists.js";
 import { runClaudeAdvisor } from "./advisor.js";
+import { jevTurnPreflight } from "../llm/jev.js";
 import { runResearcher, type ResearchReport, formatResearchForPrompt } from "./researcher.js";
 import { runHeadTrader, type HeadTraderResult } from "./headTrader.js";
 import { canSpend } from "../cost/tracker.js";
@@ -113,6 +114,17 @@ export async function runOrchestratedTurn(params: {
   const positions = await broker.getPositions().catch(() => []);
   const account = await broker.getAccount().catch(() => ({ totalValueUsdt: 0 }));
 
+  // ── JEV: behöver den här turen Advisorn, eller är den rutin? ──
+  const jev = await jevTurnPreflight({
+    mode: config.mode,
+    executionMode: config.executionMode,
+    openPositions: positions.length,
+    maxOpenPositions: config.risk.maxOpenPositions,
+    dailyPnlUsd: state.dailyRealizedPnlUsdt,
+    maxDailyLossUsd: config.risk.maxDailyLossUsd,
+    hasUserInstruction: Boolean(userInstruction),
+  });
+
   const [macro, technical, sentiment, riskReport, quant, options, portfolio, advisor] =
     await Promise.all([
       runMacroAnalyst(apiKey).catch((err): MacroReport => {
@@ -163,22 +175,35 @@ export async function runOrchestratedTurn(params: {
         return { role: "portfolio_strategist", diversificationScore: 0, sectorConcentration: [], rebalancingNeeded: false, rebalancingActions: [], cashAllocationPct: 100, recommendation: "Ej tillgänglig.", confidence: "low", rawText: "" };
       }),
 
-      runClaudeAdvisor(apiKey, {
-        currentPositions: positions.map((p) => ({
-          symbol: p.symbol, quantity: p.quantity,
-          avgEntryPrice: p.avgEntryPrice, currentPrice: p.currentPrice,
-        })),
-        recentDecisions: recentDecisions.map((d) => ({
-          action: d.action, symbol: d.symbol,
-          reasoning: d.reasoning, timestamp: d.timestamp,
-        })),
-        dailyPnl: state.dailyRealizedPnlUsdt,
-        accountValue: account.totalValueUsdt,
-        activeEngines: config.engines,
-      }).catch((err): AdvisorReport => {
-        log.error(`Claude Advisor kraschade: ${err instanceof Error ? err.message : String(err)}`);
-        return { role: "claude_advisor", strategicOutlook: "neutral", marketCyclePhase: "accumulation", keyInsights: ["Advisor ej tillgänglig"], blindSpots: [], behavioralWarnings: [], contrarian: "Ej tillgänglig", portfolioAdvice: "Avvakta.", confidence: "low", rawText: "" };
-      }),
+      !jev.runAdvisor
+        ? Promise.resolve<AdvisorReport>({
+            role: "claude_advisor",
+            strategicOutlook: "neutral",
+            marketCyclePhase: "accumulation",
+            keyInsights: [`Advisor hoppades över av JEV (${jev.detail}) — rutinturn.`],
+            blindSpots: [],
+            behavioralWarnings: [],
+            contrarian: "Ingen advisor-granskning denna turn.",
+            portfolioAdvice: "Följ riskramarna som vanligt.",
+            confidence: "low",
+            rawText: "",
+          })
+        : runClaudeAdvisor(apiKey, {
+            currentPositions: positions.map((p) => ({
+              symbol: p.symbol, quantity: p.quantity,
+              avgEntryPrice: p.avgEntryPrice, currentPrice: p.currentPrice,
+            })),
+            recentDecisions: recentDecisions.map((d) => ({
+              action: d.action, symbol: d.symbol,
+              reasoning: d.reasoning, timestamp: d.timestamp,
+            })),
+            dailyPnl: state.dailyRealizedPnlUsdt,
+            accountValue: account.totalValueUsdt,
+            activeEngines: config.engines,
+          }).catch((err): AdvisorReport => {
+            log.error(`Claude Advisor kraschade: ${err instanceof Error ? err.message : String(err)}`);
+            return { role: "claude_advisor", strategicOutlook: "neutral", marketCyclePhase: "accumulation", keyInsights: ["Advisor ej tillgänglig"], blindSpots: [], behavioralWarnings: [], contrarian: "Ej tillgänglig", portfolioAdvice: "Avvakta.", confidence: "low", rawText: "" };
+          }),
     ]);
 
   const specialistMs = Date.now() - specialistStart;

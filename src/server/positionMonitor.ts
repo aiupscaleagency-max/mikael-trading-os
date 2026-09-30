@@ -16,6 +16,7 @@ import { detectAllPatterns, type Candle, type PatternType } from "./patternDetec
 import { sendMessage as sendTelegramMessage } from "./telegram.js";
 import { log } from "../logger.js";
 import Anthropic from "@anthropic-ai/sdk";
+import { createLlmClient, hasLlmCredentials, modelFor } from "../llm/gateway.js";
 import { atr as computeATR } from "../indicators/ta.js";
 import { trailingStop } from "../risk/eliteRisk.js";
 import { loadLessons, saveLessons, loadEntries, saveEntries, aggregateLessonsBySymbol, type SaleLesson, type PersistedEntry } from "../memory/lessons.js";
@@ -166,12 +167,11 @@ async function verifyWithAdvisor(
   position: { entryPrice: number | null; pnlPct: number | null; holdMinutes: number; qty: number; valueUsdt: number },
   ruleSignals: { tpSl: string; pattern: string; rsi: string },
 ): Promise<{ approve: boolean; verdict: string; reasoning: string }> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    log.warn("[Advisor] ANTHROPIC_API_KEY saknas — defaultar till APPROVE");
+  if (!hasLlmCredentials()) {
+    log.warn("[Advisor] AI_GATEWAY_API_KEY/ANTHROPIC_API_KEY saknas — defaultar till APPROVE");
     return { approve: true, verdict: "APPROVE_NO_AI", reasoning: "Advisor unavailable, regelbaserat beslut godkänt." };
   }
-  const anthropic = new Anthropic({ apiKey });
+  const anthropic = createLlmClient();
 
   // LÄRDOMAR: senaste 10 sales på samma symbol + 5 övriga + aggregerad edge per symbol
   const symbolSpecific = state.recentSales.filter(s => s.symbol === symbol).slice(-10);
@@ -267,7 +267,7 @@ REASONING: ...`;
 
   try {
     const reply = await anthropic.messages.create({
-      model: "claude-opus-4-7",
+      model: modelFor("monitor", "claude-opus-4-7"),
       max_tokens: 500,
       system: systemPrompt,
       messages: [{ role: "user", content: userMsg }],

@@ -178,3 +178,23 @@ separata nycklar.
 
 **"För lite USDT i kontot"** — testnet ger 10k–100k USDT när du skapar
 nycklarna. Om saldot är 0, generera en ny key på testnet.binance.vision.
+
+## Vercel AI Gateway + JEV
+
+Sätt `AI_GATEWAY_API_KEY` i `.env` så går alla modellanrop via Vercel AI Gateway
+(`src/llm/gateway.ts`) och teamet körs som:
+
+| Roll | Modell via gatewayen |
+| --- | --- |
+| Head Trader (beslutar) | `anthropic/claude-opus-5.5` |
+| Advisor (granskar helheten) | `openai/gpt-6-astra` |
+| Specialister | `anthropic/claude-haiku-4.5` |
+
+Varje roll kan överstyras med `LLM_MODEL_HEAD`, `LLM_MODEL_ADVISOR`,
+`LLM_MODEL_SPECIALIST` och `LLM_MODEL_MONITOR`. Utan gateway-nyckel används
+`ANTHROPIC_API_KEY` med samma modeller som tidigare.
+
+Med `TYPESAFE_API_KEY` satt frågar JEV (`src/llm/jev.ts`) före varje turn om
+Advisorn behövs. Rutinturer hoppar över den och sparar ett modellanrop. Bara
+anonymiserade band skickas (positionslast, P&L-riktning, läge), aldrig symboler
+eller priser. Svarar inte JEV körs Advisorn som vanligt, och i LIVE körs den alltid.

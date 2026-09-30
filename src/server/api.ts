@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
+import { createLlmClient, hasLlmCredentials } from "../llm/gateway.js";
 import { loadState, saveState, loadRecentDecisions } from "../memory/store.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { computeIndicators } from "../indicators/ta.js";
@@ -253,9 +254,8 @@ async function consultAdvisor(
   userClient: BinanceClient,
   mode: "testnet" | "live",
 ): Promise<{ recommendation: string; data: Record<string, unknown> }> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY ej satt");
-  const anthropic = new Anthropic({ apiKey });
+  if (!hasLlmCredentials()) throw new Error("AI_GATEWAY_API_KEY eller ANTHROPIC_API_KEY ej satt");
+  const anthropic = createLlmClient();
 
   // Mainnet-client för publik marknadsdata — använder LIVE creds om de finns,
   // annars en publik client utan auth (klines + price är opublic)
@@ -952,7 +952,7 @@ export function startServer(
           json(res, { error: `Okänd agent: '${agent}'. Tillgängliga: ${Object.keys(AGENT_PROMPTS).join(", ")}` });
           return;
         }
-        if (!anthropicApiKey) {
+        if (!anthropicApiKey && !hasLlmCredentials()) {
           res.writeHead(500);
           json(res, { error: "ANTHROPIC_API_KEY ej konfigurerad" });
           return;
@@ -961,7 +961,7 @@ export function startServer(
         log.agent(`[Manual] Fråga till ${agent}: ${question.slice(0, 80)}...`);
 
         try {
-          const client = new Anthropic({ apiKey: anthropicApiKey });
+          const client = createLlmClient(anthropicApiKey);
 
           // Samla kontext för agenten
           const state = await loadState();
@@ -1114,7 +1114,7 @@ export function startServer(
           const update = JSON.parse(body);
           // Helper för att fråga agent (Hanna m.fl.) — INKL live-marknadsdata
           const askAgent = async (agentKey: string, question: string): Promise<string> => {
-            if (!anthropicApiKey) return "❌ Anthropic API-nyckel ej konfigurerad i backend.";
+            if (!anthropicApiKey && !hasLlmCredentials()) return "❌ Anthropic API-nyckel ej konfigurerad i backend.";
             const agentMap: Record<string, string> = {
               hanna: "head_trader",
               tomas: "technical",
@@ -1149,7 +1149,7 @@ export function startServer(
             }
 
             // Prompt-caching på system-promten — sparar tokens när Mike frågar flera gånger
-            const client = new Anthropic({ apiKey: anthropicApiKey });
+            const client = createLlmClient(anthropicApiKey);
             const resp = await client.messages.create({
               model: profile.model,
               max_tokens: 800,
@@ -1430,14 +1430,13 @@ export function startServer(
           mode: "testnet" | "live";
           history?: Array<{ role: "user" | "assistant"; text: string }>;
         };
-        const apiKey = process.env.ANTHROPIC_API_KEY;
-        if (!apiKey) { json(res, { ok: false, error: "ANTHROPIC_API_KEY ej satt" }); return; }
+        if (!hasLlmCredentials()) { json(res, { ok: false, error: "AI_GATEWAY_API_KEY eller ANTHROPIC_API_KEY ej satt" }); return; }
         const creds = resolveBinanceCreds(mode);
         if (!creds) { json(res, { ok: false, error: `Binance ${mode} ej konfigurerat` }); return; }
 
         try {
           const client = new BinanceClient(creds);
-          const anthropic = new Anthropic({ apiKey });
+          const anthropic = createLlmClient();
 
           // Hämta kontext: saldo + symbols + senaste trades
           const [equity, symbols] = await Promise.all([

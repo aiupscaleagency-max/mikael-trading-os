@@ -44,8 +44,14 @@ function dayFile(d: Date = new Date()): string {
   return path.join(COST_DIR, `${iso}.jsonl`);
 }
 
+// Gateway-id:n ("anthropic/claude-haiku-4.5") matchas mot samma pristabell.
+function normalizeModel(model: string): string {
+  const bare = model.replace(/^anthropic\//, "");
+  return bare.replace(/^(claude-[a-z]+-\d+)\.(\d+)$/, "$1-$2");
+}
+
 function calcCostUsd(model: string, inputTokens: number, outputTokens: number): number {
-  const p = PRICING[model] ?? { in: 5, out: 25 }; // default conservative om okänd modell
+  const p = PRICING[model] ?? PRICING[normalizeModel(model)] ?? { in: 5, out: 25 }; // default conservative om okänd modell
   return (inputTokens * p.in / 1_000_000) + (outputTokens * p.out / 1_000_000);
 }
 

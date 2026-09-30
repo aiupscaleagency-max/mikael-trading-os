@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { createLlmClient } from "../llm/gateway.js";
 import type { Config } from "../config.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import type { RiskManager } from "../risk/riskManager.js";
@@ -29,7 +30,7 @@ export async function runAgentTurn(params: {
 }): Promise<AgentTurnResult> {
   const { config, broker, brokers, risk, state, engines, userInstruction } = params;
 
-  const client = new Anthropic({ apiKey: config.anthropicApiKey });
+  const client = createLlmClient(config.anthropicApiKey);
   const performance = await summarizePastPerformance();
   const systemPrompt = buildSystemPrompt(config, state, performance);
 

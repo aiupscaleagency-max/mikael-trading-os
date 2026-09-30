@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { createLlmClient, modelFor } from "../llm/gateway.js";
 import { trackClaudeCall } from "../cost/tracker.js";
 import type { Config } from "../config.js";
 import type { AgentState } from "../memory/store.js";
@@ -32,7 +33,7 @@ import type { OrderRequest, OrderResult } from "../types.js";
 //  inte räcker.)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const HEAD_TRADER_MODEL = "claude-sonnet-4-6";
+const headTraderModel = () => modelFor("head", "claude-sonnet-4-6");
 
 // AllReports definieras i orchestrator.ts och importeras därifrån.
 // Den lokala kopian saknade fältet 'research' (Lars/Perplexity), vilket
@@ -86,7 +87,7 @@ export async function runHeadTrader(params: {
     { role: "user", content: userMessage },
   ];
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const MAX_ITERATIONS = 12;
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
@@ -94,7 +95,7 @@ export async function runHeadTrader(params: {
     // Cache TTL = 5 min, perfekt för tool-use-loopen (alla iterationer inom sek).
     // Read: 90% billigare input. Write: +25% på första anropet. Net win efter 2+ iter.
     const response = await client.messages.create({
-      model: HEAD_TRADER_MODEL,
+      model: headTraderModel(),
       max_tokens: 4096,
       system: [
         { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } },
@@ -102,7 +103,7 @@ export async function runHeadTrader(params: {
       tools: toolDefinitions(),
       messages,
     });
-    trackClaudeCall("head", HEAD_TRADER_MODEL, response.usage).catch(() => {});
+    trackClaudeCall("head", headTraderModel(), response.usage).catch(() => {});
 
     messages.push({ role: "assistant", content: response.content });
 
