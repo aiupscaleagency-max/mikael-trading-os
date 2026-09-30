@@ -194,7 +194,7 @@ Varje roll kan överstyras med `LLM_MODEL_HEAD`, `LLM_MODEL_ADVISOR`,
 `LLM_MODEL_SPECIALIST` och `LLM_MODEL_MONITOR`. Utan gateway-nyckel används
 `ANTHROPIC_API_KEY` med samma modeller som tidigare.
 
-Med `TYPESAFE_API_KEY` satt frågar JEV (`src/llm/jev.ts`) före varje turn om
-Advisorn behövs. Rutinturer hoppar över den och sparar ett modellanrop. Bara
+JEV (`src/llm/jev.ts`, via samma rutter och nycklar som `src/server/jevClient.ts`)
+frågas före varje turn om Advisorn behövs. Rutinturer hoppar över den och sparar ett modellanrop. Bara
 anonymiserade band skickas (positionslast, P&L-riktning, läge), aldrig symboler
 eller priser. Svarar inte JEV körs Advisorn som vanligt, och i LIVE körs den alltid.

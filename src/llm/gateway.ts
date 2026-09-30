@@ -1,9 +1,11 @@
+import { execFileSync } from "node:child_process";
 import Anthropic from "@anthropic-ai/sdk";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  LLM-klient — Vercel AI Gateway eller Anthropic direkt.
 //
-//  Är AI_GATEWAY_API_KEY satt går ALLA modellanrop via Vercel AI Gateway
+//  Finns AI_GATEWAY_API_KEY (i .env eller i Keychain via
+//  scripts/set-gateway-key.sh) går ALLA modellanrop via Vercel AI Gateway
 //  (Anthropic Messages-kompatibel endpoint). Då kan varje roll köra valfri
 //  modell i gatewayen — t.ex. Head Trader på Opus 5.5 och Advisor på
 //  GPT-6 Astra — med en och samma nyckel och en samlad kostnadsvy i Vercel.
@@ -35,9 +37,30 @@ const ENV_OVERRIDE: Record<LlmRole, string> = {
   monitor: "LLM_MODEL_MONITOR",
 };
 
+// Samma Keychain-post som scripts/set-gateway-key.sh och jevClient.ts använder.
+const GATEWAY_KEYCHAIN_SERVICE = "aiupscale.vercel.gateway-key";
+let keychainKey: string | null | undefined;
+
+function gatewayKeyFromKeychain(): string | null {
+  if (keychainKey !== undefined) return keychainKey;
+  keychainKey = null;
+  if (process.platform !== "darwin") return keychainKey;
+  try {
+    const out = execFileSync("security", ["find-generic-password", "-s", GATEWAY_KEYCHAIN_SERVICE, "-w"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    keychainKey = out.length > 0 ? out : null;
+  } catch {
+    keychainKey = null;
+  }
+  return keychainKey;
+}
+
 function gatewayKey(): string | undefined {
   const key = process.env.AI_GATEWAY_API_KEY?.trim();
-  return key ? key : undefined;
+  if (key) return key;
+  return gatewayKeyFromKeychain() ?? undefined;
 }
 
 export function usingGateway(): boolean {

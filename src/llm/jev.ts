@@ -1,4 +1,5 @@
 import { log } from "../logger.js";
+import { askJev, type JevAnswer } from "../server/jevClient.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  JEV (TypeSafe System One) — beslutslagret framför de stora modellerna.
@@ -8,16 +9,17 @@ import { log } from "../logger.js";
 //  en oberoende granskning av Advisorn. Rutin → Advisorn hoppas över och
 //  sparar ett helt modellanrop. Allt annat → Advisorn körs som vanligt.
 //
+//  Anropet går via src/server/jevClient.ts: samma rutter (Vercel AI Gateway
+//  eller TypeSafe direkt), samma nycklar och samma circuit breaker.
+//
 //  Säkerhet:
-//    - Nyckeln läses från TYPESAFE_API_KEY (miljövariabel, aldrig i git).
 //    - Bara anonymiserade band skickas: antal positioner, P&L-riktning,
 //      läge. Inga symboler, priser, strategier eller källdata lämnar maskinen.
 //    - Fail-open: svarar inte JEV körs Advisorn precis som förut.
 //    - LIVE-läge kör alltid Advisorn, oavsett vad JEV säger.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const JEV_URL = "https://api.typesafe.ai/v1/systemone";
-const JEV_TIMEOUT_MS = 8_000;
+const JEV_TIMEOUT_MS = 2_500;
 
 export interface TurnSignals {
   mode: "paper" | "live";
@@ -37,7 +39,6 @@ export interface JevTurnDecision {
   detail: string;
 }
 
-type JevAnswer = { choice?: string; noul?: number };
 
 function band(value: number, limit: number): string {
   if (limit <= 0) return "unknown";
@@ -49,7 +50,6 @@ function band(value: number, limit: number): string {
 
 export function buildTurnRequest(s: TurnSignals) {
   return {
-    model: "jev-latest",
     state: {
       task: "Sanitized category: scheduled crypto trading turn. Decide whether an independent strategic review is worth one extra large-model call.",
       mode: s.mode,
@@ -102,26 +102,16 @@ export function decideFromAnswers(answers: Record<string, JevAnswer>, mode: "pap
 }
 
 export async function jevTurnPreflight(signals: TurnSignals): Promise<JevTurnDecision> {
-  const key = process.env.TYPESAFE_API_KEY?.trim();
-  if (!key || process.env.JEV_ENABLED === "false") {
-    return { status: "skipped", runAdvisor: true, detail: "JEV avstängd eller TYPESAFE_API_KEY saknas" };
+  if (process.env.JEV_ENABLED === "false") {
+    return { status: "skipped", runAdvisor: true, detail: "JEV avstängd (JEV_ENABLED=false)" };
   }
-
-  try {
-    const res = await fetch(JEV_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify(buildTurnRequest(signals)),
-      signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const body = (await res.json()) as { answers?: Record<string, JevAnswer> };
-    const decision = decideFromAnswers(body.answers ?? {}, signals.mode);
-    log.info(`[JEV] ${decision.detail} → advisor ${decision.runAdvisor ? "körs" : "hoppas över"}`);
-    return decision;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.warn(`[JEV] Otillgänglig (${msg}) — kör Advisorn som vanligt.`);
-    return { status: "unavailable", runAdvisor: true, detail: `JEV otillgänglig: ${msg}` };
+  const { state, questions } = buildTurnRequest(signals);
+  const verdict = await askJev(state, JEV_TIMEOUT_MS, questions);
+  if (!verdict.available) {
+    log.warn(`[JEV] Otillgänglig (${verdict.note}) — kör Advisorn som vanligt.`);
+    return { status: "unavailable", runAdvisor: true, detail: `JEV otillgänglig: ${verdict.note}` };
   }
+  const decision = decideFromAnswers(verdict.answers, signals.mode);
+  log.info(`[JEV] ${decision.detail} via ${verdict.mode} → advisor ${decision.runAdvisor ? "körs" : "hoppas över"}`);
+  return decision;
 }

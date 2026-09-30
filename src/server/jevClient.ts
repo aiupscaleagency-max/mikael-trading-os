@@ -245,6 +245,9 @@ function offlineVerdict(note: string): JevVerdict {
 export async function askJev(
   state: Record<string, unknown>,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  // Andra anropare (t.ex. src/llm/jev.ts) ställer egna frågor men delar rutter,
+  // nyckelupplösning och circuit breaker.
+  questions: Record<string, unknown> = buildQuestions(),
 ): Promise<JevVerdict> {
   const routes = resolveRoutes();
   if (routes.length === 0) {
@@ -265,7 +268,7 @@ export async function askJev(
     try {
       const data = await postWithRetry(
         route.url, route.key,
-        { state, model: route.model, questions: buildQuestions() },
+        { state, model: route.model, questions },
         timeoutMs,
       );
       failureCount = 0;
