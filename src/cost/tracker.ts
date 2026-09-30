@@ -20,6 +20,11 @@ const PRICING: Record<string, { in: number; out: number }> = {
   "claude-sonnet-4-6":         { in: 3, out: 15 },
   "claude-opus-4-6":           { in: 15, out: 75 },
   "claude-opus-4-7":           { in: 15, out: 75 },
+  // Listpriser från Vercel och OpenRouter /v1/models (2026-09-30).
+  "claude-opus-5-5":           { in: 4, out: 20 },
+  "claude-opus-4-8":           { in: 5, out: 25 },
+  "claude-sonnet-5-5":         { in: 2, out: 10 },
+  "openai/gpt-6-astra":        { in: 10, out: 50 },
   "perplexity-sonar-pro":      { in: 1, out: 1 },
 };
 

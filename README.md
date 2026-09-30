@@ -186,7 +186,7 @@ Sätt `AI_GATEWAY_API_KEY` i `.env` så går alla modellanrop via Vercel AI Gate
 
 | Roll | Modell via gatewayen |
 | --- | --- |
-| Head Trader (beslutar) | `anthropic/claude-opus-5.5` |
+| Head Trader (beslutar) | `anthropic/claude-sonnet-5.5` (reserv `anthropic/claude-opus-4.8`) |
 | Advisor (granskar helheten) | `openai/gpt-6-astra` |
 | Specialister | `anthropic/claude-haiku-4.5` |
 

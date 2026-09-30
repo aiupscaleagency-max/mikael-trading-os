@@ -22,10 +22,13 @@ export const GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh";
 
 export type LlmRole = "head" | "advisor" | "specialist" | "monitor";
 
-// Trädet i gateway-läge: Opus 5.5 fattar besluten, GPT-6 Astra granskar
-// helheten (billigare än Fable-credits), Haiku kör de snabba specialisterna.
+// Trädet i gateway-läge: Sonnet 5.5 fattar besluten, GPT-6 Astra granskar
+// helheten (dyrast per token, körs bara när JEV ber om det), Haiku kör
+// de snabba specialisterna.
+// Head kör Sonnet 5.5: tecknen räknas ut av koden, Head väger bara ihop
+// rapporterna, och Sonnet släpps igenom av Vercel där Opus 5/5.5 spärras.
 const GATEWAY_MODELS: Record<LlmRole, string> = {
-  head: "anthropic/claude-opus-5.5",
+  head: "anthropic/claude-sonnet-5.5",
   advisor: "openai/gpt-6-astra",
   specialist: "anthropic/claude-haiku-4.5",
   monitor: "anthropic/claude-opus-5.5",
@@ -38,6 +41,7 @@ const GATEWAY_MODELS: Record<LlmRole, string> = {
 // LLM_MODEL_FALLBACK, eller stäng av med LLM_MODEL_FALLBACK=off.
 const GATEWAY_FALLBACKS: Record<string, string> = {
   "anthropic/claude-opus-5.5": "anthropic/claude-opus-4.8",
+  "anthropic/claude-sonnet-5.5": "anthropic/claude-opus-4.8",
 };
 export function fallbackModel(model: string): string | undefined {
   const override = process.env.LLM_MODEL_FALLBACK?.trim();
