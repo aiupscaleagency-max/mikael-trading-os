@@ -29,13 +29,15 @@ import { log } from "../logger.js";
 
 const TYPESAFE_DIRECT_URL = "https://api.typesafe.ai/v1/systemone";
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/typesafe/v1/systemone";
+// OpenRouter säljer JEV utan TypeSafe-konto ($0,042 per 1M input, output gratis).
+const OPENROUTER_URL = "https://openrouter.ai/api/alpha/decisions";
 
 const RETRYABLE = new Set([429, 529]);
 const MAX_RETRIES = 2;
 const BACKOFF_BASE_MS = 350;
 const DEFAULT_TIMEOUT_MS = 2500;
 
-export type JevMode = "direct" | "gateway" | "rules_only";
+export type JevMode = "direct" | "gateway" | "openrouter" | "rules_only";
 
 export interface JevAnswer {
   type: "choice" | "noul" | "score";
@@ -139,6 +141,8 @@ const asDirect = (key: string): JevRoute =>
   ({ url: TYPESAFE_DIRECT_URL, key, model: "jev-latest", mode: "direct" });
 const asGateway = (key: string): JevRoute =>
   ({ url: GATEWAY_URL, key, model: "typesafe-ai/jev", mode: "gateway" });
+const asOpenRouter = (key: string): JevRoute =>
+  ({ url: OPENROUTER_URL, key, model: "typesafe/jev-1.13", mode: "openrouter" });
 
 /**
  * Alla rutter värda att prova, i tur och ordning.
@@ -172,6 +176,11 @@ function resolveRoutes(): JevRoute[] {
   // Annars: samma Keychain-post som coachens jev-verktyg använder.
   const fromKeychain = keyFromKeychain(KEYCHAIN_SERVICE);
   if (fromKeychain) { add(asDirect(fromKeychain)); add(asGateway(fromKeychain)); }
+
+  // Sist: OpenRouter, egen nyckel och egen leverantör. Tar över när
+  // TypeSafe svarar 503 eller Vercel spärrar JEV med 429.
+  const openRouter = process.env.OPENROUTER_API_KEY?.trim();
+  if (openRouter) add(asOpenRouter(openRouter));
 
   return routes;
 }
@@ -245,6 +254,9 @@ function offlineVerdict(note: string): JevVerdict {
 export async function askJev(
   state: Record<string, unknown>,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  // Andra anropare (t.ex. src/llm/jev.ts) ställer egna frågor men delar rutter,
+  // nyckelupplösning och circuit breaker.
+  questions: Record<string, unknown> = buildQuestions(),
 ): Promise<JevVerdict> {
   const routes = resolveRoutes();
   if (routes.length === 0) {
@@ -265,7 +277,7 @@ export async function askJev(
     try {
       const data = await postWithRetry(
         route.url, route.key,
-        { state, model: route.model, questions: buildQuestions() },
+        { state, model: route.model, questions },
         timeoutMs,
       );
       failureCount = 0;
@@ -285,8 +297,11 @@ export async function askJev(
         lastMsg = err.message;
         continue;
       }
+      // Övriga fel (429, 5xx, timeout): prova nästa rutt om det finns en,
+      // annars rapporteras felet nedan.
       lastMsg = err instanceof Error ? err.message : String(err);
-      break;
+      log.warn(`[jev] ${route.mode}: ${lastMsg} — provar nästa rutt`);
+      continue;
     }
   }
 

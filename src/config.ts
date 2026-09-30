@@ -21,6 +21,8 @@ const schema = z.object({
   // Krävs av agent-lagret, men inte för att starta och titta på marknadsdata.
   // Saknas den loggas det när en agent faktiskt anropas.
   ANTHROPIC_API_KEY: z.string().default(""),
+  // Vercel AI Gateway: när den är satt går alla modellanrop dit (src/llm/gateway.ts).
+  AI_GATEWAY_API_KEY: z.string().default(""),
 
   MODE: z.enum(["paper", "live"]).default("paper"),
   LIVE_TRADING_CONFIRMED: z

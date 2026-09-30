@@ -16,6 +16,7 @@ import {
   runPortfolioStrategist,
 } from "./advancedSpecialists.js";
 import { runClaudeAdvisor } from "./advisor.js";
+import { jevTurnPreflight } from "../llm/jev.js";
 import { runResearcher, type ResearchReport, formatResearchForPrompt } from "./researcher.js";
 import { runHeadTrader, type HeadTraderResult } from "./headTrader.js";
 import { canSpend } from "../cost/tracker.js";
@@ -113,6 +114,17 @@ export async function runOrchestratedTurn(params: {
   const positions = await broker.getPositions().catch(() => []);
   const account = await broker.getAccount().catch(() => ({ totalValueUsdt: 0 }));
 
+  // ── JEV: behöver den här turen Advisorn, eller är den rutin? ──
+  const jev = await jevTurnPreflight({
+    mode: config.mode,
+    executionMode: config.executionMode,
+    openPositions: positions.length,
+    maxOpenPositions: config.risk.maxOpenPositions,
+    dailyPnlUsd: state.dailyRealizedPnlUsdt,
+    maxDailyLossUsd: config.risk.maxDailyLossUsd,
+    hasUserInstruction: Boolean(userInstruction),
+  });
+
   const [macro, technical, sentiment, riskReport, quant, options, portfolio, advisor] =
     await Promise.all([
       runMacroAnalyst(apiKey).catch((err): MacroReport => {
@@ -163,22 +175,35 @@ export async function runOrchestratedTurn(params: {
         return { role: "portfolio_strategist", diversificationScore: 0, sectorConcentration: [], rebalancingNeeded: false, rebalancingActions: [], cashAllocationPct: 100, recommendation: "Ej tillgänglig.", confidence: "low", rawText: "" };
       }),
 
-      runClaudeAdvisor(apiKey, {
-        currentPositions: positions.map((p) => ({
-          symbol: p.symbol, quantity: p.quantity,
-          avgEntryPrice: p.avgEntryPrice, currentPrice: p.currentPrice,
-        })),
-        recentDecisions: recentDecisions.map((d) => ({
-          action: d.action, symbol: d.symbol,
-          reasoning: d.reasoning, timestamp: d.timestamp,
-        })),
-        dailyPnl: state.dailyRealizedPnlUsdt,
-        accountValue: account.totalValueUsdt,
-        activeEngines: config.engines,
-      }).catch((err): AdvisorReport => {
-        log.error(`Claude Advisor kraschade: ${err instanceof Error ? err.message : String(err)}`);
-        return { role: "claude_advisor", strategicOutlook: "neutral", marketCyclePhase: "accumulation", keyInsights: ["Advisor ej tillgänglig"], blindSpots: [], behavioralWarnings: [], contrarian: "Ej tillgänglig", portfolioAdvice: "Avvakta.", confidence: "low", rawText: "" };
-      }),
+      !jev.runAdvisor
+        ? Promise.resolve<AdvisorReport>({
+            role: "claude_advisor",
+            strategicOutlook: "neutral",
+            marketCyclePhase: "accumulation",
+            keyInsights: [`Advisor hoppades över av JEV (${jev.detail}) — rutinturn.`],
+            blindSpots: [],
+            behavioralWarnings: [],
+            contrarian: "Ingen advisor-granskning denna turn.",
+            portfolioAdvice: "Följ riskramarna som vanligt.",
+            confidence: "low",
+            rawText: "",
+          })
+        : runClaudeAdvisor(apiKey, {
+            currentPositions: positions.map((p) => ({
+              symbol: p.symbol, quantity: p.quantity,
+              avgEntryPrice: p.avgEntryPrice, currentPrice: p.currentPrice,
+            })),
+            recentDecisions: recentDecisions.map((d) => ({
+              action: d.action, symbol: d.symbol,
+              reasoning: d.reasoning, timestamp: d.timestamp,
+            })),
+            dailyPnl: state.dailyRealizedPnlUsdt,
+            accountValue: account.totalValueUsdt,
+            activeEngines: config.engines,
+          }).catch((err): AdvisorReport => {
+            log.error(`Claude Advisor kraschade: ${err instanceof Error ? err.message : String(err)}`);
+            return { role: "claude_advisor", strategicOutlook: "neutral", marketCyclePhase: "accumulation", keyInsights: ["Advisor ej tillgänglig"], blindSpots: [], behavioralWarnings: [], contrarian: "Ej tillgänglig", portfolioAdvice: "Avvakta.", confidence: "low", rawText: "" };
+          }),
     ]);
 
   const specialistMs = Date.now() - specialistStart;
@@ -198,14 +223,14 @@ export async function runOrchestratedTurn(params: {
   log.info(
     `╠══ Specialister klara på ${(specialistMs / 1000).toFixed(1)}s + exec ${(execMs / 1000).toFixed(1)}s ══╣\n` +
     `  Makro: ${macro.regime} (${macro.confidence})\n` +
-    `  Teknisk: ${technical.analyses.length} symboler, top=${technical.topPick ?? "–"}\n` +
+    `  Teknisk: ${technical.analyses?.length ?? 0} symboler, top=${technical.topPick ?? "–"}\n` +
     `  Sentiment: ${sentiment.overallSentiment}, contrary=${sentiment.contrarySignal}\n` +
     `  Risk: ${riskReport.riskLevel}, heat=${riskReport.portfolioHeatPct}%\n` +
     `  Kvant: vol=${quant.volatilityRegime}, sharpe=${quant.sharpeEstimate}\n` +
     `  Options: IV=${options.overallIvEnvironment}, applicable=${options.applicable}\n` +
     `  Portfölj: diversifiering=${portfolio.diversificationScore}, rebalans=${portfolio.rebalancingNeeded}\n` +
     `  Advisor: ${advisor.strategicOutlook}, cykel=${advisor.marketCyclePhase}\n` +
-    `  Exekvering: ${execution.tradeOptimizations.length} trades, urgency=${execution.urgency}`,
+    `  Exekvering: ${execution.tradeOptimizations?.length ?? 0} trades, urgency=${execution.urgency}`,
   );
 
   const allReports: AllReports = {

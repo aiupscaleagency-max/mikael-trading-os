@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { createLlmClient, extractJson, modelFor } from "../llm/gateway.js";
 import { getMacroSnapshot } from "../data/macro.js";
 import { searchNews, getRedditTop } from "../data/news.js";
 import { getRecentPoliticianTrades, filterTopPerformers } from "../data/capitol.js";
@@ -20,7 +21,7 @@ import { trackClaudeCall } from "../cost/tracker.js";
 //  får lägga order — bara analysera och rapportera.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SPECIALIST_MODEL = "claude-haiku-4-5-20251001";
+const specialistModel = () => modelFor("specialist", "claude-haiku-4-5-20251001");
 
 // ── Makro-analytiker ──
 
@@ -44,10 +45,10 @@ export async function runMacroAnalyst(
     fedNews: fedNews.map((n) => n.title),
   });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const response = await client.messages.create({
-    model: SPECIALIST_MODEL,
-    max_tokens: 1500,
+    model: specialistModel(),
+    max_tokens: 4000,
     system: `Du är en senior partner på McKinsey Global Institute som rådger sovereign wealth funds om hur makro-trender påverkar marknader. Din uppgift: omsätta makroekonomiska faktorer till konkret crypto/forex trading-action.
 
 ANALYSERA:
@@ -84,7 +85,7 @@ Svara i EXAKT detta JSON-format:
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är dagens data:\n${dataContext}` }],
   });
-  trackClaudeCall("macro", SPECIALIST_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("macro", specialistModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -92,7 +93,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<MacroReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<MacroReport, "role" | "rawText">;
     log.agent(`[Makro] Regim: ${parsed.regime}, Confidence: ${parsed.confidence}`);
     return { role: "macro_analyst", ...parsed, rawText: text };
   } catch {
@@ -155,10 +156,10 @@ export async function runTechnicalAnalyst(
 
   const dataContext = JSON.stringify({ analyses, motorSignals });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const response = await client.messages.create({
-    model: SPECIALIST_MODEL,
-    max_tokens: 2000,
+    model: specialistModel(),
+    max_tokens: 4000,
     system: `Du är en senior kvantitativ trader i samma stil som Citadel: kombinerar teknisk analys med statistiska modeller för att tajma in/ut.
 Din uppgift: leverera en fullständig teknisk analys för varje symbol — inte bara siffror, utan tolkning + actionable plan.
 
@@ -211,7 +212,7 @@ Inkludera entry/target/rrRatio BARA om |score| >= 3.
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: dataContext }],
   });
-  trackClaudeCall("technical", SPECIALIST_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("technical", specialistModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -219,7 +220,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<TechnicalReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<TechnicalReport, "role" | "rawText">;
     log.agent(`[Teknisk] Top pick: ${parsed.topPick ?? "ingen"}, ${parsed.analyses.length} symboler`);
     return { role: "technical_analyst", ...parsed, rawText: text };
   } catch {
@@ -258,9 +259,9 @@ export async function runSentimentAnalyst(
     })),
   });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const response = await client.messages.create({
-    model: SPECIALIST_MODEL,
+    model: specialistModel(),
     max_tokens: 1500,
     system: `Du är en sentiment-analytiker i ett trading-team. Din ENDA uppgift är att läsa av marknadens stämning från Reddit-posts och politiker-aktivitet.
 
@@ -276,7 +277,7 @@ contrarySignal = true om sentimentet är extremt (extreme_fear ELLER extreme_gre
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: dataContext }],
   });
-  trackClaudeCall("sentiment", SPECIALIST_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("sentiment", specialistModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -284,7 +285,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<SentimentReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<SentimentReport, "role" | "rawText">;
     log.agent(`[Sentiment] ${parsed.overallSentiment}, contrary=${parsed.contrarySignal}`);
     return { role: "sentiment_analyst", ...parsed, rawText: text };
   } catch {

@@ -76,6 +76,38 @@ interface AlpacaBar {
   v: number;
 }
 
+// Krypto på Alpaca heter "BTC/USD"; resten av systemet använder "BTCUSDT".
+const CRYPTO_QUOTES = ["USDT", "USDC", "USD"];
+export function toAlpacaCrypto(symbol: string): string | null {
+  if (symbol.includes("/")) return symbol;
+  for (const quote of CRYPTO_QUOTES) {
+    if (symbol.endsWith(quote) && symbol.length > quote.length + 1) {
+      return `${symbol.slice(0, -quote.length)}/USD`;
+    }
+  }
+  return null;
+}
+
+const INTERVAL_MS: Record<string, number> = {
+  "1m": 60_000,
+  "5m": 5 * 60_000,
+  "15m": 15 * 60_000,
+  "1h": 60 * 60_000,
+  "4h": 4 * 60 * 60_000,
+  "1d": 24 * 60 * 60_000,
+};
+
+/**
+ * Starttid för bar-förfrågan. Utan start ger Alpaca bara dagens bars, så
+ * 100 st 4h-ljus blev 0–1 och all teknisk analys föll bort. Aktier handlas
+ * ungefär en fjärdedel av dygnet och bara vardagar, så fönstret görs sex
+ * gånger längre än limit × intervall; sort=desc tar sedan de senaste.
+ */
+export function barsStartIso(interval: string, limit: number, now = Date.now()): string {
+  const span = (INTERVAL_MS[interval] ?? INTERVAL_MS["1h"]!) * limit * 6;
+  return new Date(now - Math.max(span, 7 * 24 * 60 * 60_000)).toISOString();
+}
+
 interface AlpacaSnapshot {
   latestTrade?: { p: number };
   dailyBar?: { o: number; c: number; v: number };
@@ -162,9 +194,12 @@ export class AlpacaBroker implements BrokerAdapter {
   }
 
   async getTicker(symbol: string): Promise<Ticker> {
-    const snap = await this.dataRequest<AlpacaSnapshot>(
-      `/v2/stocks/${symbol}/snapshot`,
-    );
+    const crypto = toAlpacaCrypto(symbol);
+    const snap = crypto
+      ? ((await this.dataRequest<{ snapshots?: Record<string, AlpacaSnapshot> }>(
+          `/v1beta3/crypto/us/snapshots?symbols=${encodeURIComponent(crypto)}`,
+        )).snapshots?.[crypto] ?? {})
+      : await this.dataRequest<AlpacaSnapshot>(`/v2/stocks/${symbol}/snapshot`);
     const price = snap.latestTrade?.p ?? snap.dailyBar?.c ?? 0;
     const prevClose = snap.prevDailyBar?.c ?? price;
     const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
@@ -188,11 +223,22 @@ export class AlpacaBroker implements BrokerAdapter {
     };
     const timeframe = tfMap[interval] ?? "1Hour";
 
-    // Alpaca ger bars 1000 åt gången, vi begär 'limit' stycken
-    const bars = await this.dataRequest<{ bars: AlpacaBar[] }>(
-      `/v2/stocks/${symbol}/bars?timeframe=${timeframe}&limit=${limit}&sort=asc`,
-    );
-    return (bars.bars ?? []).map((b) => ({
+    // De senaste 'limit' baren: brett startfönster, nyast först, vänds sedan.
+    const start = encodeURIComponent(barsStartIso(interval, limit));
+    const crypto = toAlpacaCrypto(symbol);
+    let bars: AlpacaBar[];
+    if (crypto) {
+      const resp = await this.dataRequest<{ bars?: Record<string, AlpacaBar[]> }>(
+        `/v1beta3/crypto/us/bars?symbols=${encodeURIComponent(crypto)}&timeframe=${timeframe}&start=${start}&limit=${limit}&sort=desc`,
+      );
+      bars = resp.bars?.[crypto] ?? [];
+    } else {
+      const resp = await this.dataRequest<{ bars?: AlpacaBar[] }>(
+        `/v2/stocks/${symbol}/bars?timeframe=${timeframe}&start=${start}&limit=${limit}&sort=desc`,
+      );
+      bars = resp.bars ?? [];
+    }
+    return bars.reverse().map((b) => ({
       openTime: new Date(b.t).getTime(),
       open: b.o,
       high: b.h,
