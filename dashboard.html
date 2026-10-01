@@ -129,6 +129,15 @@ aside.sidebar .spacer{flex:1}
 aside.sidebar .live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 1.5s infinite;margin-top:6px}
 
 main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-width:0}
+/* Trade-sidan: signaler överst i full bredd, sedan båda diagrammen i samma
+   kolumn och lika breda, snabb-trade till höger. Luft mot kanterna. */
+#page-trade main{grid-template-columns:minmax(0,1fr) 340px;grid-template-areas:"sig sig" "live right" "left right";gap:16px;padding:16px 24px 24px}
+#page-trade #signalPanel{grid-area:sig;min-width:0}
+#page-trade #liveChart{grid-area:live;min-width:0}
+#page-trade .left{grid-area:left}
+#page-trade .right{grid-area:right;min-width:0}
+#chartBox{height:480px}
+#page-trade .page-header{margin:16px 24px 0}
 .left{display:flex;flex-direction:column;gap:10px;min-width:0}
 .right{display:flex;flex-direction:column;gap:10px}
 
@@ -524,6 +533,8 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
   main{grid-template-columns:1fr}
   #chart{height:360px}
   .right{order:-1}
+  #page-trade main{grid-template-columns:minmax(0,1fr);grid-template-areas:"sig" "right" "live" "left"}
+  #chartBox{height:360px}
 }
 
 /* ═══ LANDING / AUTH SCREENS — visning per app-state ═══ */
@@ -808,7 +819,10 @@ body.app-state-onboard .fc-panel{display:none !important}
 
   /* Layout — allt stackat */
   main{grid-template-columns:1fr;gap:8px;padding:8px}
+  #page-trade main{gap:10px;padding:10px 12px}
+  #page-trade .page-header{margin:10px 12px 0}
   #chart{height:240px}
+  #chartBox{height:240px}
   .agent-grid{grid-template-columns:1fr;gap:6px}
   .agent{min-height:64px;padding:8px 10px}
   .agent .avatar{width:36px;height:36px;font-size:13px}
@@ -1310,7 +1324,7 @@ body.app-state-onboard .fc-panel{display:none !important}
      identisk med Binance. Det pågående ljuset ritas med avvikande färg och
      är markerat i rubriken, så ett ofärdigt ljus aldrig läses som färdigt.
      ══════════════════════════════════════════════════════════════════════ -->
-<section id="liveChart" style="margin:20px auto 0;max-width:1400px;padding:0 16px;
+<section id="liveChart" style="
          font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
   <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
     <h2 style="margin:0;font-size:17px;font-weight:600">Diagram</h2>
@@ -1321,7 +1335,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       Egen ström · verifierad mot Binance
     </span>
   </div>
-  <div id="chartBox" style="height:380px;border:1px solid #2a3140;border-radius:10px;
+  <div id="chartBox" style="border:1px solid #2a3140;border-radius:10px;
        background:#151a23;overflow:hidden"></div>
 </section>
 
@@ -1410,7 +1424,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 })();
 </script>
 
-<section id="signalPanel" style="margin:24px auto;max-width:1400px;padding:0 16px;
+<section id="signalPanel" style="
          font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
   <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px">
     <h2 style="margin:0;font-size:17px;font-weight:600">Signaler</h2>
