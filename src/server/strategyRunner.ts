@@ -14,6 +14,7 @@ import type { Candle } from "./klineStream.js";
 import {
   addPendingOrder, checkOrderGate, MAX_LIVE_STAKE_USD, MAX_TEST_STAKE_USD,
 } from "./orderGate.js";
+import { loadPaperLedger, recordPaperSignal, resetPaper } from "./paperLedger.js";
 import { createLlmClient, extractJson, hasLlmCredentials, toDirectModel, usingGateway } from "../llm/gateway.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -292,6 +293,7 @@ async function evaluate(s: Strategy, coin: string, history: Candle[]): Promise<v
   if (sig.review.final === "ok") {
     if (side === "BUY") positions[k] = { entry: sig.price, stop: sig.stopLoss, target: sig.target, since: bar.closeTime };
     else delete positions[k];
+    recordPaperSignal(sig, s.venue);
   }
 
   signals.push(sig);
@@ -398,6 +400,7 @@ export async function startStrategyRunner(
   started = true;
   signals = await readJson<StrategySignalRecord[]>(SIGNALS_FILE, []);
   positions = await readJson<Record<string, OpenPos>>(STATE_FILE, {});
+  await loadPaperLedger();
 
   subscribeBybitClosedCandles((pair, interval, _c, history) => {
     void (async () => {
@@ -432,6 +435,7 @@ export function resetStrategyPosition(strategyId: string, coin?: string): void {
   for (const k of Object.keys(positions)) {
     if (k.startsWith(`${strategyId}:`) && (!coin || k === posKey(strategyId, coin))) delete positions[k];
   }
+  resetPaper(strategyId, coin);
   scheduleSave();
 }
 

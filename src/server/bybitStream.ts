@@ -131,6 +131,38 @@ export async function fetchBybitCandles(pair: string, interval: string, limit = 
     .filter((c) => c.closeTime < now);
 }
 
+/**
+ * Längre historik än 1000 ljus (för träning): hämtar bakåt sida för sida
+ * med Bybits `end`-parameter. Äldst först, bara stängda ljus, max 5000.
+ */
+export async function fetchBybitHistory(pair: string, interval: string, total = 3000): Promise<Candle[]> {
+  const want = Math.min(5000, Math.max(100, total));
+  let out = await fetchBybitCandles(pair, interval, 1000);
+  while (out.length < want && out.length > 0) {
+    const iv = BYBIT_INTERVAL[interval]!;
+    const end = out[0]!.openTime - 1;
+    const url = `${REST_BASE}/v5/market/kline?category=spot&symbol=${pair}&interval=${iv}&limit=1000&end=${end}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Bybit kline ${pair} HTTP ${res.status}`);
+    const body = (await res.json()) as { retCode: number; retMsg: string; result?: { list?: string[][] } };
+    if (body.retCode !== 0) throw new Error(`Bybit kline ${pair}: ${body.retMsg}`);
+    const ms = INTERVAL_MS[interval] ?? 60_000;
+    const older = (body.result?.list ?? []).slice().reverse()
+      .map((k): Candle => {
+        const openTime = Number(k[0]);
+        return {
+          openTime, closeTime: openTime + ms - 1,
+          open: Number(k[1]), high: Number(k[2]), low: Number(k[3]), close: Number(k[4]),
+          volume: Number(k[5]), quoteVolume: Number(k[6]), trades: 0, closed: true,
+        };
+      })
+      .filter((c) => c.openTime < out[0]!.openTime);
+    if (!older.length) break; // ingen mer historik
+    out = [...older, ...out];
+  }
+  return out.slice(-want);
+}
+
 async function seed(pair: string, interval: string): Promise<void> {
   try {
     const candles = await fetchBybitCandles(pair, interval);

@@ -1961,6 +1961,12 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <div class="card sl-wide sl-sig">
+    <h3>🏆 Poängtavla — så hade strategierna gått <span class="tag" id="sl-score-meta">—</span></h3>
+    <div id="sl-score"><div class="sl-sub">Hämtar…</div></div>
+    <div class="sl-note">Varje godkänd köpsignal räknas som en låtsasaffär och nästa godkända sälj stänger den, med 0,1 % avgift per sida. Det gäller oavsett om du lade ordern eller inte. Så ser du vilka strategier som tjänar pengar innan riktiga pengar används. Inget flyttas till LIVE automatiskt.</div>
+  </div>
+
+  <div class="card sl-wide sl-sig">
     <h3>⚡ Signaler från strategierna <span class="tag" id="sl-sig-meta">—</span></h3>
     <div id="sl-signals"><div class="sl-sub">Inga signaler än. De kommer när ett ljus stänger och reglerna stämmer.</div></div>
     <div class="sl-note">Strategierna lägger inga ordrar själva. "Lägg som väntande order" lägger ordern i rutan Väntande ordrar på Trade-sidan, och där trycker du Godkänn. LIVE har samma gränser som förut: max $5 per order och $10 per dag, och LIVE måste vara upplåst i .env.</div>
@@ -8000,7 +8006,7 @@ document.addEventListener("DOMContentLoaded", boot);
   }
   const isActive = () => $("page-strategies")?.classList.contains("active");
 
-  const SL = { meta:null, strategies:[], positions:{}, signals:[], editing:null, wallet:null };
+  const SL = { meta:null, strategies:[], positions:{}, signals:[], editing:null, wallet:null, outs:{} };
   window.SL_STATE = SL;
 
   // ── Live-lampor ─────────────────────────────────────────────
@@ -8090,6 +8096,7 @@ document.addEventListener("DOMContentLoaded", boot);
         <div class="sl-actions">
           <button class="sl-btn" data-act="test">Testa nu</button>
           <button class="sl-btn" data-act="bt">Backtest</button>
+          <button class="sl-btn pri" data-act="train" title="Prova hundratals varianter på historiken och kontrollera på data de inte sett">🎯 Träna</button>
           <button class="sl-btn" data-act="edit">Redigera</button>
           <button class="sl-btn" data-act="copy">Kopiera</button>
           <button class="sl-btn" data-act="reset" title="Glöm att strategin har köpt (t.ex. om du sålt själv)">Nollställ läge</button>
@@ -8098,6 +8105,11 @@ document.addEventListener("DOMContentLoaded", boot);
         <div class="sl-out"></div>
       </div>`;
     }).join("");
+    // Resultat (backtest, träning, testa nu) ska inte försvinna när listan ritas om av en ny signal.
+    for(const [id, html] of Object.entries(SL.outs)){
+      const o = $("sl-list").querySelector(`.sl-strat[data-id="${CSS.escape(id)}"] .sl-out`);
+      if(o) o.innerHTML = html;
+    }
   }
   async function loadLibrary(){
     const j = await api("/api/strategies");
@@ -8125,6 +8137,44 @@ document.addEventListener("DOMContentLoaded", boot);
       `</table><div class="sl-note">Bybits riktiga historiska ljus, ${j.results[0]?.feePctPerSide ?? 0.1}% avgift per köp och sälj. Historik garanterar inget framåt, men visar om reglerna alls har haft en fördel.</div>`;
   }
 
+  // ── Träning ─────────────────────────────────────────────────
+  const pct = v => v == null ? "–" : `<span class="${v>=0?"sl-pass":"sl-fail"}">${Number(v).toFixed(2)}%</span>`;
+  const scoreCells = t => `<td>${pct(t.returnPct)}</td><td>${t.trades}</td><td>${Number(t.winRatePct).toFixed(0)}%</td><td>${Number(t.maxDrawdownPct).toFixed(2)}%</td>`;
+  function renderTraining(out, j){
+    if(!j.ok){ out.innerHTML = `<span class="sl-fail">${esc(j.error)}</span>`; return; }
+    const errs = Object.entries(j.errors||{}).map(([c,e])=>`<div class="sl-fail">${esc(c)}: ${esc(e)}</div>`).join("");
+    const head = `<tr><th></th><th colspan="4">Träning (första ${Math.round(j.splitPct)} %)</th><th colspan="4">Kontroll (sista ${100-Math.round(j.splitPct)} %, osedd data)</th></tr>
+      <tr><th></th><th>Avkastning</th><th>Affärer</th><th>Vinst-%</th><th>Max ras</th><th>Avkastning</th><th>Affärer</th><th>Vinst-%</th><th>Max ras</th></tr>`;
+    const row = (label, c) => `<tr><td><b>${label}</b></td>${scoreCells(c.train)}${scoreCells(c.check)}</tr>`;
+    const b = j.best;
+    const color = j.verdict === "bättre" ? "sl-pass" : j.verdict === "behåll" ? "" : "sl-fail";
+    const coins = Object.entries(j.candlesPerCoin||{}).map(([c,n])=>`${esc(c)} ${n}`).join(", ");
+    out.innerHTML = `${errs}<div class="${color}" style="font-weight:700;margin-bottom:6px">${esc(j.verdictText)}</div>
+      <table>${head}${row("Som nu", j.current)}${j.verdict!=="för-lite-data"?row("Förslag", b):""}</table>
+      ${j.verdict!=="för-lite-data" ? `<div class="sl-rules"><b>Förslaget:</b> KÖP när ${b.rulesText.entry.map(esc).join(" <b>och</b> ")}<br>
+        SÄLJ när ${b.rulesText.exit.length?b.rulesText.exit.map(esc).join(" <b>och</b> "):"–"} · stop ${b.params.stopAtr||"av"} ATR · target ${b.params.targetAtr||"av"} ATR</div>` : ""}
+      ${j.verdict==="bättre" ? `<div class="sl-actions"><button class="sl-btn pri" data-act="apply">Använd förslaget</button><span class="sl-sub">Det gamla sparas. Strategin stannar i TEST tills du själv flyttar den.</span></div>` : ""}
+      <div class="sl-note">${j.variantsTested} varianter provade på ${coins} ljus (${esc(j.interval)}) på ${(j.ms/1000).toFixed(1)} s. Vinnaren väljs på hur stabil den är på båda delarna, så att tur på en del inte räcker. Ett förslag kan fortfarande ha tur, så låt det köra i TEST innan LIVE.</div>`;
+  }
+
+  // ── Poängtavla (TEST-körning) ───────────────────────────────
+  async function loadScoreboard(){
+    const box = $("sl-score"); if(!box) return;
+    const j = await api("/api/strategies/scoreboard");
+    if(!j.rows){ box.innerHTML = `<div class="sl-sub">Kunde inte läsa poängtavlan: ${esc(j.error||"okänt fel")}</div>`; return; }
+    $("sl-score-meta").textContent = `krav för LIVE: ${j.rules.minTrades} affärer, ${j.rules.minDays} dagar, plus totalt`;
+    box.innerHTML = `<table><tr><th>Strategi</th><th>Affärer</th><th>Vinst-%</th><th>Totalt</th><th>Snitt/affär</th><th>Bäst / sämst</th><th>Öppna nu</th><th>Kört</th><th>Senaste träning</th><th>LIVE?</th></tr>` +
+      j.rows.map(r=>{
+        const open = r.open.length ? r.open.map(o=>`${esc(o.coin)} ${pct(o.unrealizedPct)}`).join("<br>") : "–";
+        const t = r.training;
+        const tr = t ? `<span class="${t.verdict==="bättre"?"sl-pass":t.verdict==="för-lite-data"?"sl-fail":""}">${t.verdict==="bättre"?(t.applied?"förslag använt":"bättre förslag finns"):t.verdict==="behåll"?"behåll som den är":"för lite data"}</span><div class="sl-sub">${esc(new Date(t.trainedAt).toLocaleString("sv-SE",{dateStyle:"short",timeStyle:"short"}))}</div>` : `<span class="sl-sub">inte tränad</span>`;
+        return `<tr class="${r.enabled?"":"sl-sub"}"><td><b>${esc(r.name)}</b> <span class="sl-badge ${r.venue}">${r.venue==="live"?"LIVE":"TEST"}</span>${r.enabled?"":" (av)"}</td>
+          <td>${r.closed}</td><td>${r.closed?r.winRatePct.toFixed(0)+"%":"–"}</td><td>${r.closed?pct(r.totalReturnPct):"–"}</td><td>${r.closed?pct(r.avgTradePct):"–"}</td>
+          <td>${r.bestPct==null?"–":pct(r.bestPct)+" / "+pct(r.worstPct)}</td><td>${open}</td><td>${r.daysRunning} d</td><td>${tr}</td>
+          <td class="${r.ready.ok?"sl-pass":"sl-sub"}">${esc(r.ready.text)}</td></tr>`;
+      }).join("") + `</table>`;
+  }
+
   $("sl-list")?.addEventListener("click", async e=>{
     const btn = e.target.closest("[data-act]"); if(!btn) return;
     const card = btn.closest(".sl-strat"); const id = card?.dataset.id; if(!id) return;
@@ -8141,11 +8191,20 @@ document.addEventListener("DOMContentLoaded", boot);
       if(!confirm(`Ta bort strategin "${s.name}"? Signalhistoriken finns kvar.`)) return;
       await api("/api/strategies/"+id+"/delete", {}); await loadLibrary(); return;
     }
-    if(act === "reset"){ await api("/api/strategies/"+id+"/reset", {}); await loadLibrary(); return; }
-    btn.disabled = true; out.innerHTML = `<span class="sl-sub">${act==="bt"?"Hämtar upp till 1000 ljus per coin från Bybit och kör…":"Räknar på senaste stängda ljuset…"}</span>`;
+    if(act === "reset"){ await api("/api/strategies/"+id+"/reset", {}); await loadLibrary(); loadScoreboard(); return; }
+    if(act === "apply"){
+      if(!confirm(`Använd träningens förslag i "${s.name}"? Det gamla sparas och strategin ligger kvar i ${s.venue==="live"?"LIVE":"TEST"}.`)) return;
+      const j = await api("/api/strategies/"+id+"/apply-training", {});
+      if(!j.ok){ alert(j.error); return; }
+      delete SL.outs[id];
+      await loadLibrary(); loadScoreboard(); return;
+    }
+    btn.disabled = true; out.innerHTML = `<span class="sl-sub">${act==="bt"?"Hämtar upp till 1000 ljus per coin från Bybit och kör…":act==="train"?"Hämtar 3000 ljus per coin från Bybit och provar 300 varianter… (några sekunder)":"Räknar på senaste stängda ljuset…"}</span>`;
     try{
       if(act === "test") renderTest(out, await api("/api/strategies/"+id+"/test", {}));
       if(act === "bt") renderBacktest(out, await api("/api/strategies/backtest", { id }));
+      if(act === "train"){ renderTraining(out, await api("/api/strategies/"+id+"/train", {})); loadScoreboard(); }
+      SL.outs[id] = out.innerHTML;
     } finally { btn.disabled = false; }
   });
 
@@ -8300,7 +8359,7 @@ document.addEventListener("DOMContentLoaded", boot);
           if(i >= 0) SL.signals[i] = sig; else SL.signals.unshift(sig);
           SL.signals = SL.signals.slice(0, 40);
           renderSignals();
-          if(sig.review?.final === "ok") loadLibrary();
+          if(sig.review?.final === "ok"){ loadLibrary(); loadScoreboard().catch(()=>{}); }
         }catch(_){}
       });
     }catch(_){}
@@ -8309,7 +8368,8 @@ document.addEventListener("DOMContentLoaded", boot);
   async function init(){
     if(!$("page-strategies")) return;
     await loadLibrary().catch(()=>{});
-    loadStatus(); loadBalance(false); loadSignals();
+    loadStatus(); loadBalance(false); loadSignals(); loadScoreboard().catch(()=>{});
+    setInterval(()=>{ if(isActive()) loadScoreboard().catch(()=>{}); }, 60000);
     api("/api/bybit/pairs").then(j=>{ if(j.pairs) $("sl-pairs").innerHTML = j.pairs.map(p=>`<option value="${esc(p)}">`).join(""); }).catch(()=>{});
     startStream();
     setInterval(()=>{ if(isActive()) loadStatus(); }, 3000);
