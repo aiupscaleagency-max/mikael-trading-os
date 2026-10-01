@@ -307,6 +307,9 @@ export function startSignalEngine(): () => void {
     // strömmen — signalen publiceras när bedömningen är klar, eller direkt
     // med rules_only om JEV inte svarar.
     void applyJevVerdict(base).then((signal) => {
+    // Ett sent JEV-svar får aldrig skriva över en nyare signal (annars visas gammal riktning).
+    const prev = latest.get(key(symbol, interval));
+    if (prev && prev.candleCloseTime > signal.candleCloseTime) return;
     latest.set(key(symbol, interval), signal);
     for (const cb of subscribers) {
       try { cb(signal); } catch (err) {

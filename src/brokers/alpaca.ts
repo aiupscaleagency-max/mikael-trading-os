@@ -182,8 +182,9 @@ export class AlpacaBroker implements BrokerAdapter {
   async getPositions(): Promise<Position[]> {
     const positions = await this.tradingRequest<AlpacaPosition[]>("GET", "/v2/positions");
     return positions.map((p) => ({
-      symbol: p.symbol,
-      baseAsset: p.symbol,
+      // Alpaca kallar krypto "BTCUSD"; resten av systemet använder "BTCUSDT".
+      symbol: p.asset_class === "crypto" && /USD$/.test(p.symbol.replace("/", "")) ? `${p.symbol.replace("/", "")}T` : p.symbol,
+      baseAsset: p.asset_class === "crypto" ? p.symbol.replace("/", "").replace(/USD$/, "") : p.symbol,
       quoteAsset: "USD",
       quantity: Math.abs(Number(p.qty)),
       avgEntryPrice: Number(p.avg_entry_price),
@@ -250,11 +251,19 @@ export class AlpacaBroker implements BrokerAdapter {
   }
 
   async placeOrder(order: OrderRequest): Promise<OrderResult> {
+    // Säkerhet: TEST-läge får aldrig skicka ordrar till Alpacas riktiga konto.
+    if (this.mode === "paper" && !this.cfg.baseUrl.includes("paper-api")) {
+      throw new Error(
+        "Alpaca: MODE=paper men ALPACA_BASE_URL pekar på riktiga kontot. Ingen order lades. Sätt ALPACA_BASE_URL=https://paper-api.alpaca.markets",
+      );
+    }
+    // Krypto heter BTC/USD hos Alpaca och kräver time_in_force gtc/ioc ("day" nekas).
+    const crypto = toAlpacaCrypto(order.symbol);
     const body: Record<string, unknown> = {
-      symbol: order.symbol,
+      symbol: crypto ?? order.symbol,
       side: order.side.toLowerCase(),
       type: order.type.toLowerCase(),
-      time_in_force: order.type === "MARKET" ? "day" : "gtc",
+      time_in_force: crypto ? "gtc" : order.type === "MARKET" ? "day" : "gtc",
     };
 
     if (order.quantity !== undefined) {

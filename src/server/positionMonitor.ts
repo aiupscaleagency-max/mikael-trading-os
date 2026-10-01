@@ -15,6 +15,7 @@ import { BinanceClient, type BinanceCredentials } from "./integrations/binance.j
 import { detectAllPatterns, type Candle, type PatternType } from "./patternDetection.js";
 import { sendMessage as sendTelegramMessage } from "./telegram.js";
 import { log } from "../logger.js";
+import { needsApproval, addPendingOrder, hasPendingFor } from "./orderGate.js";
 import Anthropic from "@anthropic-ai/sdk";
 import { createLlmClient, hasLlmCredentials, modelFor } from "../llm/gateway.js";
 import { atr as computeATR } from "../indicators/ta.js";
@@ -168,7 +169,11 @@ async function verifyWithAdvisor(
   ruleSignals: { tpSl: string; pattern: string; rsi: string },
 ): Promise<{ approve: boolean; verdict: string; reasoning: string }> {
   if (!hasLlmCredentials()) {
-    log.warn("[Advisor] AI_GATEWAY_API_KEY/ANTHROPIC_API_KEY saknas — defaultar till APPROVE");
+    if (mode === "live") {
+      log.warn("[Advisor] AI-nyckel saknas — LIVE säljer INTE utan Advisor (VETO)");
+      return { approve: false, verdict: "VETO_NO_AI", reasoning: "Advisor saknas. LIVE-sälj kräver Advisor, så inget såldes." };
+    }
+    log.warn("[Advisor] AI_GATEWAY_API_KEY/ANTHROPIC_API_KEY saknas — defaultar till APPROVE (bara TEST)");
     return { approve: true, verdict: "APPROVE_NO_AI", reasoning: "Advisor unavailable, regelbaserat beslut godkänt." };
   }
   const anthropic = createLlmClient();
@@ -275,11 +280,16 @@ REASONING: ...`;
     const text = reply.content.filter(b => b.type === "text").map(b => (b as Anthropic.TextBlock).text).join("");
     const verdictMatch = text.match(/VERDICT:\s*(APPROVE|VETO)/i);
     const reasoningMatch = text.match(/REASONING:\s*([\s\S]+?)(?:\n\n|$)/i);
-    const verdict = verdictMatch?.[1]?.toUpperCase() ?? "APPROVE";
+    // LIVE: ett otydligt svar räknas som VETO, aldrig som godkänt.
+    const verdict = verdictMatch?.[1]?.toUpperCase() ?? (mode === "live" ? "VETO" : "APPROVE");
     const reasoning = reasoningMatch?.[1]?.trim().slice(0, 400) ?? text.slice(0, 400);
     return { approve: verdict === "APPROVE", verdict, reasoning };
   } catch (e) {
-    log.warn(`[Advisor] verifikation fail: ${e instanceof Error ? e.message : String(e)} — defaultar till APPROVE`);
+    if (mode === "live") {
+      log.warn(`[Advisor] verifikation fail: ${e instanceof Error ? e.message : String(e)} — LIVE säljer INTE (VETO)`);
+      return { approve: false, verdict: "VETO_API_FAIL", reasoning: "Advisor svarade inte. LIVE-sälj kräver Advisor, så inget såldes." };
+    }
+    log.warn(`[Advisor] verifikation fail: ${e instanceof Error ? e.message : String(e)} — defaultar till APPROVE (bara TEST)`);
     return { approve: true, verdict: "APPROVE_API_FAIL", reasoning: "Advisor API fail, regelbaserat beslut används." };
   }
 }
@@ -493,6 +503,22 @@ async function runCheckCycle(testnetCreds: BinanceCredentials | null, liveCreds:
             continue;
           }
         } catch { /* slippage-fail ska inte blocka critical SL-exits */ }
+
+        // Godkännande-läge: monitorn säljer inte själv, den lägger ett förslag som väntar på Mike.
+        if (needsApproval()) {
+          if (!(await hasPendingFor(symInfo.symbol, "SELL", "binance"))) {
+            await addPendingOrder({
+              source: "positionMonitor",
+              venue: "binance",
+              live: mode === "live",
+              symbol: symInfo.symbol,
+              side: "SELL",
+              quantity: qtyRounded,
+              reason: `Auto-sälj föreslås: ${decision.reason ?? "regel"}`.slice(0, 200),
+            });
+          }
+          continue;
+        }
 
         try {
           const fill = await userClient.placeMarketOrder({ symbol: symInfo.symbol, side: "SELL", quantity: qtyRounded });

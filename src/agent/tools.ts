@@ -252,6 +252,22 @@ export const TOOLS: Record<string, ToolDef> = {
         log.agent(
           `[APPROVE-LÄGE] Claude vill lägga order: ${finalOrder.side} ${finalOrder.symbol} — ${reasoning}`,
         );
+        // Lägg förslaget i kön så Mike ser det i dashboarden och kan trycka Godkänn.
+        try {
+          const { addPendingOrder } = await import("../server/orderGate.js");
+          await addPendingOrder({
+            source: "agent",
+            venue: `broker:${ctx.broker.name}`,
+            live: ctx.broker.mode === "live",
+            symbol: finalOrder.symbol,
+            side: finalOrder.side,
+            quoteUsd: finalOrder.quoteOrderQty,
+            quantity: finalOrder.quoteOrderQty === undefined ? finalOrder.quantity : undefined,
+            reason: String(reasoning ?? "").slice(0, 200),
+          });
+        } catch (err) {
+          log.warn(`Kunde inte spara väntande order: ${err instanceof Error ? err.message : String(err)}`);
+        }
         return {
           accepted: true,
           executed: false,

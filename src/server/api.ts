@@ -20,6 +20,7 @@ import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
 import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
+import { checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, MAX_TEST_STAKE_USD, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
@@ -27,7 +28,7 @@ let binanceTestnetCreds: BinanceCredentials | null = null;
 let oandaCreds: OandaCredentials | null = null;
 
 // Säkerhetslås för LIVE-mode (riktiga pengar)
-const MAX_LIVE_STAKE_USD = parseFloat(process.env.MAX_LIVE_STAKE_USD || "5");
+// MAX_LIVE_STAKE_USD, MAX_TEST_STAKE_USD och dagsgränsen bor i orderGate.ts
 const MAX_LIVE_DAILY_LOSS_USD = parseFloat(process.env.MAX_LIVE_DAILY_LOSS_USD || "10");
 let liveDailyLossUsd = 0; // resettas vid midnatt
 let lastResetDay = new Date().getUTCDate();
@@ -94,24 +95,23 @@ function resolveBinanceCreds(mode: "testnet" | "live"): BinanceCredentials | nul
 }
 
 function initIntegrationsFromEnv(): void {
-  // Live-keys (binance.com / mainnet)
-  const liveKey = process.env.BINANCE_API_KEY;
-  const liveSecret = process.env.BINANCE_API_SECRET;
-  const explicitTestnet = process.env.BINANCE_TESTNET === "true";
-  if (liveKey && liveSecret && !explicitTestnet) {
+  // Samma namn som config.ts och .env.example:
+  //   BINANCE_API_KEY/SECRET           = TESTNET (låtsaspengar)
+  //   BINANCE_LIVE_API_KEY/SECRET      = LIVE (riktiga pengar)
+  // BINANCE_TESTNET_API_KEY/SECRET läses också (äldre namn för testnet).
+  // Live-nycklar tas ALDRIG från BINANCE_API_KEY, så en testnet-nyckel kan
+  // inte av misstag bli "live" och tvärtom.
+  const liveKey = process.env.BINANCE_LIVE_API_KEY;
+  const liveSecret = process.env.BINANCE_LIVE_API_SECRET;
+  if (liveKey && liveSecret) {
     binanceLiveCreds = { apiKey: liveKey, apiSecret: liveSecret, testnet: false };
-    log.ok(`Binance LIVE auto-init (mainnet)`);
+    log.ok(`Binance LIVE-nycklar hittade (används bara när MODE=live)`);
   }
-  // Testnet-keys (separat så båda kan köras parallellt)
-  const tnKey = process.env.BINANCE_TESTNET_API_KEY;
-  const tnSecret = process.env.BINANCE_TESTNET_API_SECRET;
+  const tnKey = process.env.BINANCE_TESTNET_API_KEY || process.env.BINANCE_API_KEY;
+  const tnSecret = process.env.BINANCE_TESTNET_API_SECRET || process.env.BINANCE_API_SECRET;
   if (tnKey && tnSecret) {
     binanceTestnetCreds = { apiKey: tnKey, apiSecret: tnSecret, testnet: true };
-    log.ok(`Binance TESTNET auto-init (parallellt med live)`);
-  } else if (liveKey && liveSecret && explicitTestnet) {
-    // Bakåtkompat: om gamla BINANCE_TESTNET=true → använd som testnet
-    binanceTestnetCreds = { apiKey: liveKey, apiSecret: liveSecret, testnet: true };
-    log.ok(`Binance TESTNET auto-init (fallback från BINANCE_TESTNET=true)`);
+    log.ok(`Binance TESTNET auto-init`);
   }
 
   log.info(`Säkerhetslås LIVE: max stake $${MAX_LIVE_STAKE_USD} · daily loss-cap $${MAX_LIVE_DAILY_LOSS_USD}`);
@@ -148,6 +148,55 @@ function setCachedPortfolioStats(mode: "testnet" | "live", data: PortfolioStats)
   portfolioStatsCache.set(mode, { ts: Date.now(), data });
 }
 
+// Skydd mot dubbelklick på Godkänn
+const approvingIds = new Set<string>();
+
+// ─── Godkänd väntande order → lägg den på riktigt (TEST eller LIVE) ───
+// Kör hela order-grinden IGEN vid godkännandet: kill switch eller LIVE-lås kan
+// ha ändrats sedan ordern skapades.
+async function executeApprovedOrder(
+  p: PendingOrder,
+  brokers: Record<string, BrokerAdapter>,
+): Promise<{ ok: true; result: unknown } | { ok: false; error: string; keepPending?: boolean }> {
+  const gate = await checkOrderGate({ live: p.live, side: p.side, quoteUsd: p.quoteUsd, source: `godkänd:${p.source}` });
+  // Spärrad just nu (t.ex. kill switch) → ordern får ligga kvar och kan godkännas senare
+  if (!gate.ok) return { ok: false, error: gate.error, keepPending: true };
+  try {
+    if (p.venue === "binance") {
+      const creds = resolveBinanceCreds(p.live ? "live" : "testnet");
+      if (!creds) return { ok: false, error: `Binance ${p.live ? "LIVE" : "TEST"} är inte kopplad` };
+      const client = new BinanceClient(creds);
+      const order = p.quantity !== undefined
+        ? await client.placeMarketOrder({ symbol: p.symbol, side: p.side, quantity: p.quantity })
+        : await client.placeMarketOrder({ symbol: p.symbol, side: p.side, quoteOrderQty: p.quoteUsd });
+      if (p.live && p.side === "BUY") recordLiveSpend(parseFloat(order.cummulativeQuoteQty) || p.quoteUsd || 0);
+      log.trade(`[GODKÄND] ${p.side} ${p.symbol} via Binance ${p.live ? "LIVE" : "TEST"}`);
+      return { ok: true, result: order };
+    }
+    if (p.venue.startsWith("broker:")) {
+      const name = p.venue.slice("broker:".length);
+      const broker = brokers[name];
+      if (!broker) return { ok: false, error: `Mäklaren ${name} är inte kopplad längre` };
+      if ((broker.mode === "live") !== p.live) {
+        return { ok: false, error: "Mäklarens läge (TEST/LIVE) har ändrats sedan ordern skapades. Lägg den igen." };
+      }
+      const order = await broker.placeOrder({
+        symbol: p.symbol,
+        side: p.side,
+        type: "MARKET",
+        quoteOrderQty: p.quantity === undefined ? p.quoteUsd : undefined,
+        quantity: p.quantity,
+      });
+      if (p.live && p.side === "BUY") recordLiveSpend(order.cummulativeQuoteQty || p.quoteUsd || 0);
+      log.trade(`[GODKÄND] ${p.side} ${p.symbol} via ${name} ${p.live ? "LIVE" : "TEST"} · status ${order.status}`);
+      return { ok: true, result: order };
+    }
+    return { ok: false, error: `Okänd order-väg: ${p.venue}` };
+  } catch (err) {
+    return { ok: false, error: (err instanceof Error ? err.message : String(err)).slice(0, 300) };
+  }
+}
+
 // ─── Chat-tool executor — utför Claude's tool_use mot riktiga Binance-orders ───
 async function executeChatTool(
   toolName: string,
@@ -176,6 +225,15 @@ async function executeChatTool(
       // Försök sälja mot USDT först, sen USDC
       const symInfo = symbols.find(s => s.baseAsset === p.asset && (s.quoteAsset === "USDT" || s.quoteAsset === "USDC"));
       if (!symInfo) { closes.push({ symbol: p.asset, qty: p.qty, ok: false, error: "Ingen tradable USDT/USDC-pair" }); continue; }
+      const gate = await checkOrderGate({ live: mode === "live", side: "SELL", source: "chat:close_all" });
+      if (!gate.ok) { closes.push({ symbol: symInfo.symbol, qty: p.qty, ok: false, error: gate.error }); continue; }
+      if (needsApproval()) {
+        const stepSize = symInfo.stepSize || 0.000001;
+        const qtyRounded = Math.floor(p.qty / stepSize) * stepSize;
+        await addPendingOrder({ source: "chat:close_all", venue: "binance", live: mode === "live", symbol: symInfo.symbol, side: "SELL", quantity: qtyRounded, reason: "Stäng allt (chatten)" });
+        closes.push({ symbol: symInfo.symbol, qty: qtyRounded, ok: false, error: "Väntar på ditt godkännande" });
+        continue;
+      }
       try {
         // Avrunda qty till stepSize
         const stepSize = symInfo.stepSize || 0.000001;
@@ -208,13 +266,12 @@ async function executeChatTool(
       // Välj quote Mike har mest av
       quotePref = userQuotes.includes("USDC") ? "USDC" : (userQuotes.includes("USDT") ? "USDT" : "USDT");
     }
-    // LIVE säkerhetslås
-    if (mode === "live" && amt > MAX_LIVE_STAKE_USD) {
-      return { ok: false, error: `LIVE-säkerhetslås: max $${MAX_LIVE_STAKE_USD}/trade. Du försökte $${amt}.` };
+    // Samma order-grind som allt annat (kill switch, LIVE-lås, max belopp, dagsgräns)
+    if (mode === "live" && getLiveSpentTodayUsd() + amt * n > MAX_LIVE_DAILY_SPEND_USD) {
+      return { ok: false, error: `Dagens LIVE-gräns är $${MAX_LIVE_DAILY_SPEND_USD}. ${n} × $${amt} skulle gå över (redan $${getLiveSpentTodayUsd().toFixed(2)} i dag).` };
     }
-    if (mode === "live" && liveDailyLossUsd >= MAX_LIVE_DAILY_LOSS_USD) {
-      return { ok: false, error: `Daglig loss-cap nådd ($${liveDailyLossUsd.toFixed(2)} / $${MAX_LIVE_DAILY_LOSS_USD}). Trading pausad.` };
-    }
+    const perOrderGate = await checkOrderGate({ live: mode === "live", side: "BUY", quoteUsd: amt, source: "chat:place_market_orders" });
+    if (!perOrderGate.ok) return { ok: false, error: perOrderGate.error };
     // Filtrera symbols
     const skipBases = new Set(["EUR", "GBP", "JPY", "TRY", "BRL", "ARS", "RON", "ZAR", "UAH", "NGN"]);
     const eligible = symbols.filter(s => s.quoteAsset === quotePref && amt >= s.minNotional && !skipBases.has(s.baseAsset));
@@ -227,6 +284,19 @@ async function executeChatTool(
     const shuffled = [...eligible].sort(() => Math.random() - 0.5).slice(0, n);
     // Pre-trade orderbook-check: avbryt om förväntad slippage > 50 bps (LIVE) eller 100 bps (TESTNET)
     const maxSlippageBps = mode === "live" ? 50 : 100;
+    if (needsApproval()) {
+      const queued = [];
+      for (const s of shuffled) {
+        queued.push(await addPendingOrder({ source: "chat:place_market_orders", venue: "binance", live: mode === "live", symbol: s.symbol, side: "BUY", quoteUsd: amt, reason: "Köp från chatten" }));
+      }
+      return {
+        ok: true,
+        executed: false,
+        waiting_for_approval: queued.length,
+        message: "Inga ordrar är lagda än. De väntar på Mikes godkännande under Väntande ordrar.",
+        orders: queued.map(q => ({ id: q.id, symbol: q.symbol, quoteUsd: q.quoteUsd })),
+      };
+    }
     const fills = await Promise.all(shuffled.map(async (s) => {
       try {
         // Slippage-skydd: kolla orderbok-djup först (snabbt — publik endpoint, ingen rate-cost)
@@ -241,6 +311,7 @@ async function executeChatTool(
         } catch { /* slippage-check failure ska inte blocka, fortsätt med order */ }
 
         const fill = await client.placeMarketOrder({ symbol: s.symbol, side: "BUY", quoteOrderQty: amt });
+        if (mode === "live") recordLiveSpend(parseFloat(fill.cummulativeQuoteQty) || amt);
         const fillPrice = parseFloat(fill.cummulativeQuoteQty) / parseFloat(fill.executedQty);
         // Registrera entry till PositionMonitor så den vet när auto-sell ska triggas
         recordPositionEntry(s.baseAsset, mode, fillPrice, parseFloat(fill.executedQty));
@@ -826,8 +897,7 @@ export function startServer(
         const body = await readBody(req);
         const { broker: name } = JSON.parse(body) as { broker: string };
         if (!brokers[name]) {
-          res.writeHead(400);
-          json(res, { error: `Broker '${name}' finns inte. Tillgängliga: ${Object.keys(brokers).join(", ")}` });
+          jsonStatus(res, 400, { error: `Broker '${name}' finns inte. Tillgängliga: ${Object.keys(brokers).join(", ")}` });
           return;
         }
         activeBrokerName = name;
@@ -898,59 +968,122 @@ export function startServer(
           // Härled UI-läge från kombination
           uiMode: config.mode === "paper" ? "paper" :
                   config.executionMode === "approve" ? "propose" : "live",
+          // Ärligt svar till UI:t: kan LIVE över huvud taget användas just nu?
+          liveAllowed: liveAllowedByServer(),
+          liveKeys: { binance: !!binanceLiveCreds, oanda: !!oandaCreds && !oandaCreds.practice },
+          limits: { maxLiveStakeUsd: MAX_LIVE_STAKE_USD, maxTestStakeUsd: MAX_TEST_STAKE_USD, maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD, liveSpentTodayUsd: getLiveSpentTodayUsd() },
         });
         return;
       }
 
+      // POST /api/mode
+      //  - "paper"   → TEST. Ändrar INTE godkännande-läget.
+      //  - "propose" → TEST + varje order väntar på godkännande (säkrare riktning, tillåten).
+      //  - "live"    → bara om servern redan är startad med MODE=live och
+      //                LIVE_TRADING_CONFIRMED=true i .env. Webbläsaren kan aldrig slå på
+      //                riktiga pengar och skriver aldrig i .env.
       if (url.pathname === "/api/mode" && method === "POST") {
         const body = await readBody(req);
-        const { uiMode, confirmation } = JSON.parse(body) as {
-          uiMode: "paper" | "propose" | "live";
-          confirmation?: { confirmed: boolean[] };
-        };
+        const { uiMode } = JSON.parse(body) as { uiMode: "paper" | "propose" | "live" };
 
-        // Live-läge kräver att alla 6 checklistor är confirmed
         if (uiMode === "live") {
-          const allChecked = confirmation?.confirmed?.length === 6 &&
-                             confirmation.confirmed.every((c) => c === true);
-          if (!allChecked) {
-            res.writeHead(400);
-            res.end(JSON.stringify({ error: "Live-läge kräver 6 bekräftelser." }));
+          if (!liveAllowedByServer()) {
+            jsonStatus(res, 409, {
+              ok: false,
+              error: "LIVE är låst. Riktiga pengar slås bara på i .env (MODE=live, LIVE_TRADING_CONFIRMED=true och live-nycklar) följt av omstart. Ingenting har ändrats.",
+            });
             return;
           }
+          log.warn("Dashboard bad om LIVE-vy (servern är redan startad i LIVE)");
+          broadcastEvent("mode-changed", { uiMode: "live", mode: config.mode, executionMode: config.executionMode });
+          json(res, { ok: true, uiMode: "live", mode: config.mode, executionMode: config.executionMode });
+          return;
         }
 
-        // Mappa UI-läge → config
-        const newMode = uiMode === "paper" ? "paper" : "live";
-        const newExecMode = uiMode === "propose" ? "approve" : "auto";
-
-        // Mutera in-memory config — alla framtida agent-anrop använder nya värden
-        (config as { mode: string }).mode = newMode;
-        (config as { executionMode: string }).executionMode = newExecMode;
-
-        // Persistera till .env så det överlever restart
-        try {
-          const envPath = "/root/mikael-trading-os/.env";
-          const envContent = await fs.readFile(envPath, "utf8").catch(() => "");
-          let updated = envContent;
-          updated = updated.includes("\nMODE=")
-            ? updated.replace(/\nMODE=[^\n]*/, `\nMODE=${newMode}`)
-            : updated.replace(/^MODE=[^\n]*/, `MODE=${newMode}`);
-          updated = updated.includes("\nEXECUTION_MODE=")
-            ? updated.replace(/\nEXECUTION_MODE=[^\n]*/, `\nEXECUTION_MODE=${newExecMode}`)
-            : updated + `\nEXECUTION_MODE=${newExecMode}`;
-          updated = updated.includes("\nLIVE_TRADING_CONFIRMED=")
-            ? updated.replace(/\nLIVE_TRADING_CONFIRMED=[^\n]*/, `\nLIVE_TRADING_CONFIRMED=${newMode === "live" ? "true" : "false"}`)
-            : updated + `\nLIVE_TRADING_CONFIRMED=${newMode === "live" ? "true" : "false"}`;
-          await fs.writeFile(envPath, updated, "utf8");
-        } catch (err) {
-          log.warn(`Kunde inte persistera mode till .env: ${err instanceof Error ? err.message : String(err)}`);
+        if (uiMode === "propose" && config.executionMode !== "approve") {
+          (config as { executionMode: string }).executionMode = "approve";
+          log.warn("Godkännande-läge PÅ via dashboard (gäller tills omstart)");
         }
-
-        log.warn(`Mode bytt: ${uiMode.toUpperCase()} (mode=${newMode}, exec=${newExecMode}) via dashboard`);
-        broadcastEvent("mode-changed", { uiMode, mode: newMode, executionMode: newExecMode });
-        json(res, { ok: true, uiMode, mode: newMode, executionMode: newExecMode });
+        if (uiMode !== "paper" && uiMode !== "propose") {
+          jsonStatus(res, 400, { ok: false, error: `Okänt läge: ${String(uiMode)}` });
+          return;
+        }
+        broadcastEvent("mode-changed", { uiMode, mode: config.mode, executionMode: config.executionMode });
+        json(res, { ok: true, uiMode, mode: config.mode, executionMode: config.executionMode });
         return;
+      }
+
+      // ── Väntande ordrar (EXECUTION_MODE=approve) ──
+      if (url.pathname === "/api/pending-orders" && method === "GET") {
+        json(res, { orders: await listPendingOrders(), executionMode: config.executionMode });
+        return;
+      }
+
+      // POST /api/pending-orders — lägg en order som väntar på godkännande
+      // body: { symbol, side, quoteUsd, source?, broker? }  (broker saknas = aktiv broker)
+      if (url.pathname === "/api/pending-orders" && method === "POST") {
+        const b = JSON.parse(await readBody(req)) as { symbol?: string; side?: string; quoteUsd?: number; source?: string; broker?: string; reason?: string };
+        const symbol = String(b.symbol || "").toUpperCase();
+        const side = b.side === "SELL" ? "SELL" : b.side === "BUY" ? "BUY" : null;
+        const quoteUsd = Number(b.quoteUsd);
+        if (!/^[A-Z0-9/]{3,20}$/.test(symbol) || !side) {
+          jsonStatus(res, 400, { ok: false, error: "symbol och side (BUY/SELL) krävs" });
+          return;
+        }
+        const brokerName = b.broker || activeBrokerName || Object.keys(brokers)[0];
+        const broker = brokerName ? brokers[brokerName] : undefined;
+        if (!broker) {
+          jsonStatus(res, 409, { ok: false, error: "Ingen mäklare är kopplad på servern. Lägg in Alpaca- eller Binance-nycklar i .env." });
+          return;
+        }
+        const live = broker.mode === "live";
+        const gate = await checkOrderGate({ live, side, quoteUsd, source: b.source || "dashboard" });
+        if (!gate.ok) { json(res, { ok: false, error: gate.error }); return; }
+        const p = await addPendingOrder({
+          source: String(b.source || "dashboard").slice(0, 60),
+          venue: `broker:${brokerName}`,
+          live,
+          symbol,
+          side,
+          quoteUsd,
+          reason: b.reason ? String(b.reason).slice(0, 200) : undefined,
+        });
+        broadcastEvent("pending-orders", { id: p.id });
+        json(res, { ok: true, pendingOrder: p });
+        return;
+      }
+
+      // POST /api/pending-orders/:id/approve | /reject
+      {
+        const m = url.pathname.match(/^\/api\/pending-orders\/([0-9a-f-]{36})\/(approve|reject)$/);
+        if (m && method === "POST") {
+          const id = m[1] as string;
+          const action = m[2] as string;
+          if (approvingIds.has(id)) { json(res, { ok: false, error: "Ordern håller redan på att läggas" }); return; }
+          const p = await getPendingOrder(id);
+          if (!p) { jsonStatus(res, 404, { ok: false, error: "Ordern finns inte" }); return; }
+          if (p.status !== "pending") { json(res, { ok: false, error: `Ordern är redan ${p.status}` }); return; }
+          if (action === "reject") {
+            const upd = await updatePendingOrder(id, { status: "rejected" });
+            log.info(`Väntande order avvisad: ${p.side} ${p.symbol}`);
+            broadcastEvent("pending-orders", { id });
+            json(res, { ok: true, order: upd });
+            return;
+          }
+          approvingIds.add(id);
+          let result: Awaited<ReturnType<typeof executeApprovedOrder>>;
+          try { result = await executeApprovedOrder(p, brokers); } finally { approvingIds.delete(id); }
+          if (!result.ok && result.keepPending) {
+            json(res, { ok: false, order: p, error: `${result.error} Ordern ligger kvar och väntar.` });
+            return;
+          }
+          const upd = await updatePendingOrder(id, result.ok
+            ? { status: "done", result: result.result }
+            : { status: "failed", error: result.error });
+          broadcastEvent("pending-orders", { id });
+          json(res, { ok: result.ok, order: upd, error: result.ok ? undefined : result.error });
+          return;
+        }
       }
 
       // ── Kill-switch ──
@@ -973,13 +1106,11 @@ export function startServer(
 
         const agentConfig = AGENT_PROMPTS[agent];
         if (!agentConfig) {
-          res.writeHead(400);
-          json(res, { error: `Okänd agent: '${agent}'. Tillgängliga: ${Object.keys(AGENT_PROMPTS).join(", ")}` });
+          jsonStatus(res, 400, { error: `Okänd agent: '${agent}'. Tillgängliga: ${Object.keys(AGENT_PROMPTS).join(", ")}` });
           return;
         }
         if (!anthropicApiKey && !hasLlmCredentials()) {
-          res.writeHead(500);
-          json(res, { error: "ANTHROPIC_API_KEY ej konfigurerad" });
+          jsonStatus(res, 500, { error: "ANTHROPIC_API_KEY ej konfigurerad" });
           return;
         }
 
@@ -1033,8 +1164,7 @@ export function startServer(
           json(res, { agent, question, response: responseText, model: agentConfig.model });
         } catch (err) {
           log.error(`[Manual] Fel från ${agent}: ${err instanceof Error ? err.message : String(err)}`);
-          res.writeHead(500);
-          json(res, { error: `Agent-fel: ${err instanceof Error ? err.message : String(err)}` });
+          jsonStatus(res, 500, { error: `Agent-fel: ${err instanceof Error ? err.message : String(err)}` });
         }
         return;
       }
@@ -1042,8 +1172,7 @@ export function startServer(
       // ── Run Agent (trigga ny analys-turn, valfritt med Mikes instruktion) ──
       if (url.pathname === "/api/run-agent" && method === "POST") {
         if (!runAgentCallback) {
-          res.writeHead(500);
-          json(res, { error: "Agent-callback ej konfigurerad" });
+          jsonStatus(res, 500, { error: "Agent-callback ej konfigurerad" });
           return;
         }
 
@@ -1096,8 +1225,7 @@ export function startServer(
         try {
           const parsed = JSON.parse(body) as { clientId?: string; state?: unknown };
           if (!parsed.clientId || !parsed.state) {
-            res.writeHead(400);
-            json(res, { error: "clientId + state krävs" });
+            jsonStatus(res, 400, { error: "clientId + state krävs" });
             return;
           }
           const clientId = String(parsed.clientId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
@@ -1109,16 +1237,14 @@ export function startServer(
           broadcastEvent("sync-updated", { clientId, updatedAt: Date.now() });
           json(res, { ok: true, updatedAt: Date.now() });
         } catch (err) {
-          res.writeHead(500);
-          json(res, { error: err instanceof Error ? err.message : String(err) });
+          jsonStatus(res, 500, { error: err instanceof Error ? err.message : String(err) });
         }
         return;
       }
       if (url.pathname === "/api/sync/load" && method === "GET") {
         const clientId = (url.searchParams.get("clientId") || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
         if (!clientId) {
-          res.writeHead(400);
-          json(res, { error: "clientId krävs" });
+          jsonStatus(res, 400, { error: "clientId krävs" });
           return;
         }
         try {
@@ -1297,7 +1423,7 @@ export function startServer(
       if (url.pathname === "/api/binance/setup" && method === "POST") {
         const body = await readBody(req);
         const { apiKey, apiSecret, testnet } = JSON.parse(body) as { apiKey: string; apiSecret: string; testnet: boolean };
-        if (!apiKey || !apiSecret) { res.writeHead(400); json(res, { error: "apiKey + apiSecret krävs" }); return; }
+        if (!apiKey || !apiSecret) { jsonStatus(res, 400, { error: "apiKey + apiSecret krävs" }); return; }
         try {
           const client = new BinanceClient({ apiKey, apiSecret, testnet: !!testnet });
           const hc = await client.healthCheck();
@@ -1346,21 +1472,19 @@ export function startServer(
         const body = await readBody(req);
         const { mode = "testnet", symbol, side, quoteOrderQty, clientOrderId } = JSON.parse(body) as { mode?: "testnet" | "live"; symbol: string; side: "BUY" | "SELL"; quoteOrderQty: number; clientOrderId?: string };
         const creds = resolveBinanceCreds(mode);
-        if (!creds) { res.writeHead(400); json(res, { error: `Binance ${mode} ej konfigurerat` }); return; }
-        // SÄKERHETSLÅS — bara för LIVE-mode (testnet = ingen risk)
-        if (mode === "live") {
-          if (quoteOrderQty > MAX_LIVE_STAKE_USD) {
-            json(res, { ok: false, error: `🛡 Säkerhetslås: max stake $${MAX_LIVE_STAKE_USD}/trade i LIVE-mode (du försökte $${quoteOrderQty})` });
-            return;
-          }
-          if (liveDailyLossUsd >= MAX_LIVE_DAILY_LOSS_USD) {
-            json(res, { ok: false, error: `🛡 Säkerhetslås: daglig förlust-cap $${MAX_LIVE_DAILY_LOSS_USD} uppnådd. Trading pausad till midnatt UTC.` });
-            return;
-          }
+        if (!creds) { jsonStatus(res, 400, { ok: false, error: `Binance ${mode === "live" ? "LIVE" : "TEST"} är inte kopplad (nycklar saknas i .env)` }); return; }
+        // Samma order-grind som allt annat: kill switch, LIVE-lås, max belopp, dagsgräns
+        const gate = await checkOrderGate({ live: mode === "live", side, quoteUsd: quoteOrderQty, source: "dashboard:binance" });
+        if (!gate.ok) { json(res, { ok: false, error: `🛡 ${gate.error}` }); return; }
+        if (needsApproval()) {
+          const p = await addPendingOrder({ source: "dashboard:binance", venue: "binance", live: mode === "live", symbol, side, quoteUsd: quoteOrderQty, reason: "Knapp i dashboarden" });
+          json(res, { ok: true, pending: true, pendingOrder: p, message: "Ordern väntar på ditt godkännande (Väntande ordrar)." });
+          return;
         }
         try {
           const client = new BinanceClient(creds);
           const order = await client.placeMarketOrder({ symbol, side, quoteOrderQty, clientOrderId });
+          if (mode === "live" && side === "BUY") recordLiveSpend(quoteOrderQty);
           log.info(`[binance-${mode}] ORDER PLACERAD: ${side} ${symbol} $${quoteOrderQty}`);
           json(res, { ok: true, mode, order });
         } catch (err) {
@@ -1680,7 +1804,7 @@ Regler:
       if (url.pathname === "/api/oanda/setup" && method === "POST") {
         const body = await readBody(req);
         const { apiToken, accountId, practice } = JSON.parse(body) as { apiToken: string; accountId: string; practice: boolean };
-        if (!apiToken || !accountId) { res.writeHead(400); json(res, { error: "apiToken + accountId krävs" }); return; }
+        if (!apiToken || !accountId) { jsonStatus(res, 400, { error: "apiToken + accountId krävs" }); return; }
         try {
           const client = new OandaClient({ apiToken, accountId, practice: practice !== false });
           const hc = await client.healthCheck();
@@ -1705,9 +1829,15 @@ Regler:
         return;
       }
       if (url.pathname === "/api/oanda/order" && method === "POST") {
-        if (!oandaCreds) { res.writeHead(400); json(res, { error: "Oanda ej konfigurerat" }); return; }
+        if (!oandaCreds) { jsonStatus(res, 400, { ok: false, error: "Oanda ej konfigurerat" }); return; }
         const body = await readBody(req);
         const { symbol, side, units, clientOrderId } = JSON.parse(body) as { symbol: string; side: "BUY" | "SELL"; units: number; clientOrderId?: string };
+        const oandaGate = await checkOrderGate({ live: !oandaCreds.practice, side, unitsOrder: true, source: "dashboard:oanda" });
+        if (!oandaGate.ok) { json(res, { ok: false, error: `🛡 ${oandaGate.error}` }); return; }
+        if (needsApproval()) {
+          json(res, { ok: false, error: "Godkännande-läge är på. Oanda-ordrar kan inte köas än, så ingen order lades." });
+          return;
+        }
         try {
           const client = new OandaClient(oandaCreds);
           const order = await client.placeMarketOrder({ symbol, side, units, clientOrderId });
@@ -1730,6 +1860,11 @@ Regler:
             maxLiveStakeUsd: MAX_LIVE_STAKE_USD,
             maxLiveDailyLossUsd: MAX_LIVE_DAILY_LOSS_USD,
             liveDailyLossUsd,
+            maxTestStakeUsd: MAX_TEST_STAKE_USD,
+            maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD,
+            liveSpentTodayUsd: getLiveSpentTodayUsd(),
+            liveAllowed: liveAllowedByServer(),
+            executionMode: config.executionMode,
           },
         });
         return;
