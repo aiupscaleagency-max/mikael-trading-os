@@ -167,6 +167,37 @@ export class BybitBroker implements BrokerAdapter {
     return { balances, totalValueUsdt: Number(acc?.totalEquity ?? 0), updatedAt: Date.now() };
   }
 
+  /** Rått Unified-saldo (för live-vyn innan websocket-uppdateringen kommer). */
+  async getWalletRaw(): Promise<Record<string, unknown> | null> {
+    const r = await this.request<{ list: Array<Record<string, unknown>> }>(
+      "GET", "/v5/account/wallet-balance", { accountType: "UNIFIED" }, true,
+    );
+    return r.list?.[0] ?? null;
+  }
+
+  /**
+   * Funding-plånboken: dit insättningar ofta hamnar. Boten handlar inte
+   * därifrån, men saldot visas så att Mike ser var pengarna ligger.
+   * Kräver att API-nyckeln har läsrätt för Assets → Wallet.
+   */
+  async getFundingBalances(): Promise<Array<{ coin: string; balance: number; usdValue: number }>> {
+    const r = await this.request<{ balance: Array<{ coin: string; walletBalance: string }> }>(
+      "GET", "/v5/asset/transfer/query-account-coins-balance", { accountType: "FUND" }, true,
+    );
+    const out: Array<{ coin: string; balance: number; usdValue: number }> = [];
+    for (const b of r.balance ?? []) {
+      const balance = Number(b.walletBalance);
+      if (!(balance > 0)) continue;
+      let usdValue = 0;
+      if (STABLES.includes(b.coin)) usdValue = balance;
+      else {
+        try { usdValue = balance * (await this.getTicker(`${b.coin}USDT`)).price; } catch { /* okänt par */ }
+      }
+      out.push({ coin: b.coin, balance, usdValue });
+    }
+    return out;
+  }
+
   async getPositions(): Promise<Position[]> {
     const acc = await this.getAccount();
     const out: Position[] = [];

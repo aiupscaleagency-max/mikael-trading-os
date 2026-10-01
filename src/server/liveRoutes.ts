@@ -1,0 +1,374 @@
+import type http from "node:http";
+import type Anthropic from "@anthropic-ai/sdk";
+import type { BrokerAdapter } from "../brokers/adapter.js";
+import { BybitBroker } from "../brokers/bybit.js";
+import { log } from "../logger.js";
+import {
+  startBybitPublicStream, startBybitPrivateStream, setBybitWalletFromRest, getBybitWallet,
+  subscribeBybitWallet, subscribeBybitOrders, getBybitStreamStatus, fetchBybitCandles,
+  getBybitTickers, watchBybitTicker,
+} from "./bybitStream.js";
+import { getMarketStreamStatus } from "./marketStream.js";
+import { getKlineStreamStatus } from "./klineStream.js";
+import { getJevStatus } from "./jevClient.js";
+import {
+  startStrategyRunner, syncStrategies, getStrategySignals, getStrategyPositions, queueSignal,
+  resetStrategyPosition, getRunnerStatus, getRunnerCandles, pairOf,
+} from "./strategyRunner.js";
+import {
+  loadLibrary, upsertStrategy, deleteStrategy, sanitizeStrategy, backtest, evaluateNow,
+  INTERVALS, REVIEW_MODELS, type Strategy,
+} from "../strategies/library.js";
+import { INDICATORS, OPERATORS } from "../strategies/ruleEngine.js";
+import { createLlmClient, extractJson, hasLlmCredentials, modelFor, toDirectModel, usingGateway } from "../llm/gateway.js";
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Live-lagret: Bybit-saldo, live-lampor och strategibiblioteket
+//
+//  Egen fil så att api.ts bara behöver två rader: initLiveLayer() vid start
+//  och handleLiveRoutes() i routningen.
+//
+//    GET  /api/live/status                     → lampor för alla strömmar
+//    GET  /api/bybit/balance                   → Unified + Funding (riktiga pengar)
+//    GET  /api/bybit/pairs                     → alla spot-par i USDC på Bybit EU
+//    GET  /api/strategies                      → biblioteket + vad som går att välja
+//    POST /api/strategies                      → ny strategi
+//    POST /api/strategies/parse                → "beskriv med egna ord" → regler (AI)
+//    POST /api/strategies/backtest             → backtest av en strategi (sparad eller utkast)
+//    POST /api/strategies/:id                  → uppdatera
+//    POST /api/strategies/:id/delete           → ta bort
+//    POST /api/strategies/:id/test             → vilka regler stämmer just nu
+//    POST /api/strategies/:id/reset            → nollställ strategins läge (inne/ute)
+//    GET  /api/strategies/signals              → senaste signaler med JEV/AI-bedömning
+//    POST /api/strategies/signals/:id/queue    → lägg som väntande order
+// ═══════════════════════════════════════════════════════════════════════════
+
+let brokersRef: Record<string, BrokerAdapter> = {};
+let walletRefreshedAt = 0;
+let pairsCache: { at: number; pairs: string[] } | null = null;
+let parseClient: Anthropic | null = null;
+
+function bybit(): BybitBroker | null {
+  const b = brokersRef.bybit;
+  return b instanceof BybitBroker ? b : null;
+}
+
+async function refreshWalletRest(): Promise<void> {
+  const b = bybit();
+  if (!b) return;
+  try {
+    const raw = await b.getWalletRaw();
+    if (raw) setBybitWalletFromRest(raw);
+    walletRefreshedAt = Date.now();
+  } catch (err) {
+    log.warn(`[bybit] saldo via REST misslyckades: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export function initLiveLayer(
+  brokers: Record<string, BrokerAdapter>,
+  broadcast: (event: string, data: unknown) => void,
+): void {
+  brokersRef = brokers;
+  startBybitPublicStream();
+  // Priser för de vanligaste paren, så att live-lampan och tickern visar
+  // något även innan en strategi slagits på.
+  for (const c of ["BTC", "ETH", "SOL"]) watchBybitTicker(pairOf(c));
+
+  if (bybit()) {
+    startBybitPrivateStream();
+    void refreshWalletRest();
+  }
+  subscribeBybitWallet((w) => broadcast("bybit-wallet", w));
+  subscribeBybitOrders((o) => broadcast("bybit-order", o));
+  void startStrategyRunner(brokers, broadcast).catch((err) =>
+    log.warn(`[strategi] start misslyckades: ${err instanceof Error ? err.message : String(err)}`));
+}
+
+function readBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (c: Buffer) => { body += c.toString(); if (body.length > 200_000) req.destroy(); });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
+}
+
+function send(res: http.ServerResponse, code: number, data: unknown): void {
+  res.writeHead(code, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(data));
+}
+
+async function bodyJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  const raw = await readBody(req);
+  if (!raw.trim()) return {};
+  const parsed = JSON.parse(raw) as unknown;
+  return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+}
+
+// ─── Status ───────────────────────────────────────────────────────────────
+
+function lamp(connected: boolean, agoMs: number | null, detail: string) {
+  const ago = agoMs != null && agoMs >= 0 ? agoMs : null;
+  return { connected: connected && (ago == null || ago < 90_000), lastMessageAgoMs: ago, detail };
+}
+
+function liveStatus() {
+  const m = getMarketStreamStatus();
+  const k = getKlineStreamStatus();
+  const by = getBybitStreamStatus();
+  const jev = getJevStatus();
+  const runner = getRunnerStatus();
+  const w = getBybitWallet();
+  return {
+    time: Date.now(),
+    lamps: {
+      binancePrices: lamp(m.connected, m.lastFrameMs, `Binance priser · ${m.cachedSymbols} par`),
+      binanceCandles: lamp(k.connected, k.lastFrameMs, `Binance ljus · ${k.symbols.length} par @ ${k.interval}`),
+      bybitMarket: lamp(by.public.connected, by.public.lastMessageAgoMs, `Bybit priser + ljus · ${by.public.detail}`),
+      bybitAccount: lamp(by.private.connected, by.private.lastMessageAgoMs, `Bybit konto · ${by.private.detail}`),
+      jev: {
+        connected: jev.route !== "rules_only" && !jev.circuitOpen,
+        lastMessageAgoMs: null,
+        detail: jev.route === "rules_only" ? "ingen JEV-nyckel — bara regler" : `JEV via ${jev.route}${jev.circuitOpen ? " · pausad efter fel" : ""}`,
+      },
+      ai: {
+        connected: hasLlmCredentials(),
+        lastMessageAgoMs: null,
+        detail: !hasLlmCredentials() ? "ingen AI-nyckel" : usingGateway() ? "AI-modeller via gateway (Claude, GPT m.fl.)" : "Claude direkt (bara Claude-modeller)",
+      },
+      strategies: {
+        connected: runner.started,
+        lastMessageAgoMs: runner.lastEvalAt ? Date.now() - runner.lastEvalAt : null,
+        detail: `${runner.streams.length} par/intervall · ${runner.evaluations} körningar`,
+      },
+    },
+    wallet: w,
+  };
+}
+
+// ─── Saldo ────────────────────────────────────────────────────────────────
+
+async function balance(refresh: boolean) {
+  const b = bybit();
+  if (!b) return { connected: false, error: "Bybit är inte kopplat (BYBIT_API_KEY saknas i .env)" };
+  const w0 = getBybitWallet();
+  if (refresh || !w0 || (w0.source === "rest" && Date.now() - walletRefreshedAt > 60_000)) await refreshWalletRest();
+  const unified = getBybitWallet();
+  let funding: { coins: Array<{ coin: string; balance: number; usdValue: number }>; totalUsd: number } | null = null;
+  let fundingError: string | null = null;
+  try {
+    const coins = await b.getFundingBalances();
+    funding = { coins, totalUsd: coins.reduce((a, c) => a + c.usdValue, 0) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    fundingError = /permission|10005|denied|not.*auth/i.test(msg)
+      ? "Nyckeln saknar läsrätt för Funding. Bocka i Assets → Wallet (Read) på nyckeln hos Bybit."
+      : msg.slice(0, 200);
+  }
+  return {
+    connected: true,
+    quote: (process.env.BYBIT_QUOTE || "USDC").toUpperCase(),
+    unified,
+    funding,
+    fundingError,
+    totalUsd: (unified?.totalEquityUsd ?? 0) + (funding?.totalUsd ?? 0),
+    tradableUsd: unified?.totalEquityUsd ?? 0,
+  };
+}
+
+async function bybitPairs(): Promise<string[]> {
+  if (pairsCache && Date.now() - pairsCache.at < 3_600_000) return pairsCache.pairs;
+  const quote = (process.env.BYBIT_QUOTE || "USDC").toUpperCase();
+  const base = process.env.BYBIT_BASE_URL || "https://api.bybit.eu";
+  const res = await fetch(`${base}/v5/market/instruments-info?category=spot&limit=1000`);
+  const body = (await res.json()) as { result?: { list?: Array<{ baseCoin: string; quoteCoin: string; status: string }> } };
+  const pairs = (body.result?.list ?? [])
+    .filter((x) => x.quoteCoin === quote && x.status === "Trading")
+    .map((x) => x.baseCoin)
+    .sort();
+  pairsCache = { at: Date.now(), pairs };
+  return pairs;
+}
+
+// ─── AI: "beskriv med egna ord" → regler ──────────────────────────────────
+
+async function parseStrategyText(text: string): Promise<Record<string, unknown>> {
+  if (!hasLlmCredentials()) throw new Error("Ingen AI-nyckel finns (AI_GATEWAY_API_KEY eller ANTHROPIC_API_KEY). Fyll i reglerna själv nedanför.");
+  parseClient ??= createLlmClient();
+  const model = modelFor("specialist", "claude-haiku-4-5-20251001");
+  const system = [
+    "Du översätter en trading-strategi som Mike beskriver på svenska till JSON-regler för en regelmotor.",
+    "Spot-handel: bara köp (entry) och sälj (exit). Ingen blankning.",
+    `Tillåtna indikatorer (nycklar): ${Object.entries(INDICATORS).map(([k, v]) => `${k} = ${v}`).join("; ")}.`,
+    `Tillåtna operatorer: ${Object.keys(OPERATORS).join(", ")}.`,
+    "En regel: {\"left\": indikator, \"op\": operator, \"right\": tal eller indikator, \"factor\": valfri multiplikator när right är en indikator}.",
+    "Alla regler i entry måste stämma samtidigt för köp; samma för exit.",
+    `interval är ett av: ${INTERVALS.join(", ")}. coins är bas-coins som BTC, ETH, SOL.`,
+    "stopAtr och targetAtr är avstånd i ATR (standard 1.5 och 3). stakeUsd standard 5.",
+    "Hittar du inte på en regel som passar, välj den närmaste och förklara i description.",
+    "Svara ENDAST med JSON: {\"name\",\"description\",\"coins\",\"interval\",\"entry\",\"exit\",\"stopAtr\",\"targetAtr\",\"stakeUsd\"}",
+  ].join("\n");
+  const res = (await parseClient.messages.create({
+    model: usingGateway() ? model : toDirectModel(model),
+    max_tokens: 1200,
+    system,
+    messages: [{ role: "user", content: text.slice(0, 2000) }],
+  })) as Anthropic.Message;
+  const out = res.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+  return JSON.parse(extractJson(out)) as Record<string, unknown>;
+}
+
+// ─── Routning ─────────────────────────────────────────────────────────────
+
+/** Returnerar true om requesten hanterades. */
+export async function handleLiveRoutes(
+  url: URL,
+  method: string,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<boolean> {
+  const p = url.pathname;
+  if (!p.startsWith("/api/live/") && !p.startsWith("/api/bybit/") && !p.startsWith("/api/strategies")) return false;
+
+  try {
+    if (p === "/api/live/status" && method === "GET") { send(res, 200, liveStatus()); return true; }
+
+    if (p === "/api/bybit/balance" && method === "GET") {
+      send(res, 200, await balance(url.searchParams.get("refresh") === "1"));
+      return true;
+    }
+
+    if (p === "/api/bybit/pairs" && method === "GET") {
+      try { send(res, 200, { pairs: await bybitPairs() }); }
+      catch (err) { send(res, 200, { pairs: [], error: err instanceof Error ? err.message : String(err) }); }
+      return true;
+    }
+
+    if (p === "/api/bybit/tickers" && method === "GET") { send(res, 200, { tickers: getBybitTickers() }); return true; }
+
+    if (p === "/api/strategies" && method === "GET") {
+      send(res, 200, {
+        strategies: await loadLibrary(),
+        positions: getStrategyPositions(),
+        indicators: INDICATORS,
+        operators: OPERATORS,
+        intervals: INTERVALS,
+        models: REVIEW_MODELS,
+        quote: (process.env.BYBIT_QUOTE || "USDC").toUpperCase(),
+        runner: getRunnerStatus(),
+      });
+      return true;
+    }
+
+    if (p === "/api/strategies" && method === "POST") {
+      const r = await upsertStrategy(await bodyJson(req));
+      if (r.ok) await syncStrategies();
+      send(res, r.ok ? 200 : 400, r);
+      return true;
+    }
+
+    if (p === "/api/strategies/parse" && method === "POST") {
+      const b = await bodyJson(req);
+      const text = String(b.text ?? "").trim();
+      if (text.length < 5) { send(res, 400, { ok: false, error: "Beskriv strategin med några ord." }); return true; }
+      try {
+        const draft = await parseStrategyText(text);
+        const checked = sanitizeStrategy({ ...draft, sourceText: text, enabled: false });
+        send(res, 200, checked.ok
+          ? { ok: true, draft: checked.strategy }
+          : { ok: false, error: `AI:n gav ofullständiga regler: ${checked.error}`, raw: draft });
+      } catch (err) {
+        send(res, 200, { ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
+
+    if (p === "/api/strategies/backtest" && method === "POST") {
+      const b = await bodyJson(req);
+      let s: Strategy | undefined;
+      if (typeof b.id === "string") s = (await loadLibrary()).find((x) => x.id === b.id);
+      else {
+        const r = sanitizeStrategy((b.strategy as Record<string, unknown>) ?? {});
+        if (!r.ok) { send(res, 400, r); return true; }
+        s = r.strategy;
+      }
+      if (!s) { send(res, 404, { ok: false, error: "Strategin finns inte" }); return true; }
+      const limit = Math.min(1000, Math.max(100, Number(b.limit) || 1000));
+      const results = await Promise.all(s.coins.map(async (coin) => {
+        try {
+          const bars = await fetchBybitCandles(pairOf(coin), s!.interval, limit);
+          return { coin, ...backtest(s!, bars) };
+        } catch (err) {
+          return { coin, error: err instanceof Error ? err.message : String(err) };
+        }
+      }));
+      send(res, 200, { ok: true, interval: s.interval, results });
+      return true;
+    }
+
+    if (p === "/api/strategies/signals" && method === "GET") {
+      const limit = Math.min(300, Number(url.searchParams.get("limit")) || 50);
+      send(res, 200, { signals: getStrategySignals(limit, url.searchParams.get("strategyId") ?? undefined) });
+      return true;
+    }
+
+    {
+      const m = p.match(/^\/api\/strategies\/signals\/([0-9a-f-]{36})\/queue$/);
+      if (m && method === "POST") {
+        const b = await bodyJson(req);
+        const venue = b.venue === "live" ? "live" : b.venue === "test" ? "test" : undefined;
+        send(res, 200, await queueSignal(m[1]!, venue));
+        return true;
+      }
+    }
+
+    {
+      const m = p.match(/^\/api\/strategies\/([0-9a-f-]{36})(?:\/(delete|test|reset))?$/);
+      if (m && method === "POST") {
+        const id = m[1]!;
+        const action = m[2];
+        if (action === "delete") {
+          const ok = await deleteStrategy(id);
+          resetStrategyPosition(id);
+          send(res, ok ? 200 : 404, { ok });
+          return true;
+        }
+        if (action === "reset") {
+          const b = await bodyJson(req);
+          resetStrategyPosition(id, typeof b.coin === "string" ? b.coin : undefined);
+          send(res, 200, { ok: true });
+          return true;
+        }
+        if (action === "test") {
+          const s = (await loadLibrary()).find((x) => x.id === id);
+          if (!s) { send(res, 404, { ok: false, error: "Strategin finns inte" }); return true; }
+          const positions = getStrategyPositions();
+          const results = await Promise.all(s.coins.map(async (coin) => {
+            let bars = getRunnerCandles(coin, s.interval);
+            if (bars.length < 50) {
+              try { bars = await fetchBybitCandles(pairOf(coin), s.interval, 500); } catch (err) {
+                return { coin, error: err instanceof Error ? err.message : String(err) };
+              }
+            }
+            const last = bars[bars.length - 1];
+            return { coin, inPosition: Boolean(positions[`${s.id}:${coin}`]), candleCloseTime: last?.closeTime ?? null, ...evaluateNow(s, bars) };
+          }));
+          send(res, 200, { ok: true, results });
+          return true;
+        }
+        const r = await upsertStrategy(await bodyJson(req), id);
+        if (r.ok) await syncStrategies();
+        send(res, r.ok ? 200 : 400, r);
+        return true;
+      }
+    }
+
+    return false;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`[live-api] ${method} ${p}: ${msg}`);
+    send(res, 500, { ok: false, error: msg.slice(0, 300) });
+    return true;
+  }
+}
