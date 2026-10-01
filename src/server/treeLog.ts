@@ -14,7 +14,7 @@ import path from "node:path";
 //  Fel här får aldrig störa tradingen, därför sväljs de tyst.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const FILE = process.env.AGENT_TREE_TRADING_LOG
+const FILE = process.env.AGENT_TREE_TRADING_EVENTS
   || path.join(os.homedir(), ".claude", "agent-tree", "trading-events.jsonl");
 const MAX_BYTES = 5 * 1024 * 1024;
 
@@ -35,7 +35,7 @@ export interface TreeEvent {
 let dirReady = false;
 
 export function treeEvent(e: TreeEvent): void {
-  if (process.env.AGENT_TREE_TRADING_LOG === "off") return;
+  if (process.env.AGENT_TREE_TRADING_EVENTS === "off") return;
   try {
     if (!dirReady) { fs.mkdirSync(path.dirname(FILE), { recursive: true }); dirReady = true; }
     try {
