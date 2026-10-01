@@ -970,7 +970,7 @@ export function startServer(
                   config.executionMode === "approve" ? "propose" : "live",
           // Ärligt svar till UI:t: kan LIVE över huvud taget användas just nu?
           liveAllowed: liveAllowedByServer(),
-          liveKeys: { binance: !!binanceLiveCreds, oanda: !!oandaCreds && !oandaCreds.practice, alpaca: Object.values(brokers).some((b) => b.name === "alpaca" && b.mode === "live") },
+          liveKeys: { binance: !!binanceLiveCreds, oanda: !!oandaCreds && !oandaCreds.practice, alpaca: Object.values(brokers).some((b) => b.name === "alpaca" && b.mode === "live"), kraken: !!brokers.kraken },
           limits: { maxLiveStakeUsd: MAX_LIVE_STAKE_USD, maxTestStakeUsd: MAX_TEST_STAKE_USD, maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD, liveSpentTodayUsd: getLiveSpentTodayUsd() },
         });
         return;

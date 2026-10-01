@@ -1186,6 +1186,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     <option value="binance">Binance</option>
     <option value="alpaca">Alpaca</option>
     <option value="alpaca-live">Alpaca LIVE (riktiga pengar)</option>
+    <option value="kraken">Kraken LIVE (riktiga pengar)</option>
     <option value="blofin">Blofin</option>
   </select>
   <div class="mode-switcher" id="mode-switcher">
@@ -7310,7 +7311,19 @@ async function refreshBinanceSync(){
       if(pbEq) pbEq.textContent = window._brokerBal.eq;
       if(pbPnl) pbPnl.textContent = window._brokerBal.label;
     }
-    if(lbEq && !data.live?.configured){ lbEq.textContent = "ej kopplad"; }
+    if(lbEq && !data.live?.configured){
+      // Ingen Binance LIVE: visa saldot hos en annan LIVE-mäklare (t.ex. Kraken)
+      if(Date.now() - (window._liveBalTs||0) > 30000){
+        window._liveBalTs = Date.now();
+        try{
+          const st = await (await fetch("/api/status")).json();
+          const br = await (await fetch("/api/brokers")).json();
+          const live = (br.brokers||[]).find(b=>b.mode === "live" && st[b.name]?.account);
+          window._liveBal = live ? `${live.name.charAt(0).toUpperCase()+live.name.slice(1)} ${st[live.name].account.totalValueUsdt.toFixed(2)}` : null;
+        }catch(_){ window._liveBal = null; }
+      }
+      lbEq.textContent = window._liveBal || "ej kopplad";
+    }
 
     // SALDO-CARD speglar mode: TEST → Testnet, LIVE → Mainnet
     const isLive = currentUiMode === "live";

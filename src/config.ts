@@ -43,6 +43,12 @@ const schema = z.object({
   ALPACA_LIVE_SECRET_KEY: z.string().default(""),
   ALPACA_LIVE_BASE_URL: z.string().default("https://api.alpaca.markets"),
 
+  // ── Kraken (krypto, tillåter API-handel från Sverige/EU). Alltid LIVE. ──
+  KRAKEN_API_KEY: z.string().default(""),
+  KRAKEN_API_SECRET: z.string().default(""),
+  // Valutan du har på Kraken-kontot (EUR för svenska konton, eller USD)
+  KRAKEN_QUOTE: z.string().default("EUR"),
+
   // ── Blofin (Krypto-derivat) ──
   BLOFIN_API_KEY: z.string().default(""),
   BLOFIN_API_SECRET: z.string().default(""),
@@ -148,6 +154,7 @@ if (env.MODE === "live" && !env.LIVE_TRADING_CONFIRMED) {
 // Minst en broker måste vara konfigurerad.
 const hasAlpaca = !!(env.ALPACA_KEY_ID && env.ALPACA_SECRET_KEY);
 const hasAlpacaLive = !!(env.ALPACA_LIVE_KEY_ID && env.ALPACA_LIVE_SECRET_KEY);
+const hasKraken = !!(env.KRAKEN_API_KEY && env.KRAKEN_API_SECRET);
 const hasBlofin = !!(env.BLOFIN_API_KEY && env.BLOFIN_API_SECRET && env.BLOFIN_PASSPHRASE);
 const hasBinance = !!(env.BINANCE_API_KEY && env.BINANCE_API_SECRET) ||
   !!(env.BINANCE_LIVE_API_KEY && env.BINANCE_LIVE_API_SECRET);
@@ -162,7 +169,7 @@ const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 // Tidigare avbröts starten här. Det gjorde att man inte kunde titta på
 // systemet utan att först koppla ett riktigt konto — och att koppla ett
 // konto bara för att se ett diagram är fel ordning.
-const viewOnly = !hasAlpaca && !hasAlpacaLive && !hasBlofin && !hasBinance && !hasOanda;
+const viewOnly = !hasAlpaca && !hasAlpacaLive && !hasKraken && !hasBlofin && !hasBinance && !hasOanda;
 if (viewOnly) {
   console.warn(
     "⚠️  Ingen broker konfigurerad — startar i VY-LÄGE.\n" +
@@ -186,6 +193,13 @@ export const config = {
     secretKey: env.ALPACA_SECRET_KEY,
     baseUrl: env.ALPACA_BASE_URL,
     dataUrl: "https://data.alpaca.markets",
+  },
+
+  kraken: {
+    enabled: hasKraken,
+    apiKey: env.KRAKEN_API_KEY,
+    apiSecret: env.KRAKEN_API_SECRET,
+    quote: env.KRAKEN_QUOTE,
   },
 
   alpacaLive: {

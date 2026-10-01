@@ -2,6 +2,7 @@ import { config } from "./config.js";
 import type { BrokerAdapter } from "./brokers/adapter.js";
 import { BinanceBroker } from "./brokers/binance.js";
 import { AlpacaBroker } from "./brokers/alpaca.js";
+import { KrakenBroker } from "./brokers/kraken.js";
 import { BlofinBroker } from "./brokers/blofin.js";
 import { OandaBroker } from "./brokers/oanda.js";
 import { RiskManager } from "./risk/riskManager.js";
@@ -54,6 +55,16 @@ function createBrokers(): Record<string, BrokerAdapter> {
   // Alpacas riktiga konto (egna nycklar). Ligger bredvid paper-kontot så att
   // TEST och LIVE finns samtidigt. Order-grinden släpper bara igenom LIVE-ordrar
   // när MODE=live och LIVE_TRADING_CONFIRMED=true.
+  // Kraken: riktiga pengar (ingen sandbox). Ordrar släpps bara igenom av
+  // order-grinden när MODE=live och LIVE_TRADING_CONFIRMED=true.
+  if (config.kraken.enabled) {
+    brokers.kraken = new KrakenBroker({
+      apiKey: config.kraken.apiKey,
+      apiSecret: config.kraken.apiSecret,
+      quote: config.kraken.quote,
+    });
+  }
+
   if (config.alpacaLive.enabled) {
     brokers["alpaca-live"] = new AlpacaBroker({
       keyId: config.alpacaLive.keyId,
