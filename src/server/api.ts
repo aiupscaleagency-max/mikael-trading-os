@@ -52,6 +52,7 @@ const SESSION_COOKIE = "tos_session";
 const AUTH_EXEMPT_PATHS = new Set([
   "/api/auth/login",
   "/api/auth/logout",
+  "/api/auth/mode",
 ]);
 
 // TILLFÄLLIGT: DASHBOARD_NO_LOGIN=true släpper in dashboarden utan inloggning,
@@ -690,6 +691,14 @@ export function startServer(
             `; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${signed.expiresIn}`,
         });
         res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
+      // Talar om för dashboarden om inloggningsskärmen ska hoppas över.
+      // Samma kontroll som släpper igenom API-anropen, så svaret är bara
+      // true från den egna datorn med DASHBOARD_NO_LOGIN=true.
+      if (url.pathname === "/api/auth/mode" && method === "GET") {
+        json(res, { noLogin: isLocalNoLogin(req) });
         return;
       }
 
