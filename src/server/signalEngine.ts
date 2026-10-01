@@ -2,6 +2,7 @@ import { computeIndicators } from "../indicators/ta.js";
 import { subscribeClosedCandles, getClosedCandles, msUntilClose, type Candle } from "./klineStream.js";
 import { log } from "../logger.js";
 import { askJev, type JevVerdict } from "./jevClient.js";
+import { treeEvent } from "./treeLog.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Signal-motor — gör indikatorer till LONG/SHORT-förslag
@@ -266,9 +267,13 @@ export async function applyJevVerdict(signal: Signal): Promise<Signal> {
 
   const jev = await askJev(state);
   const out: Signal = { ...signal, jev };
+  const jevInfo = { available: jev.available, route: jev.mode, latencyMs: jev.latencyMs };
 
   // Utan JEV gäller signalen som den är — rules_only, tydligt märkt.
-  if (!jev.available || signal.direction === "NEUTRAL") return out;
+  if (!jev.available || signal.direction === "NEUTRAL") {
+    treeEvent({ branch: "signal", subject: signal.symbol, jev: jevInfo, outcome: jev.available ? "ok" : "bara regler", why: jev.available ? `${signal.direction}` : jev.note });
+    return out;
+  }
 
   const regime = jev.answers.regime?.choice;
   const toxic = jev.answers.toxic_flow?.noul ?? 0;
@@ -286,7 +291,11 @@ export async function applyJevVerdict(signal: Signal): Promise<Signal> {
     vetoes.push(`JEV: bedömer riktningen som ${bias} (säkerhet ${biasConf.toFixed(2)})`);
   }
 
-  if (!vetoes.length) return out;
+  if (!vetoes.length) {
+    treeEvent({ branch: "signal", subject: signal.symbol, jev: jevInfo, outcome: "ok", why: `${signal.direction} godkänd av JEV` });
+    return out;
+  }
+  treeEvent({ branch: "signal", subject: signal.symbol, jev: jevInfo, outcome: "stoppad", why: vetoes[0] });
 
   log.info(`[signal] ${signal.symbol}: ${signal.direction} sänkt till AVVAKTA — ${vetoes[0]}`);
   return {

@@ -1,5 +1,6 @@
 import { log } from "../logger.js";
 import { askJev, type JevAnswer } from "../server/jevClient.js";
+import { treeEvent } from "../server/treeLog.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  JEV (TypeSafe System One) — beslutslagret framför de stora modellerna.
@@ -109,9 +110,14 @@ export async function jevTurnPreflight(signals: TurnSignals): Promise<JevTurnDec
   const verdict = await askJev(state, JEV_TIMEOUT_MS, questions);
   if (!verdict.available) {
     log.warn(`[JEV] Otillgänglig (${verdict.note}) — kör Advisorn som vanligt.`);
+    treeEvent({ branch: "tur", jev: { available: false, route: verdict.mode }, outcome: "advisor körs", why: `JEV otillgänglig: ${verdict.note}` });
     return { status: "unavailable", runAdvisor: true, detail: `JEV otillgänglig: ${verdict.note}` };
   }
   const decision = decideFromAnswers(verdict.answers, signals.mode);
   log.info(`[JEV] ${decision.detail} via ${verdict.mode} → advisor ${decision.runAdvisor ? "körs" : "hoppas över"}`);
+  treeEvent({
+    branch: "tur", jev: { available: true, route: verdict.mode, latencyMs: verdict.latencyMs, depth: decision.depth, review: decision.reviewProbability },
+    outcome: decision.runAdvisor ? "advisor körs" : "advisor hoppas över", why: decision.detail,
+  });
   return decision;
 }
