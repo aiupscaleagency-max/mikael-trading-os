@@ -49,6 +49,13 @@ const schema = z.object({
   // Valutan du har på Kraken-kontot (EUR för svenska konton, eller USD)
   KRAKEN_QUOTE: z.string().default("EUR"),
 
+  // ── Bybit EU (krypto, EU-licens, API-handel tillåten från Sverige). Alltid LIVE. ──
+  BYBIT_API_KEY: z.string().default(""),
+  BYBIT_API_SECRET: z.string().default(""),
+  // USDC som standard: USDT är begränsat i EU
+  BYBIT_QUOTE: z.string().default("USDC"),
+  BYBIT_BASE_URL: z.string().default("https://api.bybit.eu"),
+
   // ── Blofin (Krypto-derivat) ──
   BLOFIN_API_KEY: z.string().default(""),
   BLOFIN_API_SECRET: z.string().default(""),
@@ -155,6 +162,7 @@ if (env.MODE === "live" && !env.LIVE_TRADING_CONFIRMED) {
 const hasAlpaca = !!(env.ALPACA_KEY_ID && env.ALPACA_SECRET_KEY);
 const hasAlpacaLive = !!(env.ALPACA_LIVE_KEY_ID && env.ALPACA_LIVE_SECRET_KEY);
 const hasKraken = !!(env.KRAKEN_API_KEY && env.KRAKEN_API_SECRET);
+const hasBybit = !!(env.BYBIT_API_KEY && env.BYBIT_API_SECRET);
 const hasBlofin = !!(env.BLOFIN_API_KEY && env.BLOFIN_API_SECRET && env.BLOFIN_PASSPHRASE);
 const hasBinance = !!(env.BINANCE_API_KEY && env.BINANCE_API_SECRET) ||
   !!(env.BINANCE_LIVE_API_KEY && env.BINANCE_LIVE_API_SECRET);
@@ -169,7 +177,7 @@ const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 // Tidigare avbröts starten här. Det gjorde att man inte kunde titta på
 // systemet utan att först koppla ett riktigt konto — och att koppla ett
 // konto bara för att se ett diagram är fel ordning.
-const viewOnly = !hasAlpaca && !hasAlpacaLive && !hasKraken && !hasBlofin && !hasBinance && !hasOanda;
+const viewOnly = !hasAlpaca && !hasAlpacaLive && !hasKraken && !hasBybit && !hasBlofin && !hasBinance && !hasOanda;
 if (viewOnly) {
   console.warn(
     "⚠️  Ingen broker konfigurerad — startar i VY-LÄGE.\n" +
@@ -193,6 +201,14 @@ export const config = {
     secretKey: env.ALPACA_SECRET_KEY,
     baseUrl: env.ALPACA_BASE_URL,
     dataUrl: "https://data.alpaca.markets",
+  },
+
+  bybit: {
+    enabled: hasBybit,
+    apiKey: env.BYBIT_API_KEY,
+    apiSecret: env.BYBIT_API_SECRET,
+    quote: env.BYBIT_QUOTE,
+    baseUrl: env.BYBIT_BASE_URL,
   },
 
   kraken: {
