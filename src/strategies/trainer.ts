@@ -28,6 +28,8 @@ export interface TrainScore {
   winRatePct: number;
   buyAndHoldPct: number;
   score: number;
+  /** Affärer per dag (alla coins tillsammans) i den delen av historiken. */
+  tradesPerDay?: number;
 }
 
 export interface TrainCandidate {
@@ -51,6 +53,8 @@ export interface TrainResult {
   top: TrainCandidate[];
   verdict: "bättre" | "behåll" | "för-lite-data";
   verdictText: string;
+  /** Mikes krav: minst så här många affärer per dag (0 = inget krav). */
+  minTradesPerDay: number;
   trainedAt: string;
   ms: number;
 }
@@ -170,7 +174,7 @@ const roundScore = (t: TrainScore): TrainScore => ({
 export function trainStrategy(
   s: Strategy,
   history: Record<string, HistBar[]>,
-  opts: { maxVariants?: number; splitPct?: number; feePctPerSide?: number } = {},
+  opts: { maxVariants?: number; splitPct?: number; feePctPerSide?: number; minTradesPerDay?: number } = {},
 ): TrainResult {
   const t0 = Date.now();
   const split = Math.min(0.9, Math.max(0.5, (opts.splitPct ?? 70) / 100));
@@ -181,8 +185,16 @@ export function trainStrategy(
     return { bars, series: computeSeries(bars), cut: Math.floor(bars.length * split) };
   });
   // Minst 2 affärer per coin i träningen, annars räknas varianten inte.
-  const minTrain = Math.max(3, coins.length * 2);
-  const minCheck = Math.max(1, coins.length);
+  // Hur många dagar varje del täcker (snitt över coins), för kravet "affärer per dag".
+  const dayMs = 86_400_000;
+  const avg = (f: (d: (typeof data)[number]) => number) => data.length ? data.reduce((a, d) => a + f(d), 0) / data.length : 0;
+  const trainDays = Math.max(1e-6, avg((d) => (d.bars[d.cut - 1]!.closeTime - d.bars[0]!.openTime) / dayMs));
+  const checkDays = Math.max(1e-6, avg((d) => (d.bars[d.bars.length - 1]!.closeTime - d.bars[d.cut - 1]!.closeTime) / dayMs));
+  const perDay = Math.max(0, opts.minTradesPerDay ?? 0);
+  // Minst 2 affärer per coin i träningen, och minst Mikes krav per dag.
+  const minTrain = Math.max(3, coins.length * 2, Math.ceil(perDay * trainDays));
+  // Kontrolldelen är kort, så där räcker 70 % av kravet (slumpen kan ge en lugn period).
+  const minCheck = Math.max(1, coins.length, Math.ceil(perDay * checkDays * 0.7));
 
   const run = (p: Params, part: "train" | "check", min: number) => scoreOf(
     data.map((d) => backtest(p, d.bars, fee, part === "train"
@@ -193,8 +205,8 @@ export function trainStrategy(
   const describe = (p: Params, train: TrainScore, check: TrainScore): TrainCandidate => ({
     params: p,
     rulesText: { entry: p.entry.map(ruleText), exit: p.exit.map(ruleText) },
-    train: roundScore(train),
-    check: roundScore(check),
+    train: { ...roundScore(train), tradesPerDay: r2(train.trades / trainDays) },
+    check: { ...roundScore(check), tradesPerDay: r2(check.trades / checkDays) },
   });
 
   const variants = buildVariants(s, opts.maxVariants ?? 300);
@@ -208,7 +220,7 @@ export function trainStrategy(
     return {
       ok: true, strategyId: s.id, strategyName: s.name, interval: s.interval, coins, candlesPerCoin,
       splitPct: split * 100, variantsTested: 0, current, best: current, top: [],
-      verdict: "för-lite-data", verdictText: "För lite historik för att träna (minst 150 ljus per coin behövs).",
+      verdict: "för-lite-data", verdictText: "För lite historik för att träna (minst 150 ljus per coin behövs).", minTradesPerDay: opts.minTradesPerDay ?? 0,
       trainedAt: now, ms: Date.now() - t0,
     };
   }
@@ -233,10 +245,12 @@ export function trainStrategy(
   let verdictText: string;
   if (!top.length) {
     verdict = "för-lite-data";
-    verdictText = `Ingen variant gjorde minst ${minTrain} affärer i träningsdelen. Prova ett kortare intervall eller fler coins.`;
+    verdictText = perDay > 0
+      ? `Ingen variant klarade ${perDay} affärer per dag (${minTrain} i träningsdelen). Prova ett kortare intervall (t.ex. 5m eller 15m) eller fler coins.`
+      : `Ingen variant gjorde minst ${minTrain} affärer i träningsdelen. Prova ett kortare intervall eller fler coins.`;
   } else if (!sameAsNow && best.check.score > current.check.score + 0.25 && best.check.returnPct > 0 && best.check.trades >= minCheck) {
     verdict = "bättre";
-    verdictText = `Förslaget gav ${best.check.returnPct}% på kontrolldata (som nu: ${current.check.returnPct}%), med ${best.check.trades} affärer. Det har inte sett den datan under träningen.`;
+    verdictText = `Förslaget gav ${best.check.returnPct}% på kontrolldata (som nu: ${current.check.returnPct}%), med ${best.check.trades} affärer (${best.check.tradesPerDay} per dag). Det har inte sett den datan under träningen.`;
   } else {
     verdict = "behåll";
     verdictText = best.check.returnPct <= 0
@@ -247,6 +261,6 @@ export function trainStrategy(
   return {
     ok: true, strategyId: s.id, strategyName: s.name, interval: s.interval, coins, candlesPerCoin,
     splitPct: split * 100, variantsTested: variants.length, current, best, top: top.slice(0, 5),
-    verdict, verdictText, trainedAt: now, ms: Date.now() - t0,
+    verdict, verdictText, minTradesPerDay: perDay, trainedAt: now, ms: Date.now() - t0,
   };
 }

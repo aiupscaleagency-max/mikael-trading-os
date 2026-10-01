@@ -14,6 +14,7 @@ import type { Candle } from "./klineStream.js";
 import {
   addPendingOrder, checkOrderGate, MAX_LIVE_STAKE_USD, MAX_TEST_STAKE_USD,
 } from "./orderGate.js";
+import { treeEvent } from "./treeLog.js";
 import { loadPaperLedger, recordPaperSignal, resetPaper } from "./paperLedger.js";
 import { createLlmClient, extractJson, hasLlmCredentials, toDirectModel, usingGateway } from "../llm/gateway.js";
 
@@ -285,6 +286,14 @@ async function evaluate(s: Strategy, coin: string, history: Candle[]): Promise<v
   };
 
   sig.review = await review(s, sig, snapshot(series, i));
+  if (side === "BUY" && s.review !== "off") {
+    treeEvent({
+      branch: "strategi", subject: `${s.name} · ${coin}`,
+      jev: sig.review.jev ? { available: sig.review.jev.available, route: sig.review.jev.route, latencyMs: sig.review.jev.latencyMs } : undefined,
+      model: sig.review.ai && !sig.review.ai.skipped ? sig.review.ai.model : null,
+      outcome: sig.review.final, why: sig.review.reason,
+    });
+  }
 
   if (sig.review.final !== "ok" && side === "BUY") {
     cooldownUntil.set(k, bar.closeTime + COOLDOWN_CANDLES * (INTERVAL_MS[s.interval] ?? 60_000));

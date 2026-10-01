@@ -379,7 +379,10 @@ export async function handleLiveRoutes(
               try { history[coin] = await fetchBybitHistory(pairOf(coin), s.interval, candles); }
               catch (err) { errors[coin] = err instanceof Error ? err.message : String(err); }
             }));
-            const result = trainStrategy(s, history, { maxVariants: Math.min(600, Math.max(20, Number(b.variants) || 300)) });
+            // Mikes krav 2026-10-01: minst 10 affärer per dag. Kan ändras i dashboarden eller med TRAIN_MIN_TRADES_PER_DAY.
+            const perDayRaw = b.minTradesPerDay ?? process.env.TRAIN_MIN_TRADES_PER_DAY ?? 10;
+            const minTradesPerDay = Math.min(500, Math.max(0, Number(perDayRaw) || 0));
+            const result = trainStrategy(s, history, { maxVariants: Math.min(600, Math.max(20, Number(b.variants) || 300)), minTradesPerDay });
             const all = await readTrainings();
             all[id] = { ...result, errors };
             await writeTrainings(all);

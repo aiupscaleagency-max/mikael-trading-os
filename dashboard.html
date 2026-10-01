@@ -1923,7 +1923,8 @@ body.app-state-onboard .fc-panel{display:none !important}
 
   <div class="card sl-wide">
     <h3>📚 Strategibibliotek <span class="tag" id="sl-lib-meta">—</span></h3>
-    <div class="sl-actions" style="margin:0 0 10px"><button class="sl-btn pri" id="sl-new">+ Ny strategi</button></div>
+    <div class="sl-actions" style="margin:0 0 10px;align-items:center"><button class="sl-btn pri" id="sl-new">+ Ny strategi</button>
+      <span class="sl-sub" style="margin-left:12px">Träningskrav: minst</span><input id="sl-min-per-day" type="number" min="0" step="1" value="10" style="width:60px" title="Träningen föreslår bara varianter som gör minst så här många affärer per dag" /><span class="sl-sub">affärer per dag</span></div>
     <div id="sl-editor">
       <div class="sl-rule-h" id="sl-ed-title">Ny strategi</div>
       <label>Beskriv med egna ord (AI gör om det till regler)</label>
@@ -8139,7 +8140,7 @@ document.addEventListener("DOMContentLoaded", boot);
 
   // ── Träning ─────────────────────────────────────────────────
   const pct = v => v == null ? "–" : `<span class="${v>=0?"sl-pass":"sl-fail"}">${Number(v).toFixed(2)}%</span>`;
-  const scoreCells = t => `<td>${pct(t.returnPct)}</td><td>${t.trades}</td><td>${Number(t.winRatePct).toFixed(0)}%</td><td>${Number(t.maxDrawdownPct).toFixed(2)}%</td>`;
+  const scoreCells = t => `<td>${pct(t.returnPct)}</td><td>${t.trades}${t.tradesPerDay!=null?` <span class="sl-sub">(${t.tradesPerDay}/dag)</span>`:""}</td><td>${Number(t.winRatePct).toFixed(0)}%</td><td>${Number(t.maxDrawdownPct).toFixed(2)}%</td>`;
   function renderTraining(out, j){
     if(!j.ok){ out.innerHTML = `<span class="sl-fail">${esc(j.error)}</span>`; return; }
     const errs = Object.entries(j.errors||{}).map(([c,e])=>`<div class="sl-fail">${esc(c)}: ${esc(e)}</div>`).join("");
@@ -8154,7 +8155,7 @@ document.addEventListener("DOMContentLoaded", boot);
       ${j.verdict!=="för-lite-data" ? `<div class="sl-rules"><b>Förslaget:</b> KÖP när ${b.rulesText.entry.map(esc).join(" <b>och</b> ")}<br>
         SÄLJ när ${b.rulesText.exit.length?b.rulesText.exit.map(esc).join(" <b>och</b> "):"–"} · stop ${b.params.stopAtr||"av"} ATR · target ${b.params.targetAtr||"av"} ATR</div>` : ""}
       ${j.verdict==="bättre" ? `<div class="sl-actions"><button class="sl-btn pri" data-act="apply">Använd förslaget</button><span class="sl-sub">Det gamla sparas. Strategin stannar i TEST tills du själv flyttar den.</span></div>` : ""}
-      <div class="sl-note">${j.variantsTested} varianter provade på ${coins} ljus (${esc(j.interval)}) på ${(j.ms/1000).toFixed(1)} s. Vinnaren väljs på hur stabil den är på båda delarna, så att tur på en del inte räcker. Ett förslag kan fortfarande ha tur, så låt det köra i TEST innan LIVE.</div>`;
+      <div class="sl-note">${j.minTradesPerDay ? `Krav: minst ${j.minTradesPerDay} affärer per dag. ` : ""}${j.variantsTested} varianter provade på ${coins} ljus (${esc(j.interval)}) på ${(j.ms/1000).toFixed(1)} s. Vinnaren väljs på hur stabil den är på båda delarna, så att tur på en del inte räcker. Ett förslag kan fortfarande ha tur, så låt det köra i TEST innan LIVE.</div>`;
   }
 
   // ── Poängtavla (TEST-körning) ───────────────────────────────
@@ -8203,7 +8204,7 @@ document.addEventListener("DOMContentLoaded", boot);
     try{
       if(act === "test") renderTest(out, await api("/api/strategies/"+id+"/test", {}));
       if(act === "bt") renderBacktest(out, await api("/api/strategies/backtest", { id }));
-      if(act === "train"){ renderTraining(out, await api("/api/strategies/"+id+"/train", {})); loadScoreboard(); }
+      if(act === "train"){ renderTraining(out, await api("/api/strategies/"+id+"/train", { minTradesPerDay: Number($("sl-min-per-day")?.value ?? 10) })); loadScoreboard(); }
       SL.outs[id] = out.innerHTML;
     } finally { btn.disabled = false; }
   });
@@ -8375,6 +8376,8 @@ document.addEventListener("DOMContentLoaded", boot);
     setInterval(()=>{ if(isActive()) loadStatus(); }, 3000);
     setInterval(()=>{ loadBalance(false); }, 60000);
     $("sl-bal-refresh")?.addEventListener("click", ()=>loadBalance(true));
+    try{ const v = localStorage.getItem("sl-min-per-day"); if(v !== null && $("sl-min-per-day")) $("sl-min-per-day").value = v; }catch(_){}
+    $("sl-min-per-day")?.addEventListener("change", e=>{ try{ localStorage.setItem("sl-min-per-day", e.target.value); }catch(_){} });
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();
