@@ -6,8 +6,12 @@ import { log } from "../logger.js";
 import {
   startBybitPublicStream, startBybitPrivateStream, setBybitWalletFromRest, getBybitWallet,
   subscribeBybitWallet, subscribeBybitOrders, getBybitStreamStatus, fetchBybitCandles,
-  getBybitTickers, watchBybitTicker,
+  getBybitTickers, watchBybitTicker, fetchBybitHistory, getBybitTicker,
 } from "./bybitStream.js";
+import { scoreboard, READY_RULES } from "./paperLedger.js";
+import { trainStrategy, type TrainResult, type HistBar } from "../strategies/trainer.js";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { getMarketStreamStatus } from "./marketStream.js";
 import { getKlineStreamStatus } from "./klineStream.js";
 import { getJevStatus } from "./jevClient.js";
@@ -40,6 +44,9 @@ import { createLlmClient, extractJson, hasLlmCredentials, modelFor, toDirectMode
 //    POST /api/strategies/:id/test             → vilka regler stämmer just nu
 //    POST /api/strategies/:id/reset            → nollställ strategins läge (inne/ute)
 //    GET  /api/strategies/signals              → senaste signaler med JEV/AI-bedömning
+//    GET  /api/strategies/scoreboard           → poängtavla från TEST-körningen + senaste träning
+//    POST /api/strategies/:id/train            → träna (prova varianter, kontroll på osedd data)
+//    POST /api/strategies/:id/apply-training   → använd träningens förslag (det gamla sparas)
 //    POST /api/strategies/signals/:id/queue    → lägg som väntande order
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -222,6 +229,22 @@ async function parseStrategyText(text: string): Promise<Record<string, unknown>>
 // ─── Routning ─────────────────────────────────────────────────────────────
 
 /** Returnerar true om requesten hanterades. */
+// ─── Träningsresultat (senaste per strategi) ─────────────────────────────
+
+type StoredTraining = TrainResult & { errors?: Record<string, string>; appliedAt?: string; previous?: unknown };
+const TRAIN_FILE = path.resolve(process.cwd(), "data", "strategy-training.json");
+const training = new Set<string>();
+
+async function readTrainings(): Promise<Record<string, StoredTraining>> {
+  try { return JSON.parse(await fs.readFile(TRAIN_FILE, "utf8")) as Record<string, StoredTraining>; } catch { return {}; }
+}
+
+async function writeTrainings(all: Record<string, StoredTraining>): Promise<void> {
+  await fs.mkdir(path.dirname(TRAIN_FILE), { recursive: true });
+  await fs.writeFile(`${TRAIN_FILE}.tmp`, JSON.stringify(all, null, 1), "utf8");
+  await fs.rename(`${TRAIN_FILE}.tmp`, TRAIN_FILE);
+}
+
 export async function handleLiveRoutes(
   url: URL,
   method: string,
@@ -305,6 +328,83 @@ export async function handleLiveRoutes(
       }));
       send(res, 200, { ok: true, interval: s.interval, results });
       return true;
+    }
+
+    if (p === "/api/strategies/scoreboard" && method === "GET") {
+      const lib = await loadLibrary();
+      const trained = await readTrainings();
+      const priceOf = (coin: string) => {
+        const t = getBybitTicker(pairOf(coin));
+        if (t?.price) return t.price;
+        const c = lib.map((s) => getRunnerCandles(coin, s.interval)).find((x) => x.length);
+        return c?.[c.length - 1]?.close ?? null;
+      };
+      send(res, 200, {
+        rules: READY_RULES,
+        rows: lib.map((s) => {
+          const t = trained[s.id];
+          return {
+            name: s.name, enabled: s.enabled, venue: s.venue, coins: s.coins, interval: s.interval,
+            ...scoreboard(s.id, priceOf),
+            training: t ? {
+              trainedAt: t.trainedAt, verdict: t.verdict, verdictText: t.verdictText, variantsTested: t.variantsTested,
+              current: t.current, best: t.best, applied: Boolean(t.appliedAt),
+            } : null,
+          };
+        }),
+      });
+      return true;
+    }
+
+    {
+      const m = p.match(/^\/api\/strategies\/([0-9a-f-]{36})\/(train|apply-training|training)$/);
+      if (m) {
+        const id = m[1]!;
+        const action = m[2];
+        const s = (await loadLibrary()).find((x) => x.id === id);
+        if (!s) { send(res, 404, { ok: false, error: "Strategin finns inte" }); return true; }
+        if (action === "training" && method === "GET") {
+          send(res, 200, { ok: true, training: (await readTrainings())[id] ?? null });
+          return true;
+        }
+        if (action === "train" && method === "POST") {
+          if (training.has(id)) { send(res, 409, { ok: false, error: "Strategin tränas redan, vänta en stund." }); return true; }
+          training.add(id);
+          try {
+            const b = await bodyJson(req);
+            const candles = Math.min(5000, Math.max(500, Number(b.candles) || 3000));
+            const history: Record<string, HistBar[]> = {};
+            const errors: Record<string, string> = {};
+            await Promise.all(s.coins.map(async (coin) => {
+              try { history[coin] = await fetchBybitHistory(pairOf(coin), s.interval, candles); }
+              catch (err) { errors[coin] = err instanceof Error ? err.message : String(err); }
+            }));
+            const result = trainStrategy(s, history, { maxVariants: Math.min(600, Math.max(20, Number(b.variants) || 300)) });
+            const all = await readTrainings();
+            all[id] = { ...result, errors };
+            await writeTrainings(all);
+            log.info(`[träning] ${s.name}: ${result.variantsTested} varianter på ${result.ms} ms — ${result.verdict}`);
+            send(res, 200, { ...result, errors });
+          } finally {
+            training.delete(id);
+          }
+          return true;
+        }
+        if (action === "apply-training" && method === "POST") {
+          const all = await readTrainings();
+          const t = all[id];
+          if (!t || t.verdict !== "bättre") { send(res, 400, { ok: false, error: "Det finns inget godkänt förslag att använda." }); return true; }
+          // Det gamla sparas i träningsfilen så att det går att gå tillbaka.
+          const previous = { entry: s.entry, exit: s.exit, stopAtr: s.stopAtr, targetAtr: s.targetAtr };
+          const r = await upsertStrategy({ ...t.best.params }, id);
+          if (!r.ok) { send(res, 400, r); return true; }
+          all[id] = { ...t, appliedAt: new Date().toISOString(), previous };
+          await writeTrainings(all);
+          await syncStrategies();
+          send(res, 200, { ok: true, strategy: r.strategy, previous });
+          return true;
+        }
+      }
     }
 
     if (p === "/api/strategies/signals" && method === "GET") {

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import { computeSeries, evalAll, sanitizeRule, type Bar, type Rule, type RuleResult } from "./ruleEngine.js";
+import { computeSeries, evalAll, sanitizeRule, type Bar, type Rule, type RuleResult, type Series } from "./ruleEngine.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Strategibiblioteket — Mikes egna strategibottar
@@ -257,8 +257,12 @@ export function backtest(
   s: Pick<Strategy, "entry" | "exit" | "stopAtr" | "targetAtr">,
   bars: Array<Bar & { openTime: number; closeTime: number }>,
   feePctPerSide = 0.1,
+  /** Träningen räknar serierna en gång och testar bara en del av ljusen (from..to). */
+  opts: { series?: Series; from?: number; to?: number } = {},
 ): BacktestResult {
-  const series = computeSeries(bars);
+  const series = opts.series ?? computeSeries(bars);
+  const startIdx = Math.max(1, opts.from ?? 1);
+  const endIdx = Math.min(bars.length, opts.to ?? bars.length);
   const trades: BacktestTrade[] = [];
   let pos: { entry: number; time: number; stop: number | null; target: number | null } | null = null;
   let equity = 1, peak = 1, maxDd = 0;
@@ -274,7 +278,7 @@ export function backtest(
     pos = null;
   };
 
-  for (let i = 1; i < bars.length; i++) {
+  for (let i = startIdx; i < endIdx; i++) {
     const b = bars[i]!;
     if (pos) {
       // Stop före target: når ljuset båda räknas det försiktigt som stop.
@@ -291,18 +295,17 @@ export function backtest(
       };
     }
   }
-  if (pos) {
-    const last = bars[bars.length - 1]!;
-    close(last.close, last.closeTime, "öppen");
-  }
+  const lastBar = bars[endIdx - 1];
+  if (pos && lastBar) close(lastBar.close, lastBar.closeTime, "öppen");
 
   const wins = trades.filter((t) => t.pnlPct > 0).length;
-  const first = bars[0]?.close ?? 0;
-  const last = bars[bars.length - 1]?.close ?? 0;
+  const firstBar = bars[startIdx - 1];
+  const first = firstBar?.close ?? 0;
+  const last = lastBar?.close ?? 0;
   return {
-    candles: bars.length,
-    from: bars[0]?.openTime ?? 0,
-    to: bars[bars.length - 1]?.closeTime ?? 0,
+    candles: Math.max(0, endIdx - startIdx + 1),
+    from: firstBar?.openTime ?? 0,
+    to: lastBar?.closeTime ?? 0,
     trades: trades.length,
     wins,
     winRatePct: trades.length ? (wins / trades.length) * 100 : 0,
