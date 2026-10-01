@@ -1234,6 +1234,9 @@ body.app-state-onboard .fc-panel{display:none !important}
     <span class="ico">⚡</span><span>Live</span>
     <span class="live-dot"></span>
   </button>
+  <button data-page="strategies" title="Strategier — bibliotek, live-lampor, Bybit-saldo">
+    <span class="ico">🧠</span><span>Strategi</span>
+  </button>
   <button data-page="trades" title="Trades — positioner + beslut">
     <span class="ico">📈</span><span>Trades</span>
   </button>
@@ -1843,6 +1846,125 @@ body.app-state-onboard .fc-panel{display:none !important}
   <p style="margin:14px 12px;font-size:11px;color:var(--dim);line-height:1.5">
     💡 Klicka på ett par för att ladda det i charten på Trade-sidan. Hovra för att pausa rullningen.
   </p>
+</section>
+
+<!-- ═══ STRATEGIER — live-lampor, Bybit-saldo, strategibibliotek, signaler ═══ -->
+<style>
+#page-strategies .sl-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 10px 10px}
+#page-strategies .card{margin-bottom:0}
+#page-strategies .sl-wide{margin:0 10px 10px}
+.sl-lamp{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--border);font-size:12px}
+.sl-lamp:last-child{border-bottom:none}
+.sl-dot{width:10px;height:10px;border-radius:50%;flex:0 0 10px;background:#475569}
+.sl-dot.on{background:var(--green);box-shadow:0 0 8px var(--green);animation:slPulse 1.6s infinite}
+.sl-dot.off{background:var(--red);box-shadow:0 0 6px var(--red)}
+.sl-dot.idle{background:#eab308}
+@keyframes slPulse{0%,100%{opacity:1}50%{opacity:.45}}
+.sl-lamp .sl-name{font-weight:700;min-width:150px;color:#fff}
+.sl-lamp .sl-det{color:var(--dim);flex:1}
+.sl-lamp .sl-ago{color:var(--dim);font-size:11px;white-space:nowrap}
+.sl-big{font-size:26px;font-weight:800;color:var(--green)}
+.sl-sub{color:var(--dim);font-size:11px}
+.sl-coins{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.sl-chip{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:2px 9px;font-size:11px}
+.sl-btn{background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:inherit}
+.sl-btn:hover{border-color:var(--cyan)}
+.sl-btn.pri{background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.6);color:#fff}
+.sl-btn.warn{border-color:rgba(239,68,68,.5);color:#fca5a5}
+.sl-btn:disabled{opacity:.5;cursor:default}
+.sl-strat{border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px;background:var(--card2)}
+.sl-strat.off{opacity:.6}
+.sl-strat-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sl-strat-h b{color:#fff;font-size:13px}
+.sl-badge{font-size:10px;font-weight:800;padding:2px 6px;border-radius:3px;letter-spacing:.4px}
+.sl-badge.test{background:rgba(59,130,246,.2);color:#93c5fd}
+.sl-badge.live{background:rgba(239,68,68,.2);color:#fca5a5}
+.sl-badge.ai{background:rgba(168,85,247,.2);color:#d8b4fe}
+.sl-rules{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.6}
+.sl-rules b{color:var(--text)}
+.sl-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.sl-out{margin-top:8px;font-size:12px}
+.sl-out table,.sl-sig table{width:100%;border-collapse:collapse;font-size:12px}
+.sl-out td,.sl-out th,.sl-sig td,.sl-sig th{padding:4px 6px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+.sl-out th,.sl-sig th{color:var(--dim);font-weight:600}
+.sl-pass{color:var(--green)} .sl-fail{color:var(--red)}
+.sl-switch{position:relative;width:34px;height:18px;flex:0 0 34px;cursor:pointer}
+.sl-switch input{display:none}
+.sl-switch span{position:absolute;inset:0;background:#334155;border-radius:9px;transition:.15s}
+.sl-switch span:before{content:"";position:absolute;width:14px;height:14px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s}
+.sl-switch input:checked+span{background:var(--green)}
+.sl-switch input:checked+span:before{transform:translateX(16px)}
+#sl-editor{display:none;border:1px solid var(--cyan);border-radius:6px;padding:12px;margin-bottom:10px;background:var(--card2)}
+#sl-editor .sl-form{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px}
+#sl-editor label{display:block;font-size:11px;color:var(--dim);margin-bottom:3px}
+#sl-editor input,#sl-editor select,#sl-editor textarea{width:100%;box-sizing:border-box}
+#sl-editor textarea{font-family:inherit;font-size:12px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px}
+.sl-rule-row{display:grid;grid-template-columns:2fr 1.3fr 1fr 2fr .8fr auto;gap:6px;margin-bottom:5px;align-items:center}
+.sl-rule-h{font-weight:700;color:#fff;margin:10px 0 5px;font-size:12px}
+.sl-note{font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5}
+.sl-side-buy{color:var(--green);font-weight:800} .sl-side-sell{color:var(--red);font-weight:800}
+@media (max-width:900px){#page-strategies .sl-grid{grid-template-columns:1fr}#sl-editor .sl-form{grid-template-columns:1fr 1fr}.sl-rule-row{grid-template-columns:1fr 1fr}}
+</style>
+<section class="page" id="page-strategies">
+  <div class="page-header"><span class="ph-ico">🧠</span>Strategier<span class="ph-sub">— live-anslutningar, Bybit-saldo, strategibibliotek</span></div>
+
+  <div class="sl-grid">
+    <div class="card">
+      <h3>🟢 Live-anslutningar <span class="tag" id="sl-status-time">—</span></h3>
+      <div id="sl-lamps"><div class="sl-sub">Hämtar…</div></div>
+      <div class="sl-note">Grön = data har kommit in de senaste sekunderna via websocket. Röd = anslutningen är nere och återansluter av sig själv.</div>
+    </div>
+    <div class="card">
+      <h3>💚 Bybit-saldo (riktiga pengar) <span class="tag" id="sl-bal-src">—</span></h3>
+      <div id="sl-balance"><div class="sl-sub">Hämtar…</div></div>
+      <div class="sl-actions"><button class="sl-btn" id="sl-bal-refresh">Uppdatera nu</button></div>
+    </div>
+  </div>
+
+  <div class="card sl-wide">
+    <h3>📚 Strategibibliotek <span class="tag" id="sl-lib-meta">—</span></h3>
+    <div class="sl-actions" style="margin:0 0 10px"><button class="sl-btn pri" id="sl-new">+ Ny strategi</button></div>
+    <div id="sl-editor">
+      <div class="sl-rule-h" id="sl-ed-title">Ny strategi</div>
+      <label>Beskriv med egna ord (AI gör om det till regler)</label>
+      <textarea id="sl-ed-text" rows="2" placeholder="T.ex. köp ETH och SOL när RSI är under 30 och priset ligger över SMA 200, sälj när RSI går över 60. 15 minuters ljus."></textarea>
+      <div class="sl-actions"><button class="sl-btn" id="sl-ed-ai">✨ Gör regler med AI</button><span class="sl-sub" id="sl-ed-ai-msg"></span></div>
+      <div class="sl-form">
+        <div><label>Namn</label><input id="sl-ed-name" /></div>
+        <div><label>Coins (komma mellan)</label><input id="sl-ed-coins" list="sl-pairs" placeholder="BTC, ETH, SOL" /></div>
+        <div><label>Ljus (intervall)</label><select id="sl-ed-interval"></select></div>
+        <div><label>Var signalerna köas</label><select id="sl-ed-venue"><option value="test">TEST (Alpaca, låtsaspengar)</option><option value="live">LIVE (Bybit EU, riktiga pengar)</option></select></div>
+        <div><label>Belopp per köp (USD)</label><input id="sl-ed-stake" type="number" min="1" step="1" /></div>
+        <div><label>Stop-loss (ATR, 0 = av)</label><input id="sl-ed-stop" type="number" min="0" step="0.1" /></div>
+        <div><label>Target (ATR, 0 = av)</label><input id="sl-ed-target" type="number" min="0" step="0.1" /></div>
+        <div><label>Granskning</label><select id="sl-ed-review"><option value="off">Bara regler</option><option value="jev">JEV bedömer</option><option value="jev_ai">JEV + AI-modell</option></select></div>
+        <div><label>AI-modell</label><select id="sl-ed-model"></select></div>
+        <div style="grid-column:span 3"><label>Beskrivning</label><input id="sl-ed-desc" /></div>
+      </div>
+      <label style="margin-top:8px;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text)"><input type="checkbox" id="sl-ed-auto" style="width:auto" /> Lägg godkända signaler direkt bland väntande ordrar (du trycker fortfarande Godkänn)</label>
+      <div class="sl-rule-h">KÖP när alla stämmer</div>
+      <div id="sl-ed-entry"></div>
+      <button class="sl-btn" data-add="entry">+ regel</button>
+      <div class="sl-rule-h">SÄLJ när alla stämmer (eller stop/target nås)</div>
+      <div id="sl-ed-exit"></div>
+      <button class="sl-btn" data-add="exit">+ regel</button>
+      <div class="sl-actions" style="margin-top:12px">
+        <button class="sl-btn pri" id="sl-ed-save">Spara</button>
+        <button class="sl-btn" id="sl-ed-bt">Backtesta utkastet</button>
+        <button class="sl-btn" id="sl-ed-cancel">Avbryt</button>
+        <span class="sl-sub" id="sl-ed-msg"></span>
+      </div>
+      <div class="sl-out" id="sl-ed-out"></div>
+    </div>
+    <div id="sl-list"><div class="sl-sub">Hämtar…</div></div>
+    <datalist id="sl-pairs"></datalist>
+  </div>
+
+  <div class="card sl-wide sl-sig">
+    <h3>⚡ Signaler från strategierna <span class="tag" id="sl-sig-meta">—</span></h3>
+    <div id="sl-signals"><div class="sl-sub">Inga signaler än. De kommer när ett ljus stänger och reglerna stämmer.</div></div>
+    <div class="sl-note">Strategierna lägger inga ordrar själva. "Lägg som väntande order" lägger ordern i rutan Väntande ordrar på Trade-sidan, och där trycker du Godkänn. LIVE har samma gränser som förut: max $5 per order och $10 per dag, och LIVE måste vara upplåst i .env.</div>
+  </div>
 </section>
 
 <!-- ═══ TEAM-SIDA — egen vy med team-banner + alla agenter ═══ -->
@@ -6338,7 +6460,7 @@ function wireTeamChat(){
 /* ======================================================================
    SPA NAVIGATION — varje sidebar-knapp = egen sida
    ====================================================================== */
-const PAGES = ["trade","team","chat","live","trades","cost","settings"];
+const PAGES = ["trade","team","chat","live","strategies","trades","cost","settings"];
 
 function switchPage(name){
   if(!PAGES.includes(name)) name = "trade";
@@ -7280,7 +7402,8 @@ async function refreshBinanceSync(){
     }
     // Header LIVE-balance (mainnet, riktiga pengar)
     const lbEq = document.getElementById("lb-equity");
-    if(lbEq && data.live?.cashUsdt !== undefined){
+    // Bybit EU är LIVE-mäklaren när den är kopplad (Binance spärrar API-handel i Sverige)
+    if(lbEq && data.live?.cashUsdt !== undefined && !window._bybitLive){
       const total = data.live.totalUsdt || data.live.cashUsdt;
       lbEq.textContent = "$" + total.toFixed(2);
     }
@@ -7312,7 +7435,7 @@ async function refreshBinanceSync(){
       if(pbEq) pbEq.textContent = window._brokerBal.eq;
       if(pbPnl) pbPnl.textContent = window._brokerBal.label;
     }
-    if(lbEq && !data.live?.configured){
+    if(lbEq && !data.live?.configured && !window._bybitLive){
       // Ingen Binance LIVE: visa saldot hos en annan LIVE-mäklare (t.ex. Kraken)
       if(Date.now() - (window._liveBalTs||0) > 30000){
         window._liveBalTs = Date.now();
@@ -7857,6 +7980,345 @@ document.addEventListener("DOMContentLoaded", boot);
     });
   });
 })();
+</script>
+<script>
+/* ═══ STRATEGIER-sidan — live-lampor, Bybit-saldo, strategibibliotek ═══
+   Fristående: egen EventSource mot /api/events (bybit-wallet, strategy-signal)
+   så sidan är live oavsett vad resten av dashboarden gör. */
+(function(){
+  const $ = id => document.getElementById(id);
+  const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const fmtUsd = n => "$" + (Number(n)||0).toLocaleString("sv-SE",{minimumFractionDigits:2,maximumFractionDigits:2});
+  const fmtPx = n => n == null ? "–" : (Math.abs(n) >= 100 ? Number(n).toFixed(2) : Number(n).toPrecision(5));
+  const ago = ms => ms == null ? "" : ms < 1500 ? "nu" : ms < 60000 ? Math.round(ms/1000)+" s sedan" : Math.round(ms/60000)+" min sedan";
+  const time = t => t ? new Date(t).toLocaleTimeString("sv-SE",{hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "–";
+  async function api(path, body){
+    const r = await fetch(path, body === undefined ? {} : { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+    const j = await r.json().catch(()=>({ ok:false, error:"Ogiltigt svar ("+r.status+")" }));
+    if(!r.ok && j && j.ok === undefined) j.ok = false;
+    return j;
+  }
+  const isActive = () => $("page-strategies")?.classList.contains("active");
+
+  const SL = { meta:null, strategies:[], positions:{}, signals:[], editing:null, wallet:null };
+  window.SL_STATE = SL;
+
+  // ── Live-lampor ─────────────────────────────────────────────
+  const LAMP_NAMES = {
+    bybitMarket:"Bybit priser + ljus", bybitAccount:"Bybit konto (saldo)", strategies:"Strategi-löparen",
+    jev:"JEV (bedömning)", ai:"AI-modeller", binancePrices:"Binance priser", binanceCandles:"Binance ljus (diagram)",
+  };
+  async function loadStatus(){
+    try{
+      const s = await api("/api/live/status");
+      const rows = Object.entries(LAMP_NAMES).map(([k,name])=>{
+        const l = s.lamps?.[k]; if(!l) return "";
+        const cls = l.connected ? "on" : (k==="jev"||k==="ai") ? "idle" : "off";
+        return `<div class="sl-lamp"><span class="sl-dot ${cls}"></span><span class="sl-name">${esc(name)}</span><span class="sl-det">${esc(l.detail)}</span><span class="sl-ago">${esc(ago(l.lastMessageAgoMs))}</span></div>`;
+      }).join("");
+      $("sl-lamps").innerHTML = rows;
+      $("sl-status-time").textContent = "uppdaterad " + time(s.time);
+      if(s.wallet) setWallet(s.wallet, false);
+    }catch(e){ $("sl-lamps").innerHTML = `<div class="sl-sub">Servern svarar inte: ${esc(e.message)}</div>`; }
+  }
+
+  // ── Saldo ───────────────────────────────────────────────────
+  function setHeaderLive(total){
+    const lb = $("lb-equity"); if(!lb) return;
+    window._bybitLive = true;
+    window._liveBal = "Bybit " + fmtUsd(total);
+    window._liveBalTs = Date.now();
+    lb.textContent = window._liveBal;
+  }
+  function setWallet(w, render){
+    SL.wallet = w;
+    setHeaderLive(w.totalEquityUsd);
+    if(render !== false && SL.lastBalance){ SL.lastBalance.unified = w; renderBalance(SL.lastBalance); }
+  }
+  function renderBalance(b){
+    SL.lastBalance = b;
+    if(!b.connected){ $("sl-balance").innerHTML = `<div class="sl-sub">${esc(b.error||"Bybit är inte kopplat")}</div>`; $("sl-bal-src").textContent = "ej kopplad"; return; }
+    const u = b.unified;
+    const coins = (u?.coins||[]).map(c=>`<span class="sl-chip">${esc(c.coin)} ${esc(fmtPx(c.balance))}${c.usdValue?` · ${fmtUsd(c.usdValue)}`:""}</span>`).join("") || `<span class="sl-sub">Tom</span>`;
+    let fund = "";
+    if(b.funding){
+      const fc = b.funding.coins.map(c=>`<span class="sl-chip">${esc(c.coin)} ${esc(fmtPx(c.balance))}${c.usdValue?` · ${fmtUsd(c.usdValue)}`:""}</span>`).join("") || `<span class="sl-sub">Tom</span>`;
+      fund = `<div style="margin-top:10px"><b>Funding</b> <span class="sl-sub">(insättningar, boten handlar inte härifrån)</span> · ${fmtUsd(b.funding.totalUsd)}<div class="sl-coins">${fc}</div></div>`;
+      if(b.funding.totalUsd > 0 && !(u?.totalEquityUsd > 0)) fund += `<div class="sl-note" style="color:#fbbf24">Pengarna ligger i Funding. Flytta dem på bybit.eu: Assets → Transfer → från Funding till Unified Trading, så kan boten använda dem.</div>`;
+    } else if(b.fundingError){
+      fund = `<div class="sl-note" style="color:#fbbf24">Funding: ${esc(b.fundingError)}</div>`;
+    }
+    $("sl-balance").innerHTML = `<div class="sl-sub">Unified Trading (det boten handlar med, i ${esc(b.quote)})</div>
+      <div class="sl-big">${fmtUsd(u?.totalEquityUsd)}</div><div class="sl-coins">${coins}</div>${fund}`;
+    $("sl-bal-src").textContent = u ? (u.source === "websocket" ? "live via websocket · " : "via REST · ") + time(u.ts) : "—";
+    if(u) setHeaderLive(u.totalEquityUsd);
+  }
+  async function loadBalance(refresh){
+    try{ renderBalance(await api("/api/bybit/balance" + (refresh ? "?refresh=1" : ""))); }
+    catch(e){ $("sl-balance").innerHTML = `<div class="sl-sub">Kunde inte hämta saldo: ${esc(e.message)}</div>`; }
+  }
+
+  // ── Bibliotek ───────────────────────────────────────────────
+  const ruleTxt = r => {
+    const I = SL.meta?.indicators||{}, O = SL.meta?.operators||{};
+    const right = typeof r.right === "number" ? r.right : (I[r.right]||r.right) + (r.factor && r.factor !== 1 ? " × " + r.factor : "");
+    return `${I[r.left]||r.left} ${O[r.op]||r.op} ${right}`;
+  };
+  function renderLibrary(){
+    const list = SL.strategies;
+    $("sl-lib-meta").textContent = `${list.filter(s=>s.enabled).length} av ${list.length} påslagna · par i ${SL.meta?.quote||"USDC"} på Bybit EU`;
+    if(!list.length){ $("sl-list").innerHTML = `<div class="sl-sub">Biblioteket är tomt. Tryck "+ Ny strategi".</div>`; return; }
+    $("sl-list").innerHTML = list.map(s=>{
+      const state = s.coins.map(c=>{
+        const p = SL.positions[s.id+":"+c];
+        return `<span class="sl-chip" title="${p?"Strategin har köpt "+esc(c)+" @ "+fmtPx(p.entry):"Strategin väntar på köpläge"}">${esc(c)} ${p?"● inne @ "+esc(fmtPx(p.entry)):"○ ute"}</span>`;
+      }).join("");
+      const review = s.review === "off" ? "bara regler" : s.review === "jev" ? "JEV" : "JEV + " + (SL.meta?.models?.[s.reviewModel] || s.reviewModel);
+      return `<div class="sl-strat ${s.enabled?"":"off"}" data-id="${esc(s.id)}">
+        <div class="sl-strat-h">
+          <label class="sl-switch" title="Slå på/av"><input type="checkbox" data-act="toggle" ${s.enabled?"checked":""}/><span></span></label>
+          <b>${esc(s.name)}</b>
+          <span class="sl-badge ${s.venue}">${s.venue==="live"?"LIVE":"TEST"}</span>
+          <span class="sl-chip">${esc(s.interval)}</span>
+          <span class="sl-badge ai">${esc(review)}</span>
+          ${s.autoQueue?'<span class="sl-chip">köar själv</span>':""}
+        </div>
+        ${s.description?`<div class="sl-sub" style="margin-top:4px">${esc(s.description)}</div>`:""}
+        <div class="sl-coins">${state}</div>
+        <div class="sl-rules"><b>KÖP</b> när ${s.entry.map(r=>esc(ruleTxt(r))).join(" <b>och</b> ")}<br>
+          <b>SÄLJ</b> när ${s.exit.length?s.exit.map(r=>esc(ruleTxt(r))).join(" <b>och</b> "):"–"}${s.stopAtr>0?` · stop ${s.stopAtr} ATR`:""}${s.targetAtr>0?` · target ${s.targetAtr} ATR`:""} · ${fmtUsd(s.stakeUsd)} per köp</div>
+        <div class="sl-actions">
+          <button class="sl-btn" data-act="test">Testa nu</button>
+          <button class="sl-btn" data-act="bt">Backtest</button>
+          <button class="sl-btn" data-act="edit">Redigera</button>
+          <button class="sl-btn" data-act="copy">Kopiera</button>
+          <button class="sl-btn" data-act="reset" title="Glöm att strategin har köpt (t.ex. om du sålt själv)">Nollställ läge</button>
+          <button class="sl-btn warn" data-act="del">Ta bort</button>
+        </div>
+        <div class="sl-out"></div>
+      </div>`;
+    }).join("");
+  }
+  async function loadLibrary(){
+    const j = await api("/api/strategies");
+    if(!j.strategies){ $("sl-list").innerHTML = `<div class="sl-sub">Kunde inte läsa biblioteket: ${esc(j.error||"okänt fel")}</div>`; return; }
+    SL.meta = j; SL.strategies = j.strategies; SL.positions = j.positions || {};
+    renderLibrary();
+  }
+
+  function renderTest(out, j){
+    if(!j.ok){ out.innerHTML = `<span class="sl-fail">${esc(j.error)}</span>`; return; }
+    out.innerHTML = j.results.map(r=>{
+      if(r.error) return `<div><b>${esc(r.coin)}</b>: <span class="sl-fail">${esc(r.error)}</span></div>`;
+      const rows = (lst, title) => lst.results.length ? `<tr><th colspan="3">${title} — ${lst.pass?'<span class="sl-pass">ALLA STÄMMER</span>':'<span class="sl-fail">inte än</span>'}</th></tr>` +
+        lst.results.map(x=>`<tr><td class="${x.pass?"sl-pass":"sl-fail"}">${x.pass?"✓":"✗"}</td><td>${esc(x.text)}</td><td class="sl-sub">${esc(fmtPx(x.left))} vs ${esc(fmtPx(x.right))}</td></tr>`).join("") : "";
+      return `<div style="margin-bottom:6px"><b>${esc(r.coin)}</b> · pris ${esc(fmtPx(r.close))} · ljus stängt ${esc(time(r.candleCloseTime))} · ${r.inPosition?"strategin är inne":"strategin är ute"}
+        <table>${rows(r.entry,"KÖP-regler")}${rows(r.exit,"SÄLJ-regler")}</table></div>`;
+    }).join("");
+  }
+  function renderBacktest(out, j){
+    if(!j.ok){ out.innerHTML = `<span class="sl-fail">${esc(j.error)}</span>`; return; }
+    out.innerHTML = `<table><tr><th>Coin</th><th>Ljus</th><th>Trades</th><th>Vinst-%</th><th>Avkastning</th><th>Köp &amp; behåll</th><th>Max nedgång</th></tr>` +
+      j.results.map(r=> r.error ? `<tr><td>${esc(r.coin)}</td><td colspan="6" class="sl-fail">${esc(r.error)}</td></tr>` :
+        `<tr><td><b>${esc(r.coin)}</b></td><td>${r.candles} × ${esc(j.interval)}</td><td>${r.trades}</td><td>${r.winRatePct.toFixed(0)}%</td>
+         <td class="${r.totalReturnPct>=0?"sl-pass":"sl-fail"}">${r.totalReturnPct.toFixed(2)}%</td><td class="sl-sub">${r.buyAndHoldPct.toFixed(2)}%</td><td>${r.maxDrawdownPct.toFixed(2)}%</td></tr>`).join("") +
+      `</table><div class="sl-note">Bybits riktiga historiska ljus, ${j.results[0]?.feePctPerSide ?? 0.1}% avgift per köp och sälj. Historik garanterar inget framåt, men visar om reglerna alls har haft en fördel.</div>`;
+  }
+
+  $("sl-list")?.addEventListener("click", async e=>{
+    const btn = e.target.closest("[data-act]"); if(!btn) return;
+    const card = btn.closest(".sl-strat"); const id = card?.dataset.id; if(!id) return;
+    const s = SL.strategies.find(x=>x.id===id); const out = card.querySelector(".sl-out");
+    const act = btn.dataset.act;
+    if(act === "toggle"){
+      const j = await api("/api/strategies/"+id, { enabled: btn.checked });
+      if(!j.ok){ alert(j.error); btn.checked = !btn.checked; return; }
+      await loadLibrary(); loadStatus(); return;
+    }
+    if(act === "edit"){ openEditor(s); return; }
+    if(act === "copy"){ openEditor({ ...s, id:null, name: s.name + " (kopia)", enabled:false }); return; }
+    if(act === "del"){
+      if(!confirm(`Ta bort strategin "${s.name}"? Signalhistoriken finns kvar.`)) return;
+      await api("/api/strategies/"+id+"/delete", {}); await loadLibrary(); return;
+    }
+    if(act === "reset"){ await api("/api/strategies/"+id+"/reset", {}); await loadLibrary(); return; }
+    btn.disabled = true; out.innerHTML = `<span class="sl-sub">${act==="bt"?"Hämtar upp till 1000 ljus per coin från Bybit och kör…":"Räknar på senaste stängda ljuset…"}</span>`;
+    try{
+      if(act === "test") renderTest(out, await api("/api/strategies/"+id+"/test", {}));
+      if(act === "bt") renderBacktest(out, await api("/api/strategies/backtest", { id }));
+    } finally { btn.disabled = false; }
+  });
+
+  // ── Redigerare ─────────────────────────────────────────────
+  function ruleRow(r){
+    const I = SL.meta.indicators, O = SL.meta.operators;
+    const opt = (obj, sel) => Object.entries(obj).map(([k,v])=>`<option value="${esc(k)}" ${k===sel?"selected":""}>${esc(v)}</option>`).join("");
+    const isNum = typeof r.right === "number";
+    const div = document.createElement("div"); div.className = "sl-rule-row";
+    div.innerHTML = `<select data-f="left">${opt(I, r.left)}</select>
+      <select data-f="op">${opt(O, r.op)}</select>
+      <select data-f="kind"><option value="num" ${isNum?"selected":""}>tal</option><option value="ind" ${!isNum?"selected":""}>indikator</option></select>
+      <span data-f="rightwrap"></span>
+      <input data-f="factor" type="number" step="0.01" min="0" title="Multiplikator, t.ex. 1.5 = 50 % över" placeholder="× 1" value="${!isNum && r.factor ? esc(r.factor) : ""}" />
+      <button class="sl-btn warn" data-f="rm" title="Ta bort regeln">×</button>`;
+    const wrap = div.querySelector('[data-f="rightwrap"]');
+    const setRight = () => {
+      const kind = div.querySelector('[data-f="kind"]').value;
+      wrap.innerHTML = kind === "num"
+        ? `<input data-f="right" type="number" step="any" value="${isNum ? esc(r.right) : 30}" />`
+        : `<select data-f="right">${opt(I, isNum ? "sma50" : r.right)}</select>`;
+      div.querySelector('[data-f="factor"]').style.visibility = kind === "num" ? "hidden" : "visible";
+    };
+    setRight();
+    div.querySelector('[data-f="kind"]').addEventListener("change", setRight);
+    div.querySelector('[data-f="rm"]').addEventListener("click", ()=>div.remove());
+    return div;
+  }
+  function readRules(boxId){
+    return [...$(boxId).querySelectorAll(".sl-rule-row")].map(div=>{
+      const kind = div.querySelector('[data-f="kind"]').value;
+      const rv = div.querySelector('[data-f="right"]').value;
+      const r = { left: div.querySelector('[data-f="left"]').value, op: div.querySelector('[data-f="op"]').value, right: kind === "num" ? Number(rv) : rv };
+      const f = Number(div.querySelector('[data-f="factor"]').value);
+      if(kind === "ind" && f > 0 && f !== 1) r.factor = f;
+      return r;
+    });
+  }
+  function fillEditor(s){
+    $("sl-ed-name").value = s.name || "";
+    $("sl-ed-coins").value = (s.coins||[]).join(", ");
+    $("sl-ed-interval").value = s.interval || "15m";
+    $("sl-ed-venue").value = s.venue || "test";
+    $("sl-ed-stake").value = s.stakeUsd ?? 5;
+    $("sl-ed-stop").value = s.stopAtr ?? 1.5;
+    $("sl-ed-target").value = s.targetAtr ?? 3;
+    $("sl-ed-review").value = s.review || "jev";
+    const models = SL.meta.models;
+    $("sl-ed-model").innerHTML = Object.entries(models).map(([k,v])=>`<option value="${esc(k)}">${esc(v)}</option>`).join("")
+      + (s.reviewModel && !models[s.reviewModel] ? `<option value="${esc(s.reviewModel)}">${esc(s.reviewModel)}</option>` : "");
+    $("sl-ed-model").value = s.reviewModel || "auto";
+    $("sl-ed-desc").value = s.description || "";
+    $("sl-ed-auto").checked = !!s.autoQueue;
+    if(s.sourceText) $("sl-ed-text").value = s.sourceText;
+    for(const k of ["entry","exit"]){
+      const box = $("sl-ed-"+k); box.innerHTML = "";
+      (s[k]||[]).forEach(r=>box.appendChild(ruleRow(r)));
+    }
+  }
+  function openEditor(s){
+    SL.editing = s && s.id ? s.id : null;
+    $("sl-ed-title").textContent = SL.editing ? "Redigera: " + s.name : "Ny strategi";
+    $("sl-ed-interval").innerHTML = SL.meta.intervals.map(i=>`<option>${esc(i)}</option>`).join("");
+    $("sl-ed-text").value = "";
+    fillEditor(s || { name:"", coins:["BTC"], interval:"15m", entry:[{left:"rsi14",op:"<",right:30}], exit:[{left:"rsi14",op:">",right:55}], review:"jev", reviewModel:"auto", venue:"test", stakeUsd:5, stopAtr:1.5, targetAtr:3 });
+    $("sl-ed-msg").textContent = ""; $("sl-ed-out").innerHTML = ""; $("sl-ed-ai-msg").textContent = "";
+    $("sl-editor").style.display = "block";
+    $("sl-editor").scrollIntoView({ behavior:"smooth", block:"start" });
+  }
+  function readEditor(){
+    return {
+      name: $("sl-ed-name").value, coins: $("sl-ed-coins").value, interval: $("sl-ed-interval").value,
+      venue: $("sl-ed-venue").value, stakeUsd: Number($("sl-ed-stake").value), stopAtr: Number($("sl-ed-stop").value),
+      targetAtr: Number($("sl-ed-target").value), review: $("sl-ed-review").value, reviewModel: $("sl-ed-model").value,
+      description: $("sl-ed-desc").value, autoQueue: $("sl-ed-auto").checked,
+      entry: readRules("sl-ed-entry"), exit: readRules("sl-ed-exit"),
+      sourceText: $("sl-ed-text").value || undefined,
+    };
+  }
+  document.querySelectorAll("#sl-editor [data-add]").forEach(b=>b.addEventListener("click", ()=>{
+    $("sl-ed-"+b.dataset.add).appendChild(ruleRow({ left:"close", op:">", right:"sma50" }));
+  }));
+  $("sl-new")?.addEventListener("click", ()=>openEditor(null));
+  $("sl-ed-cancel")?.addEventListener("click", ()=>{ $("sl-editor").style.display = "none"; });
+  $("sl-ed-ai")?.addEventListener("click", async ()=>{
+    const text = $("sl-ed-text").value.trim(); const b = $("sl-ed-ai");
+    if(!text){ $("sl-ed-ai-msg").textContent = "Skriv strategin först."; return; }
+    b.disabled = true; $("sl-ed-ai-msg").textContent = "AI:n skriver regler…";
+    try{
+      const j = await api("/api/strategies/parse", { text });
+      if(!j.ok){ $("sl-ed-ai-msg").textContent = j.error; return; }
+      fillEditor({ ...j.draft, reviewModel: $("sl-ed-model").value, venue: $("sl-ed-venue").value, review: $("sl-ed-review").value });
+      $("sl-ed-ai-msg").textContent = "Klart. Kontrollera reglerna nedan och tryck Spara.";
+    } finally { b.disabled = false; }
+  });
+  $("sl-ed-save")?.addEventListener("click", async ()=>{
+    const body = readEditor();
+    if(body.venue === "live" && !confirm("Signalerna köas mot Bybit LIVE (riktiga pengar). Varje order väntar fortfarande på att du trycker Godkänn. Fortsätt?")) return;
+    const j = await api(SL.editing ? "/api/strategies/"+SL.editing : "/api/strategies", body);
+    if(!j.ok){ $("sl-ed-msg").textContent = j.error; return; }
+    $("sl-editor").style.display = "none";
+    await loadLibrary(); loadStatus();
+  });
+  $("sl-ed-bt")?.addEventListener("click", async ()=>{
+    const out = $("sl-ed-out"); out.innerHTML = `<span class="sl-sub">Hämtar ljus från Bybit och kör…</span>`;
+    renderBacktest(out, await api("/api/strategies/backtest", { strategy: readEditor() }));
+  });
+
+  // ── Signaler ───────────────────────────────────────────────
+  function renderSignals(){
+    const list = SL.signals;
+    $("sl-sig-meta").textContent = list.length ? `${list.length} senaste` : "—";
+    if(!list.length){ $("sl-signals").innerHTML = `<div class="sl-sub">Inga signaler än. De kommer när ett ljus stänger och reglerna stämmer.</div>`; return; }
+    $("sl-signals").innerHTML = `<table><tr><th>Tid</th><th>Strategi</th><th>Par</th><th></th><th>Pris</th><th>Stop / target</th><th>Granskning</th><th></th></tr>` +
+      list.map(s=>{
+        const rv = s.review || {};
+        const parts = [];
+        if(rv.jev) parts.push(`JEV ${rv.jev.available ? "("+esc(rv.jev.route)+(rv.jev.latencyMs?", "+rv.jev.latencyMs+" ms":"")+")" : "svarade inte"}`);
+        if(rv.ai) parts.push(rv.ai.skipped ? esc(rv.ai.skipped) : `${esc(rv.ai.model)}: ${esc(rv.ai.reason)} (${rv.ai.ms} ms)`);
+        const verdict = rv.final === "ok" ? `<span class="sl-pass">✓ ${esc(rv.reason)}</span>` : `<span class="sl-fail">✗ stoppad: ${esc(rv.reason)}</span>`;
+        let act = "";
+        if(s.queued?.pendingId) act = `<span class="sl-pass">i Väntande ordrar</span>`;
+        else if(rv.final === "ok") act = `<button class="sl-btn pri" data-q="${esc(s.id)}">Lägg som väntande order</button>${s.queued?.error?`<div class="sl-fail" style="font-size:11px">${esc(s.queued.error)}</div>`:""}`;
+        return `<tr><td>${esc(time(s.createdAt))}</td><td>${esc(s.strategyName)}<div class="sl-sub">${esc(s.interval)} · ${esc(s.why)}</div></td><td>${esc(s.pair)}</td>
+          <td class="${s.side==="BUY"?"sl-side-buy":"sl-side-sell"}">${s.side==="BUY"?"KÖP":"SÄLJ"}</td><td>${esc(fmtPx(s.price))}</td>
+          <td class="sl-sub">${s.stopLoss?esc(fmtPx(s.stopLoss)):"–"} / ${s.target?esc(fmtPx(s.target)):"–"}</td>
+          <td>${verdict}${parts.length?`<div class="sl-sub">${parts.join(" · ")}</div>`:""}</td><td>${act}</td></tr>`;
+      }).join("") + `</table>`;
+  }
+  async function loadSignals(){
+    const j = await api("/api/strategies/signals?limit=40");
+    if(Array.isArray(j.signals)){ SL.signals = j.signals; renderSignals(); }
+  }
+  $("sl-signals")?.addEventListener("click", async e=>{
+    const b = e.target.closest("[data-q]"); if(!b) return;
+    b.disabled = true;
+    const j = await api("/api/strategies/signals/"+b.dataset.q+"/queue", {});
+    if(!j.ok) alert(j.error);
+    await loadSignals();
+    if(typeof window.loadPendingOrders === "function") window.loadPendingOrders();
+  });
+
+  // ── Live-ström ─────────────────────────────────────────────
+  function startStream(){
+    try{
+      const es = new EventSource("/api/events");
+      es.addEventListener("bybit-wallet", e=>{ try{ setWallet(JSON.parse(e.data)); }catch(_){} });
+      es.addEventListener("strategy-signal", e=>{
+        try{
+          const sig = JSON.parse(e.data);
+          const i = SL.signals.findIndex(x=>x.id===sig.id);
+          if(i >= 0) SL.signals[i] = sig; else SL.signals.unshift(sig);
+          SL.signals = SL.signals.slice(0, 40);
+          renderSignals();
+          if(sig.review?.final === "ok") loadLibrary();
+        }catch(_){}
+      });
+    }catch(_){}
+  }
+
+  async function init(){
+    if(!$("page-strategies")) return;
+    await loadLibrary().catch(()=>{});
+    loadStatus(); loadBalance(false); loadSignals();
+    api("/api/bybit/pairs").then(j=>{ if(j.pairs) $("sl-pairs").innerHTML = j.pairs.map(p=>`<option value="${esc(p)}">`).join(""); }).catch(()=>{});
+    startStream();
+    setInterval(()=>{ if(isActive()) loadStatus(); }, 3000);
+    setInterval(()=>{ loadBalance(false); }, 60000);
+    $("sl-bal-refresh")?.addEventListener("click", ()=>loadBalance(true));
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
+})();
+
 </script>
 </body>
 </html>

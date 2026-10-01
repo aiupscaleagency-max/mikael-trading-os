@@ -16,6 +16,7 @@ import { BinanceClient, type BinanceCredentials } from "./integrations/binance.j
 import { startPositionMonitor, recordEntry as recordPositionEntry, getMonitorStatus, setMonitorEnabled, setLiveAutoSell, initLessonsFromDisk } from "./positionMonitor.js";
 import { OandaClient, type OandaCredentials } from "./integrations/oanda.js";
 import { startMarketStream, getCachedPrice, getCachedTicker, getMarketStreamStatus } from "./marketStream.js";
+import { initLiveLayer, handleLiveRoutes } from "./liveRoutes.js";
 import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
 import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
@@ -687,6 +688,8 @@ export function startServer(
   brokers: Record<string, BrokerAdapter>,
 ): http.Server {
   const uiDir = path.resolve(import.meta.dirname, "ui");
+  // Bybit-websocket, live-lampor och strategibiblioteket (src/server/liveRoutes.ts)
+  initLiveLayer(brokers, broadcastEvent);
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -733,6 +736,9 @@ export function startServer(
           return;
         }
       }
+
+      // ── Live-lagret: /api/live/*, /api/bybit/*, /api/strategies* ──
+      if (await handleLiveRoutes(url, method, req, res)) return;
 
       // ── Login: sätter sessionen som httpOnly-cookie ──
       if (url.pathname === "/api/auth/login" && method === "POST") {
