@@ -6771,6 +6771,24 @@ async function boot(){
     }
   }
 
+  // TILLFÄLLIGT: servern kör med DASHBOARD_NO_LOGIN=true och anropet kommer
+  // från den egna datorn → gå direkt in som Mike, utan inloggningsskärm.
+  if(!loadUser()){
+    try{
+      const r = await fetch("/api/auth/mode");
+      if(r.ok && (await r.json()).noLogin){
+        // Sparas inte i localStorage: när inloggningen slås på igen ska
+        // ingen kvarglömd användare släppa in någon.
+        currentUser = { id:"local-mike", email:"aiupscaleagency@gmail.com", name:"Mike",
+                        tier:"family", isAdmin:true, onboardingComplete:true, createdAt:Date.now() };
+        setAppState("app");
+        updateUserChip();
+        initApp();
+        return;
+      }
+    }catch(_){}
+  }
+
   // Fallback: localStorage-user (demo-läge)
   const user = loadUser();
   if(user){
