@@ -45,7 +45,22 @@ function createBrokers(): Record<string, BrokerAdapter> {
       secretKey: config.alpaca.secretKey,
       baseUrl: config.alpaca.baseUrl,
       dataUrl: config.alpaca.dataUrl,
-      mode: config.mode,
+      // Läget bestäms av vilket konto nycklarna pekar på, inte av MODE,
+      // så att ett paper-konto aldrig visas som LIVE och tvärtom.
+      mode: config.alpaca.baseUrl.includes("paper-api") ? "paper" : "live",
+    });
+  }
+
+  // Alpacas riktiga konto (egna nycklar). Ligger bredvid paper-kontot så att
+  // TEST och LIVE finns samtidigt. Order-grinden släpper bara igenom LIVE-ordrar
+  // när MODE=live och LIVE_TRADING_CONFIRMED=true.
+  if (config.alpacaLive.enabled) {
+    brokers["alpaca-live"] = new AlpacaBroker({
+      keyId: config.alpacaLive.keyId,
+      secretKey: config.alpacaLive.secretKey,
+      baseUrl: config.alpacaLive.baseUrl,
+      dataUrl: config.alpacaLive.dataUrl,
+      mode: "live",
     });
   }
 

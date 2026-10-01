@@ -36,6 +36,12 @@ const schema = z.object({
   ALPACA_BASE_URL: z
     .string()
     .default("https://paper-api.alpaca.markets"),
+  // Separata nycklar för Alpacas RIKTIGA konto. Alpaca ger olika nycklar för
+  // paper och live, så båda kan ligga inne samtidigt. Order mot live-kontot
+  // släpps ändå bara igenom när MODE=live och LIVE_TRADING_CONFIRMED=true.
+  ALPACA_LIVE_KEY_ID: z.string().default(""),
+  ALPACA_LIVE_SECRET_KEY: z.string().default(""),
+  ALPACA_LIVE_BASE_URL: z.string().default("https://api.alpaca.markets"),
 
   // ── Blofin (Krypto-derivat) ──
   BLOFIN_API_KEY: z.string().default(""),
@@ -141,6 +147,7 @@ if (env.MODE === "live" && !env.LIVE_TRADING_CONFIRMED) {
 
 // Minst en broker måste vara konfigurerad.
 const hasAlpaca = !!(env.ALPACA_KEY_ID && env.ALPACA_SECRET_KEY);
+const hasAlpacaLive = !!(env.ALPACA_LIVE_KEY_ID && env.ALPACA_LIVE_SECRET_KEY);
 const hasBlofin = !!(env.BLOFIN_API_KEY && env.BLOFIN_API_SECRET && env.BLOFIN_PASSPHRASE);
 const hasBinance = !!(env.BINANCE_API_KEY && env.BINANCE_API_SECRET) ||
   !!(env.BINANCE_LIVE_API_KEY && env.BINANCE_LIVE_API_SECRET);
@@ -155,7 +162,7 @@ const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 // Tidigare avbröts starten här. Det gjorde att man inte kunde titta på
 // systemet utan att först koppla ett riktigt konto — och att koppla ett
 // konto bara för att se ett diagram är fel ordning.
-const viewOnly = !hasAlpaca && !hasBlofin && !hasBinance && !hasOanda;
+const viewOnly = !hasAlpaca && !hasAlpacaLive && !hasBlofin && !hasBinance && !hasOanda;
 if (viewOnly) {
   console.warn(
     "⚠️  Ingen broker konfigurerad — startar i VY-LÄGE.\n" +
@@ -178,6 +185,14 @@ export const config = {
     keyId: env.ALPACA_KEY_ID,
     secretKey: env.ALPACA_SECRET_KEY,
     baseUrl: env.ALPACA_BASE_URL,
+    dataUrl: "https://data.alpaca.markets",
+  },
+
+  alpacaLive: {
+    enabled: hasAlpacaLive,
+    keyId: env.ALPACA_LIVE_KEY_ID,
+    secretKey: env.ALPACA_LIVE_SECRET_KEY,
+    baseUrl: env.ALPACA_LIVE_BASE_URL,
     dataUrl: "https://data.alpaca.markets",
   },
 
