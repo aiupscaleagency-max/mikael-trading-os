@@ -1211,6 +1211,37 @@ export function startServer(
       }
 
       // ── Binance public prices (för PROPOSE-mode — riktiga marknadspriser, ingen auth) ──
+      // Riktiga ljus från Binance publika API (ingen nyckel behövs). Används av
+      // dashboardens stora diagram när den är kopplad till boten.
+      if (url.pathname === "/api/binance/klines" && method === "GET") {
+        const symbol = (url.searchParams.get("symbol") ?? "BTCUSDT").toUpperCase();
+        const interval = url.searchParams.get("interval") ?? "1h";
+        const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "300", 10) || 300, 1), 1000);
+        const okIntervals = new Set(["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"]);
+        if (!/^[A-Z0-9]{2,20}$/.test(symbol) || !okIntervals.has(interval)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Ogiltig symbol eller intervall", klines: [] }));
+          return;
+        }
+        try {
+          const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+          if (!r.ok) {
+            json(res, { error: `Binance svarade ${r.status}`, klines: [] });
+            return;
+          }
+          const rows = (await r.json()) as Array<[number, string, string, string, string, string]>;
+          const klines = rows.map((k) => ({
+            time: Math.floor(k[0] / 1000),
+            open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]),
+            close: parseFloat(k[4]), volume: parseFloat(k[5]),
+          }));
+          json(res, { symbol, interval, klines, source: "binance-public" });
+        } catch (err) {
+          json(res, { error: err instanceof Error ? err.message : String(err), klines: [] });
+        }
+        return;
+      }
+
       if (url.pathname === "/api/binance/prices" && method === "GET") {
         const symbolsParam = url.searchParams.get("symbols") || "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,MATICUSDT";
         const symbols = symbolsParam.split(",").map((s) => s.trim());
@@ -1765,7 +1796,9 @@ Regler:
       log.warn("DASHBOARD_NO_LOGIN=true — dashboarden öppen utan inloggning, bara från den här datorn.");
     }
     // Sätt upp Telegram-webhook om token finns
-    const publicUrl = process.env.PUBLIC_URL || "https://trading.aiupscale.agency";
+    // Telegram-webhooken kräver en publik https-adress. Utan PUBLIC_URL i .env
+    // sätts ingen webhook (localhost går inte att nå utifrån).
+    const publicUrl = process.env.PUBLIC_URL || "";
     if (process.env.TELEGRAM_BOT_TOKEN && publicUrl.startsWith("https://")) {
       setupTelegramWebhook(publicUrl).catch((err) => {
         log.error(`Telegram-webhook setup-fel: ${err instanceof Error ? err.message : String(err)}`);

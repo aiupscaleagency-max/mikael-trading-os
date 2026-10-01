@@ -1884,7 +1884,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     <div class="grid">
       <div>
         <label>Backend URL</label>
-        <input type="text" id="cfg-url" placeholder="https://trading.aiupscale.agency" />
+        <input type="text" id="cfg-url" placeholder="http://localhost:3939" />
       </div>
       <div>
         <label>API Key (valfri)</label>
@@ -1894,7 +1894,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         <label>Mode</label>
         <select id="cfg-mode">
           <option value="demo">Demo (simulerad data)</option>
-          <option value="live">Live backend</option>
+          <option value="live">Egen server (riktig data, ordrar enligt botens läge)</option>
         </select>
       </div>
     </div>
@@ -2102,11 +2102,25 @@ body.app-state-onboard .fc-panel{display:none !important}
 /* ======================================================================
    KONFIG
    ====================================================================== */
+// Dashboarden serveras av boten själv, så standard är att prata med samma
+// server den laddades från (t.ex. http://localhost:3939) och visa riktig data.
+// trading.aiupscale.agency används inte: ett sparat värde med den domänen
+// ignoreras, och då även det sparade läget som hörde till den.
+const OLD_DEFAULT_URL = "https://trading.aiupscale.agency";
+const SAME_ORIGIN = /^https?:$/.test(location.protocol) ? location.origin : "";
+const SAVED_URL = localStorage.getItem("trading_url");
+const SAVED_URL_OK = !!SAVED_URL && SAVED_URL !== OLD_DEFAULT_URL;
 const CFG = {
-  url: localStorage.getItem("trading_url") || "https://trading.aiupscale.agency",
+  url: (SAVED_URL_OK ? SAVED_URL : "") || SAME_ORIGIN,
   key: localStorage.getItem("trading_key") || "",
-  mode: localStorage.getItem("trading_mode") || "demo"
+  mode: (SAVED_URL_OK ? localStorage.getItem("trading_mode") : null) || (SAME_ORIGIN ? "live" : "demo")
 };
+// Riktiga marknadspriser (Binance publik data) när vi är kopplade till boten.
+// Påverkar bara vad som visas, inte vilka ordrar som läggs: det styrs av
+// MODE/EXECUTION_MODE på servern.
+function useRealPrices(sym){
+  return CFG.mode === "live" && (!sym || SYMBOLS.crypto.includes(sym));
+}
 
 // ── Supabase-konfig (multi-tenant Auth + per-user data) ──
 const SUPABASE_URL = "https://orkuexkzufpklttvsclp.supabase.co";
@@ -3031,6 +3045,28 @@ function loadCandles(sym, tf){
   candleSeries.setData(data.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
   applyIndicators(data);
   updatePriceHeader(data);
+  if(useRealPrices(sym)) loadRealCandles(sym, tf);
+}
+
+// Ersätter de simulerade ljusen med riktiga från Binance (publik data via
+// boten). Misslyckas hämtningen ligger simuleringen kvar och indikatorn
+// säger fortfarande "Demo".
+async function loadRealCandles(sym, tf){
+  try{
+    const r = await fetch(`/api/binance/klines?symbol=${sym}&interval=${tf}&limit=300`);
+    if(!r.ok) return;
+    const d = await r.json();
+    if(!d.klines || !d.klines.length) return;
+    const key = sym+"|"+tf;
+    STATE.candleData[key] = d.klines;
+    STATE.livePrices[sym] = d.klines[d.klines.length-1].close;
+    if(STATE.symbol !== sym || STATE.tf !== tf) return; // användaren hann byta
+    candleSeries.setData(d.klines.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
+    applyIndicators(d.klines);
+    updatePriceHeader(d.klines);
+    const ind = document.getElementById("data-source-indicator");
+    if(ind) ind.innerHTML = `<span style="color:var(--green)">●</span> Binance live · ${new Date().toLocaleTimeString().slice(0,8)}`;
+  }catch(_){ /* behåll senaste vyn */ }
 }
 
 function applyIndicators(data){
@@ -3232,6 +3268,7 @@ function tick(){
   ALL_SYMS.forEach(sym=>{
     const cat = symCategory(sym);
     const vol = VOL[cat];
+    if(useRealPrices(sym)) return; // riktiga priser kommer från Binance-pollningen
     const cur = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
     const next = cur * (1 + (Math.random()-.5)*vol*0.15);
     STATE.livePrices[sym] = next;
@@ -3239,7 +3276,8 @@ function tick(){
 
   const key = STATE.symbol+"|"+STATE.tf;
   const data = STATE.candleData[key];
-  if(data && data.length){
+  // Med riktiga priser kan livepriset saknas tills första hämtningen är klar.
+  if(data && data.length && STATE.livePrices[STATE.symbol] != null){
     const last = data[data.length-1];
     last.close = STATE.livePrices[STATE.symbol];
     last.high = Math.max(last.high, last.close);
@@ -6348,7 +6386,7 @@ async function pollBinancePrices(){
       binanceLastUpdate = Date.now();
       // UI-indikator
       const ind = document.getElementById("data-source-indicator");
-      if(ind){
+      if(ind && count > 0){
         ind.innerHTML = `<span style="color:var(--green)">●</span> Binance live · ${count} symbols · ${new Date().toLocaleTimeString().slice(0,8)}`;
       }
     }
@@ -6413,8 +6451,8 @@ function setActiveMode(uiMode){
   }
   // Trigga saldo-card-refresh direkt så panelen byter mellan TESTNET/LIVE-data
   if(typeof refreshBinanceSync === "function") refreshBinanceSync();
-  // PROPOSE = riktiga priser från Binance
-  if(uiMode === "propose"){
+  // PROPOSE = riktiga priser från Binance, och alltid när vi är kopplade till boten
+  if(uiMode === "propose" || useRealPrices()){
     startBinancePolling();
   } else {
     stopBinancePolling();
@@ -7486,7 +7524,26 @@ function initApp(){
     setInterval(refreshCost, 30000); // Refresh kostnadsräknare var 30s
     window._tickStarted = true;
   }
-  if(CFG.mode === "live"){ loadFromBackend(); startSSE(); loadCurrentMode(); }
+  if(CFG.mode === "live"){
+    loadFromBackend(); startSSE(); loadCurrentMode(); syncBrokers();
+    startBinancePolling();
+    // Hämta om riktiga ljus regelbundet så nya ljus dyker upp i diagrammet.
+    setInterval(()=>{ if(useRealPrices(STATE.symbol)) loadRealCandles(STATE.symbol, STATE.tf); }, 30000);
+  }
+}
+
+// Visar i mäklarlistan vilka konton boten faktiskt har nycklar till.
+async function syncBrokers(){
+  try{
+    const r = await apiGet("/api/brokers");
+    const connected = new Set((r.brokers||[]).map(b=>b.name));
+    const sel = document.getElementById("broker-select");
+    Array.from(sel.options).forEach(o=>{
+      const base = o.dataset.label || (o.dataset.label = o.textContent);
+      o.textContent = connected.has(o.value) ? `${base} ✓` : `${base} (ej kopplad)`;
+    });
+    if(r.activeBroker) sel.value = r.activeBroker;
+  }catch(_){}
 }
 
 document.addEventListener("DOMContentLoaded", boot);
