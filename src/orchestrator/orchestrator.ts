@@ -1,4 +1,5 @@
 import type { Config } from "../config.js";
+import { track, agentSkip, turnPhase, turnEnd } from "../server/agentActivity.js";
 import type { AgentState } from "../memory/store.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import type { RiskManager } from "../risk/riskManager.js";
@@ -103,9 +104,11 @@ export async function runOrchestratedTurn(params: {
   // ── Fas 0: Lars (Perplexity Research) ──
   // Hämtar färska nyheter/makro/geopolitik som specialisterna kan använda.
   log.info("╔══ ORCHESTRATOR: Fas 0 — Lars (Research) hämtar färsk webbkontext ══╗");
-  const research = await runResearcher(config.perplexity.apiKey);
+  turnPhase("Fas 0 · Lars hämtar research");
+  const research = await track("research", "hämtar färsk webbkontext", () => runResearcher(config.perplexity.apiKey), { from: "orchestrator" });
 
   log.info("╔══ ORCHESTRATOR: Fas 1 — specialist-analys (parallellt) ══╗");
+  turnPhase("Fas 1 · JEV + specialister + advisor");
   const specialistStart = Date.now();
 
   const allSymbols = [...config.crypto.symbols, ...config.stocks.symbols];
@@ -115,7 +118,7 @@ export async function runOrchestratedTurn(params: {
   const account = await broker.getAccount().catch(() => ({ totalValueUsdt: 0 }));
 
   // ── JEV: behöver den här turen Advisorn, eller är den rutin? ──
-  const jev = await jevTurnPreflight({
+  const jev = await track("jev", "avgör om advisorn behövs", () => jevTurnPreflight({
     mode: config.mode,
     executionMode: config.executionMode,
     openPositions: positions.length,
@@ -123,36 +126,37 @@ export async function runOrchestratedTurn(params: {
     dailyPnlUsd: state.dailyRealizedPnlUsdt,
     maxDailyLossUsd: config.risk.maxDailyLossUsd,
     hasUserInstruction: Boolean(userInstruction),
-  });
+  }), { from: "research", done: (v) => v.runAdvisor ? `advisorn körs (${v.detail})` : `rutin, advisorn hoppas över (${v.detail})` });
+  if (!jev.runAdvisor) agentSkip("advisor", `JEV: rutinturn (${jev.detail})`);
 
   const [macro, technical, sentiment, riskReport, quant, options, portfolio, advisor] =
     await Promise.all([
-      runMacroAnalyst(apiKey).catch((err): MacroReport => {
+      track("macro", "läser makro", () => runMacroAnalyst(apiKey), { from: "jev", done: (r) => `${r.regime} (${r.confidence})` }).catch((err): MacroReport => {
         log.error(`Makro-analytiker kraschade: ${err instanceof Error ? err.message : String(err)}`);
         return { role: "macro_analyst", regime: "uncertain", keyFactors: ["Analytiker ej tillgänglig"], oilSummary: "Okänt", vixLevel: "Okänt", dollarTrend: "Okänt", cryptoFearGreed: "Okänt", recommendation: "Avvakta", confidence: "low", rawText: "" };
       }),
 
-      runTechnicalAnalyst(apiKey, broker, allSymbols, engines).catch((err): TechnicalReport => {
+      track("technical", `teknisk analys ${allSymbols.length} symboler`, () => runTechnicalAnalyst(apiKey, broker, allSymbols, engines), { from: "jev", done: (r) => `top ${r.topPick ?? "–"}` }).catch((err): TechnicalReport => {
         log.error(`Teknisk analytiker kraschade: ${err instanceof Error ? err.message : String(err)}`);
         return { role: "technical_analyst", analyses: [], topPick: null, rawText: "" };
       }),
 
-      runSentimentAnalyst(apiKey).catch((err): SentimentReport => {
+      track("sentiment", "läser sentiment", () => runSentimentAnalyst(apiKey), { from: "jev", done: (r) => r.overallSentiment }).catch((err): SentimentReport => {
         log.error(`Sentiment-analytiker kraschade: ${err instanceof Error ? err.message : String(err)}`);
         return { role: "sentiment_analyst", overallSentiment: "neutral", topNarratives: [], politicianActivity: "Ej tillgänglig", contrarySignal: false, rawText: "" };
       }),
 
-      runRiskAnalyst(apiKey, broker, {
+      track("risk", "räknar risk", () => runRiskAnalyst(apiKey, broker, {
         maxPositionUsd: config.risk.maxPositionUsd,
         maxTotalExposureUsd: config.risk.maxTotalExposureUsd,
         maxDailyLossUsd: config.risk.maxDailyLossUsd,
         maxOpenPositions: config.risk.maxOpenPositions,
-      }).catch((err): RiskReport => {
+      }), { from: "jev", done: (r) => `${r.riskLevel}, heat ${r.portfolioHeatPct}%` }).catch((err): RiskReport => {
         log.error(`Risk-analytiker kraschade: ${err instanceof Error ? err.message : String(err)}`);
         return { role: "risk_analyst", portfolioHeatPct: 0, correlationRisk: "medium", correlationDetails: "Ej tillgänglig", maxDrawdownScenario: { description: "Okänt", estimatedLossUsd: 0, estimatedLossPct: 0 }, suggestedPositionSizing: { maxNewPositionUsd: 0, reasoning: "Ej tillgänglig" }, riskLevel: "high", warnings: ["Risk-analys misslyckades"], recommendation: "Avvakta.", rawText: "" };
       }),
 
-      runQuantAnalyst(apiKey, broker, allSymbols).catch((err): QuantReport => {
+      track("quant", "kvantanalys", () => runQuantAnalyst(apiKey, broker, allSymbols), { from: "jev", done: (r) => `vol ${r.volatilityRegime}` }).catch((err): QuantReport => {
         log.error(`Kvant-analytiker kraschade: ${err instanceof Error ? err.message : String(err)}`);
         return { role: "quant_analyst", volatilityRegime: "medium", sharpeEstimate: 0, winRateFromHistory: 0, symbolScores: [], recommendation: "Ej tillgänglig.", confidence: "low", rawText: "" };
       }),
@@ -170,7 +174,7 @@ export async function runOrchestratedTurn(params: {
         rawText: "",
       }),
 
-      runPortfolioStrategist(apiKey, broker).catch((err): PortfolioReport => {
+      track("portfolio", "portföljkoll", () => runPortfolioStrategist(apiKey, broker), { from: "jev", done: (r) => `diversifiering ${r.diversificationScore}` }).catch((err): PortfolioReport => {
         log.error(`Portfölj-strateg kraschade: ${err instanceof Error ? err.message : String(err)}`);
         return { role: "portfolio_strategist", diversificationScore: 0, sectorConcentration: [], rebalancingNeeded: false, rebalancingActions: [], cashAllocationPct: 100, recommendation: "Ej tillgänglig.", confidence: "low", rawText: "" };
       }),
@@ -188,7 +192,7 @@ export async function runOrchestratedTurn(params: {
             confidence: "low",
             rawText: "",
           })
-        : runClaudeAdvisor(apiKey, {
+        : track("advisor", "granskar helheten", () => runClaudeAdvisor(apiKey, {
             currentPositions: positions.map((p) => ({
               symbol: p.symbol, quantity: p.quantity,
               avgEntryPrice: p.avgEntryPrice, currentPrice: p.currentPrice,
@@ -200,7 +204,7 @@ export async function runOrchestratedTurn(params: {
             dailyPnl: state.dailyRealizedPnlUsdt,
             accountValue: account.totalValueUsdt,
             activeEngines: config.engines,
-          }).catch((err): AdvisorReport => {
+          }), { from: "jev", done: (r) => `${r.strategicOutlook}, ${r.marketCyclePhase}` }).catch((err): AdvisorReport => {
             log.error(`Claude Advisor kraschade: ${err instanceof Error ? err.message : String(err)}`);
             return { role: "claude_advisor", strategicOutlook: "neutral", marketCyclePhase: "accumulation", keyInsights: ["Advisor ej tillgänglig"], blindSpots: [], behavioralWarnings: [], contrarian: "Ej tillgänglig", portfolioAdvice: "Avvakta.", confidence: "low", rawText: "" };
           }),
@@ -214,7 +218,8 @@ export async function runOrchestratedTurn(params: {
     .filter((a) => Math.abs(a.score) >= 2)
     .map((a) => ({ symbol: a.symbol, bias: a.bias, score: a.score }));
 
-  const execution = await runExecutionOptimizer(apiKey, proposedTrades).catch((err): ExecutionReport => {
+  turnPhase("Fas 1.5 · Emma optimerar exekvering");
+  const execution = await track("execution", `${proposedTrades.length} föreslagna trades`, () => runExecutionOptimizer(apiKey, proposedTrades), { from: "technical", done: (r) => `brådska ${r.urgency}` }).catch((err): ExecutionReport => {
     log.error(`Exekverings-optimerare kraschade: ${err instanceof Error ? err.message : String(err)}`);
     return { role: "execution_optimizer", tradeOptimizations: [], generalAdvice: "Ej tillgänglig.", urgency: "low", rawText: "" };
   });
@@ -244,11 +249,12 @@ export async function runOrchestratedTurn(params: {
   log.info("╠══ ORCHESTRATOR: Fas 2 — Head Trader beslutar ══╣");
   const headStart = Date.now();
 
-  const headTrader = await runHeadTrader({
+  turnPhase("Fas 2 · Hanna (Head Trader) beslutar");
+  const headTrader = await track("head", "väger ihop alla rapporter", () => runHeadTrader({
     apiKey, config, state, broker, brokers, risk, engines,
     reports: allReports,
     userInstruction,
-  });
+  }), { from: "execution", done: (r) => `${r.placedOrders.length} order` });
 
   const headMs = Date.now() - headStart;
   const totalMs = Date.now() - totalStart;
@@ -260,6 +266,7 @@ export async function runOrchestratedTurn(params: {
     `head trader ${(headMs / 1000).toFixed(1)}s) ══╝`,
   );
 
+  turnEnd(`Turen klar på ${(totalMs / 1000).toFixed(1)} s`);
   return {
     headTrader,
     reports: allReports,

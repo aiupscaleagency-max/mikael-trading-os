@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { agentStart, agentDone, agentFail, agentSkip, agentScan, registerStrategies } from "./agentActivity.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -182,6 +183,8 @@ async function review(s: Strategy, sig: StrategySignalRecord, ind: Record<string
 
   const out: StrategySignalRecord["review"] = { final: "ok", reason: "", totalMs: 0 };
   let jev: JevVerdict | undefined;
+  const who = `strategy:${s.id}`;
+  agentStart("jev", `granskar ${s.name} · ${sig.coin}`, { from: who, coin: sig.coin });
   try {
     jev = await askJev({
       symbol: sig.pair, interval: sig.interval, close: sig.price,
@@ -190,9 +193,11 @@ async function review(s: Strategy, sig: StrategySignalRecord, ind: Record<string
     });
     const veto = jevVeto(jev);
     out.jev = { available: jev.available, route: jev.mode, note: jev.note, latencyMs: jev.latencyMs, veto };
-    if (veto) return { ...out, final: "stoppad", reason: veto, totalMs: Date.now() - t0 };
+    if (veto) { agentDone("jev", `stoppade ${sig.coin}: ${veto}`); return { ...out, final: "stoppad", reason: veto, totalMs: Date.now() - t0 }; }
+    if (jev.available) agentDone("jev", `godkände ${sig.coin}`); else agentSkip("jev", `svarade inte: ${jev.note ?? "rules_only"}`);
   } catch (err) {
     out.jev = { available: false, route: "rules_only", note: err instanceof Error ? err.message : String(err) };
+    agentFail("jev", out.jev.note ?? "fel");
   }
 
   if (s.review === "jev_ai") {
@@ -201,12 +206,15 @@ async function review(s: Strategy, sig: StrategySignalRecord, ind: Record<string
       out.ai = { model: "-", approve: true, reason: pick.why, ms: 0, skipped: pick.why };
     } else {
       const a0 = Date.now();
+      agentStart("review-ai", `${pick.model} granskar ${sig.coin}`, { from: "jev", coin: sig.coin });
       try {
         const r = await aiReview(pick.model, s, sig, ind);
         out.ai = { model: pick.model, approve: r.approve, reason: r.reason, ms: Date.now() - a0 };
+        agentDone("review-ai", `${r.approve ? "godkände" : "stoppade"} ${sig.coin}: ${r.reason}`.slice(0, 160));
         if (!r.approve) return { ...out, final: "stoppad", reason: `${pick.model}: ${r.reason}`, totalMs: Date.now() - t0 };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        agentFail("review-ai", msg.slice(0, 140));
         out.ai = { model: pick.model, approve: s.venue !== "live", reason: `Granskning misslyckades: ${msg}`, ms: Date.now() - a0 };
         // LIVE stängs vid fel (samma princip som positionsövervakningen). TEST släpps igenom, tydligt märkt.
         if (s.venue === "live") return { ...out, final: "stoppad", reason: `AI-granskning misslyckades i LIVE: ${msg}`, totalMs: Date.now() - t0 };
@@ -242,6 +250,7 @@ async function evaluate(s: Strategy, coin: string, history: Candle[]): Promise<v
 
   stats.evaluations++;
   stats.lastEvalAt = Date.now();
+  agentScan(`strategy:${s.id}`, coin);
   const series = computeSeries(history);
   const pos = positions[k];
 
@@ -285,7 +294,9 @@ async function evaluate(s: Strategy, coin: string, history: Candle[]): Promise<v
     review: { final: "ok", reason: "granskas…", totalMs: 0 },
   };
 
+  agentStart(`strategy:${s.id}`, `${side} ${coin}: ${why}`, { coin });
   sig.review = await review(s, sig, snapshot(series, i));
+  agentDone(`strategy:${s.id}`, `${side} ${coin} ${sig.review.final === "ok" ? "godkänd" : "stoppad"}`);
   if (side === "BUY" && s.review !== "off") {
     treeEvent({
       branch: "strategi", subject: `${s.name} · ${coin}`,
@@ -303,6 +314,8 @@ async function evaluate(s: Strategy, coin: string, history: Candle[]): Promise<v
     if (side === "BUY") positions[k] = { entry: sig.price, stop: sig.stopLoss, target: sig.target, since: bar.closeTime };
     else delete positions[k];
     recordPaperSignal(sig, s.venue);
+    agentStart("paper", `${side} ${coin} @ ${price}`, { from: s.review === "jev_ai" ? "review-ai" : "jev", coin });
+    agentDone("paper", `${side} ${coin} bokförd`);
   }
 
   signals.push(sig);
@@ -329,6 +342,8 @@ export async function queueSignal(signalId: string, venueOverride?: "test" | "li
 
   const fail = (error: string) => {
     sig.queued = { error, at: new Date().toISOString() };
+    agentStart("orders", `${sig.side} ${sig.coin}`, { from: "paper", coin: sig.coin });
+    agentFail("orders", error.slice(0, 140));
     scheduleSave();
     broadcast("strategy-signal", sig);
     return { ok: false, error };
@@ -373,6 +388,8 @@ export async function queueSignal(signalId: string, venueOverride?: "test" | "li
     reason: `${sig.strategyName}: ${sig.why}${note}`.slice(0, 200),
   });
   sig.queued = { pendingId: p.id, at: new Date().toISOString() };
+  agentStart("orders", `${sig.side} ${sig.coin}`, { from: "paper", coin: sig.coin });
+  agentDone("orders", `${sig.side} ${sig.coin} väntar på ditt OK (${venue.toUpperCase()})`);
   scheduleSave();
   broadcast("pending-orders", { id: p.id });
   broadcast("strategy-signal", sig);
@@ -384,6 +401,7 @@ export async function queueSignal(signalId: string, venueOverride?: "test" | "li
 /** Ser till att varje påslagen strategis par strömmar. Körs efter varje ändring. */
 export async function syncStrategies(): Promise<void> {
   const lib = await loadLibrary();
+  registerStrategies(lib);
   const jobs: Promise<void>[] = [];
   for (const s of lib.filter((x) => x.enabled)) {
     for (const coin of s.coins) {

@@ -1237,6 +1237,9 @@ body.app-state-onboard .fc-panel{display:none !important}
   <button data-page="strategies" title="Strategier — bibliotek, live-lampor, Bybit-saldo">
     <span class="ico">🧠</span><span>Strategi</span>
   </button>
+  <button data-page="tree" title="Arbetsträd — vem jobbar, var i processen">
+    <span class="ico">🌳</span><span>Träd</span>
+  </button>
   <button data-page="trades" title="Trades — positioner + beslut">
     <span class="ico">📈</span><span>Trades</span>
   </button>
@@ -1975,6 +1978,25 @@ body.app-state-onboard .fc-panel{display:none !important}
 </section>
 
 <!-- ═══ TEAM-SIDA — egen vy med team-banner + alla agenter ═══ -->
+<section class="page" id="page-tree">
+  <div class="page-header"><span class="ph-ico">🌳</span>Arbetsträd<span class="ph-sub">— vem jobbar, var i processen. Svag rörelse = lyssnar, stark rörelse + ARBETAR = jobbar på riktigt</span></div>
+  <style>
+    #tr-box{margin:12px;background:#0b0d12;border:1px solid var(--border);border-radius:10px;overflow:auto}
+    #tr-bar{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid #1a1d24;color:#64748b;font:11px 'SF Mono',Monaco,monospace}
+    #tr-bar i{width:10px;height:10px;border-radius:50%;display:inline-block}
+    #tr-pre{margin:0;padding:14px 16px;color:#cbd5e1;font:12.5px/1.42 'SF Mono',SFMono-Regular,Menlo,Monaco,monospace;white-space:pre}
+    #tr-pre .o{color:#fb923c} #tr-pre .p{color:#a78bfa} #tr-pre .g{color:#34d399} #tr-pre .b{color:#60a5fa}
+    #tr-pre .c{color:#22d3ee} #tr-pre .r{color:#f87171} #tr-pre .y{color:#fbbf24} #tr-pre .d{color:#3f4654}
+    #tr-pre .w{color:#e5e7eb;font-weight:700} #tr-pre .k{font-weight:700}
+    #tr-pre .inv{background:currentColor} #tr-pre .inv>span{color:#0b0d12}
+    #tr-pre .hl{filter:brightness(1.35);text-shadow:0 0 8px currentColor}
+  </style>
+  <div id="tr-box">
+    <div id="tr-bar"><i style="background:#ef4444"></i><i style="background:#f59e0b"></i><i style="background:#10b981"></i><span style="margin-left:auto" id="tr-src">~/trading-os · /api/live/agent-tree</span></div>
+    <pre id="tr-pre">Ritar arbetsträdet…</pre>
+  </div>
+</section>
+
 <section class="page" id="page-team">
   <div class="page-header"><span class="ph-ico">🤖</span>AI-Team<span class="ph-sub">— 10 personer, schemalagd autonomi</span></div>
   <div class="card" style="margin:0 10px;padding:14px">
@@ -6467,7 +6489,7 @@ function wireTeamChat(){
 /* ======================================================================
    SPA NAVIGATION — varje sidebar-knapp = egen sida
    ====================================================================== */
-const PAGES = ["trade","team","chat","live","strategies","trades","cost","settings"];
+const PAGES = ["trade","team","chat","live","strategies","tree","trades","cost","settings"];
 
 function switchPage(name){
   if(!PAGES.includes(name)) name = "trade";
@@ -8382,6 +8404,316 @@ document.addEventListener("DOMContentLoaded", boot);
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();
 
+
+/* ======================================================================
+   ARBETSTRÄD — vem jobbar och var i processen (GET /api/live/agent-tree)
+   Samma stil som agent-trädet i terminalen/Agent-OS (videon).
+   Starkt ljus, ARBETAR och pilar = riktiga händelser från boten (agentStart/agentDone).
+   Svaga scanners och vågor = delen är igång och lyssnar. Inget hittas på.
+   ====================================================================== */
+(function(){
+  const $ = id => document.getElementById(id);
+  const esc = v => String(v ?? "").replace(/[&<>]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[ch]));
+  const c = (cls, raw) => `<span class="${cls}">${esc(raw)}</span>`;
+  const ch = (cls, html) => `<span class="${cls}">${html}</span>`;
+  const vis = h => h.replace(/<[^>]*>/g, "").replace(/&[a-z#0-9]+;/g, "x").length;
+  const pad = (h, w) => h + " ".repeat(Math.max(0, w - vis(h)));
+  const center = (h, w) => { const g = Math.max(0, w - vis(h)); return " ".repeat(g >> 1) + h + " ".repeat(g - (g >> 1)); };
+  const cut = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+  const clock = t => new Date(t).toLocaleTimeString("sv-SE", { hour:"2-digit", minute:"2-digit", second:"2-digit" });
+  const hm = t => new Date(t).toLocaleTimeString("sv-SE", { hour:"2-digit", minute:"2-digit" });
+  const ago = t => { if (!t) return "–"; const s = Math.max(0, (Date.now() - t) / 1000); return s < 90 ? Math.round(s) + " s" : s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h"; };
+
+  const LIVE_S = 120, REPLAY_S = 30, COLS = 110, W = 148;
+  const LANE = { research:"lars", jev:"jev", macro:"spec", technical:"spec", sentiment:"spec", risk:"spec", quant:"spec", portfolio:"spec",
+                 advisor:"albert", execution:"emma", head:"hanna", broker:"order", orders:"order", signal:"strategi", "review-ai":"strategi", paper:"strategi" };
+  const laneOf = id => LANE[id] || (id.startsWith("strategy:") ? "strategi" : null);
+  const LANES = [["lars","c"],["jev","g"],["spec","b"],["albert","p"],["emma","b"],["hanna","o"],["order","r"],["strategi","y"]];
+  const LANE_NAME = { lars:"lars", jev:"jev", spec:"specialist", albert:"albert", emma:"emma", hanna:"hanna", order:"order", strategi:"strategier" };
+  let data = null, ok = false, err = "", tick = 0;
+
+  // ── Rörelse: LIVE (något hände senaste 2 min) eller REPLAY av senaste aktiviteten ──
+  function motion(d, now){
+    const evs = d.events.filter(e => e.kind !== "phase" || true);
+    const last = evs.length ? evs[evs.length - 1].ts : null;
+    if (!last) return { live:false, cursor:now, start:now - 900000, end:now, hot:new Set(), at:null };
+    const live = now - last <= LIVE_S * 1000;
+    let start, end, cursor, win;
+    if (live) { end = now; start = Math.max(now - 15 * 60000, evs[0].ts - 5000); if (end - start < 60000) start = end - 60000; cursor = now; win = 3000; }
+    else { end = last; start = Math.max(evs[0].ts, last - 30 * 60000); if (end - start < 60000) start = end - 60000;
+           cursor = start + ((now % (REPLAY_S * 1000)) / (REPLAY_S * 1000)) * (end - start); win = (end - start) / COLS * 2.5; }
+    const hot = new Set();
+    let at = null;
+    for (const e of evs) if (e.ts <= cursor && e.ts >= cursor - win) { hot.add(e.id); if (e.from && e.kind === "flow") hot.add(e.from + ">" + e.id); at = e; }
+    if (live) for (const a of d.agents) if (a.status === "working") hot.add(a.id);
+    if (!at) at = [...evs].reverse().find(e => e.ts <= cursor) || null;
+    return { live, cursor, start, end, hot, at };
+  }
+
+  // ── Byggstenar i videons stil ──
+  function frame(lines, w, cls, edge, chaseOn){
+    const inner = w - 2;
+    if (!chaseOn) {
+      const rule = c(cls, "+" + edge.repeat(inner) + "+");
+      return [rule, ...lines.map(l => c(cls, "|") + " " + pad(l, inner - 2) + " " + c(cls, "|")), rule];
+    }
+    const lap = inner * 2, pos = (tick * 3) % lap, seg = 8;
+    const rule = (off, rev) => { let s = ""; for (let i = 0; i < inner; i++) { const j = rev ? inner - 1 - i : i; s += ((pos - off - j) % lap + lap) % lap < seg ? "#" : "="; } return ch(cls + " k hl", "+" + esc(s) + "+"); };
+    const side = i => ch(cls + " k hl", (tick + i) % 4 === 0 ? "#" : "|");
+    return [rule(0, false), ...lines.map((l, i) => side(i) + " " + pad(l, inner - 2) + " " + side(i + 2)), rule(inner, true)];
+  }
+  function scan(w, on, cls, off, glyph = "oo"){
+    const span = Math.max(1, w - glyph.length), step = (tick * (on ? 2 : 1) + off) % (2 * span), p = step <= span ? step : 2 * span - step;
+    const s = ".".repeat(p) + glyph + ".".repeat(w - p - glyph.length);
+    return on ? ch(cls + " k hl", esc(s)) : c("d", s);
+  }
+  function scanBar(n, total, w, cls, off, marker = ":"){
+    const filled = total ? Math.max(0, Math.min(w, Math.round(w * n / total))) : 0, empty = w - filled;
+    const cells = Array(empty).fill(".");
+    if (empty) cells[(Math.floor(tick / 2) + off) % empty] = marker;
+    return c(cls, "#".repeat(filled)) + c("d", cells.join(""));
+  }
+  const badge = on => on ? "  " + (tick % 4 < 3 ? ch("o inv", c("k", " > ARBETAR ")) : c("o k", " > ARBETAR ")) : "";
+  const down = on => on ? c("o k hl", tick % 2 ? "v" : "|") : c("d", "v");
+  const flow = (on, n = 9) => { if (!on) return c("d", "- ".repeat(n >> 1) + ">"); const p = tick % n; let s = ""; for (let i = 0; i < n; i++) s += (i === p || i === (p + 1) % n) ? ">" : "-"; return c("o k", s + ">"); };
+  function mark(a, on){
+    if (on) return ch("b k hl", "[" + "|/-\\"[tick % 4].repeat(2) + "]");
+    return a.status === "working" ? c("o", "[..]") : a.status === "done" ? c("g", "[ok]") : a.status === "failed" ? c("r", "[x]") : a.status === "skipped" ? c("d", "[hoppad]") : c("d", "[–]");
+  }
+  const stateText = a => a.status === "working" ? c("o k", "ARBETAR " + ago(a.startedAt) + (a.coin ? " · " + a.coin : ""))
+    : a.status === "done" ? c("g", "klar " + (a.lastMs != null ? (a.lastMs < 1000 ? a.lastMs + " ms" : (a.lastMs / 1000).toFixed(1) + " s") : "") + " · " + a.runs + "×")
+    : a.status === "failed" ? c("r", "fel: " + cut(a.note, 14)) : a.status === "skipped" ? c("d", "hoppades över") : c("d", "väntar");
+  const short = m => cut(String(m || "").replace(/^(anthropic|openai|google|perplexity)\//, "").replace(/^claude-/, "").replace(/-20\d{6}$/, ""), 22);
+
+  function render(){
+    const d = data;
+    if (!d) return ok ? "" : c("r", "Boten svarar inte (" + err + "). Trädet visar bara riktiga händelser, så det står still tills boten kör.");
+    const now = Date.now() - (d.now ? 0 : 0);
+    const m = motion(d, now);
+    const by = Object.fromEntries(d.agents.map(a => [a.id, a]));
+    const A = id => by[id] || { id, name:id, role:"", model:"", status:"idle", runs:0 };
+    const on = id => m.hot.has(id);
+    const head = A("head"), adv = A("advisor");
+    const spin = "|/-\\"[tick % 4];
+    const rows = [];
+
+    // Rubrik
+    const st = m.live ? `HANNA (${short(head.model).toUpperCase()}) BESLUTAR · ALBERT (${short(adv.model).toUpperCase()}) PÅ JOUR · LIVE ${spin}`
+      : d.events.length ? `REPLAY ${hm(m.cursor)} · senaste aktivitet ${hm(m.end)} ${spin}` : `VÄNTAR PÅ FÖRSTA TUREN ${spin}`;
+    rows.push(center(c("w", "TRADING AGENT TREE · ") + c("o k", st), W));
+    const pulse = Math.floor((tick % 32) * W / 32);
+    rows.push(c("d", "=".repeat(Math.max(0, pulse - 5))) + c("g", "===###===") + c("d", "=".repeat(Math.max(0, W - pulse - 4))));
+    rows.push(center(`[${c("o","#")}] hanna head   [${c("b","#")}] specialister   [${c("g","#")}] jev grind   [${c("p","#")}] albert advisor   [${c("y","#")}] strategier`, W));
+    rows.push(center(c("d", `tur #${d.turn.id} · `) + c("w", cut(d.turn.phase, 60)), W));
+    rows.push("");
+
+    // ── Vänster: Albert på jour ──
+    const speaking = on("advisor");
+    const wave = Array.from({ length: 13 }, (_, i) => ((i * 7 + tick * (speaking ? 2 : 1)) % 5) < 3 ? "|" : " ").join("");
+    const wcls = speaking ? "p k hl" : "d";
+    const albert = frame([
+      center(c("p k", "ALBERT"), 24),
+      center("advisor · " + (speaking ? ch("p inv", c("k", "talar")) : "på jour"), 24),
+      center(c("d", short(adv.model)), 24),
+      "",
+      c("p", "<>") + " när JEV säger split",
+      c("d", "   behövs advisorn?"),
+      c("d", " :  ") + (speaking ? c("p", "granskar") : c("d", "lyssnar")),
+      "   " + c(wcls, wave),
+      "   " + c("p", Array.from({ length: 10 }, (_, i) => (i + (tick >> 1)) % 10 ? "+" : "*").join(" ")),
+      "   " + c(wcls, [...wave].reverse().join("")),
+      c("d", " :  läser alla rapporter"),
+      c("d", " :  från specialisterna"),
+      " :  anrop     " + c("w", String(adv.runs).padStart(5)),
+      " :  " + stateText(adv),
+      "",
+      c("p", "<>") + " före Hannas beslut",
+      c("d", "   vad missar vi?"),
+      "",
+      c("p", speaking ? "<*" : "<>") + " LIVE: alltid med",
+      c("d", "   TEST: bara vid split"),
+    ], 30, speaking ? "p" : "p", "-", speaking);
+
+    // ── Mitten: turen ──
+    const M = 64, mid = [];
+    const lars = A("research");
+    mid.push(center(c("d", "orkestrator · ") + (on("orchestrator") ? c("o k hl", "startar tur #" + d.turn.id) : c("d", "tur #" + d.turn.id)), M));
+    mid.push(center(down(on("research")), M));
+    mid.push(...frame([
+      center(c("c k", "LARS · research") + badge(on("research")), 42),
+      center(c("d", short(lars.model) + " · ") + stateText(lars), 42),
+      center(scan(30, on("research"), "c", 2), 42),
+    ], 46, "c", "-", on("research")).map(l => center(l, M)));
+    mid.push(center(on("research") || on("jev") ? c("g k", "|") : c("d", ":"), M));
+    const jevEv = d.events.filter(e => e.id === "jev" && (e.kind === "done" || e.kind === "skip" || e.kind === "fail"));
+    const stopped = jevEv.filter(e => /^stoppade/.test(e.note)).length;
+    const advRun = d.events.filter(e => e.id === "advisor" && e.kind === "start").length;
+    const advSkip = d.events.filter(e => e.id === "advisor" && e.kind === "skip").length;
+    const sigs = jevEv.filter(e => /signal|godkände|stoppade/.test(e.note)).length;
+    const jevOn = on("jev");
+    const jt = c("g k", "JEV · grind") + badge(jevOn);
+    mid.push(...frame([
+      jt + " ".repeat(Math.max(1, 46 - vis(jt))) + c("w", String(jevEv.length).padStart(5) + " beslut"),
+      (jevOn && /advisor/.test(A("jev").note) ? ">" : " ") + "advisor eller ej [" + scanBar(advRun, advRun + advSkip, 14, "o", 0) + "] " + c("o", String(advRun) + " split") + " / " + c("g", advSkip + " sharp"),
+      (jevOn && /granskar/.test(A("jev").note) ? ">" : " ") + "signaler        [" + scanBar(sigs - stopped, sigs, 14, "g", 5) + "] " + c("g", (sigs - stopped) + " släppta") + " / " + c("r", stopped + " stoppade"),
+      " " + (jevOn ? ch("g inv", c("k", " " + cut(A("jev").note, 50) + " ")) : c("d", "senast: " + cut(A("jev").note || "–", 44) + " · " + ago(A("jev").endedAt))),
+      c("d", " sharp -> kod direkt    ") + c("w", "split -> Albert") + c("d", "    kan bara stoppa"),
+    ], M, "g", "=", jevOn));
+    const specOn = ["macro","technical","sentiment","risk","quant","portfolio"].some(on);
+    mid.push(center(specOn ? c("b k", "|") : c("d", ":"), M));
+    mid.push(center("delegerar · " + c("b", "6 specialister parallellt"), M));
+    const box = (id, off) => { const a = A(id), o = on(id); return frame([
+      center(c("w", a.name) + c("d", " · " + cut(a.role, 9)), 16),
+      center(c("d", short(a.model).slice(0, 14)), 16),
+      center(scan(12, o, "b", off), 16),
+      center(o ? ch("b k hl", "ARBETAR " + (a.coin || "")) : mark(a, false), 16),
+    ], 20, "b", "-", o); };
+    for (const trio of [["macro","technical","sentiment"],["risk","quant","portfolio"]]) {
+      mid.push(center(trio.map(id => down(on(id))).join(" ".repeat(19)), M));
+      const bx = trio.map((id, i) => box(id, i * 7 + (trio[0] === "risk" ? 3 : 0)));
+      for (let i = 0; i < bx[0].length; i++) mid.push(bx.map(b => b[i]).join(" "));
+    }
+    const emma = A("execution");
+    mid.push(center(down(on("execution")), M));
+    mid.push(...frame([
+      center(c("b k", "EMMA · exekvering") + badge(on("execution")), 32),
+      center(stateText(emma), 32),
+      center(scan(24, on("execution"), "b", 9), 32),
+    ], 36, "b", "-", on("execution")).map(l => center(l, M)));
+    mid.push(center(down(on("head")), M));
+    mid.push(...frame([
+      center(c("o k", "HANNA · head trader") + badge(on("head")), 58),
+      center(c("d", short(head.model) + " · ") + stateText(head), 58),
+      center(c("d", "väger ihop alla rapporter · " + cut(head.note, 28)), 58),
+      center(scan(40, on("head"), "o", 4), 58),
+    ], M, "o", "-", on("head")));
+    mid.push(center(down(on("broker")), M));
+    const br = A("broker");
+    mid.push(...frame([
+      center(c("r k", "ORDER-SPÄRR · mäklaren") + badge(on("broker")), 32),
+      center(stateText(br), 32),
+    ], 36, "r", "-", on("broker")).map(l => center(l, M)));
+
+    // ── Höger: strategier & signaler ──
+    const R = 36, right = [];
+    right.push(center(c("y k", "STRATEGIER & SIGNALER"), R));
+    right.push(center(c("d", "varje stängt ljus skannas"), R));
+    const strategies = d.agents.filter(a => a.id.startsWith("strategy:"));
+    const sig = A("signal");
+    right.push(...frame([
+      center(c("c k", "signalmotor") + badge(on("signal")), 30),
+      center(stateText(sig), 30),
+      center(scan(24, on("signal"), "c", 6), 30),
+    ], R, "c", "-", on("signal")));
+    for (const [i, s] of strategies.slice(0, 6).entries()) {
+      const fresh = s.lastScanAt && Date.now() - s.lastScanAt < 3000;
+      const o = on(s.id);
+      const coins = cut((s.role || "").split(" · ")[0], 30);
+      const live = /· på$/.test(s.role || "");
+      right.push(center(down(o), R));
+      right.push(...frame([
+        c("y k", cut(s.name, 22)) + (live ? c("g", "  [på]") : c("d", "  [av]")),
+        c("d", coins),
+        (s.scans ? c("d", "skannade ") + c("w", s.lastScanCoin || "") + c("d", " · " + ago(s.lastScanAt) + " · " + s.scans + "×") : c("d", "inga ljus skannade än")),
+        scan(30, o || fresh, "y", i * 5, fresh ? ">>" : "oo"),
+        o ? ch("y k hl", "SIGNAL " + cut(s.note, 24)) : s.status === "done" ? c("g", cut(s.note, 30)) : c("d", "väntar på signal"),
+      ], R, "y", "-", o));
+    }
+    if (!strategies.length) right.push(center(c("d", "(inga strategier i biblioteket)"), R));
+    for (const id of ["review-ai", "paper", "orders"]) {
+      const a = A(id), o = on(id);
+      right.push(center(down(o), R));
+      right.push(...frame([
+        center(c(id === "orders" ? "r k" : id === "paper" ? "y k" : "p k", a.name) + badge(o), 30),
+        center(c("d", cut(a.role, 28)), 30),
+        center(stateText(a), 30),
+      ], R, id === "orders" ? "r" : id === "paper" ? "y" : "p", "-", o));
+    }
+
+    // Lägg ihop kolumnerna
+    const left = albert;
+    const arrows = { 4: flow(on("jev>advisor") || (speaking && on("jev"))), 15: flow(on("advisor") && on("head")) };
+    const n = Math.max(left.length, mid.length, right.length);
+    for (let i = 0; i < n; i++) rows.push(pad(left[i] || "", 30) + " " + pad(arrows[i] || "", 11) + " " + pad(mid[i] || "", M) + "  " + c("d", ":") + "  " + (right[i] || ""));
+
+    // ── Tidslinje ──
+    rows.push("");
+    rows.push(c("d", "+- ") + "tidslinje " + c("d", (m.live ? "(live, upp till 15 min) " : "(replay av senaste aktiviteten) ") + "-".repeat(W - 50) + "+"));
+    const span = Math.max(m.end - m.start, 60000);
+    const col = t => Math.min(COLS - 1, Math.max(0, Math.floor((t - m.start) / span * COLS)));
+    const cur = col(m.cursor);
+    const glyph = { lars:"=", jev:"|", spec:"=", albert:"<", emma:"=", hanna:"#", order:"!", strategi:"o" };
+    for (const [lane, cls] of LANES) {
+      const cells = Array(COLS).fill(c("d", "."));
+      for (const e of d.events) {
+        if (laneOf(e.id) !== lane || e.ts < m.start || e.ts > m.end || e.kind === "flow") continue;
+        cells[col(e.ts)] = e.ts <= m.cursor ? c(e.kind === "fail" ? "r" : cls, glyph[lane]) : c("d", glyph[lane]);
+      }
+      const laneLit = [...m.hot].some(id => laneOf(id) === lane);
+      cells[cur] = laneLit ? ch(cls + " k hl", "#") : c("w", "|");
+      const name = laneLit ? ch(cls + " inv", c("k", (LANE_NAME[lane]).padEnd(10))) + " " : c(cls, LANE_NAME[lane].padEnd(11));
+      rows.push(c("d", "| ") + name + cells.join(""));
+    }
+    rows.push(c("d", "| ") + " ".repeat(11) + " ".repeat(cur) + c("w", "^"));
+    rows.push(c("d", "| " + " ".repeat(11) + pad(hm(m.start), COLS / 3) + pad(hm(m.start + span / 3), COLS / 3) + pad(hm(m.start + 2 * span / 3), COLS / 3 - 4) + (m.live ? "nu" : hm(m.end))));
+    rows.push(c("d", "+" + "-".repeat(W - 1)));
+
+    // ── JEV-beslut över tid + vem ser vad ──
+    const B = 26, H = 5, ok2 = Array(B).fill(0), no = Array(B).fill(0);
+    for (const e of jevEv) { if (e.ts > m.cursor || e.ts < m.start) continue; const i = Math.min(B - 1, Math.floor((e.ts - m.start) / span * B)); (/^stoppade/.test(e.note) || e.kind === "fail" ? no : ok2)[i]++; }
+    for (const e of d.events) { if (e.id !== "advisor" || e.kind !== "start" || e.ts > m.cursor || e.ts < m.start) continue; no[Math.min(B - 1, Math.floor((e.ts - m.start) / span * B))]++; }
+    const top = Math.max(1, ...ok2, ...no), hist = [];
+    for (let lv = H; lv > 0; lv--) { const th = top * (lv - .5) / H; let s = ""; for (let i = 0; i < B; i++) s += (ok2[i] >= th && ok2[i] ? c("g", "#") : " ") + (no[i] >= th && no[i] ? c("o", "#") : " "); hist.push(s); }
+    if (!jevEv.length) hist[H - 1] = c("d", "(inga JEV-beslut i fönstret än)");
+    const total = Math.max(1, jevEv.length);
+    const seen = [
+      c("g", "jev     ") + scanBar(jevEv.length, total, 26, "g", 0, "@"),
+      c("d", "        varje beslut (" + jevEv.length + ")"),
+      c("o", "hanna   ") + scanBar(head.runs, Math.max(total, head.runs), 26, "o", 7, "@"),
+      c("d", "        bara turerna (" + head.runs + ")"),
+      c("p", "albert  ") + scanBar(adv.runs, Math.max(total, adv.runs), 26, "p", 13, "@"),
+      c("d", "        bara split (" + adv.runs + ")"),
+    ];
+    rows.push(c("d", "+- ") + "JEV-beslut över tid " + c("d", "-------- ") + c("g", "#") + " släppt " + c("o", "#") + " stoppad/split " + c("d", "-+  +- ") + "vem ser vad " + c("d", "-".repeat(30)));
+    for (let i = 0; i < Math.max(hist.length, seen.length); i++) rows.push(c("d", "| ") + pad(hist[i] || "", 56) + c("d", " |  | ") + (seen[i] || ""));
+    rows.push(c("d", "+" + "-".repeat(W - 1)));
+
+    // ── Loggrad (skrivs fram) + statusrad ──
+    const e = m.at;
+    const who = e ? (A(e.id).name || e.id) : "";
+    const word = e ? ({ start:"börjar", done:"klar", fail:"FEL", skip:"hoppas över", flow:"→", phase:"" }[e.kind] || "") : "";
+    const text = e ? `${e.kind === "flow" && e.from ? (A(e.from).name || e.from) + " -> " : ""}${who}  ${word} ${e.note}${e.coin ? " · " + e.coin : ""}` : "väntar på nästa tur eller signal";
+    const typed = e ? text.slice(0, Math.max(1, Math.floor((m.cursor - e.ts) / 1000 * (m.live ? 40 : 40 * COLS / (span / 1000) * REPLAY_S / 6)))) : text;
+    rows.push("log > " + c("w", cut(typed, W - 40)) + (tick % 2 ? "_" : " ") + (e ? c("d", `   [källa: /api/live/agent-tree ${clock(e.ts)}]`) : ""));
+    const working = d.agents.filter(a => a.status === "working").length;
+    const specBusy = ["macro","technical","sentiment","risk","quant","portfolio"].filter(id => A(id).status === "working" || on(id)).length;
+    const onCount = strategies.filter(s => /· på$/.test(s.role || "")).length;
+    rows.push(c("d", `[hanna ${short(head.model)}]  specialister [${specBusy}/6]  albert `) + (speaking ? c("p", "[talar]") : c("d", "[på jour]")) +
+      c("d", `  jev [${jevEv.length} beslut]  strategier [${onCount} på / ${strategies.length}]  jobbar nu [${working}]  ${m.live ? "LIVE" : "REPLAY"}  ${spin}`));
+    return rows.join("\n");
+  }
+
+  const isActive = () => $("page-tree")?.classList.contains("active");
+  async function load(){
+    if (!isActive()) return;
+    try {
+      const r = await fetch("/api/live/agent-tree?limit=400", { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      data = await r.json(); ok = true; err = "";
+    } catch (x) { ok = false; err = x.message; }
+  }
+  function draw(){
+    tick++;
+    if (!isActive()) return;
+    const pre = $("tr-pre");
+    try { pre.innerHTML = render() + (!ok && data ? "\n" + c("r", "Boten svarar inte just nu (" + err + "). Visar senaste riktiga läget.") : ""); }
+    catch (x) { pre.textContent = "Trädet kunde inte ritas: " + x.message; }
+  }
+  setInterval(load, 1000);
+  setInterval(draw, 250);
+  document.querySelector('aside.sidebar button[data-page="tree"]')?.addEventListener("click", () => setTimeout(() => { load().then(draw); }, 50));
+  setTimeout(() => load().then(draw), 300);
+})();
 </script>
 </body>
 </html>
