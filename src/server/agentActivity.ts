@@ -36,7 +36,7 @@ export interface AgentNode {
 export interface ActivityEvent {
   ts: number;
   id: string;
-  kind: "start" | "done" | "fail" | "skip" | "flow" | "phase";
+  kind: "start" | "done" | "fail" | "skip" | "flow" | "phase" | "info";
   note: string;
   from?: string;
   coin?: string | null;
@@ -132,13 +132,23 @@ function finish(id: string, status: AgentStatus, kind: ActivityEvent["kind"], no
   } catch { /* bara en spegel */ }
 }
 
-/** En strategi har läst ett nytt stängt ljus för ett coin. Räknas utan att fylla loggen. */
-export function agentScan(id: string, coin: string): void {
+/** Rörelse på ett ljus som räknas som värd att visa i loggen (procent). */
+const MOVE_PCT = 0.3;
+
+/**
+ * En strategi har läst ett nytt stängt ljus för ett coin. Räknas alltid; om
+ * priset rörde sig minst MOVE_PCT % blir det en rad i loggen ("BTC har stigit 0.6 %").
+ */
+export function agentScan(id: string, coin: string, changePct?: number | null): void {
   try {
     const a = node(id);
     a.scans++;
     a.lastScanAt = Date.now();
     a.lastScanCoin = coin;
+    if (changePct != null && Number.isFinite(changePct) && Math.abs(changePct) >= MOVE_PCT) {
+      const word = changePct > 0 ? "har stigit" : "har fallit";
+      push({ ts: Date.now(), id, kind: "info", note: `${coin} ${word} ${Math.abs(changePct).toFixed(2)} % på senaste ljuset`, coin });
+    }
   } catch { /* bara en spegel */ }
 }
 

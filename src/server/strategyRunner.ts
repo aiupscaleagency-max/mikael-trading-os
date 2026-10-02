@@ -250,7 +250,8 @@ async function evaluate(s: Strategy, coin: string, history: Candle[]): Promise<v
 
   stats.evaluations++;
   stats.lastEvalAt = Date.now();
-  agentScan(`strategy:${s.id}`, coin);
+  const prevClose = history[i - 1]?.close;
+  agentScan(`strategy:${s.id}`, coin, prevClose ? ((bar.close - prevClose) / prevClose) * 100 : null);
   const series = computeSeries(history);
   const pos = positions[k];
 
