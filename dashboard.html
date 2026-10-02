@@ -133,11 +133,29 @@ aside.sidebar .live-dot{width:6px;height:6px;border-radius:50%;background:var(--
 main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-width:0}
 /* Trade-sidan: signaler överst i full bredd, sedan båda diagrammen i samma
    kolumn och lika breda, snabb-trade till höger. Luft mot kanterna. */
-#page-trade main{grid-template-columns:minmax(0,1fr) 340px;grid-template-areas:"sig sig" "live right" "left right";gap:16px;padding:16px 24px 24px}
+/* Trade-sidan i numrerade sektioner över hela bredden, 6 lika kolumner:
+   1 Marknaden (4) + 2 Handla (2) · 3 Signaler (6) · 4 Analys (3) + 5 Ordrar (3)
+   · 6 Signaldiagram (3) + 7 AI-teamet (3). */
+#page-trade main{grid-template-columns:repeat(6,minmax(0,1fr));grid-template-areas:"info info info info info info" "chart chart chart chart side side" "sig sig sig sig sig sig" "ana ana ana pend pend pend" "live live live team team team";gap:16px;padding:16px 24px 24px;align-items:start}
+#page-trade #tradeInfo{grid-area:info;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+#page-trade .ti-box{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.55;color:#c9d1d9}
+#page-trade .ti-h{font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:4px}
+#page-trade .ti-box b{color:#fff}
+#page-trade .left{display:contents}
+#page-trade #mainChartCard{grid-area:chart;min-width:0;align-self:stretch}
+@media (min-width:1700px){#page-trade #chart{height:720px}}
+#page-trade #ai-team-card{grid-area:team;min-width:0;margin:0}
+#page-trade .right{grid-area:side;min-width:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+#page-trade .right > .card{margin:0}
+#page-trade #bybitTradeCard{grid-column:1;grid-row:2 / span 2}
+#page-trade #orderCard{grid-column:2;grid-row:2}
+#page-trade .right > .bet-panel{grid-column:2;grid-row:3}
 #page-trade #signalPanel{grid-area:sig;min-width:0}
+#page-trade #analysisBox{grid-area:ana;min-width:0;margin:0 !important}
+#page-trade #pendingBox{grid-area:pend;min-width:0;margin:0 !important}
 #page-trade #liveChart{grid-area:live;min-width:0}
-#page-trade .left{grid-area:left}
-#page-trade .right{grid-area:right;min-width:0}
+/* Sektionsnamn ovanför varje del */
+#page-trade [data-sec]::before{content:attr(data-sec);display:block;grid-column:1 / -1;font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--cyan);padding:0 0 8px;margin-bottom:8px;border-bottom:1px solid var(--border)}
 #chartBox{height:480px}
 #page-trade .page-header{margin:16px 24px 0}
 .left{display:flex;flex-direction:column;gap:10px;min-width:0}
@@ -530,12 +548,18 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .status-line.err{color:var(--red)}
 .status-line.warn{color:var(--yellow)}
 
+@media (min-width:1280px) and (max-width:1699px){
+  #page-trade main{grid-template-areas:"info info info info info info" "chart chart chart chart side side" "sig sig sig sig sig sig" "ana ana ana pend pend pend" "live live live team team team"}
+  #page-trade .right{grid-template-columns:minmax(0,1fr)}
+  #page-trade #bybitTradeCard,#page-trade #orderCard,#page-trade .right > .bet-panel{grid-column:1;grid-row:auto}
+}
 /* ═══ RESPONSIVE — desktop / tablet / mobile ═══ */
 @media (max-width:1279px){
   main{grid-template-columns:1fr}
   #chart{height:360px}
   .right{order:-1}
-  #page-trade main{grid-template-columns:minmax(0,1fr);grid-template-areas:"sig" "right" "live" "left"}
+  #page-trade main{grid-template-columns:minmax(0,1fr);grid-template-areas:"info" "chart" "side" "sig" "ana" "pend" "live" "team"}
+  #page-trade #tradeInfo{grid-template-columns:repeat(2,minmax(0,1fr))}
   #chartBox{height:360px}
 }
 
@@ -1224,6 +1248,9 @@ body.app-state-onboard .fc-panel{display:none !important}
   <button class="active" data-page="trade" title="Trade — chart + bet + team">
     <span class="ico">📊</span><span>Trade</span>
   </button>
+  <button data-page="pairs" title="Alla par — en kolumn per par, CALL/PUT och analys under varje">
+    <span class="ico">🧮</span><span>Alla par</span>
+  </button>
   <button data-page="team" title="AI-Team — alla agenter">
     <span class="ico">🤖</span><span>Team</span>
   </button>
@@ -1318,8 +1345,16 @@ body.app-state-onboard .fc-panel{display:none !important}
 
 <!-- ═══ TRADE-SIDA ═══ -->
 <section class="page active" id="page-trade">
-<div class="page-header"><span class="ph-ico">📊</span>Trade<span class="ph-sub">— chart, snabb-trade, AI-team</span></div>
+<div class="page-header"><span class="ph-ico">📊</span>Trade<span class="ph-sub">— marknaden, handla, signaler, analys och ordrar</span>
+  <button type="button" onclick="switchPage('pairs')" style="margin-left:auto;padding:6px 14px;border:1px solid var(--cyan);background:transparent;color:var(--cyan);border-radius:6px;font-weight:800;cursor:pointer;letter-spacing:.4px">ALLA PAR SIDA VID SIDA →</button></div>
 <main>
+<!-- Vad som analyseras: läser /api/live/watchlist + /api/brokers. Bara visning. -->
+<section id="tradeInfo">
+  <div class="ti-box"><div class="ti-h">Signaltabellen (sektion 3)</div><div id="ti-sig">Laddar…</div></div>
+  <div class="ti-box"><div class="ti-h">Agenterna (sektion 4)</div><div id="ti-agents">Laddar…</div></div>
+  <div class="ti-box"><div class="ti-h">Diagram och orderbok (sektion 1–2)</div><div id="ti-chart">Det par du väljer i diagrammet. Priserna kommer live från Bybit, samma som på bybit.eu. Orderboken visar samma mynt i USDC.</div></div>
+  <div class="ti-box"><div class="ti-h">Läge</div><div id="ti-mode">Laddar…</div></div>
+</section>
 <!-- ══════════════════════════════════════════════════════════════════════
      SIGNALPANEL — valutapar, indikatorer, LONG/SHORT
      Läser /api/signals. Varje rad bygger på STÄNGDA ljus; nedräkningen
@@ -1335,10 +1370,10 @@ body.app-state-onboard .fc-panel{display:none !important}
      identisk med Binance. Det pågående ljuset ritas med avvikande färg och
      är markerat i rubriken, så ett ofärdigt ljus aldrig läses som färdigt.
      ══════════════════════════════════════════════════════════════════════ -->
-<section id="liveChart" style="
+<section id="liveChart" data-sec="6 · Signalmotorns diagram · stängda ljus från Binance, det signaltabellen räknar på" style="
          font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
   <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
-    <h2 style="margin:0;font-size:17px;font-weight:600">Diagram</h2>
+    <h2 style="margin:0;font-size:17px;font-weight:600">Signaldiagram</h2>
     <select id="chartSymbol" style="padding:5px 8px;background:#0b0e14;color:#e6e6e6;
             border:1px solid #2a3140;border-radius:6px;font-size:12px"></select>
     <span id="chartForming" style="font-size:12px;color:#8b95a7"></span>
@@ -1435,7 +1470,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 })();
 </script>
 
-<section id="signalPanel" style="
+<section id="signalPanel" data-sec="3 · Signaler · indikatorerna för alla par som följs, räknas om när varje ljus stänger" style="
          font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
   <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px">
     <h2 style="margin:0;font-size:17px;font-weight:600">Signaler</h2>
@@ -1481,10 +1516,11 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <p id="sigReasons" style="margin:12px 2px 0;font-size:12px;color:#8b95a7;line-height:1.6"></p>
+</section>
 
   <!-- Senaste analysen: vad agenterna kom fram till efter "Kör analys" (eller schemat).
        Läser /api/live/analysis. Bara visning; ordrar läggs fortfarande via Väntande ordrar. -->
-  <div id="analysisBox" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
+  <div id="analysisBox" data-sec="4 · Agenternas analys · vad AI-teamet föreslår efter Kör analys eller schemat" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
       <strong style="font-size:13px">Senaste analys <span style="color:#8b95a7;font-weight:400">· vad agenterna föreslår</span></strong>
       <span style="display:flex;gap:8px;align-items:center">
@@ -1557,14 +1593,13 @@ body.app-state-onboard .fc-panel{display:none !important}
   })();
   </script>
 
-  <div id="pendingBox" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
+  <div id="pendingBox" data-sec="5 · Väntande ordrar · inget skickas förrän du trycker Godkänn" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
       <strong style="font-size:13px">Väntande ordrar <span style="color:#8b95a7;font-weight:400">· inget läggs förrän du trycker Godkänn</span></strong>
       <span id="pendingMeta" style="font-size:12px;color:#8b95a7"></span>
     </div>
     <div id="pendingRows" style="margin-top:8px;font-size:13px;color:#8b95a7">Laddar…</div>
   </div>
-</section>
 
 <script>
 (function () {
@@ -1791,7 +1826,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 
   <!-- LEFT: CHART + AGENTS -->
   <div class="left">
-    <div class="card">
+    <div class="card" id="mainChartCard" data-sec="1 · Marknaden live · det par du väljer, Bybit via WebSocket">
       <div class="chart-toolbar">
         <div class="symbol-picker">
           <select id="cat-select">
@@ -1843,7 +1878,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       <div id="macd-pane"></div>
     </div>
 
-    <div class="card" id="ai-team-card" style="scroll-margin-top:70px">
+    <div class="card" id="ai-team-card" data-sec="7 · AI-teamet · vem som gjorde vad i senaste analysen" style="scroll-margin-top:70px">
       <h3>AI-Team <span class="tag" id="last-turn">väntar…</span></h3>
       <div class="team-banner" id="team-banner"></div>
       <div class="agent-grid" id="agent-grid"></div>
@@ -1854,7 +1889,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <!-- RIGHT: BET PANEL -->
-  <div class="right">
+  <div class="right" data-sec="2 · Handla · orderbok, order och snabb-trade för samma par">
     <!-- Som på Bybit: orderbok, senaste affärer och order med limit + TP/SL. Live från Bybits publika WebSocket. -->
     <div class="card" id="bybitTradeCard">
       <h3>Orderbok <span class="tag" id="bk-pair">–</span><span style="float:right;font-size:10px;color:var(--dim)" id="bk-status">ansluter…</span></h3>
@@ -1871,7 +1906,9 @@ body.app-state-onboard .fc-panel{display:none !important}
         <span>Pris</span><span style="text-align:right">Antal</span><span style="text-align:right">Tid</span></div>
       <div id="bk-trades" class="bk-side" style="max-height:150px;overflow:hidden"></div>
 
-      <h3 style="margin-top:12px">Lägg order <span class="tag" id="ot-venue">–</span></h3>
+    </div>
+    <div class="card" id="orderCard">
+      <h3>Lägg order <span class="tag" id="ot-venue">–</span></h3>
       <div style="display:flex;gap:6px;margin-bottom:8px">
         <button type="button" class="ot-type active" data-ot="LIMIT">Limit</button>
         <button type="button" class="ot-type" data-ot="MARKET">Market</button>
@@ -1938,6 +1975,32 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
   </div>
 </main>
+</section>
+
+<!-- ═══ ALLA PAR — en kolumn per par, sida vid sida ═══
+     Pris och 24h live från Bybits publika WebSocket (tickers.<MYNT>USDC), minidiagram från
+     /api/bybit/klines, signal från /api/signals, agenternas senaste förslag från
+     /api/live/analysis. CALL = köp och PUT = sälj läggs i Väntande ordrar (inget skickas
+     utan Godkänn). "Analysera" startar en analys av just de par du valt. -->
+<section class="page" id="page-pairs">
+  <div class="page-header"><span class="ph-ico">🧮</span>Alla par<span class="ph-sub">— en kolumn per par · analysera flera samtidigt · CALL / PUT under varje</span></div>
+  <div class="pp-bar">
+    <div class="pp-help">
+      <b>Så fungerar sidan:</b> varje kolumn är ett par som agenterna följer. Priset och diagrammet kommer live från Bybit (USDC).
+      <b>Signal</b> är indikatorernas läge just nu. <b>Agenterna</b> visar vad AI-teamet föreslog senast för just det paret.
+      Bocka i flera par och tryck <b>Analysera valda</b>, så analyseras de samtidigt i en körning. Följ arbetet i fliken Träd.
+      <b>CALL</b> = köp och <b>PUT</b> = sälj. Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn.
+    </div>
+    <div class="pp-tools">
+      <span id="pp-mode" class="pp-chip">–</span>
+      <label>Belopp (USDC) <input type="number" id="pp-amt" value="5" min="1" step="1"></label>
+      <label>Tidshorisont <select id="pp-tf"><option value="300">5 min</option><option value="900">15 min</option><option value="3600" selected>1 tim</option><option value="14400">4 tim</option><option value="86400">1 dag</option></select></label>
+      <button type="button" id="pp-all" class="pp-btn">Markera alla</button>
+      <button type="button" id="pp-run" class="pp-btn pp-go">▶ Analysera valda (0)</button>
+    </div>
+    <div id="pp-status" class="pp-status"></div>
+  </div>
+  <div id="pp-grid" class="pp-grid"><div style="padding:20px;color:var(--dim)">Laddar par…</div></div>
 </section>
 
 <!-- ═══ LIVE-SIDA — 4 rullande rader (en per kategori) ═══ -->
@@ -3413,14 +3476,14 @@ function initChart(){
     crosshair:{mode:1},
     rightPriceScale:{borderColor:"#1e293b"},
     timeScale:{borderColor:"#1e293b",timeVisible:true,secondsVisible:false},
-    width:document.getElementById("chart").clientWidth, height:480
+    width:document.getElementById("chart").clientWidth, height:document.getElementById("chart").clientHeight || 480
   });
   candleSeries = chart.addCandlestickSeries({
     upColor:"#10b981", downColor:"#ef4444",
     borderUpColor:"#10b981", borderDownColor:"#ef4444",
     wickUpColor:"#10b981", wickDownColor:"#ef4444"
   });
-  window.addEventListener("resize",()=>{ chart.applyOptions({width:document.getElementById("chart").clientWidth}); });
+  window.addEventListener("resize",()=>{ const el = document.getElementById("chart"); chart.applyOptions({width:el.clientWidth, height:el.clientHeight || 480}); });
 }
 
 function genCandles(sym, tf, n=300){
@@ -6733,7 +6796,7 @@ function wireTeamChat(){
 /* ======================================================================
    SPA NAVIGATION — varje sidebar-knapp = egen sida
    ====================================================================== */
-const PAGES = ["trade","team","chat","live","strategies","tree","trades","cost","settings"];
+const PAGES = ["trade","pairs","team","chat","live","strategies","tree","trades","cost","settings"];
 
 function switchPage(name){
   if(!PAGES.includes(name)) name = "trade";
@@ -9140,6 +9203,294 @@ document.addEventListener("DOMContentLoaded", boot);
   connect();
   setInterval(()=>{ connect(); render(); }, 250);
   setInterval(syncVenue, 10000); syncVenue();
+})();
+</script>
+
+<style>
+#page-pairs .pp-bar{margin:0 24px 14px;display:flex;flex-direction:column;gap:10px}
+#page-pairs .pp-help{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:12px;line-height:1.6;color:#c9d1d9}
+#page-pairs .pp-help b{color:#fff}
+#page-pairs .pp-tools{display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--dim)}
+#page-pairs .pp-tools input,#page-pairs .pp-tools select{margin-left:6px;padding:6px 8px;background:var(--card2);border:1px solid var(--border);border-radius:4px;color:var(--text);width:90px}
+#page-pairs .pp-btn{padding:7px 14px;border:1px solid var(--border);background:var(--card2);color:var(--text);border-radius:6px;font-weight:700;cursor:pointer}
+#page-pairs .pp-go{border-color:#3fb950;background:#0d2a14;color:#3fb950}
+#page-pairs .pp-btn:disabled{opacity:.45;cursor:not-allowed}
+#page-pairs .pp-chip{font-size:11px;font-weight:800;letter-spacing:.5px;padding:4px 10px;border-radius:4px;border:1px solid var(--border)}
+#page-pairs .pp-status{font-size:12px;min-height:16px}
+#page-pairs .pp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;margin:0 24px 24px}
+.pp-col{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.pp-col.pp-sel{border-color:var(--cyan)}
+.pp-col.pp-busy{border-color:#fbbf24;box-shadow:0 0 0 1px #fbbf24 inset}
+.pp-top{display:flex;align-items:center;gap:8px}
+.pp-top .pp-name{font-weight:800;font-size:15px;color:#fff}
+.pp-top .pp-px{margin-left:auto;font-family:'SF Mono',monospace;font-weight:700;font-size:14px}
+.pp-chg{font-size:11px;font-family:'SF Mono',monospace;text-align:right}
+.pp-canvas{width:100%;height:70px;display:block}
+.pp-sub{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+.pp-row{font-size:12px;line-height:1.5;color:#c9d1d9}
+.pp-row .pp-k{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;display:block}
+.pp-ctrl{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:auto}
+.pp-ctrl button{padding:9px 6px;border-radius:6px;font-weight:800;cursor:pointer;font-size:12px}
+.pp-call{border:1px solid #3fb950;background:#0d2a14;color:#3fb950}
+.pp-put{border:1px solid #f85149;background:#2d1114;color:#f85149}
+.pp-an{grid-column:1 / -1;border:1px solid var(--cyan);background:transparent;color:var(--cyan)}
+.pp-ctrl button:disabled{opacity:.45;cursor:not-allowed}
+</style>
+<script>
+// ── Trade-sidan: "Vad analyseras" överst ──
+(function(){
+  const $ = (id)=>document.getElementById(id);
+  const esc = (t)=>String(t == null ? "" : t).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+  const bases = (list)=> (list||[]).map(x=>String(x).replace(/(USDT|USDC|USD)$/,"")).join(", ");
+  async function load(){
+    try{
+      const r = await fetch("/api/live/watchlist");
+      if(r.ok){
+        const w = await r.json();
+        $("ti-sig").innerHTML = `<b>${(w.signalSymbols||[]).length} par</b>: ${esc(bases(w.signalSymbols))}. Intervall <b>${esc(w.signalInterval||"–")}</b>. Indikatorerna (RSI, trend, volym) räknas om varje gång ett ljus stänger.`;
+        $("ti-agents").innerHTML = `<b>${(w.agentSymbols||[]).length} mynt</b>: ${esc(bases(w.agentSymbols))}. Analyserar automatiskt var <b>${esc(w.loopMinutes)} min</b>, eller när du trycker Kör analys. Förslagen hamnar i Väntande ordrar.`;
+      }
+    }catch(_){}
+    try{
+      const r = await fetch("/api/brokers");
+      if(r.ok){
+        const d = await r.json(); const a = (d.brokers||[]).find(b=>b.active);
+        $("ti-mode").innerHTML = a
+          ? `<b style="color:${a.mode==="live"?"#22c55e":"#f0b90b"}">${a.mode==="live"?"LIVE · riktiga pengar":"TEST · låtsaspengar"}</b> via ${esc(a.name)}. Varje order väntar på ditt Godkänn.`
+          : "Ingen mäklare kopplad.";
+      }
+    }catch(_){}
+  }
+  load(); setInterval(load, 15000);
+})();
+
+// ── Sidan Alla par ──
+(function(){
+  const $ = (id)=>document.getElementById(id);
+  const grid = $("pp-grid"); if(!grid) return;
+  const esc = (t)=>String(t == null ? "" : t).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+  const baseOf = (s)=> String(s||"").toUpperCase().replace(/(USDT|USDC|USD|BUSD|FDUSD)$/,"");
+  const pd = (p)=> p >= 1000 ? 1 : p >= 10 ? 2 : p >= 1 ? 4 : 6;
+  const fmt = (n,d)=> Number(n).toLocaleString("sv-SE",{minimumFractionDigits:d,maximumFractionDigits:d});
+  const P = {};            // bas → { price, chg, bars, sig, pick, el }
+  const sel = new Set();
+  let order = [], ws = null, analysisRunning = false, busyBases = new Set(), wsIdx = 0;
+  const ACTION = { buy:"KÖP", sell:"SÄLJ", hold:"AVVAKTA" };
+
+  function colHtml(b){
+    return `<div class="pp-col" data-b="${b}">
+      <div class="pp-top"><input type="checkbox" class="pp-chk" title="Ta med i Analysera valda"><span class="pp-name">${b}/USDC</span><span class="pp-px">–</span></div>
+      <div class="pp-chg">–</div>
+      <canvas class="pp-canvas"></canvas><div class="pp-sub">senaste 6 timmarna · 5-minutersljus · Bybit</div>
+      <div class="pp-row pp-sig"><span class="pp-k">Signal (indikatorer)</span>–</div>
+      <div class="pp-row pp-pick"><span class="pp-k">Agenterna (senaste analys)</span>Inte analyserad än</div>
+      <div class="pp-ctrl">
+        <button type="button" class="pp-call">▲ CALL · köp</button>
+        <button type="button" class="pp-put">▼ PUT · sälj</button>
+        <button type="button" class="pp-an">Analysera ${b}</button>
+      </div>
+    </div>`;
+  }
+
+  async function init(){
+    let syms = [];
+    try{ const r = await fetch("/api/live/watchlist"); if(r.ok) syms = (await r.json()).agentSymbols || []; }catch(_){}
+    if(!syms.length) syms = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT"];
+    order = [...new Set(syms.map(baseOf).filter(Boolean))];
+    grid.innerHTML = order.map(colHtml).join("");
+    order.forEach(b=>{ P[b] = { el: grid.querySelector(`.pp-col[data-b="${b}"]`), bars: [] }; });
+    order.forEach(loadBars);
+    connect();
+    loadSignals(); loadAnalysis(); loadMode();
+  }
+
+  async function loadBars(b){
+    try{
+      const r = await fetch(`/api/bybit/klines?symbol=${b}USDC&interval=5m&limit=72`);
+      const d = await r.json();
+      if(d.klines && d.klines.length){
+        P[b].bars = d.klines.map(k=>k.close);
+        if(P[b].price == null) P[b].price = P[b].bars[P[b].bars.length-1];
+      } else P[b].missing = true;
+    }catch(_){}
+    draw(b);
+  }
+
+  function connect(){
+    try{ ws = new WebSocket(["wss://stream.bybit.com/v5/public/spot","wss://stream.bybit.eu/v5/public/spot"][wsIdx % 2]); }catch(_){ return; }
+    const me = ws; let ping;
+    ws.onopen = ()=>{
+      const args = order.map(b=>`tickers.${b}USDC`);
+      for(let i=0;i<args.length;i+=10) me.send(JSON.stringify({op:"subscribe", args: args.slice(i,i+10)}));
+      ping = setInterval(()=>{ try{ me.send('{"op":"ping"}'); }catch(_){} }, 20000);
+    };
+    ws.onmessage = (ev)=>{
+      let m; try{ m = JSON.parse(ev.data); }catch(_){ return; }
+      if(!m.topic || !m.data || !m.topic.startsWith("tickers.")) return;
+      const b = baseOf(m.topic.slice(8)); const x = P[b]; if(!x) return;
+      const px = +m.data.lastPrice; if(!(px > 0)) return;
+      x.price = px; x.chg = +m.data.price24hPcnt * 100; x.dirty = true;
+      if(x.bars.length) x.bars[x.bars.length-1] = px;
+    };
+    ws.onclose = ()=>{ clearInterval(ping); if(ws === me){ ws = null; wsIdx++; setTimeout(connect, 3000); } };
+    ws.onerror = ()=>{};
+  }
+
+  function draw(b){
+    const x = P[b]; if(!x || !x.el) return;
+    const el = x.el;
+    if(x.price != null){
+      el.querySelector(".pp-px").textContent = fmt(x.price, pd(x.price));
+    } else if(x.missing){
+      el.querySelector(".pp-px").textContent = "–";
+      el.querySelector(".pp-sub").textContent = "finns inte som USDC-par på Bybit";
+    }
+    if(x.chg != null){
+      const c = el.querySelector(".pp-chg");
+      c.textContent = `24 h ${x.chg >= 0 ? "+" : ""}${x.chg.toFixed(2)} %`;
+      c.style.color = x.chg >= 0 ? "#3fb950" : "#f85149";
+    }
+    const cv = el.querySelector(".pp-canvas"); const bars = x.bars;
+    if(!bars.length) return;
+    const w = cv.clientWidth || 220, h = 70, dpr = window.devicePixelRatio || 1;
+    if(cv.width !== w*dpr){ cv.width = w*dpr; cv.height = h*dpr; }
+    const ctx = cv.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,w,h);
+    const lo = Math.min(...bars), hi = Math.max(...bars), span = (hi - lo) || 1;
+    const up = bars[bars.length-1] >= bars[0];
+    ctx.beginPath();
+    bars.forEach((v,i)=>{ const X = i/(bars.length-1)*(w-2)+1, Y = h-4-(v-lo)/span*(h-8); i ? ctx.lineTo(X,Y) : ctx.moveTo(X,Y); });
+    ctx.strokeStyle = up ? "#3fb950" : "#f85149"; ctx.lineWidth = 1.6; ctx.stroke();
+    ctx.lineTo(w-1,h); ctx.lineTo(1,h); ctx.closePath();
+    ctx.fillStyle = up ? "rgba(63,185,80,.10)" : "rgba(248,81,73,.10)"; ctx.fill();
+  }
+
+  async function loadSignals(){
+    try{
+      const r = await fetch("/api/signals"); if(!r.ok) return;
+      const list = (await r.json()).signals || [];
+      const D = { LONG:["▲ LONG","#3fb950"], SHORT:["▼ SHORT","#f85149"], NEUTRAL:["— AVVAKTA","#8b95a7"] };
+      order.forEach(b=>{
+        const sg = list.find(s=>baseOf(s.symbol) === b);
+        const el = P[b].el.querySelector(".pp-sig");
+        if(!sg){ el.innerHTML = '<span class="pp-k">Signal (indikatorer)</span>Följs inte av signaltabellen'; return; }
+        const dir = String(sg.direction || sg.signal || "NEUTRAL").toUpperCase();
+        const [t,c] = D[dir] || D.NEUTRAL;
+        const extra = [sg.score != null ? `score ${esc(sg.score)}` : "", sg.indicators && sg.indicators.rsi14 != null ? `RSI ${Number(sg.indicators.rsi14).toFixed(0)}` : "", sg.interval ? esc(sg.interval) : ""].filter(Boolean).join(" · ");
+        el.innerHTML = `<span class="pp-k">Signal (indikatorer)</span><b style="color:${c}">${t}</b> ${extra ? "· " + extra : ""}`;
+      });
+    }catch(_){}
+  }
+
+  async function loadAnalysis(){
+    try{
+      const r = await fetch("/api/live/analysis"); if(!r.ok) return;
+      const a = (await r.json()).analysis;
+      analysisRunning = !!a && a.status === "running";
+      busyBases = new Set();
+      if(analysisRunning){
+        const ins = String(a.instruction || "").toUpperCase();
+        order.forEach(b=>{ if(new RegExp("\\b"+b+"(USDT|USDC|USD)?\\b").test(ins)) busyBases.add(b); });
+        if(!busyBases.size) order.forEach(b=>busyBases.add(b));
+        $("pp-status").innerHTML = `<span style="color:#fbbf24">● Agenterna analyserar ${busyBases.size === order.length ? "alla par" : [...busyBases].join(", ")} just nu. Följ dem i fliken Träd.</span>`;
+      } else if(a && a.status !== "done" && a.reason){
+        $("pp-status").innerHTML = `<span style="color:#f87171">✕ Senaste analysen stoppades: ${esc(a.reason)}</span>`;
+      } else if(a){
+        $("pp-status").textContent = `Senaste analys klar ${a.endedAt ? new Date(a.endedAt).toLocaleTimeString("sv-SE").slice(0,5) : ""}.`;
+      }
+      const picks = (a && a.picks) || [];
+      order.forEach(b=>{
+        const x = P[b]; x.el.classList.toggle("pp-busy", busyBases.has(b));
+        const p = picks.find(q=>baseOf(q.symbol) === b);
+        const el = x.el.querySelector(".pp-pick");
+        if(busyBases.has(b)){ el.innerHTML = '<span class="pp-k">Agenterna (senaste analys)</span><span style="color:#fbbf24">Analyserar nu…</span>'; return; }
+        if(!p){ el.innerHTML = `<span class="pp-k">Agenterna (senaste analys)</span>${a && a.status === "done" ? "Inget förslag för det här paret" : "Inte analyserad än"}`; return; }
+        const col = p.action === "buy" ? "#3fb950" : p.action === "sell" ? "#f85149" : "#8b95a7";
+        el.innerHTML = `<span class="pp-k">Agenterna (senaste analys)</span><b style="color:${col}">${esc(ACTION[p.action] || p.action)}</b>${p.sizeUsd ? " $" + esc(p.sizeUsd) : ""}${p.confidence ? " · säkerhet " + esc({low:"låg",medium:"medel",high:"hög"}[p.confidence] || p.confidence) : ""}<br><span style="color:var(--dim)">${esc(String(p.reasoning || "").slice(0,160))}</span>`;
+      });
+      syncButtons();
+    }catch(_){}
+  }
+
+  async function loadMode(){
+    try{
+      const r = await fetch("/api/brokers"); if(!r.ok) return;
+      const a = ((await r.json()).brokers || []).find(b=>b.active);
+      const chip = $("pp-mode");
+      if(!a){ chip.textContent = "INGEN MÄKLARE"; return; }
+      const live = a.mode === "live";
+      chip.textContent = (live ? "LIVE · RIKTIGA PENGAR" : "TEST · LÅTSASPENGAR") + " · " + a.name.toUpperCase();
+      chip.style.color = live ? "#22c55e" : "#f0b90b"; chip.style.borderColor = chip.style.color;
+    }catch(_){}
+  }
+
+  function syncButtons(){
+    const runBtn = $("pp-run");
+    runBtn.textContent = `▶ Analysera valda (${sel.size})`;
+    runBtn.disabled = analysisRunning || sel.size === 0;
+    grid.querySelectorAll(".pp-an").forEach(b=>b.disabled = analysisRunning);
+  }
+
+  async function runAnalysis(bases){
+    if(analysisRunning){ alert("En analys pågår redan. Vänta tills den är klar."); return; }
+    const list = bases.map(b=>b+"USDT").join(", ");
+    const instruction = `Analysera bara dessa par: ${list}. Ge för varje par köp, sälj eller avvakta med kort motivering.`;
+    try{
+      const r = await fetch("/api/run-agent", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instruction }) });
+      if(!r.ok){ alert("Analysen kunde inte startas (" + r.status + ")."); return; }
+      analysisRunning = true; syncButtons();
+      setTimeout(loadAnalysis, 500);
+    }catch(e){ alert("Fel: " + e.message); }
+  }
+
+  async function bet(b, side){
+    if(typeof CFG !== "undefined" && CFG.mode !== "live"){ alert("Boten är inte ansluten. Starta Trading OS-boten först."); return; }
+    if(typeof STATE !== "undefined" && STATE.killActive){ alert("Kill switch är aktiverad. Inga nya ordrar."); return; }
+    const amt = parseFloat($("pp-amt").value);
+    if(!(amt > 0)){ alert("Skriv ett belopp i USDC."); return; }
+    const tf = +$("pp-tf").value;
+    const tfTxt = $("pp-tf").selectedOptions[0].textContent;
+    try{
+      const r = await fetch("/api/pending-orders", { method:"POST", headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({ symbol: b + "USDC", side, quoteUsd: amt, source: "alla-par",
+          reason: `Alla par: ${side === "BUY" ? "CALL" : "PUT"} ${b} · tidshorisont ${tfTxt}` }) });
+      const d = await r.json().catch(()=>({}));
+      if(!d.ok){ alert(`${b}: ordern lades inte i kön.\n\n` + (d.error || ("HTTP " + r.status))); return; }
+      if(typeof pushInAppAlert === "function") pushInAppAlert(`⏳ ${side === "BUY" ? "KÖP" : "SÄLJ"} ${b} $${amt} ligger i Väntande ordrar. Tryck Godkänn på Trade-sidan.`, 6000);
+    }catch(e){ alert("Fel: " + e.message); }
+    void tf;
+  }
+
+  grid.addEventListener("click", (e)=>{
+    const col = e.target.closest(".pp-col"); if(!col) return;
+    const b = col.dataset.b;
+    if(e.target.closest(".pp-call")) bet(b, "BUY");
+    else if(e.target.closest(".pp-put")) bet(b, "SELL");
+    else if(e.target.closest(".pp-an")) runAnalysis([b]);
+  });
+  grid.addEventListener("change", (e)=>{
+    if(!e.target.classList.contains("pp-chk")) return;
+    const col = e.target.closest(".pp-col"); const b = col.dataset.b;
+    if(e.target.checked) sel.add(b); else sel.delete(b);
+    col.classList.toggle("pp-sel", e.target.checked);
+    syncButtons();
+  });
+  $("pp-all").addEventListener("click", ()=>{
+    const all = sel.size !== order.length;
+    grid.querySelectorAll(".pp-col").forEach(col=>{
+      col.querySelector(".pp-chk").checked = all; col.classList.toggle("pp-sel", all);
+      if(all) sel.add(col.dataset.b); else sel.delete(col.dataset.b);
+    });
+    $("pp-all").textContent = all ? "Avmarkera alla" : "Markera alla";
+    syncButtons();
+  });
+  $("pp-run").addEventListener("click", ()=>{ if(sel.size) runAnalysis([...sel]); });
+
+  init();
+  setInterval(()=>{ order.forEach(b=>{ if(P[b] && P[b].dirty){ P[b].dirty = false; draw(b); } }); }, 500);
+  setInterval(loadSignals, 5000);
+  setInterval(loadAnalysis, 3000);
+  setInterval(loadMode, 15000);
+  setInterval(()=>order.forEach(loadBars), 300000);
 })();
 </script>
 </body>

@@ -14,6 +14,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getMarketStreamStatus } from "./marketStream.js";
 import { getKlineStreamStatus } from "./klineStream.js";
+import { config } from "../config.js";
 import { getJevStatus } from "./jevClient.js";
 import { snapshot as agentTreeSnapshot, registerStrategies, userAction, agentStart, agentDone, agentFail, getAnalysis } from "./agentActivity.js";
 import {
@@ -261,6 +262,18 @@ export async function handleLiveRoutes(
 
     // Senaste analysen ("Kör analys" eller schemat): vad agenterna kom fram till.
     if (p === "/api/live/analysis" && method === "GET") { send(res, 200, { analysis: getAnalysis() }); return true; }
+
+    // Vad som analyseras: agenternas mynt, hur ofta, och vilka par signaltabellen följer.
+    if (p === "/api/live/watchlist" && method === "GET") {
+      const k = getKlineStreamStatus();
+      send(res, 200, {
+        agentSymbols: config.crypto.symbols,
+        loopMinutes: Math.round(config.loopIntervalSeconds / 60),
+        signalSymbols: k.symbols,
+        signalInterval: k.interval,
+      });
+      return true;
+    }
 
     if (p === "/api/live/agent-tree" && method === "GET") {
       registerStrategies(await loadLibrary());
