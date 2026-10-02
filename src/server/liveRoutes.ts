@@ -15,7 +15,7 @@ import path from "node:path";
 import { getMarketStreamStatus } from "./marketStream.js";
 import { getKlineStreamStatus } from "./klineStream.js";
 import { getJevStatus } from "./jevClient.js";
-import { snapshot as agentTreeSnapshot, registerStrategies, userAction } from "./agentActivity.js";
+import { snapshot as agentTreeSnapshot, registerStrategies, userAction, agentStart, agentDone, agentFail, getAnalysis } from "./agentActivity.js";
 import {
   startStrategyRunner, syncStrategies, getStrategySignals, getStrategyPositions, queueSignal,
   resetStrategyPosition, getRunnerStatus, getRunnerCandles, pairOf,
@@ -259,6 +259,9 @@ export async function handleLiveRoutes(
   try {
     if (p === "/api/live/status" && method === "GET") { send(res, 200, liveStatus()); return true; }
 
+    // Senaste analysen ("Kör analys" eller schemat): vad agenterna kom fram till.
+    if (p === "/api/live/analysis" && method === "GET") { send(res, 200, { analysis: getAnalysis() }); return true; }
+
     if (p === "/api/live/agent-tree" && method === "GET") {
       registerStrategies(await loadLibrary());
       send(res, 200, agentTreeSnapshot(Number(url.searchParams.get("limit")) || 120));
@@ -417,7 +420,13 @@ export async function handleLiveRoutes(
             // Mikes krav 2026-10-01: minst 10 affärer per dag. Kan ändras i dashboarden eller med TRAIN_MIN_TRADES_PER_DAY.
             const perDayRaw = b.minTradesPerDay ?? process.env.TRAIN_MIN_TRADES_PER_DAY ?? 10;
             const minTradesPerDay = Math.min(500, Math.max(0, Number(perDayRaw) || 0));
-            const result = trainStrategy(s, history, { maxVariants: Math.min(600, Math.max(20, Number(b.variants) || 300)), minTradesPerDay });
+            // Träningen syns i arbetsträdet: strategins ruta (och dess agent) jobbar tills den är klar.
+            const variants = Math.min(600, Math.max(20, Number(b.variants) || 300));
+            agentStart(`strategy:${id}`, `tränar ${variants} varianter på ${Object.keys(history).length} coins`, { from: s.agent ?? undefined });
+            let result: TrainResult;
+            try { result = trainStrategy(s, history, { maxVariants: variants, minTradesPerDay }); }
+            catch (err) { agentFail(`strategy:${id}`, `träningen misslyckades: ${err instanceof Error ? err.message : String(err)}`); throw err; }
+            agentDone(`strategy:${id}`, `träning klar: ${result.verdict} (${result.variantsTested} varianter)`);
             const all = await readTrainings();
             all[id] = { ...result, errors };
             await writeTrainings(all);

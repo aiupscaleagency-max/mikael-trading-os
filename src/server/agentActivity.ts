@@ -230,3 +230,40 @@ export function _resetActivity(): void {
   for (const a of agents.values()) Object.assign(a, { status: "idle", startedAt: null, endedAt: null, note: "", runs: 0, lastMs: null, coin: null, scans: 0, lastScanAt: null, lastScanCoin: null });
   turn = { id: 0, phase: "väntar på nästa tur", startedAt: null, endedAt: null };
 }
+
+// ── Senaste analysen ────────────────────────────────────────────────────────
+// Vad en analys-tur kom fram till, i klartext för Trading-sidan: vilka par Hanna
+// valde, köp eller sälj, belopp och vad som hände med ordern. Stoppas turen
+// (t.ex. dagens AI-tak) står orsaken här i stället för att inget syns.
+export interface AnalysisPick { symbol: string; action: string; sizeUsd: number; confidence: string; reasoning: string }
+export interface AnalysisOrder { symbol: string; side: string; usd: number | null; status: string }
+export interface AnalysisResult {
+  startedAt: string;
+  endedAt: string | null;
+  status: "running" | "done" | "stopped" | "failed";
+  trigger: "manuell" | "schema";
+  instruction?: string;
+  reason?: string;
+  regime?: string;
+  summary?: string;
+  picks: AnalysisPick[];
+  orders: AnalysisOrder[];
+}
+
+let lastAnalysis: AnalysisResult | null = null;
+
+export function analysisStart(trigger: AnalysisResult["trigger"], instruction?: string): void {
+  lastAnalysis = { startedAt: new Date().toISOString(), endedAt: null, status: "running", trigger, instruction, picks: [], orders: [] };
+}
+
+export function analysisEnd(patch: Partial<AnalysisResult> & { status: AnalysisResult["status"] }): void {
+  try {
+    if (!lastAnalysis) analysisStart("schema");
+    lastAnalysis = { ...lastAnalysis!, ...patch, endedAt: new Date().toISOString() };
+    if (patch.status === "stopped" || patch.status === "failed") agentFail("orchestrator", patch.reason ?? "analysen stoppades");
+  } catch { /* bara en spegel */ }
+}
+
+export function getAnalysis(): AnalysisResult | null {
+  return lastAnalysis;
+}

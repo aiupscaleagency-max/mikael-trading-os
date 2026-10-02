@@ -122,14 +122,16 @@ export class RiskManager {
         };
       }
 
-      // Finns tillräckligt med USDT i kontot?
-      const usdtBal = account.balances.find((b) => b.asset === "USDT");
-      const usdtFree = usdtBal ? usdtBal.free : 0;
+      // Finns tillräckligt med kassa i kontot? Räknar dollar-valutorna som kassa:
+      // USDT (Binance), USDC (Bybit EU) och USD (Alpaca paper).
+      const usdtFree = account.balances
+        .filter((b) => b.asset === "USDT" || b.asset === "USDC" || b.asset === "USD")
+        .reduce((sum, b) => sum + (Number.isFinite(b.free) ? b.free : 0), 0);
       const finalUsd = adjustedOrder?.quoteOrderQty ?? orderUsd;
       if (usdtFree < finalUsd) {
         return {
           allowed: false,
-          reason: `För lite USDT i kontot (${usdtFree.toFixed(2)} < ${finalUsd.toFixed(2)}).`,
+          reason: `För lite kassa i kontot (USDT/USDC/USD ${usdtFree.toFixed(2)} < ${finalUsd.toFixed(2)}).`,
         };
       }
 

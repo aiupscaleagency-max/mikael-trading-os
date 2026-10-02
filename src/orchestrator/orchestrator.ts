@@ -1,5 +1,5 @@
 import type { Config } from "../config.js";
-import { track, agentSkip, turnPhase, turnEnd } from "../server/agentActivity.js";
+import { track, agentSkip, turnPhase, turnEnd, analysisStart, analysisEnd, getAnalysis, type AnalysisOrder } from "../server/agentActivity.js";
 import type { AgentState } from "../memory/store.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import type { RiskManager } from "../risk/riskManager.js";
@@ -83,6 +83,8 @@ export async function runOrchestratedTurn(params: {
   const apiKey = config.anthropicApiKey;
 
   const totalStart = Date.now();
+  // "Kör analys" har redan startat posten; annars är det schemat.
+  if (getAnalysis()?.status !== "running") analysisStart("schema", userInstruction);
 
   // ── CIRCUIT BREAKER: Spend-cap-koll innan vi ens börjar ──
   // Stoppar session om dagen/veckan redan överskridit cap. Skyddar mot
@@ -96,6 +98,7 @@ export async function runOrchestratedTurn(params: {
     log.warn(`Dagens spend: $${spendCheck.spent?.today.toFixed(2)} / cap $${config.costCap.dailyUsd}`);
     log.warn(`Veckans spend: $${spendCheck.spent?.week.toFixed(2)} / cap $${config.costCap.weeklyUsd}`);
     log.warn(`Höj cap i .env (MAX_DAILY_SPEND_USD / MAX_WEEKLY_SPEND_USD) eller vänta tills cap rullar.`);
+    analysisEnd({ status: "stopped", reason: `Dagens AI-tak är nått ($${spendCheck.spent?.today.toFixed(2)} av $${config.costCap.dailyUsd}). Analysen körs igen efter midnatt (UTC) eller när taket höjs.` });
     throw new Error(`Spend cap reached: ${spendCheck.reason}`);
   }
   log.info(`[Cost] Dagens spend: $${spendCheck.spent?.today.toFixed(2)} / cap $${config.costCap.dailyUsd} | Vecka: $${spendCheck.spent?.week.toFixed(2)} / $${config.costCap.weeklyUsd}`);
@@ -267,6 +270,29 @@ export async function runOrchestratedTurn(params: {
   );
 
   turnEnd(`Turen klar på ${(totalMs / 1000).toFixed(1)} s`);
+  try {
+    const orders: AnalysisOrder[] = headTrader.toolCalls
+      .filter((c) => c.name === "place_order")
+      .map((c) => {
+        const i = (c.input ?? {}) as Record<string, unknown>;
+        const o = (c.output ?? {}) as { error?: unknown; accepted?: boolean; reason?: unknown; executed?: boolean };
+        const status = o.error ? `stoppad: ${String(o.error).slice(0, 120)}`
+          : o.accepted === false ? `stoppad av riskkontrollen: ${String(o.reason ?? "").slice(0, 120)}`
+          : o.executed === false ? "väntar på ditt OK (Väntande ordrar)"
+          : "skickad";
+        const usd = Number(i.quote_qty);
+        return { symbol: String(i.symbol ?? "?"), side: String(i.side ?? "?"), usd: Number.isFinite(usd) ? usd : null, status };
+      });
+    analysisEnd({
+      status: "done",
+      regime: headTrader.decision.regime,
+      summary: headTrader.decision.briefingSummary.slice(0, 1500),
+      picks: headTrader.decision.actions.map((a) => ({
+        symbol: a.symbol, action: a.action, sizeUsd: a.sizeUsd, confidence: a.confidence, reasoning: a.reasoning.slice(0, 300),
+      })),
+      orders,
+    });
+  } catch { /* bara en spegel */ }
   return {
     headTrader,
     reports: allReports,
