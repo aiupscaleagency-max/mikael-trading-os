@@ -1,4 +1,5 @@
 import http from "node:http";
+import { userAction, agentDone, agentFail } from "./agentActivity.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
@@ -1055,6 +1056,7 @@ export function startServer(
           reason: b.reason ? String(b.reason).slice(0, 200) : undefined,
         });
         broadcastEvent("pending-orders", { id: p.id });
+        userAction(`la ${side} ${symbol} $${quoteUsd} i kön (${live ? "LIVE" : "TEST"})`, { to: "orders", coin: symbol });
         json(res, { ok: true, pendingOrder: p });
         return;
       }
@@ -1072,11 +1074,13 @@ export function startServer(
           if (action === "reject") {
             const upd = await updatePendingOrder(id, { status: "rejected" });
             log.info(`Väntande order avvisad: ${p.side} ${p.symbol}`);
+            userAction(`avvisade ${p.side} ${p.symbol}`, { to: "orders", coin: p.symbol });
             broadcastEvent("pending-orders", { id });
             json(res, { ok: true, order: upd });
             return;
           }
           approvingIds.add(id);
+          userAction(`godkände ${p.side} ${p.symbol}`, { to: "broker", coin: p.symbol });
           let result: Awaited<ReturnType<typeof executeApprovedOrder>>;
           try { result = await executeApprovedOrder(p, brokers); } finally { approvingIds.delete(id); }
           if (!result.ok && result.keepPending) {
@@ -1087,6 +1091,9 @@ export function startServer(
             ? { status: "done", result: result.result }
             : { status: "failed", error: result.error });
           broadcastEvent("pending-orders", { id });
+          // Utfallet syns i trädet: lagd eller fel, med orsaken
+          if (result.ok) agentDone("broker", `${p.side} ${p.symbol} lagd`);
+          else agentFail("broker", `${p.side} ${p.symbol}: ${String(result.error).slice(0, 100)}`);
           json(res, { ok: result.ok, order: upd, error: result.ok ? undefined : result.error });
           return;
         }
@@ -1101,6 +1108,7 @@ export function startServer(
         await saveState(state);
         broadcastEvent("kill-switch", { active });
         log.warn(`Kill-switch ${active ? "AKTIVERAD" : "avaktiverad"} via dashboard`);
+        userAction(`kill switch ${active ? "PÅ — inga köp" : "av"}`);
         json(res, { ok: true, active });
         return;
       }
@@ -1181,6 +1189,7 @@ export function startServer(
           jsonStatus(res, 500, { error: "Agent-callback ej konfigurerad" });
           return;
         }
+        userAction("startade en analys (Kör analys)", { to: "orchestrator" });
 
         // Body kan vara tom eller ha {instruction: "Köp BTC för $50"}
         let instruction: string | undefined;
