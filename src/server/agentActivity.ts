@@ -31,6 +31,8 @@ export interface AgentNode {
   scans: number;
   lastScanAt: number | null;
   lastScanCoin: string | null;
+  /** Strategier: vilken agent i teamet som äger strategin (t.ex. "technical"). */
+  owner: string | null;
 }
 
 export interface ActivityEvent {
@@ -71,7 +73,7 @@ const TEAM: Array<{ id: string; name: string; role: string; model: () => string 
 ];
 
 function blank(id: string, name: string, role: string, model: string, group: AgentNode["group"]): AgentNode {
-  return { id, name, role, model, group, status: "idle", startedAt: null, endedAt: null, note: "", runs: 0, lastMs: null, coin: null, scans: 0, lastScanAt: null, lastScanCoin: null };
+  return { id, name, role, model, group, status: "idle", startedAt: null, endedAt: null, note: "", runs: 0, lastMs: null, coin: null, scans: 0, lastScanAt: null, lastScanCoin: null, owner: null };
 }
 
 for (const t of TEAM) agents.set(t.id, blank(t.id, t.name, t.role, "", t.id === "review-ai" || t.id === "paper" || t.id === "orders" ? "strategi" : "team"));
@@ -94,7 +96,7 @@ function node(id: string): AgentNode {
 }
 
 /** Strategierna blir egna noder med sina coins (anropas när biblioteket läses). */
-export function registerStrategies(list: Array<{ id: string; name: string; coins: string[]; enabled: boolean; venue: string; review: string }>): void {
+export function registerStrategies(list: Array<{ id: string; name: string; coins: string[]; enabled: boolean; venue: string; review: string; agent?: string }>): void {
   try {
     for (const s of list) {
       const a = node(`strategy:${s.id}`);
@@ -102,6 +104,7 @@ export function registerStrategies(list: Array<{ id: string; name: string; coins
       a.role = `${s.coins.join(", ")} · ${s.venue.toUpperCase()} · ${s.enabled ? "på" : "av"}`;
       a.model = s.review === "off" ? "bara regler" : s.review === "jev" ? "regler + JEV" : "regler + JEV + AI";
       a.group = "strategi";
+      a.owner = s.agent ?? null;
     }
   } catch { /* bara en spegel */ }
 }
