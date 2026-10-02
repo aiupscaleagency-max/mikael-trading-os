@@ -8113,6 +8113,7 @@ document.addEventListener("DOMContentLoaded", boot);
           <b>${esc(s.name)}</b>
           <span class="sl-badge ${s.venue}">${s.venue==="live"?"LIVE":"TEST"}</span>
           <span class="sl-chip">${esc(s.interval)}</span>
+          ${s.agent?`<span class="sl-chip" title="Agenten som äger strategin">👤 ${esc(({macro:"Markus",technical:"Tomas",sentiment:"Sara",risk:"Rasmus",quant:"Karin",portfolio:"Petra"})[s.agent]||s.agent)}</span>`:""}
           <span class="sl-badge ai">${esc(review)}</span>
           ${s.autoQueue?'<span class="sl-chip">köar själv</span>':""}
         </div>
@@ -8601,7 +8602,7 @@ document.addEventListener("DOMContentLoaded", boot);
       const working = ids.filter(id => A(id).status === "working" || on(id));
       const done = ids.filter(id => A(id).status === "done").length;
       const level = Math.max(0, Math.min(4, g.key === "spec" ? Math.round(working.length / 6 * 4) : working.length ? 2 : 1));
-      const who = working.length ? cut(working.map(id => A(id).name).join(","), 14) : g.role;
+      const who = working.length ? cut(working.map(id => A(id).owner ? A(A(id).owner).name : A(id).name).join(","), 14) : g.role;
       const coin = working.map(id => A(id).coin).find(Boolean);
       const mark = failed ? c("r k", "[x] fel") : lit ? c("w k", "[[" + spin + "]") : done ? c("g", "[ok]") : c("d", "[..]");
       const cls = failed ? "r" : "b";
@@ -8687,7 +8688,7 @@ document.addEventListener("DOMContentLoaded", boot);
       const who = (A(e.id).name || e.id).toLowerCase();
       if (e.kind === "fail") text = `error  ${who}: ${e.note}`;
       else if (e.kind === "info") text = `${who}  ${e.note}`;
-      else if (e.id.startsWith("strategy:") && e.kind === "start") text = `upptäckt  ${e.note} (${A(e.id).name})`;
+      else if (e.id.startsWith("strategy:") && e.kind === "start") text = `upptäckt  ${e.note} (${A(e.id).owner ? A(A(e.id).owner).name + " · " : ""}${A(e.id).name})`;
       else if (e.kind === "flow" && e.from) text = `${(A(e.from).name || e.from).toLowerCase()} -> ${who}  ${e.note}`;
       else if (e.kind === "skip") text = `${who}  hoppas över · ${e.note}`;
       else if (e.kind === "phase") text = `hanna  ${e.note}`;

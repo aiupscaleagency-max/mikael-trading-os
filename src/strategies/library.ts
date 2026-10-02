@@ -55,6 +55,10 @@ export interface Strategy {
   autoQueue: boolean;
   /** Mikes egen text, om strategin skapades med "beskriv med egna ord". */
   sourceText?: string;
+  /** Agenten i teamet som äger strategin (t.ex. "technical" = Tomas). Bara för visning och uppföljning. */
+  agent?: string;
+  /** Fast nyckel för strategier som lagts in av systemet, så att de bara läggs in en gång. */
+  seed?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -118,6 +122,89 @@ function starterLibrary(): Strategy[] {
   ];
 }
 
+/** Vilken agent som äger de tre startstrategierna (matchas på namn). */
+const STARTER_OWNER: Record<string, string> = {
+  "EMA-kors (trend)": "technical",
+  "RSI-studs (köp dippen i upptrend)": "quant",
+  "Breakout med volym": "sentiment",
+};
+
+/**
+ * En egen strategi per agent som inte hade någon. De läggs in AVSTÄNGDA i TEST,
+ * bara en gång (seed), och Mike slår på dem själv. Inget befintligt ändras.
+ */
+function agentSeeds(): Strategy[] {
+  const base = {
+    stakeUsd: 5, venue: "test" as const, review: "jev" as const, reviewModel: "auto",
+    autoQueue: false, enabled: false, createdAt: now(), updatedAt: now(),
+  };
+  return [
+    {
+      ...base,
+      id: crypto.randomUUID(),
+      seed: "agent-macro-trend-4h",
+      agent: "macro",
+      name: "Markus · långsam trend (4h)",
+      description: "Köper när EMA20 korsar upp genom EMA50 och priset ligger över SMA200 på 4-timmarsljus. Säljer när EMA20 korsar ned igen.",
+      coins: ["BTC", "ETH"],
+      interval: "4h",
+      entry: [
+        { left: "ema20", op: "crosses_above", right: "ema50" },
+        { left: "close", op: ">", right: "sma200" },
+      ],
+      exit: [{ left: "ema20", op: "crosses_below", right: "ema50" }],
+      stopAtr: 2,
+      targetAtr: 5,
+    },
+    {
+      ...base,
+      id: crypto.randomUUID(),
+      seed: "agent-risk-bollinger-15m",
+      agent: "risk",
+      name: "Rasmus · Bollinger-studs (15m)",
+      description: "Köper när priset stänger under det undre Bollingerbandet och RSI14 är under 35. Säljer vid mittbandet. Stop 1,5 ATR.",
+      coins: ["AVAX", "LINK"],
+      interval: "15m",
+      entry: [
+        { left: "close", op: "<", right: "bb_lower" },
+        { left: "rsi14", op: "<", right: 35 },
+      ],
+      exit: [{ left: "close", op: ">", right: "bb_mid" }],
+      stopAtr: 1.5,
+      targetAtr: 2.5,
+    },
+    {
+      ...base,
+      id: crypto.randomUUID(),
+      seed: "agent-portfolio-macd-1h",
+      agent: "portfolio",
+      name: "Petra · MACD-vändning (1h)",
+      description: "Köper när MACD-linjen korsar upp genom signallinjen och priset ligger över EMA50. Säljer när MACD korsar ned.",
+      coins: ["ADA", "DOT", "LTC"],
+      interval: "1h",
+      entry: [
+        { left: "macd", op: "crosses_above", right: "macd_signal" },
+        { left: "close", op: ">", right: "ema50" },
+      ],
+      exit: [{ left: "macd", op: "crosses_below", right: "macd_signal" }],
+      stopAtr: 1.5,
+      targetAtr: 3,
+    },
+  ];
+}
+
+/** Lägger till agent-ägare och saknade agentstrategier. Returnerar true om något ändrades. */
+function addAgentStrategies(list: Strategy[]): boolean {
+  let changed = false;
+  for (const s of list) {
+    if (!s.agent && STARTER_OWNER[s.name]) { s.agent = STARTER_OWNER[s.name]; changed = true; }
+  }
+  for (const seed of agentSeeds()) {
+    if (!list.some((s) => s.seed === seed.seed)) { list.push(seed); changed = true; }
+  }
+  return changed;
+}
+
 export async function loadLibrary(): Promise<Strategy[]> {
   if (cache) return cache;
   try {
@@ -126,6 +213,7 @@ export async function loadLibrary(): Promise<Strategy[]> {
     cache = starterLibrary();
     await saveLibrary();
   }
+  if (addAgentStrategies(cache)) await saveLibrary();
   return cache;
 }
 
@@ -196,6 +284,8 @@ export function sanitizeStrategy(raw: Record<string, unknown>, prev?: Strategy):
       reviewModel: /^[a-z0-9._\-/]+$/i.test(reviewModel) ? reviewModel : "auto",
       autoQueue: Boolean(pick("autoQueue", prev?.autoQueue ?? false)),
       sourceText: raw.sourceText !== undefined ? String(raw.sourceText).slice(0, 2000) : prev?.sourceText,
+      agent: raw.agent !== undefined ? String(raw.agent).slice(0, 40) || undefined : prev?.agent,
+      seed: prev?.seed,
       createdAt: prev?.createdAt ?? t,
       updatedAt: t,
     },
