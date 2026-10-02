@@ -259,6 +259,13 @@ export class AlpacaBroker implements BrokerAdapter {
     }
     // Krypto heter BTC/USD hos Alpaca och kräver time_in_force gtc/ioc ("day" nekas).
     const crypto = toAlpacaCrypto(order.symbol);
+    if (crypto && (order.takeProfit !== undefined || order.stopLoss !== undefined)) {
+      throw new Error("Alpaca har inte TP/SL för krypto. Ingen order lades. Ta bort TP/SL eller handla via Bybit.");
+    }
+    if (order.type === "LIMIT" && order.quantity === undefined && order.quoteOrderQty !== undefined && order.price) {
+      // Alpaca tar bara belopp (notional) på marknadsordrar, så limit räknas om till antal
+      order = { ...order, quantity: Number((order.quoteOrderQty / order.price).toFixed(9)), quoteOrderQty: undefined };
+    }
     const body: Record<string, unknown> = {
       symbol: crypto ?? order.symbol,
       side: order.side.toLowerCase(),

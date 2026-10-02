@@ -243,7 +243,8 @@ export class BybitBroker implements BrokerAdapter {
       let qty = order.quantity;
       if (qty === undefined) {
         if (order.quoteOrderQty === undefined) throw new Error("Bybit: ange antal eller belopp");
-        qty = order.quoteOrderQty / (await this.getTicker(order.symbol)).price;
+        const ref = order.type === "LIMIT" && order.price ? order.price : (await this.getTicker(order.symbol)).price;
+        qty = order.quoteOrderQty / ref;
       }
       const bd = decimals(inst.lotSizeFilter.basePrecision);
       qty = Math.floor(qty * 10 ** bd) / 10 ** bd;
@@ -258,6 +259,11 @@ export class BybitBroker implements BrokerAdapter {
         delete params.marketUnit;
       }
     }
+
+    // TP/SL följer med ordern hos Bybit (säljer automatiskt vid vinst eller förlust)
+    const tick = decimals(inst.priceFilter.tickSize);
+    if (order.takeProfit !== undefined) { params.takeProfit = order.takeProfit.toFixed(tick); params.tpOrderType = "Market"; }
+    if (order.stopLoss !== undefined) { params.stopLoss = order.stopLoss.toFixed(tick); params.slOrderType = "Market"; }
 
     const created = await this.request<{ orderId: string }>("POST", "/v5/order/create", params, true);
     const orderId = created.orderId;

@@ -1728,6 +1728,9 @@ body.app-state-onboard .fc-panel{display:none !important}
           + '<span style="font-weight:700;color:' + (o.side === "BUY" ? "#3fb950" : "#f85149") + '">' + (o.side === "BUY" ? "KÖP" : "SÄLJ") + '</span>'
           + '<span style="font-weight:600;color:#e6e6e6">' + esc(o.symbol) + '</span>'
           + '<span>' + (o.quoteUsd ? "$" + esc(o.quoteUsd) : esc(o.quantity) + " st") + '</span>'
+          + (o.orderType === "LIMIT" ? '<span style="font-size:12px">limit ' + esc(o.limitPrice) + '</span>' : "")
+          + (o.takeProfit ? '<span style="font-size:12px;color:#3fb950">TP ' + esc(o.takeProfit) + '</span>' : "")
+          + (o.stopLoss ? '<span style="font-size:12px;color:#f85149">SL ' + esc(o.stopLoss) + '</span>' : "")
           + '<span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + col + ';color:' + col + '">' + (o.live ? "LIVE" : "TEST") + '</span>'
           + '<span style="font-size:12px">' + esc(o.venue.replace("broker:", "")) + ' · ' + esc(o.source) + '</span>'
           + (withButtons
@@ -1852,6 +1855,43 @@ body.app-state-onboard .fc-panel{display:none !important}
 
   <!-- RIGHT: BET PANEL -->
   <div class="right">
+    <!-- Som på Bybit: orderbok, senaste affärer och order med limit + TP/SL. Live från Bybits publika WebSocket. -->
+    <div class="card" id="bybitTradeCard">
+      <h3>Orderbok <span class="tag" id="bk-pair">–</span><span style="float:right;font-size:10px;color:var(--dim)" id="bk-status">ansluter…</span></h3>
+      <a id="bk-open" href="https://www.bybit.eu/en-EU/trade/spot/BTC/USDC" target="_blank" rel="noopener" style="display:block;font-size:11px;color:var(--cyan);margin:-4px 0 6px">↗ Öppna samma par på Bybit</a>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;font-size:9px;color:var(--dim);padding:0 2px 3px">
+        <span>Pris (USDC)</span><span style="text-align:right">Antal</span><span style="text-align:right">Totalt</span></div>
+      <div id="bk-asks" class="bk-side"></div>
+      <div id="bk-mid" style="font-size:15px;font-weight:800;padding:5px 2px;font-family:'SF Mono',monospace">–</div>
+      <div id="bk-bids" class="bk-side"></div>
+      <div id="bk-ratio" style="display:flex;height:4px;border-radius:2px;overflow:hidden;margin:6px 0 2px"><span style="flex:1;background:#3fb950"></span><span style="flex:1;background:#f85149"></span></div>
+
+      <h3 style="margin-top:12px">Senaste affärer</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;font-size:9px;color:var(--dim);padding:0 2px 3px">
+        <span>Pris</span><span style="text-align:right">Antal</span><span style="text-align:right">Tid</span></div>
+      <div id="bk-trades" class="bk-side" style="max-height:150px;overflow:hidden"></div>
+
+      <h3 style="margin-top:12px">Lägg order <span class="tag" id="ot-venue">–</span></h3>
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button type="button" class="ot-type active" data-ot="LIMIT">Limit</button>
+        <button type="button" class="ot-type" data-ot="MARKET">Market</button>
+      </div>
+      <label style="font-size:10px;color:var(--dim)" id="ot-price-label">Pris (USDC)</label>
+      <input type="number" id="ot-price" step="any" min="0" style="width:100%;margin-bottom:6px" />
+      <label style="font-size:10px;color:var(--dim)">Belopp (USDC)</label>
+      <input type="number" id="ot-amt" value="5" min="1" step="1" style="width:100%;margin-bottom:6px" />
+      <label style="display:flex;gap:6px;align-items:center;font-size:11px;margin:4px 0"><input type="checkbox" id="ot-tpsl" /> TP/SL (sälj automatiskt vid vinst eller förlust, med limit)</label>
+      <div id="ot-tpsl-box" style="display:none;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+        <div><label style="font-size:10px;color:#3fb950">TP-pris (vinst)</label><input type="number" id="ot-tp" step="any" min="0" style="width:100%" /></div>
+        <div><label style="font-size:10px;color:#f85149">SL-pris (förlust)</label><input type="number" id="ot-sl" step="any" min="0" style="width:100%" /></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <button type="button" id="ot-buy" class="bet-call" style="margin:0">Köp</button>
+        <button type="button" id="ot-sell" class="bet-put" style="margin:0">Sälj</button>
+      </div>
+      <div class="sim-note" id="ot-note" style="margin-top:6px">Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. Samma gränser gäller som för alla ordrar.</div>
+    </div>
+
     <div class="card bet-panel">
       <h3>Snabb-trade <span class="tag">UP / DOWN</span><span class="sim-badge" id="bet-badge" title="Låtsasdata i webbläsaren. Ingen riktig order, ingen riktig analys.">SIMULERING</span></h3>
       <div class="sim-note" id="bet-note">Låtsas-vad i webbläsaren med påhittad utbetalning (85%). Ingen order skickas till någon mäklare.</div>
@@ -8927,6 +8967,179 @@ document.addEventListener("DOMContentLoaded", boot);
   setInterval(draw, 250);
   document.querySelector('aside.sidebar button[data-page="tree"]')?.addEventListener("click", () => setTimeout(() => { load().then(draw); }, 50));
   setTimeout(() => load().then(draw), 300);
+})();
+</script>
+
+<style>
+.bk-side{font-family:'SF Mono',monospace;font-size:11px}
+.bk-row{display:grid;grid-template-columns:1fr 1fr 1fr;padding:1px 2px;position:relative;cursor:pointer}
+.bk-row span{position:relative;z-index:1}
+.bk-row span:not(:first-child){text-align:right}
+.bk-row .bk-bar{position:absolute;right:0;top:0;bottom:0;z-index:0;opacity:.18}
+.ot-type{flex:1;padding:6px;background:var(--card2);border:1px solid var(--border);border-radius:4px;color:var(--dim);font-weight:700;cursor:pointer}
+.ot-type.active{border-color:var(--cyan);color:var(--cyan)}
+</style>
+<script>
+// ── Som på Bybit: orderbok + senaste affärer + order med limit och TP/SL ──
+// Orderboken och affärerna kommer live från Bybits publika WebSocket (orderbook.50
+// och publicTrade) för samma mynt som diagrammet, i USDC som ditt Bybit-konto.
+// Ordrar går till Väntande ordrar som allt annat: inget skickas utan Godkänn.
+(function(){
+  const URLS = ["wss://stream.bybit.com/v5/public/spot", "wss://stream.bybit.eu/v5/public/spot"];
+  const bk = { ws:null, pair:null, asks:new Map(), bids:new Map(), trades:[], urlIdx:0, last:0, ping:null, dirty:false };
+  let otType = "LIMIT";
+  const $ = (id)=>document.getElementById(id);
+  const baseOf = (sym)=> String(sym||"").replace(/(USDT|USDC|USD|BUSD|FDUSD)$/,"");
+  const fmt = (n, d)=> Number(n).toLocaleString("sv-SE", {minimumFractionDigits:d, maximumFractionDigits:d});
+  function priceDecimals(p){ return p >= 1000 ? 1 : p >= 10 ? 2 : p >= 1 ? 4 : 6; }
+
+  function connect(){
+    const sym = (typeof STATE !== "undefined" && STATE.symbol) || "BTCUSDT";
+    const base = baseOf(sym);
+    if(!base) return;
+    const pair = base + "USDC";
+    if(bk.pair === pair && bk.ws && bk.ws.readyState <= 1) return;
+    stop();
+    bk.pair = pair; bk.asks.clear(); bk.bids.clear(); bk.trades = [];
+    $("bk-pair").textContent = base + "/USDC";
+    $("bk-open").href = `https://www.bybit.eu/en-EU/trade/spot/${base}/USDC`;
+    $("ot-price").value = "";
+    let ws;
+    try { ws = new WebSocket(URLS[bk.urlIdx % URLS.length]); } catch(_){ return; }
+    bk.ws = ws;
+    ws.onopen = ()=>{
+      ws.send(JSON.stringify({op:"subscribe", args:[`orderbook.50.${pair}`, `publicTrade.${pair}`]}));
+      bk.ping = setInterval(()=>{ try{ ws.send('{"op":"ping"}'); }catch(_){} }, 20000);
+    };
+    ws.onmessage = (ev)=>{
+      if(bk.ws !== ws) return;
+      let m; try { m = JSON.parse(ev.data); } catch(_){ return; }
+      if(!m.topic || !m.data) return;
+      bk.last = Date.now();
+      if(m.topic.startsWith("orderbook.")){
+        if(m.type === "snapshot"){ bk.asks.clear(); bk.bids.clear(); }
+        for(const [p,q] of (m.data.a||[])){ if(+q === 0) bk.asks.delete(p); else bk.asks.set(p, +q); }
+        for(const [p,q] of (m.data.b||[])){ if(+q === 0) bk.bids.delete(p); else bk.bids.set(p, +q); }
+      } else if(m.topic.startsWith("publicTrade.")){
+        for(const t of m.data){ bk.trades.unshift({p:+t.p, v:+t.v, buy:t.S === "Buy", ts:+t.T}); }
+        bk.trades.length = Math.min(bk.trades.length, 30);
+      }
+      bk.dirty = true;
+    };
+    ws.onclose = ()=>{
+      if(bk.ws !== ws) return;
+      clearInterval(bk.ping); bk.ws = null; bk.urlIdx++;
+      $("bk-status").textContent = "återansluter…";
+      setTimeout(()=>{ if(bk.pair === pair) { bk.pair = null; connect(); } }, 3000);
+    };
+    ws.onerror = ()=>{};
+  }
+  function stop(){
+    clearInterval(bk.ping);
+    const ws = bk.ws; bk.ws = null;
+    if(ws){ try{ ws.close(); }catch(_){} }
+  }
+
+  function render(){
+    const live = bk.ws && bk.ws.readyState === 1 && Date.now() - bk.last < 5000;
+    $("bk-status").innerHTML = live ? '<span style="color:var(--green)">●</span> Bybit live' : (bk.ws ? "ansluter…" : "frånkopplad");
+    if(!bk.dirty) return;
+    bk.dirty = false;
+    const asks = [...bk.asks].map(([p,q])=>[+p,q]).sort((a,b)=>a[0]-b[0]).slice(0,10);
+    const bids = [...bk.bids].map(([p,q])=>[+p,q]).sort((a,b)=>b[0]-a[0]).slice(0,10);
+    const ref = asks[0]?.[0] || bids[0]?.[0] || 0;
+    const pd = priceDecimals(ref);
+    const rows = (list, col, cum)=>{
+      let tot = 0; const out = list.map(([p,q])=>{ tot += p*q; return [p,q,tot]; });
+      const max = out.length ? out[out.length-1][2] : 1;
+      const html = out.map(([p,q,t])=>`<div class="bk-row" data-p="${p}"><span class="bk-bar" style="background:${col};width:${Math.min(100,t/max*100)}%"></span><span style="color:${col}">${fmt(p,pd)}</span><span>${fmt(q, q < 1 ? 4 : 2)}</span><span>${fmt(t,0)}</span></div>`);
+      return cum ? html.reverse().join("") : html.join("");
+    };
+    $("bk-asks").innerHTML = rows(asks, "#f85149", true);
+    $("bk-bids").innerHTML = rows(bids, "#3fb950", false);
+    const lastT = bk.trades[0];
+    if(lastT){
+      $("bk-mid").innerHTML = `<span style="color:${lastT.buy ? "#3fb950" : "#f85149"}">${lastT.buy ? "▲" : "▼"} ${fmt(lastT.p,pd)}</span>`;
+    }
+    const bidSum = bids.reduce((s,[p,q])=>s+p*q,0), askSum = asks.reduce((s,[p,q])=>s+p*q,0);
+    if(bidSum + askSum > 0){
+      const r = $("bk-ratio").children; r[0].style.flex = String(bidSum); r[1].style.flex = String(askSum);
+    }
+    $("bk-trades").innerHTML = bk.trades.slice(0,10).map(t=>`<div class="bk-row" style="cursor:default"><span style="color:${t.buy ? "#3fb950" : "#f85149"}">${fmt(t.p,pd)}</span><span>${fmt(t.v, t.v < 1 ? 4 : 2)}</span><span>${new Date(t.ts).toLocaleTimeString("sv-SE")}</span></div>`).join("");
+    const pr = $("ot-price");
+    if(otType === "LIMIT" && !pr.value && ref) pr.value = String(ref);
+  }
+
+  // Klick på en rad i orderboken = det priset i limit-fältet (som på Bybit)
+  ["bk-asks","bk-bids"].forEach(id=>$(id).addEventListener("click", (e)=>{
+    const r = e.target.closest(".bk-row[data-p]"); if(!r) return;
+    otType = "LIMIT"; syncType(); $("ot-price").value = r.dataset.p;
+  }));
+  function syncType(){
+    document.querySelectorAll(".ot-type").forEach(b=>b.classList.toggle("active", b.dataset.ot === otType));
+    const lim = otType === "LIMIT";
+    $("ot-price").disabled = !lim;
+    $("ot-price-label").textContent = lim ? "Pris (USDC)" : "Pris: bästa marknadspris";
+    if(!lim) $("ot-price").value = "";
+  }
+  document.querySelectorAll(".ot-type").forEach(b=>b.addEventListener("click", ()=>{
+    otType = b.dataset.ot;
+    if(otType === "MARKET" && $("ot-tpsl").checked){ $("ot-tpsl").checked = false; $("ot-tpsl-box").style.display = "none"; }
+    syncType(); bk.dirty = true;
+  }));
+  $("ot-tpsl").addEventListener("change", (e)=>{
+    $("ot-tpsl-box").style.display = e.target.checked ? "grid" : "none";
+    if(e.target.checked && otType !== "LIMIT"){ otType = "LIMIT"; syncType(); bk.dirty = true; } // TP/SL går med limit-order
+  });
+
+  async function submit(side){
+    if(typeof CFG !== "undefined" && CFG.mode !== "live"){ alert("Boten är inte ansluten. Starta Trading OS-boten först."); return; }
+    if(typeof STATE !== "undefined" && STATE.killActive){ alert("Kill switch är aktiverad. Inga nya ordrar."); return; }
+    const amt = parseFloat($("ot-amt").value);
+    if(!(amt > 0)){ alert("Skriv ett belopp i USDC."); return; }
+    const body = { symbol: bk.pair || (baseOf(STATE.symbol) + "USDC"), side, quoteUsd: amt, source: "orderpanel", orderType: otType };
+    if(otType === "LIMIT"){
+      const p = parseFloat($("ot-price").value);
+      if(!(p > 0)){ alert("Skriv ett limitpris, eller välj Market."); return; }
+      body.limitPrice = p;
+    }
+    if($("ot-tpsl").checked){
+      const tp = parseFloat($("ot-tp").value), sl = parseFloat($("ot-sl").value);
+      if(tp > 0) body.takeProfit = tp;
+      if(sl > 0) body.stopLoss = sl;
+      if(!body.takeProfit && !body.stopLoss){ alert("Fyll i TP, SL eller båda, eller bocka ur TP/SL."); return; }
+    }
+    const parts = [otType === "LIMIT" ? `limit ${body.limitPrice}` : "marknadspris", body.takeProfit ? `TP ${body.takeProfit}` : "", body.stopLoss ? `SL ${body.stopLoss}` : ""].filter(Boolean);
+    body.reason = `Orderpanelen: ${side === "BUY" ? "köp" : "sälj"} ${body.symbol} $${amt} · ${parts.join(" · ")}`;
+    try{
+      const r = await fetch("/api/pending-orders", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
+      const d = await r.json().catch(()=>({}));
+      if(!d.ok){ alert("Ordern lades inte i kön.\n\n" + (d.error || ("HTTP " + r.status))); return; }
+      if(typeof pushInAppAlert === "function") pushInAppAlert(`⏳ ${side === "BUY" ? "KÖP" : "SÄLJ"} ${body.symbol} $${amt} (${parts.join(", ")}) ligger i Väntande ordrar. Tryck Godkänn för att lägga den.`, 7000);
+    }catch(e){ alert("Fel: " + e.message); }
+  }
+  $("ot-buy").addEventListener("click", ()=>submit("BUY"));
+  $("ot-sell").addEventListener("click", ()=>submit("SELL"));
+
+  async function syncVenue(){
+    try{
+      const r = await fetch("/api/brokers"); if(!r.ok) return;
+      const d = await r.json();
+      const a = (d.brokers || []).find(b=>b.active);
+      const el = $("ot-venue");
+      if(!a){ el.textContent = "ingen mäklare"; return; }
+      const live = a.mode === "live";
+      el.textContent = a.name + (live ? " · LIVE" : " · TEST");
+      el.style.color = live ? "#22c55e" : "#f0b90b";
+      $("ot-note").textContent = "Ordern hamnar i Väntande ordrar hos " + a.name + (live ? " (riktiga pengar)" : " (låtsaspengar)") + " och skickas först när du trycker Godkänn."
+        + (a.name === "alpaca" ? " Alpaca har inte TP/SL för krypto, så TP/SL fungerar bara via Bybit." : "");
+    }catch(_){}
+  }
+
+  syncType();
+  connect();
+  setInterval(()=>{ connect(); render(); }, 250);
+  setInterval(syncVenue, 10000); syncVenue();
 })();
 </script>
 </body>
