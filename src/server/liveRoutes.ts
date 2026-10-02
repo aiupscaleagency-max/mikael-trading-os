@@ -6,7 +6,7 @@ import { log } from "../logger.js";
 import {
   startBybitPublicStream, startBybitPrivateStream, setBybitWalletFromRest, getBybitWallet,
   subscribeBybitWallet, subscribeBybitOrders, getBybitStreamStatus, fetchBybitCandles,
-  getBybitTickers, watchBybitTicker, fetchBybitHistory, getBybitTicker,
+  getBybitTickers, watchBybitTicker, fetchBybitHistory, getBybitTicker, BYBIT_INTERVAL,
 } from "./bybitStream.js";
 import { scoreboard, READY_RULES } from "./paperLedger.js";
 import { trainStrategy, type TrainResult, type HistBar } from "../strategies/trainer.js";
@@ -277,6 +277,32 @@ export async function handleLiveRoutes(
     }
 
     if (p === "/api/bybit/tickers" && method === "GET") { send(res, 200, { tickers: getBybitTickers() }); return true; }
+
+    // Diagrammets ljus från Bybit (samma som TradingView med Bybit valt). Bara publik
+    // marknadsdata, ingen nyckel. Det pågående ljuset är med; sidan håller det
+    // levande via Bybits WebSocket.
+    if (p === "/api/bybit/klines" && method === "GET") {
+      const symbol = (url.searchParams.get("symbol") || "BTCUSDT").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const iv = BYBIT_INTERVAL[url.searchParams.get("interval") || "1m"];
+      const limit = Math.min(1000, Math.max(10, Number(url.searchParams.get("limit")) || 300));
+      if (!iv) { send(res, 400, { error: "okänt intervall", klines: [] }); return true; }
+      let lastErr = "";
+      for (const base of ["https://api.bybit.com", process.env.BYBIT_BASE_URL || "https://api.bybit.eu"]) {
+        try {
+          const r = await fetch(`${base}/v5/market/kline?category=spot&symbol=${symbol}&interval=${iv}&limit=${limit}`);
+          const body = (await r.json()) as { retCode: number; retMsg: string; result?: { list?: string[][] } };
+          if (!r.ok || body.retCode !== 0 || !body.result?.list?.length) { lastErr = `${base}: ${body.retMsg || r.status}`; continue; }
+          const klines = body.result.list.slice().reverse().map((k) => ({
+            time: Math.floor(Number(k[0]) / 1000),
+            open: Number(k[1]), high: Number(k[2]), low: Number(k[3]), close: Number(k[4]), volume: Number(k[5]),
+          }));
+          send(res, 200, { symbol, klines, source: base.includes(".eu") ? "bybit-eu" : "bybit", at: Date.now() });
+          return true;
+        } catch (err) { lastErr = `${base}: ${err instanceof Error ? err.message : String(err)}`; }
+      }
+      send(res, 200, { symbol, klines: [], error: lastErr });
+      return true;
+    }
 
     if (p === "/api/strategies" && method === "GET") {
       send(res, 200, {
