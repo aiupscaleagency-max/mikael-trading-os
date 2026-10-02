@@ -122,6 +122,11 @@ export interface PendingOrder {
   side: "BUY" | "SELL";
   quoteUsd?: number;
   quantity?: number;
+  /** Saknas = MARKET (som förut) */
+  orderType?: "MARKET" | "LIMIT";
+  limitPrice?: number;
+  takeProfit?: number;
+  stopLoss?: number;
   reason?: string;
   status: "pending" | "done" | "rejected" | "failed";
   decidedAt?: string;

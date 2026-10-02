@@ -57,6 +57,9 @@ export interface OrderRequest {
   quoteOrderQty?: number;
   // Endast för LIMIT
   price?: number;
+  // Valfritt: sälj automatiskt vid vinst (takeProfit) eller förlust (stopLoss), som pris i quote-valutan.
+  takeProfit?: number;
+  stopLoss?: number;
 }
 
 export interface OrderResult {

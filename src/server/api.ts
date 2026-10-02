@@ -185,9 +185,12 @@ async function executeApprovedOrder(
       const order = await broker.placeOrder({
         symbol: p.symbol,
         side: p.side,
-        type: "MARKET",
+        type: p.orderType === "LIMIT" ? "LIMIT" : "MARKET",
         quoteOrderQty: p.quantity === undefined ? p.quoteUsd : undefined,
         quantity: p.quantity,
+        price: p.orderType === "LIMIT" ? p.limitPrice : undefined,
+        takeProfit: p.takeProfit,
+        stopLoss: p.stopLoss,
       });
       if (p.live && p.side === "BUY") recordLiveSpend(order.cummulativeQuoteQty || p.quoteUsd || 0);
       log.trade(`[GODKÄND] ${p.side} ${p.symbol} via ${name} ${p.live ? "LIVE" : "TEST"} · status ${order.status}`);
@@ -1029,13 +1032,32 @@ export function startServer(
       // POST /api/pending-orders — lägg en order som väntar på godkännande
       // body: { symbol, side, quoteUsd, source?, broker? }  (broker saknas = aktiv broker)
       if (url.pathname === "/api/pending-orders" && method === "POST") {
-        const b = JSON.parse(await readBody(req)) as { symbol?: string; side?: string; quoteUsd?: number; source?: string; broker?: string; reason?: string };
+        const b = JSON.parse(await readBody(req)) as { symbol?: string; side?: string; quoteUsd?: number; source?: string; broker?: string; reason?: string; orderType?: string; limitPrice?: number; takeProfit?: number; stopLoss?: number };
         const symbol = String(b.symbol || "").toUpperCase();
         const side = b.side === "SELL" ? "SELL" : b.side === "BUY" ? "BUY" : null;
         const quoteUsd = Number(b.quoteUsd);
         if (!/^[A-Z0-9/]{3,20}$/.test(symbol) || !side) {
           jsonStatus(res, 400, { ok: false, error: "symbol och side (BUY/SELL) krävs" });
           return;
+        }
+        // Limit-order och TP/SL (valfritt). Utan dem blir det en marknadsorder som förut.
+        const orderType = b.orderType === "LIMIT" ? "LIMIT" as const : "MARKET" as const;
+        const num = (v: unknown) => (v === undefined || v === null || v === "" ? undefined : Number(v));
+        const limitPrice = orderType === "LIMIT" ? num(b.limitPrice) : undefined;
+        const takeProfit = num(b.takeProfit), stopLoss = num(b.stopLoss);
+        for (const [label, v] of [["Limitpris", limitPrice], ["TP", takeProfit], ["SL", stopLoss]] as const) {
+          if (v !== undefined && !(Number.isFinite(v) && v > 0)) { jsonStatus(res, 400, { ok: false, error: `${label} måste vara ett pris över 0` }); return; }
+        }
+        if (orderType === "LIMIT" && limitPrice === undefined) { jsonStatus(res, 400, { ok: false, error: "Limit-order kräver ett pris" }); return; }
+        // Bybit spot tar TP/SL tillsammans med limit-ordrar
+        if ((takeProfit !== undefined || stopLoss !== undefined) && orderType !== "LIMIT") { jsonStatus(res, 400, { ok: false, error: "TP/SL kräver en limit-order" }); return; }
+        if (side === "SELL" && limitPrice !== undefined) {
+          if (takeProfit !== undefined && takeProfit >= limitPrice) { jsonStatus(res, 400, { ok: false, error: "När du säljer ska TP vara under säljpriset" }); return; }
+          if (stopLoss !== undefined && stopLoss <= limitPrice) { jsonStatus(res, 400, { ok: false, error: "När du säljer ska SL vara över säljpriset" }); return; }
+        }
+        if (side === "BUY" && limitPrice !== undefined) {
+          if (takeProfit !== undefined && takeProfit <= limitPrice) { jsonStatus(res, 400, { ok: false, error: "TP ska vara över köppriset" }); return; }
+          if (stopLoss !== undefined && stopLoss >= limitPrice) { jsonStatus(res, 400, { ok: false, error: "SL ska vara under köppriset" }); return; }
         }
         const brokerName = b.broker || activeBrokerName || Object.keys(brokers)[0];
         const broker = brokerName ? brokers[brokerName] : undefined;
@@ -1053,6 +1075,9 @@ export function startServer(
           symbol,
           side,
           quoteUsd,
+          ...(orderType === "LIMIT" ? { orderType, limitPrice } : {}),
+          ...(takeProfit !== undefined ? { takeProfit } : {}),
+          ...(stopLoss !== undefined ? { stopLoss } : {}),
           reason: b.reason ? String(b.reason).slice(0, 200) : undefined,
         });
         broadcastEvent("pending-orders", { id: p.id });
