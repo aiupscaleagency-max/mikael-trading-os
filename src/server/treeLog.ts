@@ -20,7 +20,7 @@ const MAX_BYTES = 5 * 1024 * 1024;
 
 export interface TreeEvent {
   /** signal = signalmotorn · strategi = strategibiblioteket · tur = Head-turen (advisor eller inte) */
-  branch: "signal" | "strategi" | "tur";
+  branch: "signal" | "strategi" | "tur" | "agent";
   /** Vad det gällde, t.ex. "BTCUSDT" eller strategins namn. */
   subject?: string;
   jev?: { available: boolean; route?: string; latencyMs?: number | null; depth?: string; review?: number };

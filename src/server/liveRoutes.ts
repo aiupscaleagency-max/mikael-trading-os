@@ -15,6 +15,7 @@ import path from "node:path";
 import { getMarketStreamStatus } from "./marketStream.js";
 import { getKlineStreamStatus } from "./klineStream.js";
 import { getJevStatus } from "./jevClient.js";
+import { snapshot as agentTreeSnapshot, registerStrategies } from "./agentActivity.js";
 import {
   startStrategyRunner, syncStrategies, getStrategySignals, getStrategyPositions, queueSignal,
   resetStrategyPosition, getRunnerStatus, getRunnerCandles, pairOf,
@@ -48,6 +49,7 @@ import { createLlmClient, extractJson, hasLlmCredentials, modelFor, toDirectMode
 //    POST /api/strategies/:id/train            → träna (prova varianter, kontroll på osedd data)
 //    POST /api/strategies/:id/apply-training   → använd träningens förslag (det gamla sparas)
 //    POST /api/strategies/signals/:id/queue    → lägg som väntande order
+//    GET  /api/live/agent-tree                 → arbetsträdet: vem jobbar, var i processen
 // ═══════════════════════════════════════════════════════════════════════════
 
 let brokersRef: Record<string, BrokerAdapter> = {};
@@ -256,6 +258,12 @@ export async function handleLiveRoutes(
 
   try {
     if (p === "/api/live/status" && method === "GET") { send(res, 200, liveStatus()); return true; }
+
+    if (p === "/api/live/agent-tree" && method === "GET") {
+      registerStrategies(await loadLibrary());
+      send(res, 200, agentTreeSnapshot(Number(url.searchParams.get("limit")) || 120));
+      return true;
+    }
 
     if (p === "/api/bybit/balance" && method === "GET") {
       send(res, 200, await balance(url.searchParams.get("refresh") === "1"));

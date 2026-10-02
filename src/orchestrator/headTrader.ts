@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { track, agentNote } from "../server/agentActivity.js";
 import { createLlmClient, modelFor } from "../llm/gateway.js";
 import { trackClaudeCall } from "../cost/tracker.js";
 import type { Config } from "../config.js";
@@ -142,7 +143,15 @@ export async function runHeadTrader(params: {
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const tu of toolUseBlocks) {
       log.agent(`[Head Trader] → tool: ${tu.name}`, tu.input);
-      const output = await runTool(tu.name, tu.input as Record<string, unknown>, toolCtx);
+      const input = tu.input as Record<string, unknown>;
+      agentNote("head", `verktyg: ${tu.name}`);
+      const output = tu.name === "place_order"
+        ? await track("broker", `${String(input.side ?? "")} ${String(input.symbol ?? "")}`.trim() || "lägger order",
+            () => runTool(tu.name, input, toolCtx), {
+              from: "head", coin: input.symbol ? String(input.symbol) : null,
+              done: (o) => { const e = (o as { error?: unknown } | null)?.error; return e ? `stoppad: ${String(e).slice(0, 100)}` : "order skickad"; },
+            })
+        : await runTool(tu.name, input, toolCtx);
       recordedToolCalls.push({ name: tu.name, input: tu.input, output });
       toolResults.push({
         type: "tool_result",
