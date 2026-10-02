@@ -149,7 +149,13 @@ export async function runHeadTrader(params: {
         ? await track("broker", `${String(input.side ?? "")} ${String(input.symbol ?? "")}`.trim() || "lägger order",
             () => runTool(tu.name, input, toolCtx), {
               from: "head", coin: input.symbol ? String(input.symbol) : null,
-              done: (o) => { const e = (o as { error?: unknown } | null)?.error; return e ? `stoppad: ${String(e).slice(0, 100)}` : "order skickad"; },
+              stopped: (o) => {
+                const r = o as { error?: unknown; accepted?: boolean; reason?: unknown } | null;
+                if (r?.error) return `stoppad: ${String(r.error).slice(0, 100)}`;
+                if (r?.accepted === false) return `stoppad av riskkontrollen: ${String(r.reason ?? "").slice(0, 100)}`;
+                return null;
+              },
+              done: (o) => ((o as { executed?: boolean } | null)?.executed === false ? "väntar på ditt OK" : "order skickad"),
             })
         : await runTool(tu.name, input, toolCtx);
       recordedToolCalls.push({ name: tu.name, input: tu.input, output });

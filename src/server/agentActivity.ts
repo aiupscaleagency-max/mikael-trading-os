@@ -168,10 +168,14 @@ export const agentFail = (id: string, note: string) => finish(id, "failed", "fai
 export const agentSkip = (id: string, note: string) => finish(id, "skipped", "skip", note);
 
 /** Kör fn och markerar noden som jobbar/klar/fel. Felet kastas vidare oförändrat. */
-export async function track<T>(id: string, note: string, fn: () => Promise<T>, opts: { from?: string; coin?: string | null; done?: (r: T) => string } = {}): Promise<T> {
+export async function track<T>(id: string, note: string, fn: () => Promise<T>, opts: { from?: string; coin?: string | null; done?: (r: T) => string; stopped?: (r: T) => string | null } = {}): Promise<T> {
   agentStart(id, note, opts);
   try {
     const r = await fn();
+    // Ett svar som säger nej (t.ex. riskkontrollen stoppade ordern) visas som fel, inte som klart.
+    let stop: string | null = null;
+    try { stop = opts.stopped ? opts.stopped(r) : null; } catch { /* bara text */ }
+    if (stop) { agentFail(id, stop); return r; }
     let summary = "klar";
     try { summary = opts.done ? opts.done(r) : "klar"; } catch { /* sammanfattningen är bara text */ }
     agentDone(id, summary);
