@@ -3340,12 +3340,15 @@ function loadCandles(sym, tf){
   applyIndicators(data);
   updatePriceHeader(data);
   if(useRealPrices(sym)) loadRealCandles(sym, tf);
+  else stopBybitChartStream();
 }
 
 // Ersätter de simulerade ljusen med riktiga från Binance (publik data via
 // boten). Misslyckas hämtningen ligger simuleringen kvar och indikatorn
 // säger fortfarande "Demo".
 async function loadRealCandles(sym, tf){
+  // Bybit först (samma källa som TradingView med Bybit valt), Binance som reserv.
+  if(await loadBybitCandles(sym, tf)) return;
   try{
     const r = await fetch(`/api/binance/klines?symbol=${sym}&interval=${tf}&limit=300`);
     if(!r.ok) return;
@@ -3361,6 +3364,100 @@ async function loadRealCandles(sym, tf){
     const ind = document.getElementById("data-source-indicator");
     if(ind) ind.innerHTML = `<span style="color:var(--green)">●</span> Binance live · ${new Date().toLocaleTimeString().slice(0,8)}`;
   }catch(_){ /* behåll senaste vyn */ }
+}
+
+// ── Bybit live i diagrammet ──────────────────────────────────────────────
+// Historik via /api/bybit/klines, sedan Bybits publika WebSocket direkt i
+// webbläsaren: kline.<int>.<PAR> (ljusets OHLC) + tickers.<PAR> (senaste pris
+// flera gånger per sekund). Varje meddelande flyttar sista ljuset, och
+// indikatorerna räknas om högst en gång per sekund. Bara visning, inga ordrar.
+const BYBIT_WS_URLS = ["wss://stream.bybit.com/v5/public/spot", "wss://stream.bybit.eu/v5/public/spot"];
+const BYBIT_IV = {"1m":"1","3m":"3","5m":"5","15m":"15","30m":"30","1h":"60","2h":"120","4h":"240","6h":"360","12h":"720","1d":"D","1w":"W"};
+const bybitChart = { ws:null, key:null, urlIdx:0, lastMsg:0, lastInd:0, ping:null, retry:null };
+
+async function loadBybitCandles(sym, tf){
+  try{
+    const r = await fetch(`/api/bybit/klines?symbol=${sym}&interval=${tf}&limit=300`);
+    if(!r.ok) return false;
+    const d = await r.json();
+    if(!d.klines || !d.klines.length) return false;
+    if(STATE.symbol !== sym || STATE.tf !== tf) return true; // användaren hann byta
+    STATE.candleData[sym+"|"+tf] = d.klines;
+    STATE.livePrices[sym] = d.klines[d.klines.length-1].close;
+    candleSeries.setData(d.klines.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
+    applyIndicators(d.klines);
+    updatePriceHeader(d.klines);
+    startBybitChartStream(sym, tf);
+    return true;
+  }catch(_){ return false; }
+}
+
+function bybitChartLive(){ return bybitChart.ws && bybitChart.ws.readyState === 1 && Date.now() - bybitChart.lastMsg < 5000; }
+
+function startBybitChartStream(sym, tf){
+  const iv = BYBIT_IV[tf];
+  const key = sym+"|"+tf;
+  if(!iv) return;
+  if(bybitChart.key === key && bybitChart.ws && bybitChart.ws.readyState <= 1) return;
+  stopBybitChartStream();
+  bybitChart.key = key;
+  let ws;
+  try { ws = new WebSocket(BYBIT_WS_URLS[bybitChart.urlIdx % BYBIT_WS_URLS.length]); } catch(_){ return; }
+  bybitChart.ws = ws;
+  ws.onopen = ()=>{
+    ws.send(JSON.stringify({op:"subscribe", args:[`kline.${iv}.${sym}`, `tickers.${sym}`]}));
+    bybitChart.ping = setInterval(()=>{ try{ ws.send('{"op":"ping"}'); }catch(_){} }, 20000);
+  };
+  ws.onmessage = (ev)=>{
+    if(bybitChart.ws !== ws || STATE.symbol+"|"+STATE.tf !== key) return;
+    let msg; try { msg = JSON.parse(ev.data); } catch(_){ return; }
+    if(!msg.topic || !msg.data) return;
+    const data = STATE.candleData[key];
+    if(!data || !data.length) return;
+    bybitChart.lastMsg = Date.now();
+    if(msg.topic.startsWith("kline.")){
+      for(const k of (Array.isArray(msg.data) ? msg.data : [msg.data])){
+        const bar = {time:Math.floor(Number(k.start)/1000), open:+k.open, high:+k.high, low:+k.low, close:+k.close, volume:+k.volume};
+        const last = data[data.length-1];
+        if(bar.time === last.time) Object.assign(last, bar);
+        else if(bar.time > last.time){ data.push(bar); if(data.length > 1000) data.shift(); }
+        else continue;
+        candleSeries.update({time:bar.time, open:bar.open, high:bar.high, low:bar.low, close:bar.close});
+      }
+    } else if(msg.topic.startsWith("tickers.")){
+      const price = +msg.data.lastPrice;
+      if(!(price > 0)) return;
+      const last = data[data.length-1];
+      last.close = price; last.high = Math.max(last.high, price); last.low = Math.min(last.low, price);
+      candleSeries.update({time:last.time, open:last.open, high:last.high, low:last.low, close:last.close});
+    }
+    const last = data[data.length-1];
+    STATE.livePrices[sym] = last.close;
+    STATE.livePrices[sym.replace(/USDC$|USDT$/, "")] = last.close;
+    document.getElementById("cur-price").textContent = formatPrice(last.close, sym);
+    if(Date.now() - bybitChart.lastInd >= 1000){
+      bybitChart.lastInd = Date.now();
+      applyIndicators(data);
+      updatePriceHeader(data);
+      const ind = document.getElementById("data-source-indicator");
+      if(ind) ind.innerHTML = `<span style="color:var(--green)">●</span> Bybit live · WebSocket · ${new Date().toLocaleTimeString().slice(0,8)}`;
+    }
+  };
+  ws.onclose = ()=>{
+    if(bybitChart.ws !== ws) return;
+    clearInterval(bybitChart.ping);
+    bybitChart.ws = null;
+    bybitChart.urlIdx++;  // nästa gång: prova den andra adressen
+    bybitChart.retry = setTimeout(()=>{ if(STATE.symbol+"|"+STATE.tf === key) startBybitChartStream(sym, tf); }, 3000);
+  };
+  ws.onerror = ()=>{ /* onclose återansluter */ };
+}
+
+function stopBybitChartStream(){
+  clearInterval(bybitChart.ping); clearTimeout(bybitChart.retry);
+  const ws = bybitChart.ws;
+  bybitChart.ws = null; bybitChart.key = null;
+  if(ws){ try{ ws.close(); }catch(_){} }
 }
 
 function applyIndicators(data){
@@ -3571,7 +3668,8 @@ function tick(){
   const key = STATE.symbol+"|"+STATE.tf;
   const data = STATE.candleData[key];
   // Med riktiga priser kan livepriset saknas tills första hämtningen är klar.
-  if(data && data.length && STATE.livePrices[STATE.symbol] != null){
+  // När Bybit-strömmen är live sköter den sista ljuset själv.
+  if(data && data.length && STATE.livePrices[STATE.symbol] != null && !bybitChartLive()){
     const last = data[data.length-1];
     last.close = STATE.livePrices[STATE.symbol];
     last.high = Math.max(last.high, last.close);
@@ -6693,13 +6791,14 @@ async function pollBinancePrices(){
     if(data.prices){
       let count = 0;
       for(const [sym, price] of Object.entries(data.prices)){
-        STATE.livePrices[sym] = price;
+        // Diagrammets par får sitt pris från Bybit-strömmen när den är live.
+        if(!(sym === STATE.symbol && bybitChartLive())) STATE.livePrices[sym] = price;
         count++;
       }
       binanceLastUpdate = Date.now();
       // UI-indikator
       const ind = document.getElementById("data-source-indicator");
-      if(ind && count > 0){
+      if(ind && count > 0 && !bybitChartLive()){
         ind.innerHTML = `<span style="color:var(--green)">●</span> Binance live · ${count} symbols · ${new Date().toLocaleTimeString().slice(0,8)}`;
       }
     }
@@ -7921,7 +8020,8 @@ function initApp(){
     loadFromBackend(); startSSE(); loadCurrentMode(); syncBrokers();
     startBinancePolling();
     // Hämta om riktiga ljus regelbundet så nya ljus dyker upp i diagrammet.
-    setInterval(()=>{ if(useRealPrices(STATE.symbol)) loadRealCandles(STATE.symbol, STATE.tf); }, 30000);
+    // (med Bybit-strömmen live behövs ingen omhämtning; den är bara reserv)
+    setInterval(()=>{ if(useRealPrices(STATE.symbol) && !bybitChartLive()) loadRealCandles(STATE.symbol, STATE.tf); }, 30000);
   }
 }
 
