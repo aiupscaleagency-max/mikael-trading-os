@@ -1853,8 +1853,8 @@ body.app-state-onboard .fc-panel{display:none !important}
   <!-- RIGHT: BET PANEL -->
   <div class="right">
     <div class="card bet-panel">
-      <h3>Snabb-trade <span class="tag">UP / DOWN</span><span class="sim-badge" title="Låtsasdata i webbläsaren. Ingen riktig order, ingen riktig analys.">SIMULERING</span></h3>
-      <div class="sim-note">Låtsas-vad i webbläsaren med påhittad utbetalning (85%). Ingen order skickas till någon mäklare.</div>
+      <h3>Snabb-trade <span class="tag">UP / DOWN</span><span class="sim-badge" id="bet-badge" title="Låtsasdata i webbläsaren. Ingen riktig order, ingen riktig analys.">SIMULERING</span></h3>
+      <div class="sim-note" id="bet-note">Låtsas-vad i webbläsaren med påhittad utbetalning (85%). Ingen order skickas till någon mäklare.</div>
       <label style="font-size:10px;color:var(--dim)">Par</label>
       <select id="bet-sym"></select>
       <label style="font-size:10px;color:var(--dim)">Tidshorisont</label>
@@ -3807,12 +3807,39 @@ function updateTickerStrip(){
 /* ======================================================================
    BET / POSITIONS
    ====================================================================== */
+// Kopplad till boten: CALL = köp, PUT = sälj, som en riktig order i Väntande
+// ordrar hos aktiv mäklare (TEST = Alpaca paper). Inget läggs förrän du trycker
+// Godkänn, och samma gränser gäller som för alla andra ordrar.
+function betsAreReal(){ return CFG.mode === "live"; }
+function syncBetLabels(){
+  const real = betsAreReal();
+  const badge = document.getElementById("bet-badge"), note = document.getElementById("bet-note");
+  if(badge){ badge.textContent = real ? "VÄNTANDE ORDER" : "SIMULERING"; badge.title = real ? "Lägger en riktig order i Väntande ordrar. Inget skickas förrän du trycker Godkänn." : "Låtsasdata i webbläsaren. Ingen riktig order, ingen riktig analys."; }
+  if(note) note.textContent = real
+    ? "CALL = köp, PUT = sälj (krypto går inte att blanka, så PUT kräver att du äger myntet). Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. Tidshorisonten är en påminnelse; ordern stängs inte av sig själv."
+    : "Låtsas-vad i webbläsaren med påhittad utbetalning (85%). Ingen order skickas till någon mäklare.";
+}
+async function placeRealBet(direction, sym, tf, amt){
+  const side = direction === "UP" ? "BUY" : "SELL";
+  try{
+    const r = await fetch("/api/pending-orders", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol: sym, side, quoteUsd: amt, source: "snabb-trade",
+        reason: `Snabb-trade ${direction === "UP" ? "CALL" : "PUT"} · tidshorisont ${tf >= 60 ? Math.round(tf/60) + " min" : tf + " s"}` }),
+    });
+    const d = await r.json().catch(()=>({}));
+    if(!d.ok){ alert("Ordern lades inte i kön.\n\n" + (d.error || ("HTTP " + r.status))); return; }
+    pushInAppAlert(`⏳ ${side === "BUY" ? "KÖP" : "SÄLJ"} ${sym} $${amt} ligger i Väntande ordrar. Tryck Godkänn för att lägga den.`, 7000);
+  }catch(e){ alert("Fel: " + e.message); }
+}
+
 function placeBet(direction){
   if(!requireTradingKeys(`Lägga ${direction}-trade`)) return;
   if(STATE.killActive){ alert("Kill switch är aktiverad — inga nya trades."); return; }
   const sym = document.getElementById("bet-sym").value;
   const tf = STATE.betTf;
   const amt = parseFloat(document.getElementById("bet-amt").value) || 10;
+  if(betsAreReal()){ placeRealBet(direction, sym, tf, amt); return; }
   const entry = STATE.livePrices[sym] ?? BASE_PRICES[sym];
   const expires = Date.now() + tf*1000;
   STATE.positions.push({
@@ -7202,6 +7229,7 @@ function wire(){
     const el = document.getElementById("bet-auto-val");
     if(el) el.textContent = calcAutoPositionSize();
   }, 5000);
+  syncBetLabels();
   document.getElementById("bet-call").addEventListener("click",()=>placeBet("UP"));
   document.getElementById("bet-put").addEventListener("click",()=>placeBet("DOWN"));
 
