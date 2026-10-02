@@ -70,6 +70,7 @@ const TEAM: Array<{ id: string; name: string; role: string; model: () => string 
   { id: "review-ai", name: "AI-granskare", role: "granskar strategins köp", model: () => "väljs per signal" },
   { id: "paper", name: "Poängtavla", role: "låtsasaffärer (TEST)", model: () => "kod" },
   { id: "orders", name: "Väntande order", role: "väntar på ditt OK", model: () => "kod" },
+  { id: "mike", name: "Mike", role: "dina handlingar i Trading OS", model: () => "du" },
 ];
 
 function blank(id: string, name: string, role: string, model: string, group: AgentNode["group"]): AgentNode {
@@ -166,6 +167,13 @@ export function agentNote(id: string, note: string, from?: string): void {
 export const agentDone = (id: string, note = "klar") => finish(id, "done", "done", note);
 export const agentFail = (id: string, note: string) => finish(id, "failed", "fail", note);
 export const agentSkip = (id: string, note: string) => finish(id, "skipped", "skip", note);
+
+/** Något Mike gjorde i Trading OS (godkände, avvisade, kill switch, strategi …) — syns i trädet direkt. */
+export function userAction(note: string, opts: { to?: string; coin?: string | null } = {}): void {
+  agentStart("mike", note, { coin: opts.coin ?? null });
+  if (opts.to) agentNote(opts.to, note, "mike");
+  agentDone("mike", note);
+}
 
 /** Kör fn och markerar noden som jobbar/klar/fel. Felet kastas vidare oförändrat. */
 export async function track<T>(id: string, note: string, fn: () => Promise<T>, opts: { from?: string; coin?: string | null; done?: (r: T) => string; stopped?: (r: T) => string | null } = {}): Promise<T> {

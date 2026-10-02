@@ -15,7 +15,7 @@ import path from "node:path";
 import { getMarketStreamStatus } from "./marketStream.js";
 import { getKlineStreamStatus } from "./klineStream.js";
 import { getJevStatus } from "./jevClient.js";
-import { snapshot as agentTreeSnapshot, registerStrategies } from "./agentActivity.js";
+import { snapshot as agentTreeSnapshot, registerStrategies, userAction } from "./agentActivity.js";
 import {
   startStrategyRunner, syncStrategies, getStrategySignals, getStrategyPositions, queueSignal,
   resetStrategyPosition, getRunnerStatus, getRunnerCandles, pairOf,
@@ -294,7 +294,7 @@ export async function handleLiveRoutes(
 
     if (p === "/api/strategies" && method === "POST") {
       const r = await upsertStrategy(await bodyJson(req));
-      if (r.ok) await syncStrategies();
+      if (r.ok) { await syncStrategies(); userAction(`skapade strategin ${r.strategy.name}`, { to: `strategy:${r.strategy.id}` }); }
       send(res, r.ok ? 200 : 400, r);
       return true;
     }
@@ -378,6 +378,7 @@ export async function handleLiveRoutes(
         if (action === "train" && method === "POST") {
           if (training.has(id)) { send(res, 409, { ok: false, error: "Strategin tränas redan, vänta en stund." }); return true; }
           training.add(id);
+          userAction(`tränar strategin ${s.name}`, { to: `strategy:${id}` });
           try {
             const b = await bodyJson(req);
             const candles = Math.min(5000, Math.max(500, Number(b.candles) || 3000));
@@ -408,6 +409,7 @@ export async function handleLiveRoutes(
           // Det gamla sparas i träningsfilen så att det går att gå tillbaka.
           const previous = { entry: s.entry, exit: s.exit, stopAtr: s.stopAtr, targetAtr: s.targetAtr };
           const r = await upsertStrategy({ ...t.best.params }, id);
+          if (r.ok) userAction(`använde träningsförslaget för ${s.name}`, { to: `strategy:${id}` });
           if (!r.ok) { send(res, 400, r); return true; }
           all[id] = { ...t, appliedAt: new Date().toISOString(), previous };
           await writeTrainings(all);
@@ -441,6 +443,7 @@ export async function handleLiveRoutes(
         const action = m[2];
         if (action === "delete") {
           const ok = await deleteStrategy(id);
+          if (ok) userAction("tog bort en strategi", { to: `strategy:${id}` });
           resetStrategyPosition(id);
           send(res, ok ? 200 : 404, { ok });
           return true;
@@ -469,7 +472,7 @@ export async function handleLiveRoutes(
           return true;
         }
         const r = await upsertStrategy(await bodyJson(req), id);
-        if (r.ok) await syncStrategies();
+        if (r.ok) { await syncStrategies(); userAction(`ändrade strategin ${r.strategy.name} (${r.strategy.enabled ? "på" : "av"})`, { to: `strategy:${id}` }); }
         send(res, r.ok ? 200 : 400, r);
         return true;
       }
