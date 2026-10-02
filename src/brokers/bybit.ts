@@ -53,12 +53,15 @@ function decimals(step: string): number {
 }
 
 export class BybitBroker implements BrokerAdapter {
-  readonly name = "bybit";
-  readonly mode = "live" as const;
+  readonly name: string;
+  // "paper" = Bybits demokonto (Demo Trading): samma börs, par och priser som LIVE, fast låtsaspengar.
+  readonly mode: "paper" | "live";
   private readonly cfg: BybitConfig;
   private instCache = new Map<string, BybitInstrument>();
 
-  constructor(cfg: Partial<BybitConfig> & { apiKey: string; apiSecret: string }) {
+  constructor(cfg: Partial<BybitConfig> & { apiKey: string; apiSecret: string; demo?: boolean }) {
+    this.mode = cfg.demo ? "paper" : "live";
+    this.name = cfg.demo ? "bybit-demo" : "bybit";
     this.cfg = {
       quote: (cfg.quote || "USDC").toUpperCase(),
       baseUrl: cfg.baseUrl || "https://api.bybit.eu",

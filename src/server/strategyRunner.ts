@@ -352,9 +352,9 @@ export async function queueSignal(signalId: string, venueOverride?: "test" | "li
 
   let brokerName: string | undefined;
   if (venue === "live") brokerName = brokersRef.bybit ? "bybit" : Object.keys(brokersRef).find((n) => brokersRef[n]!.mode === "live");
-  else brokerName = Object.keys(brokersRef).find((n) => brokersRef[n]!.mode === "paper");
+  else brokerName = brokersRef["bybit-demo"] ? "bybit-demo" : Object.keys(brokersRef).find((n) => brokersRef[n]!.mode === "paper");
   const broker = brokerName ? brokersRef[brokerName] : undefined;
-  if (!broker || !brokerName) return fail(venue === "live" ? "Ingen LIVE-mäklare (Bybit) är kopplad" : "Ingen TEST-mäklare (Alpaca paper) är kopplad");
+  if (!broker || !brokerName) return fail(venue === "live" ? "Ingen LIVE-mäklare (Bybit) är kopplad" : "Ingen TEST-mäklare (Bybit demo eller Alpaca paper) är kopplad");
   const live = broker.mode === "live";
 
   const symbol = `${sig.coin}USDT`; // mäklarna mappar själva (Bybit → USDC, Alpaca → BTC/USD)
