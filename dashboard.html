@@ -1482,6 +1482,81 @@ body.app-state-onboard .fc-panel{display:none !important}
 
   <p id="sigReasons" style="margin:12px 2px 0;font-size:12px;color:#8b95a7;line-height:1.6"></p>
 
+  <!-- Senaste analysen: vad agenterna kom fram till efter "Kör analys" (eller schemat).
+       Läser /api/live/analysis. Bara visning; ordrar läggs fortfarande via Väntande ordrar. -->
+  <div id="analysisBox" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <strong style="font-size:13px">Senaste analys <span style="color:#8b95a7;font-weight:400">· vad agenterna föreslår</span></strong>
+      <span style="display:flex;gap:8px;align-items:center">
+        <span id="analysisMeta" style="font-size:12px;color:#8b95a7"></span>
+        <button id="analysisRun" style="padding:4px 12px;border:1px solid #3fb950;background:#0d2a14;color:#3fb950;border-radius:6px;font-weight:700;cursor:pointer">▶ Kör analys</button>
+      </span>
+    </div>
+    <div id="analysisRows" style="margin-top:8px;font-size:13px;color:#8b95a7">Ingen analys än. Tryck Kör analys.</div>
+  </div>
+  <script>
+  (function () {
+    var rows = document.getElementById("analysisRows"), meta = document.getElementById("analysisMeta"), btn = document.getElementById("analysisRun");
+    function esc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (ch) { return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch]; }); }
+    function hhmm(iso) { return iso ? new Date(iso).toLocaleTimeString("sv-SE").slice(0, 5) : ""; }
+    var ACTION = { buy: "KÖP", sell: "SÄLJ", hold: "AVVAKTA", sell_put: "SÄLJ PUT", sell_call: "SÄLJ CALL" };
+    async function load() {
+      try {
+        var r = await fetch("/api/live/analysis");
+        if (!r.ok) return;
+        var a = (await r.json()).analysis;
+        if (!a) return;
+        var who = a.trigger === "manuell" ? "du startade" : "schemat";
+        if (a.status === "running") {
+          meta.textContent = "pågår sedan " + hhmm(a.startedAt) + " (" + who + ")";
+          rows.innerHTML = '<span style="color:#fbbf24">● Agenterna analyserar nu. Följ dem i fliken Träd.</span>';
+          btn.disabled = true; return;
+        }
+        btn.disabled = false;
+        meta.textContent = hhmm(a.endedAt) + " · " + who;
+        if (a.status !== "done") {
+          rows.innerHTML = '<span style="color:#f87171">✕ ' + esc(a.reason || "Analysen stoppades.") + '</span>';
+          return;
+        }
+        var html = "";
+        var picks = (a.picks || []).filter(function (p) { return p.action !== "hold"; });
+        if (picks.length) {
+          html += picks.map(function (p) {
+            var col = p.action === "buy" ? "#3fb950" : "#f87171";
+            return '<div style="display:flex;gap:10px;align-items:baseline;padding:4px 0;border-top:1px solid #1e2430">'
+              + '<b style="color:#e6e6e6;min-width:90px">' + esc(p.symbol) + '</b>'
+              + '<b style="color:' + col + ';min-width:56px">' + esc(ACTION[p.action] || p.action) + '</b>'
+              + '<span style="min-width:60px">$' + esc(p.sizeUsd) + '</span>'
+              + '<span style="min-width:70px">säkerhet ' + esc({low:"låg",medium:"medel",high:"hög"}[p.confidence] || p.confidence) + '</span>'
+              + '<span style="flex:1">' + esc(p.reasoning) + '</span></div>';
+          }).join("");
+        } else {
+          html += '<div>Inget köp eller sälj föreslogs den här gången' + (a.regime ? " (marknaden: " + esc(a.regime) + ")" : "") + '.</div>';
+        }
+        if ((a.orders || []).length) {
+          html += '<div style="margin-top:8px;font-size:11px;text-transform:uppercase;letter-spacing:.4px">Ordrar</div>'
+            + a.orders.map(function (o) {
+              var ok = /väntar/.test(o.status) ? "#fbbf24" : /stoppad/.test(o.status) ? "#f87171" : "#3fb950";
+              return '<div>' + esc(o.side) + " " + esc(o.symbol) + (o.usd != null ? " $" + esc(o.usd) : "") + ' · <span style="color:' + ok + '">' + esc(o.status) + '</span></div>';
+            }).join("");
+        }
+        if (a.summary) html += '<details style="margin-top:8px"><summary style="cursor:pointer">Hannas motivering</summary><div style="white-space:pre-wrap;margin-top:4px">' + esc(a.summary) + '</div></details>';
+        rows.innerHTML = html;
+      } catch (_) { /* servern nere — behåll senaste vyn */ }
+    }
+    btn.addEventListener("click", async function () {
+      btn.disabled = true;
+      try {
+        var r = await fetch("/api/run-agent", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        if (!r.ok) alert("Analysen kunde inte startas (" + r.status + ").");
+      } catch (err) { alert("Fel: " + err.message); }
+      setTimeout(load, 500);
+    });
+    load();
+    setInterval(load, 3000);
+  })();
+  </script>
+
   <div id="pendingBox" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
       <strong style="font-size:13px">Väntande ordrar <span style="color:#8b95a7;font-weight:400">· inget läggs förrän du trycker Godkänn</span></strong>

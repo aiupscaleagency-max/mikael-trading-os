@@ -1,5 +1,5 @@
 import http from "node:http";
-import { userAction, agentDone, agentFail } from "./agentActivity.js";
+import { userAction, agentDone, agentFail, analysisStart, analysisEnd, getAnalysis } from "./agentActivity.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
@@ -1205,9 +1205,17 @@ export function startServer(
         json(res, { ok: true, message: "Agent-turn startar...", instruction });
 
         // Kör async utan att blocka response
-        runAgentCallback(instruction).catch((err) => {
-          log.error(`Manuell turn misslyckades: ${err instanceof Error ? err.message : String(err)}`);
-        });
+        analysisStart("manuell", instruction);
+        runAgentCallback(instruction)
+          .then(() => {
+            // Turen kom aldrig till agenterna (t.ex. kill switch eller ingen mäklare).
+            if (getAnalysis()?.status === "running") analysisEnd({ status: "stopped", reason: "Analysen kördes inte: kill switch på eller ingen mäklare kopplad." });
+          })
+          .catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.error(`Manuell turn misslyckades: ${msg}`);
+            if (getAnalysis()?.status === "running") analysisEnd({ status: "failed", reason: `Analysen misslyckades: ${msg.slice(0, 200)}` });
+          });
         return;
       }
 
