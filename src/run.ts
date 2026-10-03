@@ -68,6 +68,18 @@ function createBrokers(): Record<string, BrokerAdapter> {
     });
   }
 
+  // Bybit Demo Trading: TEST på exakt samma börs, par, priser och USDC som LIVE.
+  // Finns den väljs den före Alpaca paper som TEST-mäklare.
+  if (config.bybitDemo.enabled) {
+    brokers["bybit-demo"] = new BybitBroker({
+      apiKey: config.bybitDemo.apiKey,
+      apiSecret: config.bybitDemo.apiSecret,
+      quote: config.bybitDemo.quote,
+      baseUrl: config.bybitDemo.baseUrl,
+      demo: true,
+    });
+  }
+
   if (config.kraken.enabled) {
     brokers.kraken = new KrakenBroker({
       apiKey: config.kraken.apiKey,
@@ -189,7 +201,7 @@ async function runOnce(
   const activeName = getActiveBrokerName();
   const primaryBroker = activeName
     ? brokers[activeName]
-    : (brokers.alpaca ?? brokers.blofin ?? brokers.binance);
+    : (brokers["bybit-demo"] ?? brokers.alpaca ?? brokers.blofin ?? brokers.binance);
   if (!primaryBroker) {
     log.error("Ingen broker tillgänglig.");
     return;
