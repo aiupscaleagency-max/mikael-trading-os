@@ -23,7 +23,7 @@ import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
 import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
-import { checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, MAX_TEST_STAKE_USD, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
+import { checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
@@ -995,7 +995,7 @@ export function startServer(
           // Ärligt svar till UI:t: kan LIVE över huvud taget användas just nu?
           liveAllowed: liveAllowedByServer(),
           liveKeys: { binance: !!binanceLiveCreds, oanda: !!oandaCreds && !oandaCreds.practice, alpaca: Object.values(brokers).some((b) => b.name === "alpaca" && b.mode === "live"), kraken: !!brokers.kraken, bybit: !!brokers.bybit },
-          limits: { maxLiveStakeUsd: MAX_LIVE_STAKE_USD, maxTestStakeUsd: MAX_TEST_STAKE_USD, maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD, liveSpentTodayUsd: getLiveSpentTodayUsd() },
+          limits: { maxLiveStakeUsd: MAX_LIVE_STAKE_USD, maxTestStakeUsd: testStakeCapUsd(), maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD, liveSpentTodayUsd: getLiveSpentTodayUsd() },
         });
         return;
       }
@@ -1943,7 +1943,7 @@ Regler:
             maxLiveStakeUsd: MAX_LIVE_STAKE_USD,
             maxLiveDailyLossUsd: MAX_LIVE_DAILY_LOSS_USD,
             liveDailyLossUsd,
-            maxTestStakeUsd: MAX_TEST_STAKE_USD,
+            maxTestStakeUsd: testStakeCapUsd(),
             maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD,
             liveSpentTodayUsd: getLiveSpentTodayUsd(),
             liveAllowed: liveAllowedByServer(),

@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { config } from "../config.js";
 import { loadState } from "../memory/store.js";
 import { log } from "../logger.js";
+import { currentStake } from "../risk/stakeLadder.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ORDER-GRIND — en enda kontroll som ALLA order-vägar går igenom
@@ -23,6 +24,13 @@ import { log } from "../logger.js";
 
 export const MAX_LIVE_STAKE_USD = parseFloat(process.env.MAX_LIVE_STAKE_USD || "5");
 export const MAX_TEST_STAKE_USD = parseFloat(process.env.MAX_TEST_STAKE_USD || "100");
+
+/** TEST-tak per order: insats-trappan (1 % → 5 % av låtsaskontot), annars MAX_TEST_STAKE_USD. */
+export function testStakeCapUsd(): number {
+  if (process.env.MAX_TEST_STAKE_USD) return MAX_TEST_STAKE_USD;
+  const s = currentStake();
+  return s && s.usd > 0 ? s.usd : MAX_TEST_STAKE_USD;
+}
 export const MAX_LIVE_DAILY_SPEND_USD = parseFloat(
   process.env.MAX_LIVE_DAILY_SPEND_USD || process.env.MAX_LIVE_DAILY_LOSS_USD || "10",
 );
@@ -90,7 +98,7 @@ export async function checkOrderGate(input: GateInput): Promise<GateResult> {
     if (!Number.isFinite(amt) || amt <= 0) {
       return deny("Beloppet saknas eller är ogiltigt.");
     }
-    const cap = input.live ? MAX_LIVE_STAKE_USD : MAX_TEST_STAKE_USD;
+    const cap = input.live ? MAX_LIVE_STAKE_USD : testStakeCapUsd();
     if (amt > cap) {
       return deny(`Max $${cap} per order i ${input.live ? "LIVE" : "TEST"}. Du försökte $${amt}.`);
     }

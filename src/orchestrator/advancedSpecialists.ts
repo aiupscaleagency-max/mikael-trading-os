@@ -26,6 +26,29 @@ const specialistModel = () => modelFor("specialist", "claude-haiku-4-5-20251001"
 
 // ── Risk-analytiker ──
 
+// Risk-prompten ber om portfolioHeat/overallRisk/suggestedPositionSize medan
+// RiskReport (och Hanna) läser portfolioHeatPct/riskLevel/suggestedPositionSizing.
+// Översätt så att siffrorna faktiskt når Hanna.
+const RISK_LEVEL: Record<string, RiskReport["riskLevel"]> = {
+  conservative: "low", moderate: "medium", aggressive: "high", dangerous: "critical",
+  low: "low", medium: "medium", high: "high", critical: "critical",
+};
+function normalizeRisk(p: any): Omit<RiskReport, "role" | "rawText"> {
+  const dd = p.maxDrawdownScenario;
+  const size = p.suggestedPositionSizing ?? { maxNewPositionUsd: Number(p.suggestedPositionSize) || 0, reasoning: p.recommendation ?? "" };
+  return {
+    ...p,
+    portfolioHeatPct: Number(p.portfolioHeatPct ?? p.portfolioHeat) || 0,
+    riskLevel: RISK_LEVEL[String(p.riskLevel ?? p.overallRisk ?? "").toLowerCase()] ?? "high",
+    correlationRisk: p.correlationRisk ?? "medium",
+    correlationDetails: p.correlationDetails ?? (Array.isArray(p.correlatedPairs) ? p.correlatedPairs.map((c: any) => `${c.pair} ${c.correlation}`).join(", ") : ""),
+    maxDrawdownScenario: typeof dd === "object" && dd ? dd : { description: String(dd ?? ""), estimatedLossUsd: 0, estimatedLossPct: 0 },
+    suggestedPositionSizing: size,
+    warnings: Array.isArray(p.warnings) ? p.warnings : [],
+    recommendation: p.recommendation ?? "",
+  };
+}
+
 export async function runRiskAnalyst(
   apiKey: string,
   broker: BrokerAdapter,
@@ -120,11 +143,11 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(extractJson(text)) as Omit<RiskReport, "role" | "rawText">;
+    const parsed = normalizeRisk(JSON.parse(extractJson(text)));
     log.agent(`[Risk] Nivå: ${parsed.riskLevel}, Heat: ${parsed.portfolioHeatPct}%`);
     return { role: "risk_analyst", ...parsed, rawText: text };
   } catch {
-    log.warn("[Risk] Kunde inte parsa JSON, returnerar fallback.");
+    log.warn(`[Risk] Kunde inte parsa JSON (stop_reason=${response.stop_reason}), returnerar fallback.`);
     return {
       role: "risk_analyst",
       portfolioHeatPct: 0,

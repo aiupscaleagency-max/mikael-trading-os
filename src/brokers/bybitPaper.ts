@@ -40,7 +40,7 @@ interface PaperState {
   usdc: number;
   holdings: Record<string, Holding>;
   open: OpenOrder[];
-  fills: Array<{ id: string; base: string; side: string; qty: number; price: number; fee: number; at: number; kind: string }>;
+  fills: Array<{ id: string; base: string; side: string; qty: number; price: number; fee: number; at: number; kind: string; pnl?: number }>;
 }
 
 export class BybitPaperBroker implements BrokerAdapter {
@@ -134,6 +134,7 @@ export class BybitPaperBroker implements BrokerAdapter {
   // reserved=true: väntande ordrar räknas bort (nya ordrar). false: en väntande order som nu fylls.
   private fill(base: string, side: "BUY" | "SELL", qty: number, price: number, kind: string, reserved = true): { qty: number; cost: number } {
     const cost = qty * price, fee = cost * FEE;
+    let pnl: number | undefined;
     if (side === "BUY") {
       const free = this.state.usdc - (reserved ? this.reservedUsdc() : 0);
       if (cost + fee > free + 1e-9) throw new Error(`TEST: för lite USDC (fritt ${free.toFixed(2)}, behöver ${(cost + fee).toFixed(2)})`);
@@ -146,11 +147,12 @@ export class BybitPaperBroker implements BrokerAdapter {
       const h = this.state.holdings[base];
       const free = (h?.qty ?? 0) - (reserved ? this.reservedQty(base) : 0);
       if (!h || free + 1e-12 < qty) throw new Error(`TEST: du har bara ${Math.max(0, free)} ${base} fritt`);
+      pnl = (price - h.avg) * qty - fee; // vinst/förlust på affären (köpavgiften ligger i snittpriset)
       h.qty -= qty;
       if (h.qty <= 1e-12) delete this.state.holdings[base];
       this.state.usdc += cost - fee;
     }
-    this.state.fills.push({ id: `f${Date.now()}`, base, side, qty, price, fee, at: Date.now(), kind });
+    this.state.fills.push({ id: `f${Date.now()}`, base, side, qty, price, fee, at: Date.now(), kind, pnl });
     console.log(`[TEST] ${side === "BUY" ? "KÖP" : "SÄLJ"} ${qty} ${base} @ ${price} USDC (Bybit EU orderbok, ${kind}), avgift ${fee.toFixed(4)}`);
     if (this.state.fills.length > 500) this.state.fills.shift();
     return { qty, cost };

@@ -159,7 +159,7 @@ export async function runTechnicalAnalyst(
   const client = createLlmClient(apiKey);
   const response = await client.messages.create({
     model: specialistModel(),
-    max_tokens: 4000,
+    max_tokens: 8000, // 4000 räckte inte för 15 par — svaret klipptes och kunde inte läsas
     system: `Du är en senior kvantitativ trader i samma stil som Citadel: kombinerar teknisk analys med statistiska modeller för att tajma in/ut.
 Din uppgift: leverera en fullständig teknisk analys för varje symbol — inte bara siffror, utan tolkning + actionable plan.
 
@@ -224,7 +224,7 @@ Svara BARA med JSON.`,
     log.agent(`[Teknisk] Top pick: ${parsed.topPick ?? "ingen"}, ${parsed.analyses.length} symboler`);
     return { role: "technical_analyst", ...parsed, rawText: text };
   } catch {
-    log.warn("[Teknisk] Parsningsfel.");
+    log.warn(`[Teknisk] Parsningsfel (stop_reason=${response.stop_reason}, ${text.length} tecken).`);
     return { role: "technical_analyst", analyses: [], topPick: null, rawText: text };
   }
 }

@@ -42,6 +42,19 @@ const headTraderModel = () => modelFor("head", "claude-sonnet-4-6");
 // gjorde att destrukturering av det gav typfel trots att fältet finns
 // i objektet som faktiskt skickas in.
 import type { AllReports } from "./orchestrator.js";
+import { currentStake } from "../risk/stakeLadder.js";
+
+/** Insats-principen (Mike 2026-10-03): 1 % per trade, sedan stegvis upp mot 3–5 %. */
+function stakeBlock(): string {
+  const s = currentStake();
+  if (!s) return "";
+  return `INSATS (TEST-kontot $${Math.round(s.equityUsd)}): satsa ${s.pct} % av kontot = $${s.usd} per trade.
+  • Princip: börja på 1 % per trade. Insatsen höjs stegvis (2 → 3 → 4 → 5 %) först när
+    avslutade trades visar vinst och träffsäkerhet. Förlustsvit → tillbaka till 1 %.
+  • Nu: ${s.reason} (${s.closed} avslutade, träff ${Math.round(s.winRate * 100)} %, resultat $${s.totalPnl.toFixed(2)}).
+  • Använd $${s.usd} som storlek i TEST (risk-managern tar inte större). LIVE har egna, lägre tak.
+`;
+}
 export type { AllReports };
 
 export interface HeadTraderResult {
@@ -225,7 +238,7 @@ Du SYNTETISERAR alla 9 rapporter och fattar det slutgiltiga beslutet. Du har ver
 Mode: ${config.mode.toUpperCase()} | Execution: ${config.executionMode}
 Kill-switch: ${state.killSwitchActive ? "AKTIV" : "OK"}
 Dagens PnL: ${state.dailyRealizedPnlUsdt.toFixed(2)} USDT
-Position-sizing (USD per trade):
+${stakeBlock()}Position-sizing (USD per trade):
   • DEFAULT: ${config.risk.defaultPositionUsd} (din standardstorlek)
   • MIN: ${config.risk.minPositionUsd} | MAX: ${config.risk.maxPositionUsd}
   • Total exponering: max ${config.risk.maxTotalExposureUsd} USD

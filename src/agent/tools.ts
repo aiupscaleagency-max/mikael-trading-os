@@ -233,6 +233,7 @@ export const TOOLS: Record<string, ToolDef> = {
         account,
         positions: positions as Position[],
         lastPrice: ticker.price,
+        paper: ctx.broker.mode !== "live",
       });
 
       if (!check.allowed) {
