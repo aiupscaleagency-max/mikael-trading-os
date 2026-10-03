@@ -17,7 +17,8 @@ import { Scheduler, createDefaultSchedule } from "./scheduler.js";
 import { runOrchestratedTurn } from "./orchestrator/orchestrator.js";
 import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback } from "./server/api.js";
 import { startKlineStream } from "./server/klineStream.js";
-import { startSignalEngine } from "./server/signalEngine.js";
+import { startSignalEngine, subscribeSignals } from "./server/signalEngine.js";
+import { prescreenPairs, prescreenEnabled, rememberPrescreen } from "./orchestrator/prescreen.js";
 import { log } from "./logger.js";
 import type { DecisionRecord } from "./types.js";
 import type { StrategyEngine } from "./strategies/types.js";
@@ -196,12 +197,33 @@ function createEngines(brokers: Record<string, BrokerAdapter>): StrategyEngine[]
 
 // ── Huvudfunktion: en turn (stödjer single-agent OCH orchestrator) ──
 
+// Bara en AI-tur åt gången (schemat och tidiga starter delar på den).
+let turnRunning = false;
+async function runTurnOnce(fn: () => Promise<void>): Promise<void> {
+  if (turnRunning) { log.info("[JEV] en tur körs redan, hoppar över"); return; }
+  turnRunning = true;
+  try { await fn(); } finally { turnRunning = false; }
+}
+
 async function runOnce(
   brokers: Record<string, BrokerAdapter>,
   engines: StrategyEngine[],
   instruction?: string,
   useTeam = true,
+  scheduled = false,
 ): Promise<void> {
+  // Försållning: signalmotorn + JEV väljer par innan AI-teamet startas.
+  // En schemalagd tur utan någon signal hoppas över helt (inga AI-anrop).
+  const screen = prescreenPairs({
+    cryptoSymbols: config.crypto.symbols,
+    otherSymbols: config.stocks.symbols,
+    instruction,
+    scheduled,
+  });
+  rememberPrescreen(screen);
+  log.info(`[JEV] försållning: ${screen.note}`);
+  if (useTeam && screen.skip) return;
+
   const state = await loadState();
 
   if (state.killSwitchActive) {
@@ -242,6 +264,7 @@ async function runOnce(
       risk,
       engines,
       userInstruction: instruction,
+      symbols: screen.symbols,
     });
     finalText = result.headTrader.decision.briefingSummary;
     toolCalls = result.headTrader.toolCalls;
@@ -430,8 +453,32 @@ async function main(): Promise<void> {
 
   scheduler.addTask({
     ...schedule.agentLoop,
-    execute: () => runOnce(brokers, engines),
+    execute: () => runTurnOnce(() => runOnce(brokers, engines, undefined, true, true)),
   });
+
+  // Tidig start: när ett par får en ny signal (stängt ljus + JEV) startar
+  // AI-teamet direkt i stället för att vänta på nästa schemalagda tur.
+  // Högst en sådan start per PRESCREEN_TRIGGER_COOLDOWN_SEC (standard 300 s,
+  // samma takt som schemat) och samma par väcker teamet högst var 15:e minut.
+  if (prescreenEnabled() && process.env.PRESCREEN_TRIGGER !== "false") {
+    const cooldownMs = (Number(process.env.PRESCREEN_TRIGGER_COOLDOWN_SEC ?? 300) || 300) * 1000;
+    const lastDir = new Map<string, string>();
+    const lastWake = new Map<string, number>();
+    let lastTrigger = 0;
+    subscribeSignals((sig) => {
+      const prev = lastDir.get(sig.symbol);
+      lastDir.set(sig.symbol, sig.direction);
+      if (sig.direction === "NEUTRAL" || prev === sig.direction) return;
+      const now = Date.now();
+      if (now - lastTrigger < cooldownMs || now - (lastWake.get(sig.symbol) ?? 0) < 15 * 60_000) return;
+      if (turnRunning) return;
+      lastTrigger = now;
+      lastWake.set(sig.symbol, now);
+      log.info(`[JEV] ny signal ${sig.symbol} ${sig.direction} (${sig.score}): AI-teamet startar tidigt`);
+      void runTurnOnce(() => runOnce(brokers, engines, undefined, true, true)).catch((err) =>
+        log.warn(`[JEV] tidig tur misslyckades: ${err instanceof Error ? err.message : String(err)}`));
+    });
+  }
 
   // LEGACY position-scan (trailing stops) DISABLED — ersatt av positionMonitor.ts
   // Den spammade 437 testnet-positioner med trailing-stop-notiser till Telegram.

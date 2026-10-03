@@ -9283,7 +9283,15 @@ document.addEventListener("DOMContentLoaded", boot);
       if(r.ok){
         const w = await r.json();
         $("ti-sig").innerHTML = `<b>${(w.signalSymbols||[]).length} par</b>: ${esc(bases(w.signalSymbols))}. Intervall <b>${esc(w.signalInterval||"–")}</b>. Indikatorerna (RSI, trend, volym) räknas om varje gång ett ljus stänger.`;
-        $("ti-agents").innerHTML = `<b>${(w.agentSymbols||[]).length} mynt</b>: ${esc(bases(w.agentSymbols))}. Analyserar automatiskt var <b>${esc(w.loopMinutes)} min</b>, eller när du trycker Kör analys. Förslagen hamnar i Väntande ordrar.`;
+        const ps = w.prescreen;
+        if(ps && ps.enabled){
+          // Försållning: signalmotorn + JEV bevakar alla par, AI-teamet körs bara på par med signal
+          const now = (ps.flaggedNow||[]).map(f=>`${esc(f.symbol.replace(/(USDT|USDC|USD)$/,""))} ${f.direction==="LONG"?"▲":"▼"}`).join(", ");
+          const lt = ps.lastTurn ? `<br><span style="color:var(--dim)">Senaste tur: ${esc(ps.lastTurn.note)}</span>` : "";
+          $("ti-agents").innerHTML = `JEV + signalmotorn bevakar <b>alla ${(w.agentSymbols||[]).length} mynt</b>. AI-teamet körs bara på mynt med signal${now ? `: <b>${now}</b>` : `, och <b>inget har signal just nu</b>`}. Kollar var ${esc(w.loopMinutes)} min och startar direkt vid ny signal.${lt}`;
+        } else {
+          $("ti-agents").innerHTML = `<b>${(w.agentSymbols||[]).length} mynt</b>: ${esc(bases(w.agentSymbols))}. Analyserar automatiskt var <b>${esc(w.loopMinutes)} min</b>, eller när du trycker Kör analys. Förslagen hamnar i Väntande ordrar.`;
+        }
       }
     }catch(_){}
     try{

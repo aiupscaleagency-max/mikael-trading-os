@@ -14,6 +14,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getMarketStreamStatus, getCachedPrice } from "./marketStream.js";
 import { getKlineStreamStatus } from "./klineStream.js";
+import { getLastPrescreen, prescreenEnabled, flaggedPairs } from "../orchestrator/prescreen.js";
 import { config } from "../config.js";
 import { getJevStatus } from "./jevClient.js";
 import { snapshot as agentTreeSnapshot, registerStrategies, userAction, agentStart, agentDone, agentFail, getAnalysis } from "./agentActivity.js";
@@ -271,6 +272,12 @@ export async function handleLiveRoutes(
         loopMinutes: Math.round(config.loopIntervalSeconds / 60),
         signalSymbols: k.symbols,
         signalInterval: k.interval,
+        // Försållning: vilka par AI-teamet skulle titta på just nu, och senaste turen
+        prescreen: {
+          enabled: prescreenEnabled(),
+          flaggedNow: flaggedPairs(config.crypto.symbols).flagged,
+          lastTurn: getLastPrescreen(),
+        },
       });
       return true;
     }

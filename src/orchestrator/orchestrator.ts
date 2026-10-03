@@ -78,6 +78,8 @@ export async function runOrchestratedTurn(params: {
   risk: RiskManager;
   engines: StrategyEngine[];
   userInstruction?: string;
+  /** Par som försållningen valt (signalmotorn + JEV). Saknas = alla par. */
+  symbols?: string[];
 }): Promise<OrchestratorResult> {
   const { config, state, broker, brokers, risk, engines, userInstruction } = params;
   const apiKey = config.anthropicApiKey;
@@ -114,7 +116,7 @@ export async function runOrchestratedTurn(params: {
   turnPhase("Fas 1 · JEV + specialister + advisor");
   const specialistStart = Date.now();
 
-  const allSymbols = [...config.crypto.symbols, ...config.stocks.symbols];
+  const allSymbols = params.symbols?.length ? params.symbols : [...config.crypto.symbols, ...config.stocks.symbols];
 
   const recentDecisions = await loadRecentDecisions(20);
   const positions = await broker.getPositions().catch(() => []);
