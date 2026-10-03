@@ -12,7 +12,7 @@ import { detectAllPatterns, type DetectedPattern } from "./patternDetection.js";
 // Cache: 60s TTL för att inte spam:a Binance
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "MATICUSDT"];
+const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "POLUSDT"];
 const CACHE_TTL_MS = 60_000;
 
 interface MarketSnapshot {

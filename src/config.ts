@@ -55,6 +55,10 @@ const schema = z.object({
   // USDC som standard: USDT är begränsat i EU
   BYBIT_QUOTE: z.string().default("USDC"),
   BYBIT_BASE_URL: z.string().default("https://api.bybit.eu"),
+  // Bybit Demo Trading (TEST på samma börs som LIVE). Nyckeln skapas i Bybit under Demo Trading → API.
+  BYBIT_DEMO_API_KEY: z.string().default(""),
+  BYBIT_DEMO_API_SECRET: z.string().default(""),
+  BYBIT_DEMO_BASE_URL: z.string().default("https://api-demo.bybit.com"),
 
   // ── Blofin (Krypto-derivat) ──
   BLOFIN_API_KEY: z.string().default(""),
@@ -112,7 +116,7 @@ const schema = z.object({
   MAX_WEEKLY_SPEND_USD: z.coerce.number().positive().default(10),
 
   // ── Symbol-listor per motor ──
-  CRYPTO_SYMBOLS: csvList.default("BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,DOGEUSDT,DOTUSDT,LINKUSDT,MATICUSDT,UNIUSDT,LTCUSDT,ATOMUSDT,NEARUSDT"),
+  CRYPTO_SYMBOLS: csvList.default("BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,DOGEUSDT,DOTUSDT,LINKUSDT,POLUSDT,UNIUSDT,LTCUSDT,ATOMUSDT,NEARUSDT"),
   STOCK_SYMBOLS: csvList.default("TSLA,NVDA,AAPL,MSFT"),
   WHEEL_UNDERLYINGS: csvList.default("TSLA,NVDA"),
   FOREX_SYMBOLS: csvList.default("EUR_USD,GBP_USD,USD_JPY,USD_CHF,AUD_USD,USD_CAD,EUR_GBP"),
@@ -163,6 +167,7 @@ const hasAlpaca = !!(env.ALPACA_KEY_ID && env.ALPACA_SECRET_KEY);
 const hasAlpacaLive = !!(env.ALPACA_LIVE_KEY_ID && env.ALPACA_LIVE_SECRET_KEY);
 const hasKraken = !!(env.KRAKEN_API_KEY && env.KRAKEN_API_SECRET);
 const hasBybit = !!(env.BYBIT_API_KEY && env.BYBIT_API_SECRET);
+const hasBybitDemo = !!(env.BYBIT_DEMO_API_KEY && env.BYBIT_DEMO_API_SECRET);
 const hasBlofin = !!(env.BLOFIN_API_KEY && env.BLOFIN_API_SECRET && env.BLOFIN_PASSPHRASE);
 const hasBinance = !!(env.BINANCE_API_KEY && env.BINANCE_API_SECRET) ||
   !!(env.BINANCE_LIVE_API_KEY && env.BINANCE_LIVE_API_SECRET);
@@ -177,7 +182,7 @@ const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 // Tidigare avbröts starten här. Det gjorde att man inte kunde titta på
 // systemet utan att först koppla ett riktigt konto — och att koppla ett
 // konto bara för att se ett diagram är fel ordning.
-const viewOnly = !hasAlpaca && !hasAlpacaLive && !hasKraken && !hasBybit && !hasBlofin && !hasBinance && !hasOanda;
+const viewOnly = !hasAlpaca && !hasAlpacaLive && !hasKraken && !hasBybit && !hasBybitDemo && !hasBlofin && !hasBinance && !hasOanda;
 if (viewOnly) {
   console.warn(
     "⚠️  Ingen broker konfigurerad — startar i VY-LÄGE.\n" +
@@ -209,6 +214,14 @@ export const config = {
     apiSecret: env.BYBIT_API_SECRET,
     quote: env.BYBIT_QUOTE,
     baseUrl: env.BYBIT_BASE_URL,
+  },
+
+  bybitDemo: {
+    enabled: hasBybitDemo,
+    apiKey: env.BYBIT_DEMO_API_KEY,
+    apiSecret: env.BYBIT_DEMO_API_SECRET,
+    quote: env.BYBIT_QUOTE,
+    baseUrl: env.BYBIT_DEMO_BASE_URL,
   },
 
   kraken: {
@@ -277,7 +290,8 @@ export const config = {
   },
 
   crypto: {
-    symbols: env.CRYPTO_SYMBOLS,
+    // MATIC heter POL sedan 2024 (Bybit har inget MATIC-par), så en gammal .env byts ut här
+    symbols: env.CRYPTO_SYMBOLS.map((x: string) => x.replace(/^MATIC/, "POL")),
     leverage: env.CRYPTO_LEVERAGE,
     trailingStopPct: env.CRYPTO_TRAILING_STOP_PCT,
     takeProfitSteps: env.CRYPTO_TP_STEPS,
