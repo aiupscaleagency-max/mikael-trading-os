@@ -1273,6 +1273,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   <span class="brand">MIKAEL TRADING OS</span>
   <span class="dot live" id="conn-dot" title="Connection"></span>
   <select id="broker-select">
+    <option value="bybit-paper">Bybit EU TEST (låtsaspengar, riktiga priser)</option>
     <option value="bybit-demo">Bybit TEST (demo, låtsaspengar)</option>
     <option value="bybit">Bybit LIVE (riktiga pengar)</option>
   </select>
@@ -8049,7 +8050,7 @@ async function refreshBinanceSync(){
         const act = (br.brokers||[]).find(b=>b.active);
         const acc = act && st[act.name] && st[act.name].account;
         if(act && act.mode === "paper" && acc && typeof acc.totalValueUsdt === "number"){
-          window._brokerBal = { eq: "$" + acc.totalValueUsdt.toFixed(2), label: act.name === "bybit-demo" ? "BYBIT DEMO" : act.name.toUpperCase() + " (TILLFÄLLIG TEST)" };
+          window._brokerBal = { eq: "$" + acc.totalValueUsdt.toFixed(2), label: act.name === "bybit-paper" ? "BYBIT EU TEST (LÅTSASPENGAR)" : act.name === "bybit-demo" ? "BYBIT DEMO" : act.name.toUpperCase() + " (TILLFÄLLIG TEST)" };
         } else {
           window._brokerBal = { eq: "—", label: act ? act.name.toUpperCase() + " (svarar inte)" : "EJ KOPPLAD" };
         }
