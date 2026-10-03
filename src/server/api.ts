@@ -566,6 +566,8 @@ async function startUserDataStream(mode: "testnet" | "live"): Promise<void> {
 //  - Exponential backoff vid återanslutning (5s, 30s, 120s)
 //  - Polling fortsätter parallellt som fallback om WS misslyckas
 setTimeout(() => {
+  // Bybit överallt: Binance spärrar API-handel i Sverige, så strömmarna startas bara med BYBIT_ONLY=false
+  if (process.env.BYBIT_ONLY !== "false") return;
   if (binanceLiveCreds) startUserDataStream("live");
   if (binanceTestnetCreds) startUserDataStream("testnet");
 }, 3000);

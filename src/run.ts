@@ -108,7 +108,8 @@ function createBrokers(): Record<string, BrokerAdapter> {
     });
   }
 
-  if (config.binance.enabled) {
+  // Bybit överallt: Binance registreras bara med BYBIT_ONLY=false (spärrar API-handel i Sverige)
+  if (config.binance.enabled && process.env.BYBIT_ONLY === "false") {
     brokers.binance = new BinanceBroker({
       apiKey: config.binance.apiKey,
       apiSecret: config.binance.apiSecret,
