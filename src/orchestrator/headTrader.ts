@@ -7,6 +7,7 @@ import type { AgentState } from "../memory/store.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import type { RiskManager } from "../risk/riskManager.js";
 import { toolDefinitions, runTool, type ToolContext } from "../agent/tools.js";
+import { computeIndicators } from "../indicators/ta.js";
 import type { StrategyEngine } from "../strategies/types.js";
 import { summarizePastPerformance } from "../memory/store.js";
 import type {
@@ -60,6 +61,8 @@ export async function runHeadTrader(params: {
   engines: StrategyEngine[];
   reports: AllReports;
   userInstruction?: string;
+  /** Paren JEV valt: deras indikatorer skickas med direkt (färre verktygsanrop). */
+  symbols?: string[];
 }): Promise<HeadTraderResult> {
   const { apiKey, config, state, broker, brokers, risk, engines, reports } = params;
 
@@ -80,9 +83,27 @@ export async function runHeadTrader(params: {
 
   const recordedToolCalls: Array<{ name: string; input: unknown; output: unknown }> = [];
 
+  // Indikatorer för de valda paren (15m/1h/4h) i ett paket, så Hanna inte behöver
+  // hämta dem ett anrop i taget. Bara när JEV valt få par (annars blir paketet för stort).
+  let indicatorPack = "";
+  const picked = params.symbols ?? [];
+  if (picked.length > 0 && picked.length <= 5) {
+    const jobs = picked.flatMap((sym) => ["15m", "1h", "4h"].map((iv) => ({ sym, iv })));
+    const rows = (await Promise.all(jobs.map(async ({ sym, iv }) => {
+      try { return `${sym} ${iv}: ${JSON.stringify(computeIndicators(await broker.getKlines(sym, iv, 150)))}`; }
+      catch { return null; } // Hanna kan hämta själv med get_indicators
+    }))).filter((r): r is string => r !== null);
+    if (rows.length) indicatorPack = `\n\n──── INDIKATORER (redan hämtade, anropa inte get_indicators för dessa igen; changePct24 = ändring över de senaste 24 ljusen i den tidsramen, inte 24 timmar) ────\n${rows.join("\n")}`;
+  }
+
+  // Smalt team: säg det rakt ut, så att stubb-rapporterna inte räknas som HOLD-röster
+  if (process.env.TEAM_LEAN !== "false") {
+    indicatorPack += "\n\n──── SMALT TEAM ────\nMakro, Sentiment, Kvant, Portfölj, Exekvering och Lars är avstängda: ignorera deras rapporter. Besluta på Teknisk + Risk (+ Advisor om den körts) + indikatorerna ovan. Konsensusregeln gäller bara dessa.";
+  }
+
   const userMessage = params.userInstruction
-    ? `${briefingContent}\n\n──── SPECIAL INSTRUKTION ────\n${params.userInstruction}`
-    : briefingContent;
+    ? `${briefingContent}${indicatorPack}\n\n──── SPECIAL INSTRUKTION ────\n${params.userInstruction}`
+    : `${briefingContent}${indicatorPack}`;
 
   const messages: Anthropic.MessageParam[] = [
     { role: "user", content: userMessage },
