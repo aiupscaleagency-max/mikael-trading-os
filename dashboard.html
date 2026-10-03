@@ -165,6 +165,7 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-widt
 #page-trade #liveChart{display:none !important}
 /* Minimera / maximera på varje sektion */
 #page-trade [data-sec]{position:relative}
+#page-trade [data-sec]::before{padding-right:64px !important}
 #page-trade .sec-ctl{position:absolute;right:10px;display:flex;gap:4px;z-index:5}
 #page-trade .sec-ctl button{width:24px;height:20px;padding:0;line-height:18px;font-size:12px;font-weight:800;background:var(--card2);border:1px solid var(--border);border-radius:4px;color:var(--label);cursor:pointer}
 #page-trade .sec-ctl button:hover{color:#fff;border-color:var(--cyan)}
