@@ -136,8 +136,8 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-widt
 /* Trade-sidan i numrerade sektioner över hela bredden, 6 lika kolumner:
    1 Marknaden (4) + 2 Handla (2) · 3 Analys (3) + 4 Ordrar (3) · 5 Signaler (6)
    · 6 AI-teamet (6). Ett par i taget; flera par finns på Alla par. */
-/* Trade-sidan: max 1400px bred och centrerad, så sektionerna inte blir för stora på breda skärmar */
-#page-trade{max-width:1400px;margin-left:auto !important;margin-right:auto !important}
+/* Trade-sidan: max 2100px bred och centrerad, så sektionerna inte blir för stora på breda skärmar */
+#page-trade{max-width:2100px;margin-left:auto !important;margin-right:auto !important}
 #page-trade main{grid-template-columns:repeat(6,minmax(0,1fr));grid-template-areas:"info info info info info info" "chart chart chart chart side side" "ana ana ana pend pend pend" "sig sig sig sig sig sig" "team team team team team team";gap:16px;padding:16px 24px 24px;align-items:start}
 #page-trade #tradeInfo{grid-area:info;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
 #page-trade .ti-box{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.55;color:#c9d1d9}
