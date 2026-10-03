@@ -110,7 +110,14 @@ export async function runOrchestratedTurn(params: {
   // Hämtar färska nyheter/makro/geopolitik som specialisterna kan använda.
   log.info("╔══ ORCHESTRATOR: Fas 0 — Lars (Research) hämtar färsk webbkontext ══╗");
   turnPhase("Fas 0 · Lars hämtar research");
-  const research = await track("research", "hämtar färsk webbkontext", () => runResearcher(config.perplexity.apiKey), { from: "orchestrator" });
+  // Smalt team (Mike 2026-10-03): JEV väljer paren, sedan bara Teknisk + Risk + Hanna.
+  // Lars, Makro, Sentiment, Kvant, Portfölj och Exekvering hoppas över (sparar ungefär hälften).
+  // TEAM_LEAN=false i .env tar tillbaka hela teamet.
+  const lean = process.env.TEAM_LEAN !== "false";
+  const leanNote = "smalt team: JEV → Teknisk + Risk → Hanna";
+  const research = lean
+    ? (agentSkip("research", leanNote), { role: "researcher", available: false, marketSummary: "Research avstängd (smalt team).", cryptoNews: [], macroEvents: [], geopolitical: [], riskAlerts: [], sources: [], rawText: "" } as ResearchReport)
+    : await track("research", "hämtar färsk webbkontext", () => runResearcher(config.perplexity.apiKey), { from: "orchestrator" });
 
   log.info("╔══ ORCHESTRATOR: Fas 1 — specialist-analys (parallellt) ══╗");
   turnPhase("Fas 1 · JEV + specialister + advisor");
@@ -136,7 +143,7 @@ export async function runOrchestratedTurn(params: {
 
   const [macro, technical, sentiment, riskReport, quant, options, portfolio, advisor] =
     await Promise.all([
-      track("macro", "läser makro", () => runMacroAnalyst(apiKey), { from: "jev", done: (r) => `${r.regime} (${r.confidence})` }).catch((err): MacroReport => {
+            lean ? (agentSkip("macro", leanNote), Promise.resolve<MacroReport>({ role: "macro_analyst", regime: "uncertain", keyFactors: ["Hoppas över (smalt team)"], oilSummary: "–", vixLevel: "–", dollarTrend: "–", cryptoFearGreed: "–", recommendation: "–", confidence: "low", rawText: "" })) : track("macro", "läser makro", () => runMacroAnalyst(apiKey), { from: "jev", done: (r) => `${r.regime} (${r.confidence})` }).catch((err): MacroReport => {
         log.error(`Makro-analytiker kraschade: ${err instanceof Error ? err.message : String(err)}`);
         return { role: "macro_analyst", regime: "uncertain", keyFactors: ["Analytiker ej tillgänglig"], oilSummary: "Okänt", vixLevel: "Okänt", dollarTrend: "Okänt", cryptoFearGreed: "Okänt", recommendation: "Avvakta", confidence: "low", rawText: "" };
       }),
@@ -146,7 +153,7 @@ export async function runOrchestratedTurn(params: {
         return { role: "technical_analyst", analyses: [], topPick: null, rawText: "" };
       }),
 
-      track("sentiment", "läser sentiment", () => runSentimentAnalyst(apiKey), { from: "jev", done: (r) => r.overallSentiment }).catch((err): SentimentReport => {
+            lean ? (agentSkip("sentiment", leanNote), Promise.resolve<SentimentReport>({ role: "sentiment_analyst", overallSentiment: "neutral", topNarratives: [], politicianActivity: "–", contrarySignal: false, rawText: "" })) : track("sentiment", "läser sentiment", () => runSentimentAnalyst(apiKey), { from: "jev", done: (r) => r.overallSentiment }).catch((err): SentimentReport => {
         log.error(`Sentiment-analytiker kraschade: ${err instanceof Error ? err.message : String(err)}`);
         return { role: "sentiment_analyst", overallSentiment: "neutral", topNarratives: [], politicianActivity: "Ej tillgänglig", contrarySignal: false, rawText: "" };
       }),
@@ -161,7 +168,7 @@ export async function runOrchestratedTurn(params: {
         return { role: "risk_analyst", portfolioHeatPct: 0, correlationRisk: "medium", correlationDetails: "Ej tillgänglig", maxDrawdownScenario: { description: "Okänt", estimatedLossUsd: 0, estimatedLossPct: 0 }, suggestedPositionSizing: { maxNewPositionUsd: 0, reasoning: "Ej tillgänglig" }, riskLevel: "high", warnings: ["Risk-analys misslyckades"], recommendation: "Avvakta.", rawText: "" };
       }),
 
-      track("quant", "kvantanalys", () => runQuantAnalyst(apiKey, broker, allSymbols), { from: "jev", done: (r) => `vol ${r.volatilityRegime}` }).catch((err): QuantReport => {
+            lean ? (agentSkip("quant", leanNote), Promise.resolve<QuantReport>({ role: "quant_analyst", volatilityRegime: "medium", sharpeEstimate: 0, winRateFromHistory: 0, symbolScores: [], recommendation: "Hoppas över (smalt team).", confidence: "low", rawText: "" })) : track("quant", "kvantanalys", () => runQuantAnalyst(apiKey, broker, allSymbols), { from: "jev", done: (r) => `vol ${r.volatilityRegime}` }).catch((err): QuantReport => {
         log.error(`Kvant-analytiker kraschade: ${err instanceof Error ? err.message : String(err)}`);
         return { role: "quant_analyst", volatilityRegime: "medium", sharpeEstimate: 0, winRateFromHistory: 0, symbolScores: [], recommendation: "Ej tillgänglig.", confidence: "low", rawText: "" };
       }),
@@ -179,7 +186,7 @@ export async function runOrchestratedTurn(params: {
         rawText: "",
       }),
 
-      track("portfolio", "portföljkoll", () => runPortfolioStrategist(apiKey, broker), { from: "jev", done: (r) => `diversifiering ${r.diversificationScore}` }).catch((err): PortfolioReport => {
+            lean ? (agentSkip("portfolio", leanNote), Promise.resolve<PortfolioReport>({ role: "portfolio_strategist", diversificationScore: 0, sectorConcentration: [], rebalancingNeeded: false, rebalancingActions: [], cashAllocationPct: 100, recommendation: "Hoppas över (smalt team).", confidence: "low", rawText: "" })) : track("portfolio", "portföljkoll", () => runPortfolioStrategist(apiKey, broker), { from: "jev", done: (r) => `diversifiering ${r.diversificationScore}` }).catch((err): PortfolioReport => {
         log.error(`Portfölj-strateg kraschade: ${err instanceof Error ? err.message : String(err)}`);
         return { role: "portfolio_strategist", diversificationScore: 0, sectorConcentration: [], rebalancingNeeded: false, rebalancingActions: [], cashAllocationPct: 100, recommendation: "Ej tillgänglig.", confidence: "low", rawText: "" };
       }),
@@ -223,8 +230,11 @@ export async function runOrchestratedTurn(params: {
     .filter((a) => Math.abs(a.score) >= 2)
     .map((a) => ({ symbol: a.symbol, bias: a.bias, score: a.score }));
 
-  turnPhase("Fas 1.5 · Emma optimerar exekvering");
-  const execution = await track("execution", `${proposedTrades.length} föreslagna trades`, () => runExecutionOptimizer(apiKey, proposedTrades), { from: "technical", done: (r) => `brådska ${r.urgency}` }).catch((err): ExecutionReport => {
+  if (!lean) turnPhase("Fas 1.5 · Emma optimerar exekvering");
+  else agentSkip("execution", leanNote);
+  const execution = lean
+    ? ({ role: "execution_optimizer", tradeOptimizations: [], generalAdvice: "Hoppas över (smalt team).", urgency: "low", rawText: "" } as ExecutionReport)
+    : await track("execution", `${proposedTrades.length} föreslagna trades`, () => runExecutionOptimizer(apiKey, proposedTrades), { from: "technical", done: (r) => `brådska ${r.urgency}` }).catch((err): ExecutionReport => {
     log.error(`Exekverings-optimerare kraschade: ${err instanceof Error ? err.message : String(err)}`);
     return { role: "execution_optimizer", tradeOptimizations: [], generalAdvice: "Ej tillgänglig.", urgency: "low", rawText: "" };
   });
@@ -259,6 +269,7 @@ export async function runOrchestratedTurn(params: {
     apiKey, config, state, broker, brokers, risk, engines,
     reports: allReports,
     userInstruction,
+    symbols: allSymbols,
   }), { from: "execution", done: (r) => `${r.placedOrders.length} order` });
 
   const headMs = Date.now() - headStart;
