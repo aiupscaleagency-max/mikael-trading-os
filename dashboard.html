@@ -135,25 +135,44 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-widt
    kolumn och lika breda, snabb-trade till höger. Luft mot kanterna. */
 /* Trade-sidan i numrerade sektioner över hela bredden, 6 lika kolumner:
    1 Marknaden (4) + 2 Handla (2) · 3 Signaler (6) · 4 Analys (3) + 5 Ordrar (3)
-   · 6 Signaldiagram (3) + 7 AI-teamet (3). */
-#page-trade main{grid-template-columns:repeat(6,minmax(0,1fr));grid-template-areas:"info info info info info info" "chart chart chart chart side side" "sig sig sig sig sig sig" "ana ana ana pend pend pend" "live live live team team team";gap:16px;padding:16px 24px 24px;align-items:start}
+   · 6 AI-teamet (6). Ett par i taget; flera par finns på Alla par. */
+#page-trade main{grid-template-columns:repeat(6,minmax(0,1fr));grid-template-areas:"info info info info info info" "chart chart chart chart side side" "sig sig sig sig sig sig" "ana ana ana pend pend pend" "team team team team team team";gap:16px;padding:16px 24px 24px;align-items:start}
 #page-trade #tradeInfo{grid-area:info;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
 #page-trade .ti-box{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.55;color:#c9d1d9}
 #page-trade .ti-h{font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:4px}
 #page-trade .ti-box b{color:#fff}
 #page-trade .left{display:contents}
 #page-trade #mainChartCard{grid-area:chart;min-width:0;align-self:stretch}
-@media (min-width:1700px){#page-trade #chart{height:720px}}
+/* Diagrammet fyller hela höjden bredvid Handla (ingen tom yta under) */
+@media (min-width:1280px){
+  #page-trade #mainChartCard{display:flex;flex-direction:column}
+  #page-trade #chart{height:auto;flex:1 1 0;min-height:440px;overflow:hidden}
+  #page-trade #chart > div{position:absolute !important;inset:0}
+}
+@media (min-width:1700px){#page-trade .right{align-self:stretch}#page-trade .right > .card{height:100%;box-sizing:border-box}}
 #page-trade #ai-team-card{grid-area:team;min-width:0;margin:0}
 #page-trade .right{grid-area:side;min-width:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
 #page-trade .right > .card{margin:0}
-#page-trade #bybitTradeCard{grid-column:1;grid-row:2 / span 2}
+#page-trade #bybitTradeCard{grid-column:1;grid-row:2}
 #page-trade #orderCard{grid-column:2;grid-row:2}
-#page-trade .right > .bet-panel{grid-column:2;grid-row:3}
+/* Snabb-trade är ihopslagen med Lägg order (en enda köp/sälj-ruta) */
+#page-trade .right > .bet-panel{display:none !important}
 #page-trade #signalPanel{grid-area:sig;min-width:0}
 #page-trade #analysisBox{grid-area:ana;min-width:0;margin:0 !important}
 #page-trade #pendingBox{grid-area:pend;min-width:0;margin:0 !important}
-#page-trade #liveChart{grid-area:live;min-width:0}
+/* Signaldiagrammet var samma Bybit-data som huvuddiagrammet (bara stängda ljus).
+   Klick på en rad i Signaler öppnar paret i huvuddiagrammet i stället. */
+#page-trade #liveChart{display:none !important}
+/* Minimera / maximera på varje sektion */
+#page-trade [data-sec]{position:relative}
+#page-trade .sec-ctl{position:absolute;right:10px;display:flex;gap:4px;z-index:5}
+#page-trade .sec-ctl button{width:24px;height:20px;padding:0;line-height:18px;font-size:12px;font-weight:800;background:var(--card2);border:1px solid var(--border);border-radius:4px;color:var(--label);cursor:pointer}
+#page-trade .sec-ctl button:hover{color:#fff;border-color:var(--cyan)}
+#page-trade .sec-min > :not(.sec-ctl){display:none !important}
+#page-trade .sec-min{align-self:start !important;min-height:0 !important}
+#page-trade .sec-max{position:fixed !important;inset:12px !important;z-index:9000 !important;overflow:auto !important;background:#0b0e14 !important;margin:0 !important;box-shadow:0 0 0 100vmax rgba(0,0,0,.6)}
+#page-trade #mainChartCard.sec-max #chart{min-height:calc(100vh - 260px)}
+body.sec-max-open{overflow:hidden}
 /* Sektionsnamn ovanför varje del */
 #page-trade [data-sec]::before{content:attr(data-sec);display:block;grid-column:1 / -1;font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--cyan);padding:0 0 8px;margin-bottom:8px;border-bottom:1px solid var(--border)}
 #chartBox{height:480px}
@@ -549,9 +568,9 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .status-line.warn{color:var(--yellow)}
 
 @media (min-width:1280px) and (max-width:1699px){
-  #page-trade main{grid-template-areas:"info info info info info info" "chart chart chart chart side side" "sig sig sig sig sig sig" "ana ana ana pend pend pend" "live live live team team team"}
+  #page-trade main{grid-template-areas:"info info info info info info" "chart chart chart chart side side" "sig sig sig sig sig sig" "ana ana ana pend pend pend" "team team team team team team"}
   #page-trade .right{grid-template-columns:minmax(0,1fr)}
-  #page-trade #bybitTradeCard,#page-trade #orderCard,#page-trade .right > .bet-panel{grid-column:1;grid-row:auto}
+  #page-trade #bybitTradeCard,#page-trade #orderCard{grid-column:1;grid-row:auto}
 }
 /* ═══ RESPONSIVE — desktop / tablet / mobile ═══ */
 @media (max-width:1279px){
@@ -1472,7 +1491,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 })();
 </script>
 
-<section id="signalPanel" data-sec="3 · Signaler · indikatorerna för alla par som följs, räknas om när varje ljus stänger" style="
+<section id="signalPanel" data-sec="3 · Signaler · alla par som följs, räknas om när varje ljus stänger · klicka på en rad för att se paret i diagrammet" style="
          font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
   <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px">
     <h2 style="margin:0;font-size:17px;font-weight:600">Signaler</h2>
@@ -1692,6 +1711,17 @@ body.app-state-onboard .fc-panel{display:none !important}
     if (!s) return;
     reasonsEl.innerHTML = "<strong style='color:#e6e6e6'>" + s.symbol + "</strong> — "
       + (s.reasons || []).join(" · ");
+    // Öppna paret i huvuddiagrammet (sektion 1)
+    try {
+      var want = String(s.symbol).toUpperCase().replace(/(USDT|USDC|USD)$/, "") + "USDT";
+      var cat = document.getElementById("cat-select"), sel = document.getElementById("sym-select");
+      if (cat && sel && typeof SYMBOLS !== "undefined" && SYMBOLS.crypto && SYMBOLS.crypto.indexOf(want) >= 0) {
+        if (cat.value !== "crypto") { cat.value = "crypto"; fillSymbols(); }
+        sel.value = want; sel.dispatchEvent(new Event("change"));
+        var mc = document.getElementById("mainChartCard");
+        if (mc) mc.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    } catch (_) {}
   });
 
   // ── Signal-knapp → väntande order hos aktiv mäklare (läggs först när du godkänner) ──
@@ -1880,7 +1910,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       <div id="macd-pane"></div>
     </div>
 
-    <div class="card" id="ai-team-card" data-sec="7 · AI-teamet · vem som gjorde vad i senaste analysen" style="scroll-margin-top:70px">
+    <div class="card" id="ai-team-card" data-sec="6 · AI-teamet · vem som gjorde vad i senaste analysen" style="scroll-margin-top:70px">
       <h3>AI-Team <span class="tag" id="last-turn">väntar…</span></h3>
       <div class="team-banner" id="team-banner"></div>
       <div class="agent-grid" id="agent-grid"></div>
@@ -1891,7 +1921,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <!-- RIGHT: BET PANEL -->
-  <div class="right" data-sec="2 · Handla · orderbok, order och snabb-trade för samma par">
+  <div class="right" data-sec="2 · Handla · orderbok och köp/sälj för samma par som diagrammet">
     <!-- Som på Bybit: orderbok, senaste affärer och order med limit + TP/SL. Live från Bybits publika WebSocket. -->
     <div class="card" id="bybitTradeCard">
       <h3>Orderbok <span class="tag" id="bk-pair">–</span><span style="float:right;font-size:10px;color:var(--dim)" id="bk-status">ansluter…</span></h3>
@@ -1910,7 +1940,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 
     </div>
     <div class="card" id="orderCard">
-      <h3>Lägg order <span class="tag" id="ot-venue">–</span></h3>
+      <h3>Köp / Sälj <span class="tag" id="ot-venue">–</span></h3>
       <div style="display:flex;gap:6px;margin-bottom:8px">
         <button type="button" class="ot-type active" data-ot="LIMIT">Limit</button>
         <button type="button" class="ot-type" data-ot="MARKET">Market</button>
@@ -1924,11 +1954,25 @@ body.app-state-onboard .fc-panel{display:none !important}
         <div><label style="font-size:10px;color:#3fb950">TP-pris (vinst)</label><input type="number" id="ot-tp" step="any" min="0" style="width:100%" /></div>
         <div><label style="font-size:10px;color:#f85149">SL-pris (förlust)</label><input type="number" id="ot-sl" step="any" min="0" style="width:100%" /></div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-        <button type="button" id="ot-buy" class="bet-call" style="margin:0">Köp</button>
-        <button type="button" id="ot-sell" class="bet-put" style="margin:0">Sälj</button>
+      <label style="font-size:10px;color:var(--dim)">Tidshorisont (hur länge du tänker hålla)</label>
+      <div class="bet-tf" id="ot-tf" style="margin-bottom:4px">
+        <button type="button" data-tf="0" class="active">Ingen</button>
+        <button type="button" data-tf="60">1m</button>
+        <button type="button" data-tf="300">5m</button>
+        <button type="button" data-tf="900">15m</button>
+        <button type="button" data-tf="3600">1h</button>
+        <button type="button" data-tf="14400">4h</button>
+        <button type="button" data-tf="86400">1d</button>
       </div>
-      <div class="sim-note" id="ot-note" style="margin-top:6px">Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. Samma gränser gäller som för alla ordrar.</div>
+      <div style="display:grid;grid-template-columns:1fr 64px;gap:6px;margin-bottom:6px">
+        <input type="number" id="ot-tf-custom" min="1" step="1" placeholder="Egen tid" style="width:100%" />
+        <select id="ot-tf-unit"><option value="60">min</option><option value="3600">tim</option><option value="86400">dagar</option></select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <button type="button" id="ot-buy" class="bet-call" style="margin:0">▲ Köp (CALL)</button>
+        <button type="button" id="ot-sell" class="bet-put" style="margin:0">▼ Sälj (PUT)</button>
+      </div>
+      <div class="sim-note" id="ot-note" style="margin-top:6px">Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. Tidshorisonten sparas på ordern som påminnelse; den stänger inte ordern själv, det gör TP/SL. Samma gränser gäller som för alla ordrar.</div>
     </div>
 
     <div class="card bet-panel">
@@ -3486,6 +3530,8 @@ function initChart(){
     wickUpColor:"#10b981", wickDownColor:"#ef4444"
   });
   window.addEventListener("resize",()=>{ const el = document.getElementById("chart"); chart.applyOptions({width:el.clientWidth, height:el.clientHeight || 480}); });
+  // Diagrammet fyller rutan (höjden följer Handla-kolumnen och maximera)
+  try{ new ResizeObserver(()=>{ const el = document.getElementById("chart"); if(el.clientWidth && el.clientHeight) chart.applyOptions({width:el.clientWidth, height:el.clientHeight}); }).observe(document.getElementById("chart")); }catch(_){}
 }
 
 function genCandles(sym, tf, n=300){
@@ -9207,7 +9253,8 @@ document.addEventListener("DOMContentLoaded", boot);
       if(sl > 0) body.stopLoss = sl;
       if(!body.takeProfit && !body.stopLoss){ alert("Fyll i TP, SL eller båda, eller bocka ur TP/SL."); return; }
     }
-    const parts = [otType === "LIMIT" ? `limit ${body.limitPrice}` : "marknadspris", body.takeProfit ? `TP ${body.takeProfit}` : "", body.stopLoss ? `SL ${body.stopLoss}` : ""].filter(Boolean);
+    const tfSec = otHorizon();
+    const parts = [otType === "LIMIT" ? `limit ${body.limitPrice}` : "marknadspris", body.takeProfit ? `TP ${body.takeProfit}` : "", body.stopLoss ? `SL ${body.stopLoss}` : "", tfSec ? `tidshorisont ${fmtHorizon(tfSec)}` : ""].filter(Boolean);
     body.reason = `Orderpanelen: ${side === "BUY" ? "köp" : "sälj"} ${body.symbol} $${amt} · ${parts.join(" · ")}`;
     try{
       const r = await fetch("/api/pending-orders", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
@@ -9216,6 +9263,21 @@ document.addEventListener("DOMContentLoaded", boot);
       if(typeof pushInAppAlert === "function") pushInAppAlert(`⏳ ${side === "BUY" ? "KÖP" : "SÄLJ"} ${body.symbol} $${amt} (${parts.join(", ")}) ligger i Väntande ordrar. Tryck Godkänn för att lägga den.`, 7000);
     }catch(e){ alert("Fel: " + e.message); }
   }
+  // Tidshorisont: knapp eller egen tid (egen tid vinner om den är ifylld)
+  let otTf = 0;
+  function fmtHorizon(sec){ return sec >= 86400 ? (Math.round(sec/8640)/10) + " d" : sec >= 3600 ? (Math.round(sec/360)/10) + " h" : Math.round(sec/60) + " min"; }
+  function otHorizon(){
+    const n = parseFloat($("ot-tf-custom").value);
+    return n > 0 ? Math.round(n * Number($("ot-tf-unit").value)) : otTf;
+  }
+  document.querySelectorAll("#ot-tf button").forEach(b=>b.addEventListener("click", ()=>{
+    otTf = Number(b.dataset.tf) || 0; $("ot-tf-custom").value = "";
+    document.querySelectorAll("#ot-tf button").forEach(x=>x.classList.toggle("active", x === b));
+  }));
+  $("ot-tf-custom").addEventListener("input", ()=>{
+    const custom = parseFloat($("ot-tf-custom").value) > 0;
+    document.querySelectorAll("#ot-tf button").forEach(x=>x.classList.toggle("active", !custom && Number(x.dataset.tf) === otTf));
+  });
   $("ot-buy").addEventListener("click", ()=>submit("BUY"));
   $("ot-sell").addEventListener("click", ()=>submit("SELL"));
 
@@ -9546,6 +9608,49 @@ document.addEventListener("DOMContentLoaded", boot);
   setInterval(loadAnalysis, 3000);
   setInterval(loadMode, 15000);
   setInterval(()=>order.forEach(loadBars), 300000);
+})();
+</script>
+<script>
+/* Minimera (–) och maximera (□) på varje sektion på Trade-sidan.
+   Minimerat läge sparas i webbläsaren; Esc stänger maximerat. */
+(function(){
+  const KEY = "trade-sec-min";
+  let saved = {};
+  try{ saved = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; }catch(_){}
+  const keyOf = el => el.id || (el.classList.contains("right") ? "handla" : (el.dataset.sec || "").slice(0, 12));
+  const save = () => { try{ localStorage.setItem(KEY, JSON.stringify(saved)); }catch(_){} };
+  const nudge = () => setTimeout(()=>window.dispatchEvent(new Event("resize")), 30);
+  function closeMax(){
+    document.querySelectorAll("#page-trade .sec-max").forEach(x=>{ x.classList.remove("sec-max"); const b = x.querySelector(".sec-ctl [data-a=max]"); if(b){ b.textContent = "□"; b.title = "Maximera"; } });
+    document.body.classList.remove("sec-max-open"); nudge();
+  }
+  document.querySelectorAll("#page-trade [data-sec]").forEach(el=>{
+    if(el.id === "liveChart" || el.querySelector(":scope > .sec-ctl")) return;
+    const ctl = document.createElement("div");
+    ctl.className = "sec-ctl";
+    ctl.style.top = (parseFloat(getComputedStyle(el).paddingTop) || 0) - 3 + "px";
+    ctl.innerHTML = '<button type="button" data-a="min" title="Minimera">–</button><button type="button" data-a="max" title="Maximera">□</button>';
+    el.prepend(ctl);
+    const k = keyOf(el);
+    if(saved[k]){ el.classList.add("sec-min"); ctl.querySelector("[data-a=min]").textContent = "+"; }
+    ctl.addEventListener("click", e=>{
+      const b = e.target.closest("button"); if(!b) return;
+      if(b.dataset.a === "min"){
+        if(el.classList.contains("sec-max")) closeMax();
+        const on = el.classList.toggle("sec-min");
+        b.textContent = on ? "+" : "–"; b.title = on ? "Visa" : "Minimera";
+        if(on) saved[k] = 1; else delete saved[k];
+        save(); nudge();
+      } else {
+        if(el.classList.contains("sec-max")){ closeMax(); return; }
+        closeMax();
+        if(el.classList.contains("sec-min")){ el.classList.remove("sec-min"); ctl.querySelector("[data-a=min]").textContent = "–"; delete saved[k]; save(); }
+        el.classList.add("sec-max"); b.textContent = "✕"; b.title = "Stäng (Esc)";
+        document.body.classList.add("sec-max-open"); nudge();
+      }
+    });
+  });
+  document.addEventListener("keydown", e=>{ if(e.key === "Escape") closeMax(); });
 })();
 </script>
 </body>
