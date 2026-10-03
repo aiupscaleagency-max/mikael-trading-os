@@ -15,6 +15,7 @@ import path from "node:path";
 import { getMarketStreamStatus, getCachedPrice } from "./marketStream.js";
 import { getKlineStreamStatus } from "./klineStream.js";
 import { getLastPrescreen, prescreenEnabled, flaggedPairs } from "../orchestrator/prescreen.js";
+import { getTeamLast } from "./teamLast.js";
 import { config } from "../config.js";
 import { getJevStatus } from "./jevClient.js";
 import { snapshot as agentTreeSnapshot, registerStrategies, userAction, agentStart, agentDone, agentFail, getAnalysis } from "./agentActivity.js";
@@ -262,6 +263,7 @@ export async function handleLiveRoutes(
     if (p === "/api/live/status" && method === "GET") { send(res, 200, liveStatus()); return true; }
 
     // Senaste analysen ("Kör analys" eller schemat): vad agenterna kom fram till.
+    if (p === "/api/team/last" && method === "GET") { send(res, 200, { team: getTeamLast() }); return true; }
     if (p === "/api/live/analysis" && method === "GET") { send(res, 200, { analysis: getAnalysis() }); return true; }
 
     // Vad som analyseras: agenternas mynt, hur ofta, och vilka par signaltabellen följer.

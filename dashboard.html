@@ -1025,7 +1025,7 @@ body.app-state-onboard .fc-panel{display:none !important}
             <div class="l-tech-icon">◆</div>
             <div class="l-tech-text">
               <h4>Strategisk syntes</h4>
-              <p>Albert (Opus 4.7) ger contrarian-perspektiv. Hanna (Sonnet 4.6) syntetiserar och lägger faktiska ordrar.</p>
+              <p>Albert (GPT-6 Astra) ger contrarian-perspektiv. Hanna (Sonnet 5.5) syntetiserar och lägger faktiska ordrar.</p>
             </div>
           </div>
         </div>
@@ -4096,9 +4096,9 @@ const AGENT_DEFS = [
   {key:"quant",      person:"Karin",  role:"Kvant-Analytiker",      title:"Kvant-Analytiker",      initial:"KA", model:"haiku 4.5"},
   {key:"portfolio",  person:"Petra",  role:"Portfölj-Strateg",      title:"Portfölj-Strateg",      initial:"PS", model:"haiku 4.5"},
   {key:"execution",  person:"Emma",   role:"Exekverings-Optimerare",title:"Exekverings-Optimerare",initial:"EO", model:"haiku 4.5"},
-  {key:"advisor",    person:"Albert", role:"Strategisk Advisor",    title:"Claude Advisor",        initial:"AD", model:"opus 4.7",  premium:true},
+  {key:"advisor",    person:"Albert", role:"Strategisk Advisor",    title:"Claude Advisor",        initial:"AD", model:"gpt-6 astra", premium:true},
   {key:"forex",      person:"Viktor", role:"Forex-Specialist",      title:"Forex-Specialist",      initial:"FX", model:"haiku 4.5"},
-  {key:"head",       person:"Hanna",  role:"Head Trader (chef)",    title:"Head Trader",           initial:"HT", model:"sonnet 4.6",premium:true}
+  {key:"head",       person:"Hanna",  role:"Head Trader (chef)",    title:"Head Trader",           initial:"HT", model:"sonnet 5.5",premium:true}
 ];
 
 function genSimAgents(){
@@ -4286,7 +4286,10 @@ function renderAgents(){
       n.className = "sim-note sim-agents-note";
       g.parentNode.insertBefore(n, g);
     }
-    n.innerHTML = STATE.agentsSimulated ? '<span class="sim-badge" style="margin-left:0">SIMULERING</span> Agentkorten visar slumpad demo-data tills boten har kört en riktig analys (knappen Kör).' : "";
+    n.innerHTML = STATE.agentsEmpty
+      ? 'Ingen riktig tur sedan boten startade. Korten fylls när AI-teamet har kört (schemat, en ny signal eller knappen Kör analys).'
+      : STATE.agentsSimulated ? '<span class="sim-badge" style="margin-left:0">SIMULERING</span> Agentkorten visar slumpad demo-data, boten är inte ansluten.'
+      : (STATE.agentsAt ? 'Riktig data från turen ' + new Date(STATE.agentsAt).toLocaleTimeString("sv-SE", {hour:"2-digit", minute:"2-digit"}) + (STATE.agentsSymbols?.length ? ' · par: ' + STATE.agentsSymbols.map(s=>String(s).replace(/(USDT|USDC)$/,"")).join(", ") : "") + '.' : "");
   });
   const next = getNextRun();
   const lastStr = STATE.lastRun ? fmtTimeUTC(STATE.lastRun) : "–";
@@ -4954,8 +4957,8 @@ function renderLandingAgents(){
     {name:"Karin",  role:"Kvant-Analytiker",    stat:"Sharpe 1.14"},
     {name:"Petra",  role:"Portfölj-Strateg",    stat:"Diversifiering"},
     {name:"Emma",   role:"Exekvering",          stat:"TWAP / DCA"},
-    {name:"Albert", role:"Strategisk Advisor",  stat:"Opus 4.7"},
-    {name:"Hanna",  role:"Head Trader",         stat:"Sonnet 4.6"},
+    {name:"Albert", role:"Strategisk Advisor",  stat:"GPT-6 Astra"},
+    {name:"Hanna",  role:"Head Trader",         stat:"Sonnet 5.5"},
   ];
   grid.innerHTML = landingAgents.map((a,i)=>`
     <div class="l-agent-card">
@@ -7255,12 +7258,16 @@ function startSSE(){
   if(CFG.mode !== "live") return;
   try{
     sse = new EventSource(CFG.url + "/api/events");
+    // Servern skickar namngivna händelser (event: team-reports), som onmessage inte får
+    ["team-reports","turn-complete"].forEach(name=>sse.addEventListener(name, e=>{
+      try{ sse.onmessage({ data: JSON.stringify({ type: name, payload: JSON.parse(e.data) }) }); }catch(_){}
+    }));
     sse.onmessage = e=>{
       try{
         const ev = JSON.parse(e.data);
         if(ev.type === "team-reports"){
           const known = ev.payload && AGENT_DEFS.some(d=>ev.payload[d.key]);
-          if(known){ STATE.agents = mapBackendToAgents(ev.payload); STATE.agentsSimulated = false; renderAgents(); }
+          if(known){ STATE.agents = mapBackendToAgents(ev.payload); STATE.agentsSimulated = false; STATE.agentsEmpty = false; STATE.agentsAt = ev.payload.at || Date.now(); STATE.agentsSymbols = ev.payload.symbols || STATE.agentsSymbols; renderAgents(); }
           const t = ev.payload && ev.payload.timing;
           if(t && t.total != null) updateTiming({ specialists:(t.specialists||0)/1000, exec:(t.execution||0)/1000, head:(t.headTrader||0)/1000, total:t.total/1000 });
         }
@@ -7288,8 +7295,42 @@ function startSSE(){
 }
 
 function mapBackendToAgents(p){
-  // Backend report shape may differ — pass-through with defaults
-  return p || STATE.agents;
+  // Backendens rapporter (src/orchestrator/types.ts) → fälten korten läser.
+  // Originalfälten behålls också, så detaljrutan har allt.
+  if(!p) return STATE.agents;
+  const up = v => typeof v === "string" ? v.toUpperCase() : v;
+  const out = {};
+  for(const k in p){ if(p[k] && typeof p[k] === "object") out[k] = { ...p[k] }; }
+  const r = p.research; if(r) Object.assign(out.research, { alerts: (r.cryptoNews||[]).length, riskAlerts: r.riskAlerts || [] });
+  const m = p.macro; if(m) Object.assign(out.macro, { regime: up(m.regime) });
+  const t = p.technical; if(t){
+    const pick = (t.analyses||[]).find(a=>a.symbol === t.topPick) || (t.analyses||[])[0];
+    Object.assign(out.technical, { bias: pick?.bias || "neutral", topPick: t.topPick ? String(t.topPick).replace(/(USDT|USDC)$/,"") : "" });
+  }
+  const se = p.sentiment; if(se) Object.assign(out.sentiment, { sentiment: se.overallSentiment });
+  const ri = p.risk; if(ri) Object.assign(out.risk, { level: ri.riskLevel, heat: Math.round(ri.portfolioHeatPct || 0) });
+  const q = p.quant; if(q) Object.assign(out.quant, { sharpe: q.sharpeEstimate != null ? Number(q.sharpeEstimate).toFixed(2) : "–" });
+  const po = p.portfolio; if(po) Object.assign(out.portfolio, { diversification: Math.round(po.diversificationScore || 0) });
+  const ad = p.advisor; if(ad) Object.assign(out.advisor, { cycle: ad.marketCyclePhase });
+  return out;
+}
+// Senaste riktiga turen från boten (visas direkt när sidan laddas)
+async function loadTeamLast(){
+  if(CFG.mode !== "live") return;
+  try{
+    const r = await fetch(CFG.url + "/api/team/last"); if(!r.ok) return;
+    const d = await r.json();
+    if(d.team && d.team.reports){
+      STATE.agents = mapBackendToAgents(d.team.reports);
+      STATE.agentsSimulated = false; STATE.agentsEmpty = false;
+      STATE.agentsAt = d.team.at; STATE.agentsSymbols = d.team.symbols;
+      document.getElementById("last-turn").textContent = "Klar " + new Date(d.team.at).toLocaleTimeString("sv-SE");
+    } else {
+      STATE.agents = {}; STATE.agentsSimulated = false; STATE.agentsEmpty = true;
+      document.getElementById("last-turn").textContent = "väntar på första turen";
+    }
+    renderAgents();
+  }catch(_){}
 }
 
 function updateTiming(p){
@@ -8297,7 +8338,7 @@ function initApp(){
     window._tickStarted = true;
   }
   if(CFG.mode === "live"){
-    loadFromBackend(); startSSE(); loadCurrentMode(); syncBrokers();
+    loadFromBackend(); startSSE(); loadTeamLast(); loadCurrentMode(); syncBrokers();
     startBinancePolling();
     // Hämta om riktiga ljus regelbundet så nya ljus dyker upp i diagrammet.
     // (med Bybit-strömmen live behövs ingen omhämtning; den är bara reserv)

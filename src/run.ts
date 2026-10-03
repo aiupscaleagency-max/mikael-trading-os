@@ -19,6 +19,7 @@ import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgen
 import { startKlineStream } from "./server/klineStream.js";
 import { startSignalEngine, subscribeSignals } from "./server/signalEngine.js";
 import { prescreenPairs, prescreenEnabled, rememberPrescreen } from "./orchestrator/prescreen.js";
+import { setTeamLast } from "./server/teamLast.js";
 import { log } from "./logger.js";
 import type { DecisionRecord } from "./types.js";
 import type { StrategyEngine } from "./strategies/types.js";
@@ -270,9 +271,20 @@ async function runOnce(
     toolCalls = result.headTrader.toolCalls;
     placedOrders = result.headTrader.placedOrders;
 
+    // Hanna (Head Trader) med på korten: vilket beslut och hur många ordrar
+    const headOrders = result.headTrader.placedOrders;
+    const headReport = {
+      decision: headOrders.length ? (headOrders[0]!.request.side === "BUY" ? "BUY" : "SELL") : "HOLD",
+      actions: headOrders.map((o) => ({ symbol: o.request.symbol, side: o.request.side })),
+      summary: result.headTrader.decision.briefingSummary,
+    };
+    const teamPayload = { ...result.reports, head: headReport };
+    setTeamLast(teamPayload, screen.symbols);
     broadcastEvent("team-reports", {
-      ...result.reports,
+      ...teamPayload,
       timing: result.timingMs,
+      at: Date.now(),
+      symbols: screen.symbols,
     });
   } else {
     // ── Single-agent fallback ──
