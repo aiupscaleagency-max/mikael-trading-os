@@ -31,6 +31,9 @@ interface OpenOrder {
   price: number;
   /** TP och SL hör ihop: fylls den ena tas den andra bort */
   group?: string;
+  /** LIMIT-köp med TP/SL: läggs först när köpet fyllts */
+  tp?: number;
+  sl?: number;
   createdAt: number;
 }
 interface PaperState {
@@ -46,10 +49,12 @@ export class BybitPaperBroker implements BrokerAdapter {
   private readonly market: BybitBroker;
   private state: PaperState;
   private timer: NodeJS.Timeout | null = null;
+  private readonly baseUrl: string;
 
   constructor(cfg: { quote?: string; baseUrl?: string } = {}) {
     // Bara publika anrop (pris, ljus, orderbok): inga nycklar behövs.
-    this.market = new BybitBroker({ apiKey: "", apiSecret: "", quote: cfg.quote || "USDC", baseUrl: cfg.baseUrl || "https://api.bybit.eu" });
+    this.baseUrl = cfg.baseUrl || "https://api.bybit.eu";
+    this.market = new BybitBroker({ apiKey: "", apiSecret: "", quote: cfg.quote || "USDC", baseUrl: this.baseUrl });
     this.state = this.load();
     this.schedule();
   }
@@ -77,7 +82,7 @@ export class BybitPaperBroker implements BrokerAdapter {
   private async book(base: string): Promise<{ bid: number; ask: number }> {
     const pair = `${base}USDC`;
     try {
-      const r = await fetch(`https://api.bybit.eu/v5/market/orderbook?category=spot&symbol=${pair}&limit=1`);
+      const r = await fetch(`${this.baseUrl}/v5/market/orderbook?category=spot&symbol=${pair}&limit=1`);
       const d = (await r.json()) as { retCode: number; result?: { a?: string[][]; b?: string[][] } };
       const ask = Number(d.result?.a?.[0]?.[0]), bid = Number(d.result?.b?.[0]?.[0]);
       if (d.retCode === 0 && ask > 0 && bid > 0) return { bid, ask };
@@ -86,15 +91,25 @@ export class BybitPaperBroker implements BrokerAdapter {
     return { bid: p, ask: p };
   }
 
+  /** USDC som väntande LIMIT-köp håller undan. */
+  private reservedUsdc(): number {
+    return this.state.open.filter((o) => o.kind === "LIMIT" && o.side === "BUY").reduce((t, o) => t + o.qty * o.price * (1 + FEE), 0);
+  }
+  /** Mynt som väntande LIMIT-sälj håller undan. */
+  private reservedQty(base: string): number {
+    return this.state.open.filter((o) => o.base === base && o.kind === "LIMIT" && o.side === "SELL").reduce((t, o) => t + o.qty, 0);
+  }
+
   getTicker(symbol: string): Promise<Ticker> { return this.market.getTicker(symbol); }
   getKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> { return this.market.getKlines(symbol, interval, limit); }
 
   async getAccount(): Promise<Account> {
-    const balances: Balance[] = [{ asset: "USDC", free: this.state.usdc, locked: 0 }];
+    const res = Math.min(this.state.usdc, this.reservedUsdc());
+    const balances: Balance[] = [{ asset: "USDC", free: this.state.usdc - res, locked: res }];
     let total = this.state.usdc;
     for (const [base, h] of Object.entries(this.state.holdings)) {
       if (!(h.qty > 0)) continue;
-      const locked = this.state.open.filter((o) => o.base === base && o.side === "SELL" && o.kind === "LIMIT").reduce((t, o) => t + o.qty, 0);
+      const locked = this.reservedQty(base);
       balances.push({ asset: base, free: Math.max(0, h.qty - locked), locked: Math.min(h.qty, locked) });
       try { total += h.qty * (await this.market.getTicker(`${base}USDT`)).price; } catch { total += h.qty * h.avg; }
     }
@@ -116,23 +131,27 @@ export class BybitPaperBroker implements BrokerAdapter {
   }
 
   /** Fyller en affär och uppdaterar saldot. Kastar fel om pengarna/innehavet inte räcker. */
-  private fill(base: string, side: "BUY" | "SELL", qty: number, price: number, kind: string): { qty: number; cost: number } {
+  // reserved=true: väntande ordrar räknas bort (nya ordrar). false: en väntande order som nu fylls.
+  private fill(base: string, side: "BUY" | "SELL", qty: number, price: number, kind: string, reserved = true): { qty: number; cost: number } {
     const cost = qty * price, fee = cost * FEE;
     if (side === "BUY") {
-      if (cost + fee > this.state.usdc + 1e-9) throw new Error(`TEST: för lite USDC (har ${this.state.usdc.toFixed(2)}, behöver ${(cost + fee).toFixed(2)})`);
+      const free = this.state.usdc - (reserved ? this.reservedUsdc() : 0);
+      if (cost + fee > free + 1e-9) throw new Error(`TEST: för lite USDC (fritt ${free.toFixed(2)}, behöver ${(cost + fee).toFixed(2)})`);
       const h = this.state.holdings[base] ?? { qty: 0, avg: 0, openedAt: Date.now() };
-      h.avg = (h.avg * h.qty + cost) / (h.qty + qty);
+      h.avg = (h.avg * h.qty + cost + fee) / (h.qty + qty); // avgiften ingår, som Bybits snittpris
       h.qty += qty;
       this.state.holdings[base] = h;
       this.state.usdc -= cost + fee;
     } else {
       const h = this.state.holdings[base];
-      if (!h || h.qty + 1e-12 < qty) throw new Error(`TEST: du har bara ${(h?.qty ?? 0)} ${base}`);
+      const free = (h?.qty ?? 0) - (reserved ? this.reservedQty(base) : 0);
+      if (!h || free + 1e-12 < qty) throw new Error(`TEST: du har bara ${Math.max(0, free)} ${base} fritt`);
       h.qty -= qty;
       if (h.qty <= 1e-12) delete this.state.holdings[base];
       this.state.usdc += cost - fee;
     }
     this.state.fills.push({ id: `f${Date.now()}`, base, side, qty, price, fee, at: Date.now(), kind });
+    console.log(`[TEST] ${side === "BUY" ? "KÖP" : "SÄLJ"} ${qty} ${base} @ ${price} USDC (Bybit EU orderbok, ${kind}), avgift ${fee.toFixed(4)}`);
     if (this.state.fills.length > 500) this.state.fills.shift();
     return { qty, cost };
   }
@@ -145,7 +164,8 @@ export class BybitPaperBroker implements BrokerAdapter {
     let qty = order.quantity;
     if (qty === undefined) {
       if (order.quoteOrderQty === undefined) throw new Error("TEST: ange antal eller belopp");
-      qty = order.quoteOrderQty / (order.type === "LIMIT" && order.price ? order.price : ref);
+      // Beloppet inkluderar avgiften (som "köp för $X" hos Bybit)
+      qty = order.quoteOrderQty / (1 + FEE) / (order.type === "LIMIT" && order.price ? order.price : ref);
     }
     if (!(qty > 0)) throw new Error("TEST: antalet måste vara större än 0");
 
@@ -158,19 +178,23 @@ export class BybitPaperBroker implements BrokerAdapter {
       const r = this.fill(base, order.side, qty, ref, order.type);
       status = "Filled"; executedQty = r.qty; cost = r.cost; avg = ref;
     } else {
-      if (order.side === "BUY" && qty * order.price! * (1 + FEE) > this.state.usdc) throw new Error("TEST: för lite USDC för limit-ordern");
-      this.state.open.push({ id, base, side: order.side, kind: "LIMIT", qty, price: order.price!, createdAt: Date.now() });
+      if (order.side === "BUY" && qty * order.price! * (1 + FEE) > this.state.usdc - this.reservedUsdc() + 1e-9) throw new Error("TEST: för lite fritt USDC för limit-ordern");
+      if (order.side === "SELL" && qty > (this.state.holdings[base]?.qty ?? 0) - this.reservedQty(base) + 1e-12) throw new Error(`TEST: för lite fritt ${base} för limit-ordern`);
+      this.state.open.push({ id, base, side: order.side, kind: "LIMIT", qty, price: order.price!, createdAt: Date.now(), tp: order.takeProfit, sl: order.stopLoss });
     }
 
-    // TP/SL (bara efter köp): säljer automatiskt vid vinst eller förlust
-    if (order.side === "BUY" && (order.takeProfit !== undefined || order.stopLoss !== undefined)) {
-      const group = id;
-      if (order.takeProfit !== undefined) this.state.open.push({ id: `${id}-tp`, base, side: "SELL", kind: "TP", qty, price: order.takeProfit, group, createdAt: Date.now() });
-      if (order.stopLoss !== undefined) this.state.open.push({ id: `${id}-sl`, base, side: "SELL", kind: "SL", qty, price: order.stopLoss, group, createdAt: Date.now() });
-    }
+    // TP/SL (bara efter köp): säljer automatiskt vid vinst eller förlust.
+    // För ett LIMIT-köp som väntar läggs de först när köpet fyllts (check()).
+    if (marketable && order.side === "BUY") this.addTpSl(id, base, executedQty, order.takeProfit, order.stopLoss);
     this.save();
     this.schedule();
     return { orderId: id, symbol: order.symbol, side: order.side, type: order.type, status, executedQty, cummulativeQuoteQty: cost, avgFillPrice: avg, timestamp: Date.now() };
+  }
+
+  private addTpSl(group: string, base: string, qty: number, tp?: number, sl?: number): void {
+    if (!(qty > 0)) return;
+    if (tp !== undefined) this.state.open.push({ id: `${group}-tp`, base, side: "SELL", kind: "TP", qty, price: tp, group, createdAt: Date.now() });
+    if (sl !== undefined) this.state.open.push({ id: `${group}-sl`, base, side: "SELL", kind: "SL", qty, price: sl, group, createdAt: Date.now() });
   }
 
   async cancelOrder(_symbol: string, orderId: string): Promise<void> {
@@ -196,11 +220,14 @@ export class BybitPaperBroker implements BrokerAdapter {
           : b.bid <= o.price; // SL
         if (!hit) continue;
         const px = o.kind === "LIMIT" ? o.price : b.bid; // TP/SL säljs till marknadspris, som hos Bybit
+        this.state.open = this.state.open.filter((x) => x !== o && (!o.group || x.group !== o.group));
         try {
           const have = this.state.holdings[base]?.qty ?? 0;
-          this.fill(base, o.side, o.side === "SELL" ? Math.min(o.qty, have) : o.qty, px, o.kind);
-        } catch { /* pengar/innehav räcker inte längre: ordern tas bort */ }
-        this.state.open = this.state.open.filter((x) => x !== o && (!o.group || x.group !== o.group));
+          const r = this.fill(base, o.side, o.side === "SELL" ? Math.min(o.qty, have) : o.qty, px, o.kind, false);
+          if (o.kind === "LIMIT" && o.side === "BUY") this.addTpSl(o.id, base, r.qty, o.tp, o.sl);
+        } catch (e) {
+          console.warn(`[TEST] ${o.kind}-order ${o.id} togs bort: ${e instanceof Error ? e.message : String(e)}`);
+        }
         changed = true;
       }
     }
