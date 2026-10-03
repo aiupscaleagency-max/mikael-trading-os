@@ -195,6 +195,16 @@ body.sec-max-open{overflow:hidden}
 #page-trade [data-sec]::before{content:attr(data-sec);display:block;grid-column:1 / -1;font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--cyan);padding:0 0 8px;margin-bottom:8px;border-bottom:1px solid var(--border)}
 #chartBox{height:480px}
 #page-trade .page-header{margin:16px 24px 0}
+/* Breda skärmar: som Bybits handelssida. Diagram (stort) | orderbok | köp/sälj
+   på samma rad, väntande ordrar direkt under diagrammet. */
+@media (min-width:1700px){
+  #page-trade main{grid-template-columns:minmax(0,62fr) minmax(0,19fr) minmax(0,19fr);grid-template-areas:"info info info" "chart book order" "pend pend ana" "sig sig sig" "team team team"}
+  #page-trade .right{display:contents}
+  #page-trade .right > .sec-ctl{display:none !important}
+  #page-trade #bybitTradeCard{grid-area:book;align-self:stretch;height:auto !important;margin:0;min-width:0}
+  #page-trade #orderCard{grid-area:order;align-self:stretch;height:auto !important;margin:0;min-width:0}
+  #page-trade #tradeInfo{grid-template-columns:repeat(4,minmax(0,1fr))}
+}
 .left{display:flex;flex-direction:column;gap:10px;min-width:0}
 .right{display:flex;flex-direction:column;gap:10px}
 
