@@ -2,6 +2,7 @@ import { config } from "./config.js";
 import type { BrokerAdapter } from "./brokers/adapter.js";
 import { BinanceBroker } from "./brokers/binance.js";
 import { AlpacaBroker } from "./brokers/alpaca.js";
+import { BybitPaperBroker } from "./brokers/bybitPaper.js";
 import { KrakenBroker } from "./brokers/kraken.js";
 import { BybitBroker } from "./brokers/bybit.js";
 import { BlofinBroker } from "./brokers/blofin.js";
@@ -71,6 +72,12 @@ function createBrokers(): Record<string, BrokerAdapter> {
     });
   }
 
+  // TEST = låtsaspengar i boten, fyllda mot Bybit EU:s riktiga orderbok (Mike 2026-10-03:
+  // ingen Alpaca, inga riktiga pengar i TEST; Bybit EU har ingen demo-API). BYBIT_PAPER=false stänger av.
+  if (process.env.BYBIT_PAPER !== "false") {
+    brokers["bybit-paper"] = new BybitPaperBroker({ quote: config.bybit.quote, baseUrl: config.bybit.baseUrl });
+  }
+
   // Bybit Demo Trading: TEST på exakt samma börs, par, priser och USDC som LIVE.
   // Finns den väljs den före Alpaca paper som TEST-mäklare.
   if (config.bybitDemo.enabled) {
@@ -132,8 +139,10 @@ function createBrokers(): Record<string, BrokerAdapter> {
   // Bybit överallt (Mike 2026-10-03): finns Bybit demo (TEST) körs bara Bybit,
   // demo först så att den blir aktiv mäklare. Övriga nycklar ligger kvar i .env
   // men används inte. BYBIT_ONLY=false i .env tar tillbaka dem.
-  if (brokers["bybit-demo"] && process.env.BYBIT_ONLY !== "false") {
-    const only: Record<string, BrokerAdapter> = { "bybit-demo": brokers["bybit-demo"] };
+  // TEST-mäklaren först (den blir aktiv som standard): låtsaskontot, annars demo.
+  const testName = brokers["bybit-paper"] ? "bybit-paper" : brokers["bybit-demo"] ? "bybit-demo" : null;
+  if (testName && process.env.BYBIT_ONLY !== "false") {
+    const only: Record<string, BrokerAdapter> = { [testName]: brokers[testName]! };
     if (brokers.bybit) only.bybit = brokers.bybit;
     const dropped = Object.keys(brokers).filter((n) => !(n in only));
     if (dropped.length) log.info(`Bybit överallt: använder inte ${dropped.join(", ")}`);
@@ -237,7 +246,7 @@ async function runOnce(
   const activeName = getActiveBrokerName();
   const primaryBroker = activeName
     ? brokers[activeName]
-    : (brokers["bybit-demo"] ?? brokers.alpaca ?? brokers.blofin ?? brokers.binance);
+    : (brokers["bybit-paper"] ?? brokers["bybit-demo"] ?? brokers.alpaca ?? brokers.blofin ?? brokers.binance);
   if (!primaryBroker) {
     log.error("Ingen broker tillgänglig.");
     return;
