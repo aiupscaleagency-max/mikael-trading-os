@@ -38,17 +38,30 @@ const GATEWAY_MODELS: Record<LlmRole, string> = {
 // this time"). Vercel har låga gränser på de nyaste modellerna för vissa
 // konton: första anropet går igenom, nästa stoppas. Då kör turen vidare på
 // reservmodellen i stället för att Head kraschar. Överstyr med
-// LLM_MODEL_FALLBACK, eller stäng av med LLM_MODEL_FALLBACK=off.
-const GATEWAY_FALLBACKS: Record<string, string> = {
-  "anthropic/claude-opus-5.5": "anthropic/claude-opus-4.8",
-  "anthropic/claude-sonnet-5.5": "anthropic/claude-opus-4.8",
+// LLM_MODEL_FALLBACK (kommaseparerad lista), eller stäng av med
+// LLM_MODEL_FALLBACK=off.
+//
+// Mike 2026-10-03: "sånt här får inte hända". Varje modell har därför en
+// KEDJA av reserver, billigast-som-duger först, och sist alltid Haiku 4.5
+// (billig och nästan aldrig spärrad). Varje reserv provas på alla vägar
+// (Anthropic direkt → Vercel → OpenRouter) innan nästa reserv tas.
+const GATEWAY_FALLBACKS: Record<string, string[]> = {
+  "anthropic/claude-opus-5.5": ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-4.8", "anthropic/claude-sonnet-4.6", "anthropic/claude-haiku-4.5"],
+  "anthropic/claude-sonnet-5.5": ["anthropic/claude-opus-4.8", "anthropic/claude-sonnet-4.6", "anthropic/claude-haiku-4.5"],
+  "anthropic/claude-opus-4.8": ["anthropic/claude-sonnet-4.6", "anthropic/claude-haiku-4.5"],
+  "anthropic/claude-sonnet-4.6": ["anthropic/claude-haiku-4.5"],
+  "anthropic/claude-haiku-4.5": ["anthropic/claude-sonnet-4.6"],
+  "openai/gpt-6-astra": ["anthropic/claude-sonnet-5.5", "anthropic/claude-haiku-4.5"],
 };
-export function fallbackModel(model: string): string | undefined {
+export function fallbackModels(model: string): string[] {
   const override = process.env.LLM_MODEL_FALLBACK?.trim();
-  if (override === "off") return undefined;
-  const fallback = GATEWAY_FALLBACKS[model];
-  if (!fallback) return undefined;
-  return override || fallback;
+  if (override === "off") return [];
+  const chain = override ? override.split(",").map((m) => m.trim()).filter(Boolean) : (GATEWAY_FALLBACKS[model] ?? []);
+  return chain.filter((m) => m !== model);
+}
+/** Första reserven (bakåtkompatibelt). */
+export function fallbackModel(model: string): string | undefined {
+  return fallbackModels(model)[0];
 }
 
 const ENV_OVERRIDE: Record<LlmRole, string> = {
@@ -199,12 +212,17 @@ export function createLlmClient(anthropicApiKey?: string | null): Anthropic {
   const routes = buildRoutes(directKey);
   const client = new Anthropic({ apiKey: "unused", baseURL: GATEWAY_BASE_URL });
 
-  const tryRoutes = async (body: Anthropic.MessageCreateParams, model: string, options?: Anthropic.RequestOptions) => {
+  const tryRoutes = async (
+    body: Anthropic.MessageCreateParams,
+    model: string,
+    options?: Anthropic.RequestOptions,
+    ignoreCooldown = false,
+  ) => {
     let lastErr: unknown;
     for (const route of routes) {
       if (!route.accepts(model)) continue;
       const key = `${route.name}:${model}`;
-      if ((routeBlockedUntil.get(key) ?? 0) > Date.now()) continue;
+      if (!ignoreCooldown && (routeBlockedUntil.get(key) ?? 0) > Date.now()) continue;
       try {
         return await route.create({ ...body, model: route.toModel(model) }, options);
       } catch (err) {
@@ -221,14 +239,31 @@ export function createLlmClient(anthropicApiKey?: string | null): Anthropic {
 
   client.messages.create = (async (body: Anthropic.MessageCreateParams, options?: Anthropic.RequestOptions) => {
     const model = toGatewayModel(body.model);
-    try {
-      return await tryRoutes(body, model, options);
-    } catch (err) {
-      const fallback = fallbackModel(model);
-      if (!fallback) throw err;
-      log.warn(`[LLM] Alla vägar stoppade ${model} — kör reserv ${fallback}`);
-      return tryRoutes(body, fallback, options);
+    const chain = [model, ...fallbackModels(model)];
+    const tried: string[] = [];
+    let firstErr: unknown;
+    for (const m of chain) {
+      try {
+        if (m !== model) log.warn(`[LLM] Alla vägar stoppade ${tried.join(", ")} — kör reserv ${m}`);
+        return await tryRoutes(body, m, options);
+      } catch (err) {
+        if (statusOf(err) === undefined && !/Ingen LLM-väg/.test(String((err as Error)?.message))) throw err;
+        firstErr ??= err;
+        tried.push(m);
+      }
     }
+    // Sista utvägen: alla vägar stod i paus efter tidigare spärrar. Försök ändå
+    // en gång utan paus, så att en tillfällig 429 inte stoppar hela analysen.
+    for (const m of chain) {
+      try {
+        log.warn(`[LLM] Alla reserver pausade — försöker ${m} igen utan paus`);
+        return await tryRoutes(body, m, options, true);
+      } catch (err) {
+        if (statusOf(err) === undefined && !/Ingen LLM-väg/.test(String((err as Error)?.message))) throw err;
+      }
+    }
+    const reason = firstErr instanceof Error ? firstErr.message : String(firstErr);
+    throw new Error(`Ingen AI-modell svarade (provade ${tried.join(", ")}). Första felet: ${reason}`);
   }) as typeof client.messages.create;
   return client;
 }
