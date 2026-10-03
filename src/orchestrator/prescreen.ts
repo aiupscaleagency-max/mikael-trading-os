@@ -8,7 +8,9 @@
 // någon signal hoppas över helt (inga AI-kostnader).
 //
 // Av:  AI_PRESCREEN=false  → som förut, alla par varje tur.
-// Tröskel: PRESCREEN_MIN_SCORE (standard 30 = signalmotorns egen gräns).
+// Tröskel: PRESCREEN_MIN_SCORE (standard 50). Högst PRESCREEN_MAX_PAIRS par
+// per tur (standard 3, de starkaste), så att en bred rörelse där nästan alla
+// par har signal inte väcker teamet för alla par.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { getSignals, type Signal } from "../server/signalEngine.js";
@@ -61,7 +63,7 @@ export function symbolsInInstruction(instruction: string, symbols: string[]): st
 
 /** Färska signaler med riktning (JEV har inte tonat ned dem till NEUTRAL). */
 export function flaggedPairs(symbols: string[], now = Date.now()): { flagged: PrescreenPick[]; haveSignals: boolean } {
-  const minScore = Number(process.env.PRESCREEN_MIN_SCORE ?? 30) || 30;
+  const minScore = Number(process.env.PRESCREEN_MIN_SCORE ?? 50) || 50;
   const wanted = new Set(symbols.map((s) => s.toUpperCase()));
   const signals = getSignals().filter((s) => wanted.has(s.symbol.toUpperCase()));
   const flagged: PrescreenPick[] = [];
@@ -108,8 +110,13 @@ export function prescreenPairs(params: {
     return { enabled: true, symbols: all, flagged, skip: false, note: "signalmotorn värms upp, alla par den här gången" };
   }
   if (flagged.length) {
-    const list = flagged.map((f) => `${f.symbol} ${f.direction === "LONG" ? "upp" : "ned"} ${f.score > 0 ? "+" : ""}${f.score}`).join(", ");
-    return { enabled: true, symbols: flagged.map((f) => f.symbol), flagged, skip: false, note: `${flagged.length} av ${cryptoSymbols.length} par har signal: ${list}` };
+    const maxPairs = Math.max(1, Number(process.env.PRESCREEN_MAX_PAIRS ?? 3) || 3);
+    const top = flagged.slice(0, maxPairs);
+    const list = top.map((f) => `${f.symbol} ${f.direction === "LONG" ? "upp" : "ned"} ${f.score > 0 ? "+" : ""}${f.score}`).join(", ");
+    const head = flagged.length > top.length
+      ? `${flagged.length} av ${cryptoSymbols.length} par har signal, AI-teamet tar de ${top.length} starkaste: ${list}`
+      : `${flagged.length} av ${cryptoSymbols.length} par har signal: ${list}`;
+    return { enabled: true, symbols: top.map((f) => f.symbol), flagged, skip: false, note: head };
   }
   if (scheduled && !instruction) {
     return { enabled: true, symbols: [], flagged, skip: true, note: `inget av ${cryptoSymbols.length} par har signal just nu, AI-teamet vilar` };
