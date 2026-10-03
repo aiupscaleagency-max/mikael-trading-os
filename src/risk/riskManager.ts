@@ -1,6 +1,8 @@
 import type { Config } from "../config.js";
 import type { Account, OrderRequest, Position } from "../types.js";
 import type { AgentState } from "../memory/store.js";
+import { currentStake } from "./stakeLadder.js";
+import { testStakeCapUsd } from "../server/orderGate.js";
 
 export interface RiskCheckResult {
   allowed: boolean;
@@ -31,6 +33,8 @@ export class RiskManager {
       account: Account;
       positions: Position[];
       lastPrice: number;
+      /** true = TEST/låtsaskonto. Bara då gäller insats-trappan. */
+      paper?: boolean;
     },
   ): RiskCheckResult {
     const { state, account, positions, lastPrice } = ctx;
@@ -85,15 +89,19 @@ export class RiskManager {
       }
 
       // Per-position-ramar: golv (MIN), tak (MAX). Hanna får anpassa inom ramen.
+      // Insats-trappan (1 → 5 % av TEST-kontot) styr storleken BARA i TEST.
+      // LIVE behåller .env-taket oförändrat.
+      const stake = ctx.paper ? currentStake() : null;
+      const maxPos = ctx.paper ? testStakeCapUsd() : risk.maxPositionUsd;
       let adjustedOrder: OrderRequest | undefined;
-      if (orderUsd > risk.maxPositionUsd) {
+      if (orderUsd > maxPos) {
         const scaled: OrderRequest = {
           ...order,
-          quoteOrderQty: risk.maxPositionUsd,
+          quoteOrderQty: maxPos,
           quantity: undefined,
         };
         adjustedOrder = scaled;
-        orderUsd = risk.maxPositionUsd;
+        orderUsd = maxPos;
       } else if (risk.minPositionUsd && orderUsd < risk.minPositionUsd) {
         return {
           allowed: false,
@@ -106,12 +114,14 @@ export class RiskManager {
         (sum, p) => sum + p.quantity * p.currentPrice,
         0,
       );
-      if (currentExposure + orderUsd > risk.maxTotalExposureUsd) {
-        const remaining = risk.maxTotalExposureUsd - currentExposure;
+      // Insats-trappan: tillåt maxOpenPositions × insatsen, men aldrig under .env-värdet
+      const maxExposure = Math.max(risk.maxTotalExposureUsd, (risk.maxOpenPositions ?? 0) * (stake?.usd ?? 0));
+      if (currentExposure + orderUsd > maxExposure) {
+        const remaining = maxExposure - currentExposure;
         if (remaining < 10) {
           return {
             allowed: false,
-            reason: `Max total exponering (${risk.maxTotalExposureUsd} USDT) nådd. Nuvarande: ${currentExposure.toFixed(2)} USDT.`,
+            reason: `Max total exponering (${maxExposure} USDT) nådd. Nuvarande: ${currentExposure.toFixed(2)} USDT.`,
           };
         }
         // Skala ner till vad som får plats

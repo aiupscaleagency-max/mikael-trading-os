@@ -13,7 +13,7 @@ import {
 } from "./bybitStream.js";
 import type { Candle } from "./klineStream.js";
 import {
-  addPendingOrder, checkOrderGate, MAX_LIVE_STAKE_USD, MAX_TEST_STAKE_USD,
+  addPendingOrder, checkOrderGate, MAX_LIVE_STAKE_USD, testStakeCapUsd,
 } from "./orderGate.js";
 import { treeEvent } from "./treeLog.js";
 import { loadPaperLedger, recordPaperSignal, resetPaper } from "./paperLedger.js";
@@ -362,7 +362,7 @@ export async function queueSignal(signalId: string, venueOverride?: "test" | "li
   let quantity: number | undefined;
   let note = "";
   if (sig.side === "BUY") {
-    const cap = live ? MAX_LIVE_STAKE_USD : MAX_TEST_STAKE_USD;
+    const cap = live ? MAX_LIVE_STAKE_USD : testStakeCapUsd();
     quoteUsd = Math.min(strategy?.stakeUsd ?? 5, cap);
     if ((strategy?.stakeUsd ?? 0) > cap) note = ` (sänkt till taket $${cap})`;
   } else {

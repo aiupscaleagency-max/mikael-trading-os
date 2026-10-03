@@ -237,6 +237,8 @@ export function createLlmClient(anthropicApiKey?: string | null): Anthropic {
 export function extractJson(text: string): string {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced?.[1]) return fenced[1].trim();
+  // Avklippt svar: öppnande ```json utan stängning — ta bort staketet och läs resten
+  text = text.replace(/^[^{]*?```(?:json)?\s*/i, "");
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   return start >= 0 && end > start ? text.slice(start, end + 1) : text.trim();
