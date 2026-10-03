@@ -2271,7 +2271,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
     <!-- BINANCE LIVE SYNC — jämför med testnet.binance.vision i annan flik -->
-    <div class="card" id="binance-sync-card" style="display:none;border-left:3px solid #f0b90b"><!-- dold: Bybit överallt -->
+    <div class="card" id="binance-sync-card" hidden style="display:none!important;border-left:3px solid #f0b90b"><!-- dold: Bybit överallt -->
       <h3 style="display:flex;align-items:center;gap:8px">
         🟡 Binance Live Sync
         <span id="binance-sync-mode" class="tag" style="font-size:10px;color:#f0b90b">init...</span>
@@ -7885,10 +7885,8 @@ function startBinanceSync(){
   if(binanceSyncInterval) return;
   refreshBinanceSync();
   binanceSyncInterval = setInterval(refreshBinanceSync, 3000); // var 3s polling baseline för balans
-  // PUBLIC WEBSOCKET för realtid pris-stream (millisekund-uppdateringar)
-  startBinanceMarketStream();
-  // SSE för backend-events (order-fills från positionMonitor)
-  startBinanceUserStream();
+  // Bybit överallt: Binance-strömmarna i webbläsaren startas inte längre
+  // (priserna kommer från Bybits WebSocket och /api/bybit/prices).
 }
 
 // ─── BINANCE MARKET WEBSOCKET — realtid-priser för aktiva positioner ───
@@ -9316,7 +9314,7 @@ document.addEventListener("DOMContentLoaded", boot);
 
   function colHtml(b){
     return `<div class="pp-col" data-b="${b}">
-      <div class="pp-top"><input type="checkbox" class="pp-chk" title="Ta med i Analysera valda"><span class="pp-name">${b}/USDC</span><span class="pp-px">–</span></div>
+      <div class="pp-top"><input type="checkbox" class="pp-chk" title="Ta med i Analysera valda"><span class="pp-name" title="Priset visas från USDT-paret (mest handel). Ordrar läggs i USDC.">${b}/USDC</span><span class="pp-px">–</span></div>
       <div class="pp-chg">–</div>
       <canvas class="pp-canvas"></canvas><div class="pp-sub">senaste 6 timmarna · 5-minutersljus · Bybit</div>
       <div class="pp-row pp-sig"><span class="pp-k">Signal (indikatorer)</span>–</div>
@@ -9343,7 +9341,8 @@ document.addEventListener("DOMContentLoaded", boot);
 
   async function loadBars(b){
     try{
-      const r = await fetch(`/api/bybit/klines?symbol=${b}USDC&interval=5m&limit=72`);
+      // Pris och rörelse från USDT-paret (det som syns på Bybit, mycket mer handel). Ordrarna läggs i USDC.
+      const r = await fetch(`/api/bybit/klines?symbol=${b}USDT&interval=5m&limit=72`);
       const d = await r.json();
       if(d.klines && d.klines.length){
         P[b].bars = d.klines.map(k=>k.close);
@@ -9358,7 +9357,7 @@ document.addEventListener("DOMContentLoaded", boot);
     const me = ws; let ping;
     ws.onopen = ()=>{
       // tickers = 24h-ändring (ca 1 gång/s), publicTrade = varje affär så priset rör sig direkt
-      const args = order.flatMap(b=>[`tickers.${b}USDC`, `publicTrade.${b}USDC`]);
+      const args = order.flatMap(b=>[`tickers.${b}USDT`, `publicTrade.${b}USDT`]);
       for(let i=0;i<args.length;i+=10) me.send(JSON.stringify({op:"subscribe", args: args.slice(i,i+10)}));
       ping = setInterval(()=>{ try{ me.send('{"op":"ping"}'); }catch(_){} }, 20000);
     };
@@ -9391,7 +9390,7 @@ document.addEventListener("DOMContentLoaded", boot);
       if(typeof tickFlash === "function") tickFlash(pxEl, x.price);
     } else if(x.missing){
       el.querySelector(".pp-px").textContent = "–";
-      el.querySelector(".pp-sub").textContent = "finns inte som USDC-par på Bybit";
+      el.querySelector(".pp-sub").textContent = "finns inte på Bybit";
     }
     if(x.chg != null){
       const c = el.querySelector(".pp-chg");
