@@ -1,0 +1,21 @@
+#!/bin/zsh
+# bybit-eu: Bybits officiella CLI mot Bybit EU, BARA läsning (get-*).
+# Nycklar läses från mikael-trading-os/.env vid körning och skrivs aldrig ut.
+# Ordrar, överföringar m.m. blockeras: de ska gå via Trading OS order-spärr.
+set -e
+DIR="${0:A:h}"
+ENVF="$HOME/ai_upscale_work/mikael-trading-os/.env"
+# Spärren tittar på de två första orden som inte är flaggor (grupp + kommando),
+# så "--pretty order create-order" blockeras också.
+pos=()
+for a in "$@"; do [[ "$a" != -* ]] && pos+=("$a"); done
+if (( ${#pos} >= 2 )) && [[ "${pos[2]}" != get-* ]]; then
+  echo "bybit-eu: bara läskommandon (get-…) är tillåtna. '${pos[1]} ${pos[2]}' blockeras — ordrar går via Trading OS." >&2
+  exit 2
+fi
+val() { grep -E "^$1=" "$ENVF" | head -1 | cut -d= -f2- | tr -d '[:space:]'; }
+export BYBIT_API_KEY="$(val BYBIT_API_KEY)"
+export BYBIT_API_SECRET="$(val BYBIT_API_SECRET)"
+export BYBIT_CLI_NO_UPDATE_CHECK=1 BYBIT_CLI_NO_SKILL_REGISTER=1
+unset BYBIT_ENV
+exec env NODE_OPTIONS="--import=$DIR/preload.mjs ${NODE_OPTIONS:-}" bybit-cli "$@"
