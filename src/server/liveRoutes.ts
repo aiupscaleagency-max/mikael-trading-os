@@ -336,7 +336,10 @@ export async function handleLiveRoutes(
       const limit = Math.min(1000, Math.max(10, Number(url.searchParams.get("limit")) || 300));
       if (!iv) { send(res, 400, { error: "okänt intervall", klines: [] }); return true; }
       let lastErr = "";
-      for (const base of ["https://api.bybit.com", process.env.BYBIT_BASE_URL || "https://api.bybit.eu"]) {
+      // USDC-par = samma marknad som på bybit.eu: fråga Bybit EU först
+      const euBase = process.env.BYBIT_BASE_URL || "https://api.bybit.eu";
+      const bases = symbol.endsWith("USDC") ? [euBase, "https://api.bybit.com"] : ["https://api.bybit.com", euBase];
+      for (const base of bases) {
         try {
           const r = await fetch(`${base}/v5/market/kline?category=spot&symbol=${symbol}&interval=${iv}&limit=${limit}`);
           const body = (await r.json()) as { retCode: number; retMsg: string; result?: { list?: string[][] } };
