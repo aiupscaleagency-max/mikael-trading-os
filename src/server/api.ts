@@ -8,6 +8,7 @@ import { loadState, saveState, loadRecentDecisions } from "../memory/store.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { computeIndicators } from "../indicators/ta.js";
 import { log } from "../logger.js";
+import { autoAllowed, saveExecutionMode, setExecutionMode } from "./executionModeStore.js";
 import { config } from "../config.js";
 import { getCostSummary } from "../cost/tracker.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
@@ -160,7 +161,18 @@ async function executeApprovedOrder(
   p: PendingOrder,
   brokers: Record<string, BrokerAdapter>,
 ): Promise<{ ok: true; result: unknown } | { ok: false; error: string; keepPending?: boolean }> {
-  const gate = await checkOrderGate({ live: p.live, side: p.side, quoteUsd: p.quoteUsd, source: `godkänd:${p.source}` });
+  // Agentens förslag kan vara i antal mynt (t.ex. 3.29 st) utan belopp. Räkna då
+  // ut beloppet från aktuellt pris, så att samma gränser ($ per order) gäller.
+  let quoteUsd = p.quoteUsd;
+  if (p.side === "BUY" && !(Number(quoteUsd) > 0) && Number(p.quantity) > 0) {
+    let px = getCachedPrice(p.symbol);
+    if (!px && p.venue.startsWith("broker:")) {
+      const b = brokers[p.venue.slice("broker:".length)];
+      px = b ? await b.getTicker(p.symbol).then((t) => Number(t.price) || null).catch(() => null) : null;
+    }
+    if (px) quoteUsd = Math.round(Number(p.quantity) * px * 100) / 100;
+  }
+  const gate = await checkOrderGate({ live: p.live, side: p.side, quoteUsd, source: `godkänd:${p.source}` });
   // Spärrad just nu (t.ex. kill switch) → ordern får ligga kvar och kan godkännas senare
   if (!gate.ok) return { ok: false, error: gate.error, keepPending: true };
   try {
@@ -1022,6 +1034,27 @@ export function startServer(
         }
         broadcastEvent("mode-changed", { uiMode, mode: config.mode, executionMode: config.executionMode });
         json(res, { ok: true, uiMode, mode: config.mode, executionMode: config.executionMode });
+        return;
+      }
+
+      // ── Auto / manuellt för agenternas ordrar (knappen på Trade-sidan) ──
+      // AUTO = agenterna lägger ordrar själva inom gränserna. Bara i TEST.
+      // MANUELL = varje order hamnar i Väntande ordrar och väntar på Godkänn.
+      if (url.pathname === "/api/execution-mode" && method === "POST") {
+        const { executionMode } = JSON.parse(await readBody(req)) as { executionMode?: string };
+        if (executionMode !== "auto" && executionMode !== "approve") {
+          jsonStatus(res, 400, { ok: false, error: "Välj auto eller approve." });
+          return;
+        }
+        if (executionMode === "auto" && !autoAllowed()) {
+          jsonStatus(res, 409, { ok: false, error: "AUTO går bara i TEST. I LIVE kräver varje order alltid Godkänn." });
+          return;
+        }
+        setExecutionMode(executionMode);
+        await saveExecutionMode(executionMode).catch((e) => log.warn(`Kunde inte spara auto/manuellt: ${(e as Error).message}`));
+        log.warn(`Agenternas ordrar: ${executionMode === "auto" ? "AUTO (läggs direkt inom gränserna, TEST)" : "MANUELL (varje order väntar på Godkänn)"} — valt på Trade-sidan`);
+        broadcastEvent("mode-changed", { mode: config.mode, executionMode: config.executionMode });
+        json(res, { ok: true, executionMode: config.executionMode, autoAllowed: autoAllowed() });
         return;
       }
 
