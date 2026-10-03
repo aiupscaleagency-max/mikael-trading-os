@@ -9089,7 +9089,7 @@ document.addEventListener("DOMContentLoaded", boot);
   const $ = (id)=>document.getElementById(id);
   const baseOf = (sym)=> String(sym||"").replace(/(USDT|USDC|USD|BUSD|FDUSD)$/,"");
   const fmt = (n, d)=> Number(n).toLocaleString("sv-SE", {minimumFractionDigits:d, maximumFractionDigits:d});
-  function priceDecimals(p){ return p >= 1000 ? 1 : p >= 10 ? 2 : p >= 1 ? 4 : 6; }
+  function priceDecimals(p){ return p >= 1000 ? 2 : p >= 10 ? 2 : p >= 1 ? 4 : 6; }
 
   function connect(){
     const sym = (typeof STATE !== "undefined" && STATE.symbol) || "BTCUSDT";
@@ -9305,7 +9305,7 @@ document.addEventListener("DOMContentLoaded", boot);
   const grid = $("pp-grid"); if(!grid) return;
   const esc = (t)=>String(t == null ? "" : t).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
   const baseOf = (s)=> String(s||"").toUpperCase().replace(/(USDT|USDC|USD|BUSD|FDUSD)$/,"");
-  const pd = (p)=> p >= 1000 ? 1 : p >= 10 ? 2 : p >= 1 ? 4 : 6;
+  const pd = (p)=> p >= 1000 ? 2 : p >= 10 ? 2 : p >= 1 ? 4 : 6;
   const fmt = (n,d)=> Number(n).toLocaleString("sv-SE",{minimumFractionDigits:d,maximumFractionDigits:d});
   const P = {};            // bas → { price, chg, bars, sig, pick, el }
   const sel = new Set();

@@ -364,14 +364,11 @@ async function main(): Promise<void> {
   log.info("╚══════════════════════════════════════════════════════════╝");
   log.info(`  Mode: ${config.mode}  |  Execution: ${config.executionMode}`);
   log.info(`  Engines: ${config.engines.join(", ")}`);
-  log.info(`  Brokers: ${[
-    config.alpaca.enabled && "Alpaca",
-    config.blofin.enabled && "Blofin",
-    config.binance.enabled && "Binance",
-  ].filter(Boolean).join(", ")}`);
   log.info("──────────────────────────────────────────────────────────");
 
   const brokers = createBrokers();
+  // Visa de mäklare som faktiskt är registrerade (Bybit överallt döljer t.ex. Binance)
+  log.info(`  Brokers: ${Object.keys(brokers).join(", ") || "inga"}`);
   const engines = createEngines(brokers);
 
   if (engines.length === 0) {
