@@ -134,9 +134,9 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-widt
 /* Trade-sidan: signaler överst i full bredd, sedan båda diagrammen i samma
    kolumn och lika breda, snabb-trade till höger. Luft mot kanterna. */
 /* Trade-sidan i numrerade sektioner över hela bredden, 6 lika kolumner:
-   1 Marknaden (4) + 2 Handla (2) · 3 Signaler (6) · 4 Analys (3) + 5 Ordrar (3)
+   1 Marknaden (4) + 2 Handla (2) · 3 Analys (3) + 4 Ordrar (3) · 5 Signaler (6)
    · 6 AI-teamet (6). Ett par i taget; flera par finns på Alla par. */
-#page-trade main{grid-template-columns:repeat(6,minmax(0,1fr));grid-template-areas:"info info info info info info" "chart chart chart chart side side" "sig sig sig sig sig sig" "ana ana ana pend pend pend" "team team team team team team";gap:16px;padding:16px 24px 24px;align-items:start}
+#page-trade main{grid-template-columns:repeat(6,minmax(0,1fr));grid-template-areas:"info info info info info info" "chart chart chart chart side side" "ana ana ana pend pend pend" "sig sig sig sig sig sig" "team team team team team team";gap:16px;padding:16px 24px 24px;align-items:start}
 #page-trade #tradeInfo{grid-area:info;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
 #page-trade .ti-box{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.55;color:#c9d1d9}
 #page-trade .ti-h{font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:4px}
@@ -166,6 +166,21 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-widt
 /* Minimera / maximera på varje sektion */
 #page-trade [data-sec]{position:relative}
 #page-trade [data-sec]::before{padding-right:64px !important}
+/* Väntande ordrar: syns tydligt när något väntar på Godkänn */
+.pend-approve{padding:7px 16px;border:2px solid #3fb950;background:#1f9d3a;color:#fff;border-radius:7px;font-weight:900;letter-spacing:.5px;cursor:pointer;animation:pendGlow 1.4s ease-in-out infinite}
+.pend-approve:hover{background:#2bc04b}
+@keyframes pendGlow{0%,100%{box-shadow:0 0 0 0 rgba(63,185,80,.75)}50%{box-shadow:0 0 14px 4px rgba(63,185,80,.75)}}
+#pendingBox.has-pending{border:2px solid #f0b90b !important;animation:pendBox 1.8s ease-in-out infinite}
+@keyframes pendBox{0%,100%{box-shadow:0 0 0 0 rgba(240,185,11,.0)}50%{box-shadow:0 0 18px 2px rgba(240,185,11,.45)}}
+.pend-count{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:10px;background:#f0b90b;color:#000;font-size:11px;font-weight:900}
+.pend-count:empty{display:none}
+.exec-switch{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px}
+.exec-switch .exec-lbl{font-size:11px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:#8b95a7;margin-right:4px}
+.exec-switch button{padding:7px 12px;border:1px solid #2a3140;background:#0b0e14;color:#8b95a7;border-radius:7px;font-weight:800;font-size:12px;cursor:pointer}
+.exec-switch button[data-exec=approve].on{border:2px solid #3fb950;background:#0d2a14;color:#3fb950}
+.exec-switch button[data-exec=auto].on{border:2px solid #f0b90b;background:#3a2f0b;color:#f0b90b}
+.exec-hint{margin-top:6px;font-size:12px;color:#c9d1d9;line-height:1.5}
+.exec-hint b{color:#fff}
 #page-trade .sec-ctl{position:absolute;right:10px;display:flex;gap:4px;z-index:5}
 #page-trade .sec-ctl button{width:24px;height:20px;padding:0;line-height:18px;font-size:12px;font-weight:800;background:var(--card2);border:1px solid var(--border);border-radius:4px;color:var(--label);cursor:pointer}
 #page-trade .sec-ctl button:hover{color:#fff;border-color:var(--cyan)}
@@ -569,7 +584,7 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .status-line.warn{color:var(--yellow)}
 
 @media (min-width:1280px) and (max-width:1699px){
-  #page-trade main{grid-template-areas:"info info info info info info" "chart chart chart chart side side" "sig sig sig sig sig sig" "ana ana ana pend pend pend" "team team team team team team"}
+  #page-trade main{grid-template-areas:"info info info info info info" "chart chart chart chart side side" "ana ana ana pend pend pend" "sig sig sig sig sig sig" "team team team team team team"}
   #page-trade .right{grid-template-columns:minmax(0,1fr)}
   #page-trade #bybitTradeCard,#page-trade #orderCard{grid-column:1;grid-row:auto}
 }
@@ -1372,8 +1387,8 @@ body.app-state-onboard .fc-panel{display:none !important}
 <main>
 <!-- Vad som analyseras: läser /api/live/watchlist + /api/brokers. Bara visning. -->
 <section id="tradeInfo">
-  <div class="ti-box"><div class="ti-h">Signaltabellen (sektion 3)</div><div id="ti-sig">Laddar…</div></div>
-  <div class="ti-box"><div class="ti-h">Agenterna (sektion 4)</div><div id="ti-agents">Laddar…</div></div>
+  <div class="ti-box"><div class="ti-h">Signaltabellen (sektion 5)</div><div id="ti-sig">Laddar…</div></div>
+  <div class="ti-box"><div class="ti-h">Agenterna (sektion 3)</div><div id="ti-agents">Laddar…</div></div>
   <div class="ti-box"><div class="ti-h">Diagram och orderbok (sektion 1–2)</div><div id="ti-chart">Det par du väljer i diagrammet. Priserna kommer live från Bybit, samma som på bybit.eu. Orderboken visar samma mynt i USDC.</div></div>
   <div class="ti-box"><div class="ti-h">Läge</div><div id="ti-mode">Laddar…</div></div>
 </section>
@@ -1492,7 +1507,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 })();
 </script>
 
-<section id="signalPanel" data-sec="3 · Signaler · alla par som följs, räknas om när varje ljus stänger · klicka på en rad för att se paret i diagrammet" style="
+<section id="signalPanel" data-sec="5 · Signaler · alla par som följs, räknas om när varje ljus stänger · klicka på en rad för att se paret i diagrammet" style="
          font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
   <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px">
     <h2 style="margin:0;font-size:17px;font-weight:600">Signaler</h2>
@@ -1542,7 +1557,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 
   <!-- Senaste analysen: vad agenterna kom fram till efter "Kör analys" (eller schemat).
        Läser /api/live/analysis. Bara visning; ordrar läggs fortfarande via Väntande ordrar. -->
-  <div id="analysisBox" data-sec="4 · Agenternas analys · vad AI-teamet föreslår efter Kör analys eller schemat" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
+  <div id="analysisBox" data-sec="3 · Agenternas analys · vad AI-teamet föreslår efter Kör analys eller schemat" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
       <strong style="font-size:13px">Senaste analys <span style="color:#8b95a7;font-weight:400">· vad agenterna föreslår</span></strong>
       <span style="display:flex;gap:8px;align-items:center">
@@ -1615,11 +1630,17 @@ body.app-state-onboard .fc-panel{display:none !important}
   })();
   </script>
 
-  <div id="pendingBox" data-sec="5 · Väntande ordrar · inget skickas förrän du trycker Godkänn" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
+  <div id="pendingBox" data-sec="4 · Väntande ordrar · här godkänner du" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-      <strong style="font-size:13px">Väntande ordrar <span style="color:#8b95a7;font-weight:400">· inget läggs förrän du trycker Godkänn</span></strong>
+      <strong style="font-size:13px">Väntande ordrar <span id="pendingCount" class="pend-count"></span></strong>
       <span id="pendingMeta" style="font-size:12px;color:#8b95a7"></span>
     </div>
+    <div class="exec-switch" id="execSwitch">
+      <span class="exec-lbl">Agenternas ordrar:</span>
+      <button type="button" data-exec="approve">✋ MANUELL · jag godkänner</button>
+      <button type="button" data-exec="auto">⚡ AUTO · agenterna lägger själva</button>
+    </div>
+    <div id="execHint" class="exec-hint"></div>
     <div id="pendingRows" style="margin-top:8px;font-size:13px;color:#8b95a7">Laddar…</div>
   </div>
 
@@ -1788,7 +1809,24 @@ body.app-state-onboard .fc-panel{display:none !important}
           + (d.executionMode === "approve" ? " · VARJE ORDER KRÄVER GODKÄNN" : " · AUTO-LÄGE");
         sm.style.color = isLive ? "#22c55e" : "#f0b90b";
       }
-      pendingMetaEl.textContent = "Mäklare: " + brokerLabel() + " · " + (d.executionMode === "approve" ? "godkännande-läge PÅ" : "auto-läge");
+      pendingMetaEl.textContent = "Mäklare: " + brokerLabel();
+      var pbox = document.getElementById("pendingBox");
+      if (pbox) pbox.classList.toggle("has-pending", open.length > 0);
+      var pc = document.getElementById("pendingCount");
+      if (pc) pc.textContent = open.length ? open.length + " väntar på dig" : "";
+      // Fliken visar antal väntande, och ett kort pip när en ny order dyker upp
+      var baseTitle = document.title.replace(/^\(\d+\) /, "");
+      document.title = (open.length ? "(" + open.length + ") " : "") + baseTitle;
+      if (window._pendSeen != null && open.length > window._pendSeen) {
+        try {
+          var ac = window._pendAudio || (window._pendAudio = new (window.AudioContext || window.webkitAudioContext)());
+          var o = ac.createOscillator(), g = ac.createGain();
+          o.frequency.value = 880; g.gain.setValueAtTime(0.15, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.35);
+          o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.35);
+        } catch (_) {}
+      }
+      window._pendSeen = open.length;
+      showExecMode(d.executionMode);
       var row = function (o, withButtons) {
         var col = o.live ? "#22c55e" : "#f0b90b";
         var st = { done: "✓ lagd", rejected: "✕ avvisad", failed: "⚠ misslyckades", pending: "väntar" }[o.status] || o.status;
@@ -1803,7 +1841,7 @@ body.app-state-onboard .fc-panel{display:none !important}
           + '<span style="font-size:12px">' + esc(o.venue.replace("broker:", "")) + ' · ' + esc(o.source) + '</span>'
           + (withButtons
               ? '<span style="margin-left:auto;display:flex;gap:6px">'
-                + '<button data-pend="approve" data-id="' + esc(o.id) + '" style="padding:4px 12px;border:1px solid #3fb950;background:#0d2a14;color:#3fb950;border-radius:6px;font-weight:700;cursor:pointer">Godkänn</button>'
+                + '<button data-pend="approve" data-id="' + esc(o.id) + '" class="pend-approve">✓ GODKÄNN</button>'
                 + '<button data-pend="reject" data-id="' + esc(o.id) + '" style="padding:4px 12px;border:1px solid #8b95a7;background:transparent;color:#8b95a7;border-radius:6px;cursor:pointer">Avvisa</button></span>'
               : '<span style="margin-left:auto;font-size:12px">' + st + (o.error ? ": " + esc(o.error) : "") + '</span>')
           + '</div>';
@@ -1814,6 +1852,31 @@ body.app-state-onboard .fc-panel{display:none !important}
       pendingRowsEl.textContent = "Kunde inte läsa väntande ordrar.";
     }
   }
+
+  // Auto / manuellt: tydligt vilket läge som gäller
+  function showExecMode(mode) {
+    var sw = document.getElementById("execSwitch"); if (!sw) return;
+    sw.querySelectorAll("button[data-exec]").forEach(function (b) { b.classList.toggle("on", b.dataset.exec === mode); });
+    sw.classList.toggle("is-auto", mode === "auto");
+    var isLive = brokerInfo && brokerInfo.mode === "live";
+    var h = document.getElementById("execHint");
+    if (h) h.innerHTML = mode === "auto"
+      ? "<b>AUTO är på.</b> Agenterna lägger sina ordrar direkt, utan att fråga, inom gränserna (max $ per order). Gäller bara TEST."
+      : "<b>MANUELL är på.</b> Agenternas ordrar hamnar här och läggs först när du trycker GODKÄNN." + (isLive ? " I LIVE är det alltid så." : "");
+  }
+  var execSw = document.getElementById("execSwitch");
+  if (execSw) execSw.addEventListener("click", async function (e) {
+    var b = e.target.closest("button[data-exec]"); if (!b || b.classList.contains("on")) return;
+    var mode = b.dataset.exec;
+    if (mode === "auto" && !confirm("Slå på AUTO?\n\nAgenterna lägger då sina ordrar själva, utan att du godkänner, inom gränserna. Bara i TEST (låtsaspengar).")) return;
+    try {
+      var r = await fetch("/api/execution-mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ executionMode: mode }) });
+      var d = await r.json().catch(function () { return {}; });
+      if (!d.ok) { alert(d.error || ("HTTP " + r.status)); return; }
+      showExecMode(d.executionMode);
+    } catch (err) { alert("Fel: " + err.message); }
+    loadPending();
+  });
 
   if (pendingRowsEl) {
     pendingRowsEl.addEventListener("click", async function (e) {

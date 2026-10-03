@@ -257,7 +257,7 @@ export async function handleLiveRoutes(
   res: http.ServerResponse,
 ): Promise<boolean> {
   const p = url.pathname;
-  if (!p.startsWith("/api/live/") && !p.startsWith("/api/bybit/") && !p.startsWith("/api/strategies")) return false;
+  if (!p.startsWith("/api/live/") && !p.startsWith("/api/bybit/") && !p.startsWith("/api/strategies") && !p.startsWith("/api/team/")) return false;
 
   try {
     if (p === "/api/live/status" && method === "GET") { send(res, 200, liveStatus()); return true; }

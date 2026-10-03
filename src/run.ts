@@ -20,6 +20,7 @@ import { startKlineStream } from "./server/klineStream.js";
 import { startSignalEngine, subscribeSignals } from "./server/signalEngine.js";
 import { prescreenPairs, prescreenEnabled, rememberPrescreen } from "./orchestrator/prescreen.js";
 import { setTeamLast } from "./server/teamLast.js";
+import { restoreExecutionMode } from "./server/executionModeStore.js";
 import { log } from "./logger.js";
 import type { DecisionRecord } from "./types.js";
 import type { StrategyEngine } from "./strategies/types.js";
@@ -397,6 +398,7 @@ async function main(): Promise<void> {
   log.info("║            MIKAEL TRADING OS                            ║");
   log.info("║  Multi-Asset Trading Agent powered by Claude            ║");
   log.info("╚══════════════════════════════════════════════════════════╝");
+  await restoreExecutionMode();
   log.info(`  Mode: ${config.mode}  |  Execution: ${config.executionMode}`);
   log.info(`  Engines: ${config.engines.join(", ")}`);
   log.info("──────────────────────────────────────────────────────────");
