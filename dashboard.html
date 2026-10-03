@@ -3725,9 +3725,17 @@ async function loadBybitCandles(sym, tf){
   // 1s: Bybit har inga färdiga sekundljus. Ljusen byggs live av varje affär (publicTrade).
   if(tf === "1s"){
     // Strömmen går redan för det här paret: rör inte ljusen (annars töms de på lugna par)
-    if(bybitChart.key === sym+"|1s" && bybitChart.ws && bybitChart.ws.readyState <= 1) return true;
-    STATE.candleData[sym+"|1s"] = [];
-    candleSeries.setData([]);
+    // (också under återanslutning: ljusen finns kvar och strömmen startar om själv)
+    if(bybitChart.key === sym+"|1s" && ((bybitChart.ws && bybitChart.ws.readyState <= 1) || (STATE.candleData[sym+"|1s"] || []).length)) return true;
+    // Startpunkt = senaste priset (från 1m-ljuset), så diagrammet inte är tomt på lugna par
+    let px = 0;
+    try{ const r = await fetch(`/api/bybit/klines?symbol=${sym}&interval=1m&limit=1`); const d = await r.json(); px = d.klines && d.klines.length ? +d.klines[d.klines.length-1].close : 0; }catch(_){}
+    if(STATE.symbol !== sym || STATE.tf !== tf) return true; // användaren hann byta
+    const now = Math.floor((Date.now() + (bybitChart.skew || 0))/1000) - 1;
+    const seed = px > 0 ? [{time:now, open:px, high:px, low:px, close:px, volume:0}] : [];
+    STATE.candleData[sym+"|1s"] = seed;
+    candleSeries.setData(seed.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
+    if(seed.length) updatePriceHeader(seed);
     startBybitChartStream(sym, tf);
     return true;
   }
@@ -3766,6 +3774,20 @@ function startBybitChartStream(sym, tf){
     ws.send(JSON.stringify({op:"subscribe", args: iv === "1s" ? [`publicTrade.${sym}`] : [`kline.${iv}.${sym}`, `tickers.${sym}`, `publicTrade.${sym}`]}));
     bybitChart.ping = setInterval(()=>{ try{ ws.send('{"op":"ping"}'); }catch(_){} }, 20000);
   };
+  // 1s: ett ljus varje sekund även utan affär (platt på senaste priset), som Bybits 1s-diagram
+  if(iv === "1s"){
+    clearInterval(bybitChart.beat);
+    bybitChart.beat = setInterval(()=>{
+      if(bybitChart.ws !== ws || STATE.symbol+"|"+STATE.tf !== key) return;
+      const data = STATE.candleData[key]; if(!data || !data.length) return;
+      // Börsens klocka (inte datorns), en sekund bakom så sena affärer hinner landa i rätt ljus
+      const now = Math.floor((Date.now() + (bybitChart.skew || 0))/1000) - 1, last = data[data.length-1];
+      if(now <= last.time) return;
+      const c = last.close;
+      data.push({time:now, open:c, high:c, low:c, close:c, volume:0}); if(data.length > 3600) data.shift();
+      candleSeries.update({time:now, open:c, high:c, low:c, close:c});
+    }, 1000);
+  }
   ws.onmessage = (ev)=>{
     if(bybitChart.ws !== ws || STATE.symbol+"|"+STATE.tf !== key) return;
     let msg; try { msg = JSON.parse(ev.data); } catch(_){ return; }
@@ -3773,7 +3795,10 @@ function startBybitChartStream(sym, tf){
     const data = STATE.candleData[key];
     if(iv === "1s" && data && msg.topic.startsWith("publicTrade.")){
       // Sekundljus av varje affär, i tidsordning
-      for(const t of (Array.isArray(msg.data) ? msg.data : [msg.data])){
+      const batch = Array.isArray(msg.data) ? msg.data : [msg.data];
+      const lastT = Number(batch.length && batch[batch.length-1].T);
+      if(lastT > 0) bybitChart.skew = lastT - Date.now();
+      for(const t of batch){
         const p = +t.p, v = +t.v || 0, sec = Math.floor(Number(t.T) / 1000);
         if(!(p > 0) || !sec) continue;
         const last = data[data.length-1];
@@ -3838,7 +3863,7 @@ function startBybitChartStream(sym, tf){
 }
 
 function stopBybitChartStream(){
-  clearInterval(bybitChart.ping); clearTimeout(bybitChart.retry);
+  clearInterval(bybitChart.ping); clearTimeout(bybitChart.retry); clearInterval(bybitChart.beat);
   const ws = bybitChart.ws;
   bybitChart.ws = null; bybitChart.key = null;
   if(ws){ try{ ws.close(); }catch(_){} }
@@ -9468,14 +9493,21 @@ document.addEventListener("DOMContentLoaded", boot);
       otCap = (act && act.mode === "live") ? lim.maxLiveStakeUsd : lim.maxTestStakeUsd;
     }catch(_){}
     const cap = otCap ? ` · max $${otCap} per order` : "";
-    $("ot-avail").textContent = otAvail != null ? `Tillgängligt: $${otAvail.toFixed(2)}${cap}` : `Tillgängligt: okänt${cap}`;
+    const top = otMax();
+    $("ot-avail").textContent = otAvail != null
+      ? `Tillgängligt: $${otAvail.toFixed(2)}${cap}${top != null ? ` · 100 % = $${top.toFixed(2)}` : ""}`
+      : `Tillgängligt: okänt${cap}`;
+  }
+  // 100 % = det mesta en order får vara: saldot, men aldrig över gränsen per order
+  function otMax(){
+    if(otAvail == null) return null;
+    return otCap ? Math.min(otAvail, otCap) : otAvail;
   }
   $("ot-pct").addEventListener("input", ()=>{
-    const pct = Number($("ot-pct").value);
-    if(otAvail == null){ return; }
-    let amt = otAvail * pct / 100;
-    if(otCap && amt > otCap) amt = otCap;
-    $("ot-amt").value = amt >= 1 ? amt.toFixed(2) : (pct ? "1" : "");
+    const pct = Number($("ot-pct").value), top = otMax();
+    if(top == null){ return; }
+    const amt = Math.max(1, Math.floor(top * pct) / 100); // avrundat nedåt, minst $1
+    $("ot-amt").value = pct ? amt.toFixed(2) : "";
     renderEst();
   });
   function curPx(){
