@@ -5,9 +5,12 @@
 set -e
 DIR="${0:A:h}"
 ENVF="$HOME/ai_upscale_work/mikael-trading-os/.env"
-sub="${2:-}"
-if [[ $# -ge 2 && "$sub" != get-* && "$sub" != --help && "$1" != --* ]]; then
-  echo "bybit-eu: bara läskommandon (get-…) är tillåtna. '$1 $sub' blockeras — ordrar går via Trading OS." >&2
+# Spärren tittar på de två första orden som inte är flaggor (grupp + kommando),
+# så "--pretty order create-order" blockeras också.
+pos=()
+for a in "$@"; do [[ "$a" != -* ]] && pos+=("$a"); done
+if (( ${#pos} >= 2 )) && [[ "${pos[2]}" != get-* ]]; then
+  echo "bybit-eu: bara läskommandon (get-…) är tillåtna. '${pos[1]} ${pos[2]}' blockeras — ordrar går via Trading OS." >&2
   exit 2
 fi
 val() { grep -E "^$1=" "$ENVF" | head -1 | cut -d= -f2- | tr -d '[:space:]'; }
