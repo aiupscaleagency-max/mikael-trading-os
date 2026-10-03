@@ -125,6 +125,17 @@ function createBrokers(): Record<string, BrokerAdapter> {
     });
   }
 
+  // Bybit överallt (Mike 2026-10-03): finns Bybit demo (TEST) körs bara Bybit,
+  // demo först så att den blir aktiv mäklare. Övriga nycklar ligger kvar i .env
+  // men används inte. BYBIT_ONLY=false i .env tar tillbaka dem.
+  if (brokers["bybit-demo"] && process.env.BYBIT_ONLY !== "false") {
+    const only: Record<string, BrokerAdapter> = { "bybit-demo": brokers["bybit-demo"] };
+    if (brokers.bybit) only.bybit = brokers.bybit;
+    const dropped = Object.keys(brokers).filter((n) => !(n in only));
+    if (dropped.length) log.info(`Bybit överallt: använder inte ${dropped.join(", ")}`);
+    return only;
+  }
+
   return brokers;
 }
 
@@ -377,7 +388,8 @@ async function main(): Promise<void> {
   // Startas här och inte i startServer(): servern ska kunna svara på
   // /api/signals även innan strömmen hunnit fylla på, och panelen visar då
   // att den väntar istället för att endpointen saknas.
-  const streamSymbols = config.crypto.symbols.slice(0, 8);
+  // Alla par agenterna följer (Bybit klarar alla på en anslutning)
+  const streamSymbols = config.crypto.symbols;
   const streamInterval = process.env.SIGNAL_INTERVAL ?? "1m";
   startSignalEngine();
   void startKlineStream(streamSymbols, streamInterval)

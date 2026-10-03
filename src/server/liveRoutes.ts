@@ -12,7 +12,7 @@ import { scoreboard, READY_RULES } from "./paperLedger.js";
 import { trainStrategy, type TrainResult, type HistBar } from "../strategies/trainer.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { getMarketStreamStatus } from "./marketStream.js";
+import { getMarketStreamStatus, getCachedPrice } from "./marketStream.js";
 import { getKlineStreamStatus } from "./klineStream.js";
 import { config } from "../config.js";
 import { getJevStatus } from "./jevClient.js";
@@ -289,6 +289,30 @@ export async function handleLiveRoutes(
     if (p === "/api/bybit/pairs" && method === "GET") {
       try { send(res, 200, { pairs: await bybitPairs() }); }
       catch (err) { send(res, 200, { pairs: [], error: err instanceof Error ? err.message : String(err) }); }
+      return true;
+    }
+
+    // Senaste pris per par från Bybit (serverns WebSocket-cache, REST som reserv).
+    // Ersätter /api/binance/prices på sidan: Bybit överallt.
+    if (p === "/api/bybit/prices" && method === "GET") {
+      const symbols = (url.searchParams.get("symbols") || config.crypto.symbols.join(","))
+        .split(",").map((x) => x.trim().toUpperCase().replace(/[^A-Z0-9]/g, "")).filter(Boolean).slice(0, 50);
+      const prices: Record<string, number> = {};
+      const missing: string[] = [];
+      for (const s of symbols) { const px = getCachedPrice(s); if (px) prices[s] = px; else missing.push(s); }
+      if (missing.length) {
+        for (const base of ["https://api.bybit.com", process.env.BYBIT_BASE_URL || "https://api.bybit.eu"]) {
+          try {
+            const r = await fetch(`${base}/v5/market/tickers?category=spot`);
+            const body = (await r.json()) as { retCode: number; result?: { list?: Array<{ symbol: string; lastPrice: string }> } };
+            if (!r.ok || body.retCode !== 0 || !body.result?.list) continue;
+            const bySym = new Map(body.result.list.map((t) => [t.symbol, Number(t.lastPrice)]));
+            for (const s of missing) { const px = bySym.get(s); if (px && px > 0) prices[s] = px; }
+            break;
+          } catch { /* prova nästa adress */ }
+        }
+      }
+      send(res, 200, { prices, source: "bybit", at: Date.now() });
       return true;
     }
 

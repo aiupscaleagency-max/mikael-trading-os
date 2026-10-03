@@ -2,7 +2,7 @@ import WebSocket from "ws";
 import { log } from "../logger.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Binance Kline Stream — ljus i realtid via WebSocket
+// Bybit Kline Stream — ljus i realtid via WebSocket (tidigare Binance)
 //
 // VARFÖR DEN HÄR FILEN FINNS:
 // marketStream.ts ger tick-priser, men INGA ljus. Indikatorerna hämtade
@@ -10,8 +10,8 @@ import { log } from "../logger.js";
 // släpade efter priset.
 //
 // ── DEN VIKTIGA REGELN ───────────────────────────────────────────────────
-// Binance skickar kline-uppdateringar KONTINUERLIGT medan ljuset byggs,
-// flera gånger per sekund. Fältet `k.x` säger om ljuset är STÄNGT.
+// Bybit skickar kline-uppdateringar KONTINUERLIGT medan ljuset byggs,
+// flera gånger per sekund. Fältet `confirm` säger om ljuset är STÄNGT.
 //
 // Räknas RSI/MACD/EMA på ett ohalvfärdigt ljus ändras värdet hela tiden —
 // en LONG-signal kan dyka upp och försvinna inom samma minut. Det kallas
@@ -19,16 +19,23 @@ import { log } from "../logger.js";
 // i backtest men förlorar pengar live.
 //
 // Därför:
-//   - subscribeClosedCandles()  → fyras BARA när k.x === true. Signaler här.
+//   - subscribeClosedCandles()  → fyras BARA när confirm === true. Signaler här.
 //   - getFormingCandle()        → ljuset som byggs just nu. ENDAST för
 //                                 diagram. Aldrig för beslut.
 //
-// Datan är identisk med den Binance-plattformen visar — samma ström, samma
-// ljus, samma stängningstider.
+// Datan är identisk med den Bybit visar — samma ström, samma ljus, samma
+// stängningstider.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const WS_COMBINED = "wss://stream.binance.com:9443/stream";
-const REST_BASE = "https://api.binance.com";
+// Bybit (2026-10-03): samma börs som Mike handlar på. Publik data, inga nycklar.
+// Bybit EU:s publika data är samma som bybit.com, så .com används först och .eu som reserv.
+const WS_URLS = ["wss://stream.bybit.com/v5/public/spot", "wss://stream.bybit.eu/v5/public/spot"];
+const REST_BASES = ["https://api.bybit.com", "https://api.bybit.eu"];
+/** Bybits intervallnamn ("1" = 1 min, "60" = 1 tim, "D" = dag). */
+const BYBIT_IV: Record<string, string> = { "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720", "1d": "D", "1w": "W" };
+const IV_MS: Record<string, number> = { "1m": 60e3, "3m": 180e3, "5m": 300e3, "15m": 900e3, "30m": 1800e3, "1h": 3600e3, "2h": 7200e3, "4h": 14400e3, "6h": 21600e3, "12h": 43200e3, "1d": 86400e3, "1w": 604800e3 };
+let urlIdx = 0;
+let pingTimer: NodeJS.Timeout | null = null;
 
 /** Hur många historiska ljus som hämtas vid start (indikatorer behöver djup). */
 const SEED_LIMIT = 500;
@@ -68,18 +75,19 @@ let reconnectTimer: NodeJS.Timeout | null = null;
 let watchdog: NodeJS.Timeout | null = null;
 let lastMessageAt = 0;
 
+/** Bybit kline-frame → Candle. `confirm` = ljuset är stängt. */
 function toCandle(k: Record<string, unknown>): Candle {
   return {
-    openTime: Number(k.t),
-    closeTime: Number(k.T),
-    open: Number(k.o),
-    high: Number(k.h),
-    low: Number(k.l),
-    close: Number(k.c),
-    volume: Number(k.v),
-    quoteVolume: Number(k.q),
-    trades: Number(k.n),
-    closed: k.x === true,
+    openTime: Number(k.start),
+    closeTime: Number(k.end),
+    open: Number(k.open),
+    high: Number(k.high),
+    low: Number(k.low),
+    close: Number(k.close),
+    volume: Number(k.volume),
+    quoteVolume: Number(k.turnover),
+    trades: 0,
+    closed: k.confirm === true,
   };
 }
 
@@ -91,36 +99,41 @@ function toCandle(k: Record<string, unknown>): Candle {
  * på en lucka utan att märka det.
  */
 async function seedHistory(symbol: string, interval: string): Promise<void> {
-  const url = `${REST_BASE}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${SEED_LIMIT}`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      log.warn(`[kline-stream] seed misslyckades för ${symbol} ${interval}: HTTP ${res.status}`);
+  const iv = BYBIT_IV[interval];
+  const ivMs = IV_MS[interval] ?? 60e3;
+  if (!iv) { log.warn(`[kline-stream] okänt intervall ${interval}`); return; }
+  let lastErr = "";
+  for (const base of REST_BASES) {
+    try {
+      const res = await fetch(`${base}/v5/market/kline?category=spot&symbol=${symbol}&interval=${iv}&limit=${SEED_LIMIT}`);
+      const body = (await res.json()) as { retCode: number; retMsg: string; result?: { list?: string[][] } };
+      if (!res.ok || body.retCode !== 0 || !body.result?.list?.length) { lastErr = `${base}: ${body.retMsg || res.status}`; continue; }
+      // Bybit ger nyast först, och det nyaste ljuset byggs fortfarande. Det
+      // hör inte hemma bland de stängda, så det tas bort explicit.
+      const rows = body.result.list.slice().reverse();
+      const closed = rows.slice(0, -1).map((r): Candle => ({
+        openTime: Number(r[0]),
+        open: Number(r[1]),
+        high: Number(r[2]),
+        low: Number(r[3]),
+        close: Number(r[4]),
+        volume: Number(r[5]),
+        closeTime: Number(r[0]) + ivMs - 1,
+        quoteVolume: Number(r[6]),
+        trades: 0,
+        closed: true,
+      }));
+      closedBuffers.set(key(symbol, interval), closed);
+      log.info(`[kline-stream] ${symbol} ${interval}: ${closed.length} historiska ljus från Bybit`);
       return;
+    } catch (err) {
+      lastErr = `${base}: ${err instanceof Error ? err.message : String(err)}`;
     }
-    const rows = (await res.json()) as unknown[][];
-    // Sista raden är det ljus som byggs just nu — det hör inte hemma bland
-    // de stängda. REST returnerar det ändå, så det tas bort explicit.
-    const closed = rows.slice(0, -1).map((r): Candle => ({
-      openTime: Number(r[0]),
-      open: Number(r[1]),
-      high: Number(r[2]),
-      low: Number(r[3]),
-      close: Number(r[4]),
-      volume: Number(r[5]),
-      closeTime: Number(r[6]),
-      quoteVolume: Number(r[7]),
-      trades: Number(r[8]),
-      closed: true,
-    }));
-    closedBuffers.set(key(symbol, interval), closed);
-    log.info(`[kline-stream] ${symbol} ${interval}: ${closed.length} historiska ljus laddade`);
-  } catch (err) {
-    log.warn(`[kline-stream] seed-fel ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
   }
+  log.warn(`[kline-stream] seed misslyckades för ${symbol} ${interval}: ${lastErr}`);
 }
 
-/** Lägger till ett stängt ljus. Dubbletter ignoreras — Binance kan skicka om. */
+/** Lägger till ett stängt ljus. Dubbletter ignoreras — börsen kan skicka om. */
 function appendClosed(k: string, candle: Candle): Candle[] {
   const buf = closedBuffers.get(k) ?? [];
   const last = buf[buf.length - 1];
@@ -148,16 +161,22 @@ function scheduleReconnect(): void {
 function connect(): void {
   if (!watchedSymbols.length) return;
 
-  const streams = watchedSymbols
-    .map((s) => `${s.toLowerCase()}@kline_${watchedInterval}`)
-    .join("/");
-
-  ws = new WebSocket(`${WS_COMBINED}?streams=${streams}`);
+  const iv = BYBIT_IV[watchedInterval];
+  if (!iv) return;
+  const url = WS_URLS[urlIdx % WS_URLS.length]!;
+  const sock = new WebSocket(url);
+  ws = sock;
 
   ws.on("open", () => {
-    log.info(`[kline-stream] ansluten — ${watchedSymbols.length} symboler @ ${watchedInterval}`);
+    log.info(`[kline-stream] ansluten till Bybit (${url}) — ${watchedSymbols.length} symboler @ ${watchedInterval}`);
     reconnectAttempt = 0;
     lastMessageAt = Date.now();
+    // Bybit tar max 10 ämnen per prenumeration
+    const args = watchedSymbols.map((s) => `kline.${iv}.${s}`);
+    for (let i = 0; i < args.length; i += 10) sock.send(JSON.stringify({ op: "subscribe", args: args.slice(i, i + 10) }));
+    // Bybit kopplar ner utan ping inom 20 s
+    if (pingTimer) clearInterval(pingTimer);
+    pingTimer = setInterval(() => { try { sock.send('{"op":"ping"}'); } catch { /* ignore */ } }, 20_000);
     // Omseedning fyller luckan som uppstod medan anslutningen var nere.
     for (const s of watchedSymbols) void seedHistory(s, watchedInterval);
   });
@@ -165,20 +184,19 @@ function connect(): void {
   ws.on("message", (raw) => {
     lastMessageAt = Date.now();
     try {
-      const frame = JSON.parse(raw.toString()) as { data?: { e?: string; k?: Record<string, unknown> } };
-      const k = frame.data?.k;
-      if (frame.data?.e !== "kline" || !k) return;
-
-      const symbol = String(k.s).toUpperCase();
-      const interval = String(k.i);
+      const frame = JSON.parse(raw.toString()) as { topic?: string; data?: Array<Record<string, unknown>> };
+      if (!frame.topic?.startsWith("kline.") || !Array.isArray(frame.data)) return;
+      const symbol = frame.topic.split(".")[2]!.toUpperCase();
+      const interval = watchedInterval;
       const mapKey = key(symbol, interval);
+      for (const k of frame.data) {
       const candle = toCandle(k);
 
       if (!candle.closed) {
         // Ljuset byggs fortfarande. Sparas för diagrammet — men inga
         // signaler får utlösas härifrån.
         formingCandles.set(mapKey, candle);
-        return;
+        continue;
       }
 
       // Ljuset är stängt och slutgiltigt.
@@ -192,6 +210,7 @@ function connect(): void {
           log.warn(`[kline-stream] subscriber kastade: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+      }
     } catch { /* trasig frame — ignorera */ }
   });
 
@@ -199,7 +218,10 @@ function connect(): void {
 
   ws.on("close", (code) => {
     log.warn(`[kline-stream] stängd, code=${code}`);
+    if (ws !== sock) return;
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
     ws = null;
+    urlIdx++; // nästa försök: den andra Bybit-adressen
     scheduleReconnect();
   });
 }
@@ -207,8 +229,7 @@ function connect(): void {
 /**
  * Startar strömmen.
  *
- * Binance stänger varje anslutning efter 24 timmar — det är normalt och
- * fångas av reconnect-logiken.
+ * Avbrott fångas av reconnect-logiken, som byter mellan bybit.com och bybit.eu.
  */
 export async function startKlineStream(symbols: string[], interval = "1m"): Promise<void> {
   if (ws) stopKlineStream();
@@ -233,7 +254,9 @@ export async function startKlineStream(symbols: string[], interval = "1m"): Prom
 export function stopKlineStream(): void {
   if (watchdog) { clearInterval(watchdog); watchdog = null; }
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  if (ws) { try { ws.close(); } catch { /* ignore */ } ws = null; }
+  if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+  const old = ws; ws = null;
+  if (old) { try { old.close(); } catch { /* ignore */ } }
   formingCandles.clear();
 }
 

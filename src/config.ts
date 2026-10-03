@@ -116,7 +116,7 @@ const schema = z.object({
   MAX_WEEKLY_SPEND_USD: z.coerce.number().positive().default(10),
 
   // ── Symbol-listor per motor ──
-  CRYPTO_SYMBOLS: csvList.default("BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,DOGEUSDT,DOTUSDT,LINKUSDT,MATICUSDT,UNIUSDT,LTCUSDT,ATOMUSDT,NEARUSDT"),
+  CRYPTO_SYMBOLS: csvList.default("BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,DOGEUSDT,DOTUSDT,LINKUSDT,POLUSDT,UNIUSDT,LTCUSDT,ATOMUSDT,NEARUSDT"),
   STOCK_SYMBOLS: csvList.default("TSLA,NVDA,AAPL,MSFT"),
   WHEEL_UNDERLYINGS: csvList.default("TSLA,NVDA"),
   FOREX_SYMBOLS: csvList.default("EUR_USD,GBP_USD,USD_JPY,USD_CHF,AUD_USD,USD_CAD,EUR_GBP"),
@@ -290,7 +290,8 @@ export const config = {
   },
 
   crypto: {
-    symbols: env.CRYPTO_SYMBOLS,
+    // MATIC heter POL sedan 2024 (Bybit har inget MATIC-par), så en gammal .env byts ut här
+    symbols: env.CRYPTO_SYMBOLS.map((x: string) => x.replace(/^MATIC/, "POL")),
     leverage: env.CRYPTO_LEVERAGE,
     trailingStopPct: env.CRYPTO_TRAILING_STOP_PCT,
     takeProfitSteps: env.CRYPTO_TP_STEPS,

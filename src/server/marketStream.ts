@@ -1,8 +1,9 @@
 import WebSocket from "ws";
 import { log } from "../logger.js";
+import { config } from "../config.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Binance Public Market Stream — realtidspriser via WebSocket
+// Bybit Public Market Stream — realtidspriser via WebSocket (tidigare Binance)
 //
 // Eliminerar REST-polling för pris/ticker-data:
 //  - !miniTicker@arr      → tick-by-tick price + 24h-stats för ALLA symbols
@@ -13,7 +14,15 @@ import { log } from "../logger.js";
 // Server: stream.binance.com:9443 (mainnet — publika data, ingen auth).
 // ═══════════════════════════════════════════════════════════════════════════
 
-const WS_BASE = "wss://stream.binance.com:9443/ws";
+// Bybit (2026-10-03): tickers.<PAR> för alla mynt agenterna följer, i både
+// USDT- och USDC-form. Bybit pushar en ny ticker flera gånger per sekund.
+const WS_URLS = ["wss://stream.bybit.com/v5/public/spot", "wss://stream.bybit.eu/v5/public/spot"];
+let urlIdx = 0;
+let pingTimer: NodeJS.Timeout | null = null;
+function watchedPairs(): string[] {
+  const bases = config.crypto.symbols.map((s) => s.toUpperCase().replace(/(USDT|USDC|USD)$/, ""));
+  return [...new Set(bases.flatMap((b) => [`${b}USDT`, `${b}USDC`]))];
+}
 
 interface TickerSnapshot {
   symbol: string;
@@ -59,52 +68,61 @@ function scheduleReconnect(): void {
 
 function connect(): void {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  const url = WS_URLS[urlIdx % WS_URLS.length]!;
+  let sock: WebSocket;
   try {
-    ws = new WebSocket(`${WS_BASE}/!miniTicker@arr`);
+    sock = new WebSocket(url);
+    ws = sock;
   } catch (e) {
     log.warn(`[market-stream] connect fail: ${e instanceof Error ? e.message : String(e)}`);
     scheduleReconnect();
     return;
   }
-  ws.on("open", () => {
+  sock.on("open", () => {
     reconnectAttempt = 0;
     lastMessageAt = Date.now();
-    log.ok("[market-stream] !miniTicker@arr ansluten");
+    const args = watchedPairs().map((p) => `tickers.${p}`);
+    for (let i = 0; i < args.length; i += 10) sock.send(JSON.stringify({ op: "subscribe", args: args.slice(i, i + 10) }));
+    if (pingTimer) clearInterval(pingTimer);
+    pingTimer = setInterval(() => { try { sock.send('{"op":"ping"}'); } catch { /* ignore */ } }, 20_000);
+    log.ok(`[market-stream] Bybit tickers ansluten (${url}) — ${args.length} par`);
   });
-  ws.on("message", (raw: WebSocket.RawData) => {
+  sock.on("message", (raw: WebSocket.RawData) => {
     lastMessageAt = Date.now();
     try {
-      const arr = JSON.parse(raw.toString()) as Array<{
-        e: string; E: number; s: string; c: string; o: string; h: string; l: string; v: string; q: string;
-      }>;
-      if (!Array.isArray(arr)) return;
-      for (const t of arr) {
-        const close = parseFloat(t.c);
-        const open = parseFloat(t.o);
-        const snap: TickerSnapshot = {
-          symbol: t.s,
-          price: close,
-          open,
-          high: parseFloat(t.h),
-          low: parseFloat(t.l),
-          volume: parseFloat(t.v),
-          quoteVolume: parseFloat(t.q),
-          changePct24h: open > 0 ? ((close - open) / open) * 100 : 0,
-          ts: t.E || Date.now(),
-        };
-        tickerCache.set(t.s, snap);
-        for (const sub of subscribers) {
-          try { sub(t.s, snap); } catch { /* ignore subscriber error */ }
-        }
+      const m = JSON.parse(raw.toString()) as { topic?: string; ts?: number; data?: Record<string, string> };
+      if (!m.topic?.startsWith("tickers.") || !m.data) return;
+      const t = m.data;
+      const sym = String(t.symbol || m.topic.slice(8)).toUpperCase();
+      const close = parseFloat(t.lastPrice ?? "");
+      if (!(close > 0)) return;
+      const open = parseFloat(t.prevPrice24h ?? "") || close;
+      const snap: TickerSnapshot = {
+        symbol: sym,
+        price: close,
+        open,
+        high: parseFloat(t.highPrice24h ?? "") || close,
+        low: parseFloat(t.lowPrice24h ?? "") || close,
+        volume: parseFloat(t.volume24h ?? "") || 0,
+        quoteVolume: parseFloat(t.turnover24h ?? "") || 0,
+        changePct24h: (parseFloat(t.price24hPcnt ?? "") || 0) * 100,
+        ts: m.ts || Date.now(),
+      };
+      tickerCache.set(sym, snap);
+      for (const sub of subscribers) {
+        try { sub(sym, snap); } catch { /* ignore subscriber error */ }
       }
     } catch { /* malformed frame, ignore */ }
   });
-  ws.on("error", (err) => {
+  sock.on("error", (err) => {
     log.warn(`[market-stream] WS error: ${err.message}`);
   });
-  ws.on("close", (code, reason) => {
+  sock.on("close", (code, reason) => {
     log.warn(`[market-stream] stängd code=${code} reason=${reason.toString().slice(0, 100)}`);
+    if (ws !== sock) return;
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
     ws = null;
+    urlIdx++;
     scheduleReconnect();
   });
 }
@@ -126,7 +144,9 @@ export function startMarketStream(): void {
 export function stopMarketStream(): void {
   if (watchdog) { clearInterval(watchdog); watchdog = null; }
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  if (ws) { try { ws.close(); } catch {} ws = null; }
+  if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+  const old = ws; ws = null;
+  if (old) { try { old.close(); } catch {} }
   tickerCache.clear();
   bookCache.clear();
 }
