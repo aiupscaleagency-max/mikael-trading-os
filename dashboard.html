@@ -138,7 +138,7 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-widt
    · 6 AI-teamet (6). Ett par i taget; flera par finns på Alla par. */
 /* Trade-sidan: max 2100px bred och centrerad, så sektionerna inte blir för stora på breda skärmar */
 #page-trade{max-width:2100px;margin-left:auto !important;margin-right:auto !important}
-#page-trade main{grid-template-columns:repeat(6,minmax(0,1fr));grid-template-areas:"info info info info info info" "chart chart chart chart side side" "ana ana ana pend pend pend" "sig sig sig sig sig sig" "team team team team team team";gap:16px;padding:16px 24px 24px;align-items:start}
+#page-trade main{grid-template-columns:repeat(6,minmax(0,1fr));grid-template-areas:"info info info info info info" "chart chart chart chart side side" "ana ana ana pend pend pend" "multi multi multi multi multi multi" "sig sig sig sig sig sig" "team team team team team team";gap:16px;padding:16px 24px 24px;align-items:start}
 #page-trade #tradeInfo{grid-area:info;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
 #page-trade .ti-box{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.55;color:#c9d1d9}
 #page-trade .ti-h{font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:4px}
@@ -162,6 +162,18 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-widt
 #page-trade #signalPanel{grid-area:sig;min-width:0}
 #page-trade #analysisBox{grid-area:ana;min-width:0;margin:0 !important}
 #page-trade #pendingBox{grid-area:pend;min-width:0;margin:0 !important}
+/* Flera diagram samtidigt (som Bybits 2/4-layout) */
+#page-trade #multiChart{grid-area:multi;min-width:0;margin:0}
+#multiChart .mc-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+#multiChart .mc-bar button{padding:5px 10px;background:var(--card2);border:1px solid var(--border);border-radius:5px;color:var(--label);font-weight:700;font-size:11px;cursor:pointer}
+#multiChart .mc-bar button.on{border-color:var(--cyan);color:var(--cyan)}
+#multiChart .mc-grid{display:grid;gap:10px}
+#multiChart .mc-pane{background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:6px;min-width:0;display:flex;flex-direction:column}
+#multiChart .mc-head{display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:4px;flex-wrap:wrap}
+#multiChart .mc-head select{padding:3px 6px;font-size:12px}
+#multiChart .mc-px{font-weight:800;font-family:'SF Mono',monospace}
+#multiChart .mc-chart{position:relative;flex:1;min-height:260px}
+#multiChart .mc-pane.active{border-color:#2f81f7;box-shadow:0 0 0 1px #2f81f7}
 /* Signaldiagrammet var samma Bybit-data som huvuddiagrammet (bara stängda ljus).
    Klick på en rad i Signaler öppnar paret i huvuddiagrammet i stället. */
 #page-trade #liveChart{display:none !important}
@@ -198,7 +210,7 @@ body.sec-max-open{overflow:hidden}
 /* Breda skärmar: som Bybits handelssida. Diagram (stort) | orderbok | köp/sälj
    på samma rad, väntande ordrar direkt under diagrammet. */
 @media (min-width:1700px){
-  #page-trade main{grid-template-columns:minmax(0,62fr) minmax(0,19fr) minmax(0,19fr);grid-template-areas:"info info info" "chart book order" "pend pend ana" "sig sig sig" "team team team"}
+  #page-trade main{grid-template-columns:minmax(0,62fr) minmax(0,19fr) minmax(0,19fr);grid-template-areas:"info info info" "chart book order" "pend pend ana" "multi multi multi" "sig sig sig" "team team team"}
   #page-trade .right{display:contents}
   #page-trade .right > .sec-ctl{display:none !important}
   #page-trade #bybitTradeCard{grid-area:book;align-self:stretch;height:auto !important;margin:0;min-width:0}
@@ -597,7 +609,7 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .status-line.warn{color:var(--yellow)}
 
 @media (min-width:1280px) and (max-width:1699px){
-  #page-trade main{grid-template-areas:"info info info info info info" "chart chart chart chart side side" "ana ana ana pend pend pend" "sig sig sig sig sig sig" "team team team team team team"}
+  #page-trade main{grid-template-areas:"info info info info info info" "chart chart chart chart side side" "ana ana ana pend pend pend" "multi multi multi multi multi multi" "sig sig sig sig sig sig" "team team team team team team"}
   #page-trade .right{grid-template-columns:minmax(0,1fr)}
   #page-trade #bybitTradeCard,#page-trade #orderCard{grid-column:1;grid-row:auto}
 }
@@ -606,7 +618,7 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
   main{grid-template-columns:1fr}
   #chart{height:360px}
   .right{order:-1}
-  #page-trade main{grid-template-columns:minmax(0,1fr);grid-template-areas:"info" "chart" "side" "sig" "ana" "pend" "live" "team"}
+  #page-trade main{grid-template-columns:minmax(0,1fr);grid-template-areas:"info" "chart" "side" "ana" "pend" "multi" "sig" "team"}
   #page-trade #tradeInfo{grid-template-columns:repeat(2,minmax(0,1fr))}
   #chartBox{height:360px}
 }
@@ -1570,6 +1582,20 @@ body.app-state-onboard .fc-panel{display:none !important}
 
   <!-- Senaste analysen: vad agenterna kom fram till efter "Kör analys" (eller schemat).
        Läser /api/live/analysis. Bara visning; ordrar läggs fortfarande via Väntande ordrar. -->
+  <div class="card" id="multiChart" data-sec="Fler diagram · Bybits egna diagram (TradingView), flera par samtidigt">
+    <div class="mc-bar">
+      <span style="font-size:11px;color:var(--dim);font-weight:700">Layout:</span>
+      <button type="button" data-mc="1">1</button>
+      <button type="button" data-mc="2">2 sida vid sida</button>
+      <button type="button" data-mc="2v">2 ovanpå varandra</button>
+      <button type="button" data-mc="3">3 i rad</button>
+      <button type="button" data-mc="4">4 (2×2)</button>
+      <label style="font-size:11px;margin-left:10px;display:flex;gap:4px;align-items:center"><input type="checkbox" id="mcSyncIv" /> Samma intervall i alla</label>
+      <span style="font-size:11px;color:var(--dim);margin-left:auto">Knappen Handla byter orderbok och Köp/Sälj ovan till det paret</span>
+    </div>
+    <div class="mc-grid" id="mcGrid"></div>
+  </div>
+
   <div id="analysisBox" data-sec="3 · Agenternas analys · vad AI-teamet föreslår efter Kör analys eller schemat" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
       <strong style="font-size:13px">Senaste analys <span style="color:#8b95a7;font-weight:400">· vad agenterna föreslår</span></strong>
@@ -9726,6 +9752,65 @@ document.addEventListener("DOMContentLoaded", boot);
   setInterval(loadAnalysis, 3000);
   setInterval(loadMode, 15000);
   setInterval(()=>order.forEach(loadBars), 300000);
+})();
+</script>
+<script>
+/* Fler diagram: 1–4 par samtidigt med Bybits egna diagram (TradingView, samma
+   som på bybit.eu): ritverktyg, alla intervall, indikatorer. Data BYBIT:<par>.
+   Bara visning. Knappen "Handla" byter huvuddiagram, orderbok och Köp/Sälj
+   till det paret. Valen sparas i webbläsaren. */
+(function(){
+  const box = document.getElementById("mcGrid"); if(!box) return;
+  const PAIRS = ["BTC","ETH","SOL","BNB","XRP","ADA","AVAX","DOGE","DOT","POL","LINK","UNI","LTC","ATOM","NEAR"];
+  const IVS = {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","4h":"240","1d":"D","1w":"W"};
+  const KEY = "trade-multichart-tv";
+  let cfg = { layout:"2", sync:false, panes:[{b:"BTC",iv:"1h"},{b:"ETH",iv:"1h"},{b:"SOL",iv:"1h"},{b:"XRP",iv:"1h"}] };
+  try{ const v = JSON.parse(localStorage.getItem(KEY) || "null"); if(v && v.panes) cfg = v; }catch(_){}
+  const save = () => { try{ localStorage.setItem(KEY, JSON.stringify(cfg)); }catch(_){} };
+  const COUNT = { "1":1, "2":2, "2v":2, "3":3, "4":4 };
+  const COLS = { "1":"1fr", "2":"1fr 1fr", "2v":"1fr", "3":"1fr 1fr 1fr", "4":"1fr 1fr" };
+  const url = (b, iv) => "https://s.tradingview.com/widgetembed/?" + new URLSearchParams({
+    symbol: "BYBIT:" + b + "USDT", interval: IVS[iv] || "60", theme: "dark", style: "1", locale: "sv_SE",
+    hide_side_toolbar: "0", allow_symbol_change: "1", timezone: "Europe/Stockholm", withdateranges: "1", studies: "Volume@tv-basicstudies"
+  }).toString();
+
+  function build(){
+    box.innerHTML = "";
+    const n = COUNT[cfg.layout] || 2;
+    box.style.gridTemplateColumns = COLS[cfg.layout] || "1fr 1fr";
+    document.querySelectorAll("#multiChart [data-mc]").forEach(b => b.classList.toggle("on", b.dataset.mc === cfg.layout));
+    const h = n === 1 ? 560 : (cfg.layout === "2v" || n === 4) ? 380 : 460;
+    for(let i = 0; i < n; i++){
+      const pc = cfg.panes[i] || (cfg.panes[i] = { b: PAIRS[i], iv: "1h" });
+      const el = document.createElement("div"); el.className = "mc-pane";
+      el.innerHTML = `<div class="mc-head"><select class="mc-s">${PAIRS.map(x=>`<option value="${x}"${x===pc.b?" selected":""}>${x}/USDT</option>`).join("")}</select>`
+        + `<select class="mc-iv">${Object.keys(IVS).map(x=>`<option${x===pc.iv?" selected":""}>${x}</option>`).join("")}</select>`
+        + `<button type="button" class="mc-trade" style="margin-left:auto;padding:3px 10px;border:1px solid var(--cyan);background:transparent;color:var(--cyan);border-radius:4px;font-weight:800;font-size:11px;cursor:pointer">Handla ${pc.b} ↑</button></div>`
+        + `<iframe class="mc-frame" title="Bybit ${pc.b}" src="${url(pc.b, pc.iv)}" style="width:100%;height:${h}px;border:0;border-radius:4px;background:#0f1520" loading="lazy"></iframe>`;
+      box.appendChild(el);
+      const frame = el.querySelector(".mc-frame");
+      el.querySelector(".mc-s").addEventListener("change", e => { pc.b = e.target.value; save(); frame.src = url(pc.b, pc.iv); el.querySelector(".mc-trade").textContent = "Handla " + pc.b + " ↑"; });
+      el.querySelector(".mc-iv").addEventListener("change", e => {
+        const targets = cfg.sync ? cfg.panes.slice(0, n) : [pc];
+        targets.forEach(t => t.iv = e.target.value);
+        save(); build();
+      });
+      el.querySelector(".mc-trade").addEventListener("click", () => {
+        box.querySelectorAll(".mc-pane").forEach(x => x.classList.toggle("active", x === el));
+        try{
+          const cat = document.getElementById("cat-select"), sel = document.getElementById("sym-select");
+          if(cat.value !== "crypto"){ cat.value = "crypto"; fillSymbols(); }
+          sel.value = pc.b + "USDT"; sel.dispatchEvent(new Event("change"));
+          document.getElementById("mainChartCard").scrollIntoView({ behavior: "smooth", block: "start" });
+        }catch(_){}
+      });
+    }
+  }
+
+  document.querySelectorAll("#multiChart [data-mc]").forEach(b => b.addEventListener("click", () => { cfg.layout = b.dataset.mc; save(); build(); }));
+  const syncEl = document.getElementById("mcSyncIv");
+  if(syncEl){ syncEl.checked = !!cfg.sync; syncEl.addEventListener("change", () => { cfg.sync = syncEl.checked; save(); }); }
+  build();
 })();
 </script>
 <script>
