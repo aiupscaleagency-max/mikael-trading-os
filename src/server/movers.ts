@@ -52,17 +52,18 @@ async function avgMove(base: string, interval: string): Promise<number | null> {
   return null;
 }
 
-export async function getMovers(intervalMin: number, limit = 10): Promise<Mover[]> {
-  const interval = [1, 5, 15, 30].includes(intervalMin) ? String(intervalMin) : "5";
-  const hit = cache.get(interval);
-  if (hit && Date.now() - hit.at < 60_000) return hit.list.slice(0, limit);
+interface Base { base: string; price: number; change24hPct: number; range24hPct: number; turnover24hUsd: number }
 
+let tickCache: { at: number; list: Base[] } | null = null;
+
+/** Alla USDC-par på Bybit EU (dit ordrarna går), med USDT-parets siffror när de finns. */
+async function tradeable(): Promise<Base[]> {
+  if (tickCache && Date.now() - tickCache.at < 30_000) return tickCache.list;
   const eu = await getJson<{ list?: Ticker[] }>(`${EU}/v5/market/tickers?category=spot`);
   const glob = await getJson<{ list?: Ticker[] }>(`${GLOBAL}/v5/market/tickers?category=spot`);
   if (!eu?.list) throw new Error("Bybit EU svarar inte just nu");
   const globBy = new Map((glob?.list ?? []).map((t) => [t.symbol, t]));
-
-  const candidates = eu.list
+  const list = eu.list
     .filter((t) => t.symbol.endsWith("USDC"))
     .map((t) => {
       const base = t.symbol.slice(0, -4);
@@ -76,9 +77,17 @@ export async function getMovers(intervalMin: number, limit = 10): Promise<Mover[
         turnover24hUsd: Number(g.turnover24h),
       };
     })
-    .filter((c) => !STABLE.has(c.base) && c.price > 0 && c.turnover24hUsd >= MIN_TURNOVER_USD)
-    .sort((a, b) => b.range24hPct - a.range24hPct)
-    .slice(0, 25);
+    .filter((c) => !STABLE.has(c.base) && c.price > 0 && c.turnover24hUsd >= MIN_TURNOVER_USD);
+  tickCache = { at: Date.now(), list };
+  return list;
+}
+
+export async function getMovers(intervalMin: number, limit = 10): Promise<Mover[]> {
+  const interval = [1, 5, 15, 30].includes(intervalMin) ? String(intervalMin) : "5";
+  const hit = cache.get(interval);
+  if (hit && Date.now() - hit.at < 60_000) return hit.list.slice(0, limit);
+
+  const candidates = [...(await tradeable())].sort((a, b) => b.range24hPct - a.range24hPct).slice(0, 25);
 
   const out: Mover[] = [];
   await Promise.all(candidates.map(async (c) => {
@@ -90,4 +99,33 @@ export async function getMovers(intervalMin: number, limit = 10): Promise<Mover[
   cache.set(interval, { at: Date.now(), list: out });
   log.info(`[rörelse] ${interval} min: ${out.slice(0, 3).map((m) => `${m.base} ${m.avgMovePct.toFixed(2)}%`).join(", ")}`);
   return out.slice(0, limit);
+}
+
+// Kategorier (Mike 2026-10-04): mest rörelse, mest upp, mest ner, trendar,
+// mest handlade, billigast, dyrast. Allt utom "rörelse" räknas från tickers.
+export const CATEGORIES = {
+  move: "Mest rörelse",
+  gainers: "Mest upp (24h)",
+  losers: "Mest ner (24h)",
+  trending: "Trendar",
+  volume: "Mest handlade",
+  cheapest: "Billigast",
+  priciest: "Dyrast",
+} as const;
+export type Category = keyof typeof CATEGORIES;
+
+export async function getCategory(cat: Category, intervalMin: number, limit = 10): Promise<Array<Base & Partial<Mover>>> {
+  if (cat === "move") return getMovers(intervalMin, limit);
+  const all = [...(await tradeable())];
+  const sorters: Record<Exclude<Category, "move">, (a: Base, b: Base) => number> = {
+    gainers: (a, b) => b.change24hPct - a.change24hPct,
+    losers: (a, b) => a.change24hPct - b.change24hPct,
+    // Trendar = stiger och handlas mycket: uppgång viktad med omsättning
+    trending: (a, b) => b.change24hPct * Math.log10(b.turnover24hUsd) - a.change24hPct * Math.log10(a.turnover24hUsd),
+    volume: (a, b) => b.turnover24hUsd - a.turnover24hUsd,
+    cheapest: (a, b) => a.price - b.price,
+    priciest: (a, b) => b.price - a.price,
+  };
+  const list = all.sort(sorters[cat]);
+  return (cat === "trending" ? list.filter((x) => x.change24hPct > 0) : list).slice(0, limit);
 }

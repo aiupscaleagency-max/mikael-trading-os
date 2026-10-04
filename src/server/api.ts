@@ -25,7 +25,7 @@ import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
 import { getResults, recordLiveFill } from "./results.js";
-import { getMovers } from "./movers.js";
+import { CATEGORIES, getCategory, type Category } from "./movers.js";
 import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
 import { addTimedExit, cancelTimedExit, getHorizonMin, HORIZON_CHOICES, listTimedExits, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
 import { adjustLiveSpend, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
@@ -1199,7 +1199,9 @@ export function startServer(
       if (url.pathname === "/api/movers" && method === "GET") {
         try {
           const iv = Number(url.searchParams.get("interval")) || getHorizonMin();
-          json(res, { ok: true, interval: iv, feePct: 0.5, movers: await getMovers(iv, 10) });
+          const c = url.searchParams.get("cat") || "move";
+          const cat = (c in CATEGORIES ? c : "move") as Category;
+          json(res, { ok: true, interval: iv, cat, categories: CATEGORIES, feePct: 0.5, movers: await getCategory(cat, iv, 10) });
         } catch (err) {
           jsonStatus(res, 502, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }
