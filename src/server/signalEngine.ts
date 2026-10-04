@@ -342,21 +342,49 @@ export function startSignalEngine(): () => void {
   return subscribeClosedCandles((symbol, interval, _candle, history) => {
     const base = buildSignal(symbol, interval, history);
     if (!base) return;
-    // JEV bedömer varje signal. Anropet är asynkront men blockerar inte
-    // strömmen — signalen publiceras när bedömningen är klar, eller direkt
-    // med rules_only om JEV inte svarar.
-    void applyJevVerdict(base).then((signal) => {
-    // Ett sent JEV-svar får aldrig skriva över en nyare signal (annars visas gammal riktning).
-    const prev = latest.get(key(symbol, interval));
-    if (prev && prev.candleCloseTime > signal.candleCloseTime) return;
-    latest.set(key(symbol, interval), signal);
-    for (const cb of subscribers) {
-      try { cb(signal); } catch (err) {
-        log.warn(`[signal] subscriber kastade: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    });
+    // Signalerna är ren matte och gratis. JEV (kostar pengar) granskar dem
+    // bara när du kör en analys (jevReviewSymbols), inte vid varje ljus.
+    // JEV_ON_SIGNALS=true slår på den gamla granskningen av varje signal.
+    if (!jevOnSignals()) { publish(base); return; }
+    void applyJevVerdict(base).then(publish);
   });
+}
+
+function jevOnSignals(): boolean {
+  return process.env.JEV_ON_SIGNALS === "true";
+}
+
+function publish(signal: Signal): void {
+  // Ett sent JEV-svar får aldrig skriva över en nyare signal (annars visas gammal riktning).
+  const prev = latest.get(key(signal.symbol, signal.interval));
+  if (prev && prev.candleCloseTime > signal.candleCloseTime) return;
+  latest.set(key(signal.symbol, signal.interval), signal);
+  for (const cb of subscribers) {
+    try { cb(signal); } catch (err) {
+      log.warn(`[signal] subscriber kastade: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+/**
+ * JEV granskar bara de par som en analys ska titta på (högst några anrop per
+ * analys). Returnerar de par JEV släpper igenom och de som stoppades.
+ */
+export async function jevReviewSymbols(symbols: string[], wanted = Infinity): Promise<{ kept: string[]; stopped: { symbol: string; why: string }[] }> {
+  const kept: string[] = [];
+  const stopped: { symbol: string; why: string }[] = [];
+  for (const sym of symbols) {
+    if (kept.length >= wanted) break;
+    const sig = [...latest.values()]
+      .filter((s) => s.symbol.toUpperCase() === sym.toUpperCase() && s.direction !== "NEUTRAL")
+      .sort((a, b) => b.candleCloseTime - a.candleCloseTime)[0];
+    if (!sig) { kept.push(sym); continue; }
+    const reviewed = sig.jev ? sig : await applyJevVerdict(sig);
+    if (reviewed !== sig) publish(reviewed);
+    if (reviewed.jevDowngraded) stopped.push({ symbol: sym, why: reviewed.reasons[reviewed.reasons.length - 1] ?? "JEV stoppade" });
+    else kept.push(sym);
+  }
+  return { kept, stopped };
 }
 
 /** Prenumerera på nya signaler — används av Telegram-utskicket. */

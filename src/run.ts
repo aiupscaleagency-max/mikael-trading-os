@@ -18,8 +18,9 @@ import { Scheduler, createDefaultSchedule } from "./scheduler.js";
 import { runOrchestratedTurn } from "./orchestrator/orchestrator.js";
 import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback } from "./server/api.js";
 import { startKlineStream } from "./server/klineStream.js";
-import { startSignalEngine, subscribeSignals } from "./server/signalEngine.js";
-import { prescreenPairs, prescreenEnabled, rememberPrescreen } from "./orchestrator/prescreen.js";
+import { jevReviewSymbols, startSignalEngine, subscribeSignals } from "./server/signalEngine.js";
+import { type PrescreenResult, prescreenPairs, prescreenEnabled, rememberPrescreen } from "./orchestrator/prescreen.js";
+import { analysisModeInfo, autoLoopEnabled, scheduleTimes, signalTriggerEnabled, startFixedTimes } from "./server/analysisMode.js";
 import { setTeamLast } from "./server/teamLast.js";
 import { restoreExecutionMode } from "./server/executionModeStore.js";
 import { log } from "./logger.js";
@@ -225,12 +226,35 @@ async function runOnce(
 ): Promise<void> {
   // Försållning: signalmotorn + JEV väljer par innan AI-teamet startas.
   // En schemalagd tur utan någon signal hoppas över helt (inga AI-anrop).
-  const screen = prescreenPairs({
+  const screen: PrescreenResult = prescreenPairs({
     cryptoSymbols: config.crypto.symbols,
     otherSymbols: config.stocks.symbols,
     instruction,
     scheduled,
   });
+  // JEV granskar bara paren den här analysen valt (signalerna i sig är gratis matte).
+  if (screen.enabled && screen.flagged.length && !screen.skip) {
+    const maxPairs = Math.max(1, Number(process.env.PRESCREEN_MAX_PAIRS ?? 3) || 3);
+    const candidates = screen.flagged.slice(0, maxPairs * 2).map((f) => f.symbol);
+    const picked = new Set(screen.symbols);
+    if (candidates.some((c) => picked.has(c))) {
+      const { kept, stopped } = await jevReviewSymbols(candidates, maxPairs);
+      if (stopped.length) {
+        const top = kept.slice(0, maxPairs);
+        const stopNote = `JEV stoppade ${stopped.map((x) => x.symbol).join(", ")}`;
+        if (top.length) {
+          screen.symbols = top;
+          screen.note = `${stopNote}; AI-teamet tar ${top.join(", ")}`;
+        } else if (scheduled && !instruction) {
+          screen.symbols = []; screen.skip = true;
+          screen.note = `${stopNote}; inget par kvar, AI-teamet vilar`;
+        } else {
+          screen.symbols = [...config.crypto.symbols, ...config.stocks.symbols];
+          screen.note = `${stopNote}; du bad om analys: alla par`;
+        }
+      }
+    }
+  }
   rememberPrescreen(screen);
   log.info(`[JEV] försållning: ${screen.note}`);
   if (useTeam && screen.skip) return;
@@ -474,16 +498,28 @@ async function main(): Promise<void> {
   const scheduler = new Scheduler();
   const schedule = createDefaultSchedule(config);
 
-  scheduler.addTask({
-    ...schedule.agentLoop,
-    execute: () => runTurnOnce(() => runOnce(brokers, engines, undefined, true, true)),
-  });
+  // AI kostar pengar, så standard är MANUELL: bara "Kör analys". Fasta tider
+  // med ANALYSIS_SCHEDULE, det gamla intervall-läget med AI_AUTO_LOOP=true.
+  if (autoLoopEnabled()) {
+    scheduler.addTask({
+      ...schedule.agentLoop,
+      execute: () => runTurnOnce(() => runOnce(brokers, engines, undefined, true, true)),
+    });
+  }
+  if (scheduleTimes().length) {
+    startFixedTimes((time) => {
+      log.info(`[analys] fast tid ${time}: AI-teamet startar`);
+      void runTurnOnce(() => runOnce(brokers, engines, undefined, true, true)).catch((err) =>
+        log.warn(`[analys] tur kl ${time} misslyckades: ${err instanceof Error ? err.message : String(err)}`));
+    });
+  }
+  log.ok(`[analys] ${analysisModeInfo().text}`);
 
-  // Tidig start: när ett par får en ny signal (stängt ljus + JEV) startar
-  // AI-teamet direkt i stället för att vänta på nästa schemalagda tur.
+  // Tidig start (bara med PRESCREEN_TRIGGER=true): när ett par får en ny
+  // signal startar AI-teamet direkt i stället för att vänta på nästa tur.
   // Högst en sådan start per PRESCREEN_TRIGGER_COOLDOWN_SEC (standard 300 s,
   // samma takt som schemat) och samma par väcker teamet högst var 15:e minut.
-  if (prescreenEnabled() && process.env.PRESCREEN_TRIGGER !== "false") {
+  if (prescreenEnabled() && signalTriggerEnabled()) {
     const cooldownMs = (Number(process.env.PRESCREEN_TRIGGER_COOLDOWN_SEC ?? 300) || 300) * 1000;
     const lastDir = new Map<string, string>();
     const lastWake = new Map<string, number>();
