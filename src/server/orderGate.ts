@@ -167,7 +167,11 @@ export interface PendingOrder {
   /** Sälj hela innehavet (antalet räknas fram när ordern godkänns) */
   sellAll?: boolean;
   reason?: string;
-  status: "pending" | "done" | "rejected" | "failed";
+  /** Tidshorisont i sekunder (1–30 min säljs automatiskt när tiden är slut) */
+  horizonSec?: number;
+  /** Förslaget försvinner (status "expired") efter den här tiden */
+  expiresAt?: string;
+  status: "pending" | "done" | "rejected" | "failed" | "expired";
   decidedAt?: string;
   result?: unknown;
   error?: string;
@@ -211,6 +215,10 @@ export async function addPendingOrder(
     createdAt: new Date().toISOString(),
     status: "pending",
   };
+  // Med tidshorisont: förslaget gäller lika länge som traden (minst 2 min)
+  if (entry.horizonSec && entry.horizonSec > 0 && !entry.expiresAt) {
+    entry.expiresAt = new Date(Date.now() + Math.max(120, entry.horizonSec) * 1000).toISOString();
+  }
   list.push(entry);
   await save();
   log.agent(
@@ -231,6 +239,23 @@ export async function updatePendingOrder(id: string, patch: Partial<PendingOrder
   Object.assign(p, patch, { decidedAt: new Date().toISOString() });
   await save();
   return p;
+}
+
+/** Är förslaget för gammalt (giltighetstiden passerad)? */
+export function isExpired(p: PendingOrder, now = Date.now()): boolean {
+  return p.status === "pending" && !!p.expiresAt && Date.parse(p.expiresAt) <= now;
+}
+
+/** Markerar för gamla förslag som "expired". Returnerar hur många. */
+export async function expireStalePendingOrders(): Promise<number> {
+  const list = await load();
+  const now = Date.now();
+  let n = 0;
+  for (const p of list) {
+    if (isExpired(p, now)) { p.status = "expired"; p.decidedAt = new Date(now).toISOString(); n++; }
+  }
+  if (n) await save();
+  return n;
 }
 
 /** Finns redan en väntande order för samma symbol + sida? (så monitorn inte köar dubbletter) */

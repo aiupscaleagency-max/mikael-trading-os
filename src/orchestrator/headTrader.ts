@@ -107,7 +107,9 @@ export async function runHeadTrader(params: {
   let indicatorPack = "";
   const picked = params.symbols ?? [];
   if (picked.length > 0 && picked.length <= 5) {
-    const jobs = picked.flatMap((sym) => ["15m", "1h", "4h"].map((iv) => ({ sym, iv })));
+    // Tidsramar efter Mikes horisont (1–30 min → korta ramar)
+    const { shortIntervals } = await import("../server/tradeHorizon.js");
+    const jobs = picked.flatMap((sym) => shortIntervals().map((iv) => ({ sym, iv })));
     const rows = (await Promise.all(jobs.map(async ({ sym, iv }) => {
       try { return `${sym} ${iv}: ${JSON.stringify(computeIndicators(await broker.getKlines(sym, iv, 150)))}`; }
       catch { return null; } // Hanna kan hämta själv med get_indicators
@@ -118,6 +120,12 @@ export async function runHeadTrader(params: {
   // Smalt team: säg det rakt ut, så att stubb-rapporterna inte räknas som HOLD-röster
   if (process.env.TEAM_LEAN !== "false") {
     indicatorPack += "\n\n──── SMALT TEAM ────\nMakro, Sentiment, Kvant, Portfölj, Exekvering och Lars är avstängda: ignorera deras rapporter. Besluta på Teknisk + Risk (+ Advisor om den körts) + indikatorerna ovan. Konsensusregeln gäller bara dessa.";
+  }
+
+  // Mikes tidshorisont (1/5/15/30 min): korta trades, TP/SL därefter
+  {
+    const { horizonPrompt } = await import("../server/tradeHorizon.js");
+    indicatorPack += horizonPrompt();
   }
 
   const userMessage = params.userInstruction
