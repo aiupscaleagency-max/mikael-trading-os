@@ -59,6 +59,11 @@ export class BybitPaperBroker implements BrokerAdapter {
     this.schedule();
   }
 
+  /** Ögonblicksbild för resultatfönstret (affärer, innehav, TP/SL). */
+  snapshot(): { usdc: number; holdings: Record<string, { qty: number; avg: number; openedAt: number }>; open: Array<{ base: string; kind: string; side: string; qty: number; price: number }>; fills: Array<{ base: string; side: string; qty: number; price: number; fee: number; at: number; kind: string; pnl?: number }> } {
+    return JSON.parse(JSON.stringify(this.state));
+  }
+
   private load(): PaperState {
     try {
       const s = JSON.parse(fs.readFileSync(FILE, "utf8")) as PaperState;

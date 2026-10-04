@@ -1715,6 +1715,93 @@ body.app-state-onboard .fc-panel{display:none !important}
   })();
   </script>
 
+  <!-- Resultat: alla affärer i grönt (vinst) / rött (förlust), öppna innehav
+       med vinst/förlust just nu och en knapp för att sälja (säkra vinsten).
+       Läser /api/results (TEST eller LIVE beroende på aktiv mäklare). -->
+  <div id="resultsBox" data-sec="Resultat · vinst och förlust på alla affärer" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <strong style="font-size:13px">Resultat <span id="resMode" style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid #f0b90b;color:#f0b90b;margin-left:4px">TEST</span></strong>
+      <span id="resUpdated" style="font-size:11px;color:#8b95a7"></span>
+    </div>
+    <div id="resTotals" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:10px"></div>
+    <div style="margin-top:12px;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Öppna innehav, just nu</div>
+    <div id="resOpen" style="margin-top:4px;font-size:13px;color:#8b95a7">Laddar…</div>
+    <div style="margin-top:12px;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Händelser (senaste först)</div>
+    <div id="resTrades" style="margin-top:4px;font-size:13px;color:#8b95a7;max-height:320px;overflow-y:auto">Laddar…</div>
+    <div style="margin-top:8px;font-size:11px;color:#8b95a7;line-height:1.5">Säkra vinst: sätt TP (målpris) när du köper, så säljer boten själv. Eller tryck <b>Sälj</b> på ett innehav, så hamnar en "Sälj allt" i Väntande ordrar och du trycker Godkänn. Siffrorna är efter avgift (0,25 % per köp och sälj).</div>
+  </div>
+  <script>
+  (function () {
+    function esc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+    var GREEN = "#3fb950", RED = "#f85149", DIM = "#8b95a7";
+    function money(v) { if (v == null || isNaN(v)) return "–"; var s = Math.abs(v) < 1 ? Math.abs(v).toFixed(3) : Math.abs(v).toFixed(2); return (v >= 0 ? "+$" : "−$") + s.replace(".", ","); }
+    function pct(v) { if (v == null || isNaN(v)) return ""; return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2).replace(".", ",") + " %"; }
+    function col(v) { return v == null ? DIM : v > 0 ? GREEN : v < 0 ? RED : DIM; }
+    function px(v) { return v == null ? "–" : v >= 100 ? v.toFixed(2) : v >= 1 ? v.toFixed(4) : v.toPrecision(4); }
+    var KIND = { TP: "målpris (TP)", SL: "stop-loss (SL)", MARKET: "marknad", LIMIT: "limit", "Sälj allt": "sälj allt", agent: "agent", manuell: "manuell" };
+    function tile(label, v, sub) {
+      return '<div style="border:1px solid #2a3140;border-radius:8px;padding:8px 10px;background:#0f141c">'
+        + '<div style="font-size:11px;color:' + DIM + '">' + esc(label) + '</div>'
+        + '<div style="font-size:20px;font-weight:800;color:' + col(v) + '">' + money(v) + '</div>'
+        + (sub ? '<div style="font-size:11px;color:' + DIM + '">' + sub + '</div>' : "") + '</div>';
+    }
+    var mode = "TEST";
+    async function sellAll(coin) {
+      if (!confirm("Sälja allt du har av " + coin + " (" + mode + ") till marknadspris? Ordern hamnar i Väntande ordrar och skickas när du trycker Godkänn.")) return;
+      try {
+        var r = await fetch("/api/pending-orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol: coin + "USDC", side: "SELL", sellAll: true, orderType: "MARKET", source: "resultat", broker: mode === "LIVE" ? "bybit" : "bybit-paper", reason: "Resultatfönstret: säkra / sälj allt " + coin }) });
+        var d = await r.json().catch(function () { return {}; });
+        if (!d.ok) { alert("Ordern lades inte i kön.\n\n" + (d.error || ("HTTP " + r.status))); return; }
+        alert("Sälj allt " + coin + " ligger nu i Väntande ordrar. Tryck Godkänn där.");
+      } catch (e) { alert("Fel: " + e.message); }
+    }
+    async function load() {
+      try {
+        var r = await fetch("/api/results"); if (!r.ok) return;
+        var d = await r.json();
+        mode = d.mode;
+        var m = document.getElementById("resMode");
+        m.textContent = d.mode; m.style.borderColor = m.style.color = d.mode === "LIVE" ? "#22c55e" : "#f0b90b";
+        var t = d.totals;
+        document.getElementById("resTotals").innerHTML =
+          tile("Idag (sålda)", t.today)
+          + tile("Totalt sålda", t.realized, t.trades ? (t.wins + " vinst · " + t.losses + " förlust") : "inga sålda än")
+          + tile("Öppet just nu", t.unrealized, d.open.length + " innehav")
+          + tile("Allt ihop", t.realized + t.unrealized);
+        document.getElementById("resOpen").innerHTML = d.open.length ? d.open.map(function (o) {
+          var inv = o.qty * o.avg;
+          return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #222834">'
+            + '<b style="color:#e6e6e6;min-width:52px">' + esc(o.coin) + '</b>'
+            + '<span>insatt $' + (inv > 0 ? inv.toFixed(2) : "–") + '</span>'
+            + '<span>nu $' + (o.value != null ? o.value.toFixed(2) : "–") + '</span>'
+            + '<b style="color:' + col(o.upnl) + '">' + money(o.upnl) + ' ' + pct(o.upnlPct) + '</b>'
+            + (o.tp ? '<span style="font-size:12px;color:' + GREEN + '">TP ' + esc(px(o.tp)) + '</span>' : "")
+            + (o.sl ? '<span style="font-size:12px;color:' + RED + '">SL ' + esc(px(o.sl)) + '</span>' : "")
+            + '<button type="button" data-sellall="' + esc(o.coin) + '" style="margin-left:auto;padding:3px 10px;border:1px solid ' + RED + ';background:#2a1215;color:' + RED + ';border-radius:6px;font-weight:700;cursor:pointer">Sälj</button>'
+            + '</div>';
+        }).join("") : "Inga öppna innehav.";
+        document.querySelectorAll("#resOpen [data-sellall]").forEach(function (b) { b.addEventListener("click", function () { sellAll(b.getAttribute("data-sellall")); }); });
+        document.getElementById("resTrades").innerHTML = d.trades.length ? d.trades.map(function (x) {
+          var when = new Date(x.at).toLocaleString("sv-SE", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+          var isSell = x.side === "SELL";
+          var res = isSell && x.pnl != null
+            ? '<b style="color:' + col(x.pnl) + '">' + (x.pnl > 0 ? "🟢 " : "🔴 ") + money(x.pnl) + ' ' + pct(x.pnlPct) + '</b>'
+            : '<span style="color:' + DIM + '">köpt</span>';
+          return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:5px 0;border-top:1px solid #222834">'
+            + '<span style="color:' + DIM + ';font-size:12px;min-width:84px">' + esc(when) + '</span>'
+            + '<b style="color:' + (isSell ? RED : GREEN) + ';min-width:38px">' + (isSell ? "SÄLJ" : "KÖP") + '</b>'
+            + '<b style="color:#e6e6e6;min-width:52px">' + esc(x.coin) + '</b>'
+            + '<span>$' + x.usd.toFixed(2) + ' @ ' + esc(px(x.price)) + '</span>'
+            + res
+            + '<span style="font-size:11px;color:' + DIM + ';margin-left:auto">' + esc(KIND[x.kind] || x.kind) + '</span>'
+            + '</div>';
+        }).join("") : "Inga affärer än.";
+        document.getElementById("resUpdated").textContent = "uppdaterad " + new Date().toLocaleTimeString("sv-SE");
+      } catch (_) { /* servern nere — behåll senaste vyn */ }
+    }
+    load(); setInterval(load, 5000);
+  })();
+  </script>
   <div id="pendingBox" data-sec="4 · Väntande ordrar · här godkänner du" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
       <strong style="font-size:13px">Väntande ordrar <span id="pendingCount" class="pend-count"></span></strong>

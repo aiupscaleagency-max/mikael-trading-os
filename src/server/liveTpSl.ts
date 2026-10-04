@@ -13,6 +13,7 @@ import path from "node:path";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { log } from "../logger.js";
 import { getCachedPrice } from "./marketStream.js";
+import { recordLiveFill } from "./results.js";
 
 const FILE = path.resolve("data/live-tpsl.json");
 
@@ -100,6 +101,7 @@ export function startLiveTpSl(brokers: Record<string, BrokerAdapter>, onEvent?: 
       void broker.placeOrder({ symbol: w.symbol, side: "SELL", type: "MARKET", quantity: w.qty })
         .then((r) => {
           removeLiveTpSl(w.id);
+          if (r.executedQty > 0) recordLiveFill({ symbol: w.symbol, side: "SELL", qty: r.executedQty, price: r.avgFillPrice || price, usd: r.cummulativeQuoteQty || undefined, kind: hitTp ? "TP" : "SL" });
           log.trade(`[LIVE TP/SL] ${why}: sålde ${w.symbol} ${r.executedQty || w.qty} @ ~${price} · status ${r.status}`);
           onEvent?.("live-tpsl", { symbol: w.symbol, why, price });
         })

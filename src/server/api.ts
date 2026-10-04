@@ -24,6 +24,7 @@ import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
 import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
+import { getResults, recordLiveFill } from "./results.js";
 import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
 import { adjustLiveSpend, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
@@ -232,6 +233,10 @@ async function executeApprovedOrder(
         throw err;
       }
       if (reserved) adjustLiveSpend((order.cummulativeQuoteQty || reserved) - reserved);
+      // LIVE-loggen för resultatfönstret
+      if (p.live && order.executedQty > 0) {
+        recordLiveFill({ symbol: p.symbol, side: p.side, qty: order.executedQty, price: order.avgFillPrice || (order.cummulativeQuoteQty / order.executedQty), usd: order.cummulativeQuoteQty || undefined, kind: p.sellAll ? "Sälj allt" : p.source === "agent" ? "agent" : "manuell" });
+      }
       // LIVE marknadsköp med TP/SL: boten bevakar och säljer vid TP eller SL
       // Du sålde själv i LIVE → gamla TP/SL-bevakningar för myntet tas bort
       if (p.live && p.side === "SELL") removeLiveTpSlForSymbol(p.symbol);
@@ -1088,6 +1093,14 @@ export function startServer(
         if (testBroker && activeBrokerName === "bybit") activeBrokerName = testBroker;
         broadcastEvent("mode-changed", { uiMode, mode: config.mode, executionMode: config.executionMode });
         json(res, { ok: true, uiMode, mode: config.mode, executionMode: config.executionMode, activeBroker: activeBrokerName });
+        return;
+      }
+
+      // Resultatfönstret: affärer + öppna innehav med vinst/förlust (?mode=TEST|LIVE)
+      if (url.pathname === "/api/results" && method === "GET") {
+        const q = url.searchParams.get("mode");
+        const mode = q === "LIVE" || q === "TEST" ? q : (activeBrokerName === "bybit" ? "LIVE" : "TEST");
+        json(res, await getResults(brokers, mode, listLiveTpSl()));
         return;
       }
 
