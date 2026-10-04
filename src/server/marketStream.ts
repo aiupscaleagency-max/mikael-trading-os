@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { hasUsdcPair } from "./customSymbols.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Bybit Public Market Stream — realtidspriser via WebSocket (tidigare Binance)
@@ -21,7 +22,17 @@ let urlIdx = 0;
 let pingTimer: NodeJS.Timeout | null = null;
 function watchedPairs(): string[] {
   const bases = config.crypto.symbols.map((s) => s.toUpperCase().replace(/(USDT|USDC|USD)$/, ""));
-  return [...new Set(bases.flatMap((b) => [`${b}USDT`, `${b}USDC`]))];
+  // Egna mynt utan USDC-par prenumereras bara på USDT (ett okänt par kan
+  // få Bybit att avvisa hela prenumerationen det ligger i).
+  return [...new Set(bases.flatMap((b) => hasUsdcPair(b) ? [`${b}USDT`, `${b}USDC`] : [`${b}USDT`]))];
+}
+
+/** Prenumererar på ett nytt mynts tickers i den öppna strömmen (egna mynt). */
+export function addTickerBase(base: string, usdc: boolean): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return; // tas med vid nästa anslutning
+  for (const p of usdc ? [`${base}USDT`, `${base}USDC`] : [`${base}USDT`]) {
+    ws.send(JSON.stringify({ op: "subscribe", args: [`tickers.${p}`] }));
+  }
 }
 
 interface TickerSnapshot {

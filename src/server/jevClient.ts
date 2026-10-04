@@ -234,6 +234,10 @@ async function postWithRetry(
   throw new Error(`JEV: gav upp efter ${MAX_RETRIES} försök (${lastErr})`);
 }
 
+/** En rutt som svarat 401/402/403 hoppas över i 10 min (prövas sedan igen). */
+const ROUTE_PAUSE_MS = 10 * 60_000;
+const routePausedUntil = new Map<string, number>();
+
 /** Circuit breaker — slutar anropa efter upprepade fel, testar igen efter en minut. */
 let failureCount = 0;
 let circuitOpenUntil = 0;
@@ -274,6 +278,8 @@ export async function askJev(
   let lastMsg = "";
 
   for (const route of routes) {
+    const rid = `${route.mode}:${route.key.slice(-6)}`;
+    if ((routePausedUntil.get(rid) ?? 0) > Date.now()) continue;
     try {
       const data = await postWithRetry(
         route.url, route.key,
@@ -295,16 +301,20 @@ export async function askJev(
       if (err instanceof AuthRejected) {
         rejected.push(route.mode);
         lastMsg = err.message;
+        routePausedUntil.set(rid, Date.now() + ROUTE_PAUSE_MS);
         continue;
       }
       // Övriga fel (429, 5xx, timeout): prova nästa rutt om det finns en,
       // annars rapporteras felet nedan.
       lastMsg = err instanceof Error ? err.message : String(err);
+      // 402 (krediter slut) och 403 ändras inte på sekunder: pausa rutten.
+      if (/HTTP (402|403)|verifiering/.test(lastMsg)) routePausedUntil.set(rid, Date.now() + ROUTE_PAUSE_MS);
       log.warn(`[jev] ${route.mode}: ${lastMsg} — provar nästa rutt`);
       continue;
     }
   }
 
+  if (!lastMsg) lastMsg = "alla JEV-vägar är pausade efter 401/402/403";
   if (rejected.length === routes.length) {
     lastMsg = `JEV: nyckeln avvisades (401) av både direkt-API och Gateway — nyckeln är inte giltig för någon av tjänsterna`;
   }

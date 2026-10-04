@@ -513,6 +513,9 @@ function broadcastUserStream(event: string, payload: unknown): void {
 
 // ─── Binance WebSocket User Data Stream — pushar order-fills + balans-uppdateringar i realtid ───
 import WebSocket from "ws";
+import { addCustomSymbol, removeCustomSymbol, listCustomSymbols } from "./customSymbols.js";
+import { addKlineSymbol, removeKlineSymbol } from "./klineStream.js";
+import { addTickerBase } from "./marketStream.js";
 interface UserStream { ws: WebSocket; listenKey: string; keepAlive: NodeJS.Timeout; client: BinanceClient }
 const userStreams: Map<"testnet" | "live", UserStream> = new Map();
 const userStreamRetryAttempt = new Map<"testnet" | "live", number>();
@@ -1056,6 +1059,38 @@ export function startServer(
         broadcastEvent("mode-changed", { mode: config.mode, executionMode: config.executionMode });
         json(res, { ok: true, executionMode: config.executionMode, autoAllowed: autoAllowed() });
         return;
+      }
+
+      // ── Egna mynt (tips från grupper) ──
+      if (url.pathname === "/api/custom-symbols" && method === "GET") {
+        json(res, { symbols: listCustomSymbols(), all: config.crypto.symbols });
+        return;
+      }
+      if (url.pathname === "/api/custom-symbols" && method === "POST") {
+        try {
+          const b = JSON.parse((await readBody(req)) || "{}") as { symbol?: string; note?: string };
+          const c = await addCustomSymbol(String(b.symbol ?? ""), b.note);
+          void addKlineSymbol(c.symbol).catch((err) => log.warn(`[egna mynt] kline: ${err instanceof Error ? err.message : String(err)}`));
+          addTickerBase(c.base, c.usdc);
+          userAction(`lade till ${c.base}`, { coin: c.symbol });
+          json(res, { ok: true, symbol: c, all: config.crypto.symbols });
+        } catch (err) {
+          jsonStatus(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      {
+        const m = url.pathname.match(/^\/api\/custom-symbols\/([A-Za-z0-9]{2,20})$/);
+        if (m && method === "DELETE") {
+          try {
+            const c = removeCustomSymbol(m[1]!);
+            removeKlineSymbol(c.symbol);
+            json(res, { ok: true, removed: c.base, all: config.crypto.symbols });
+          } catch (err) {
+            jsonStatus(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
+          }
+          return;
+        }
       }
 
       // ── Väntande ordrar (EXECUTION_MODE=approve) ──

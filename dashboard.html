@@ -1413,7 +1413,51 @@ body.app-state-onboard .fc-panel{display:none !important}
 <main>
 <!-- Vad som analyseras: läser /api/live/watchlist + /api/brokers. Bara visning. -->
 <section id="tradeInfo">
-  <div class="ti-box"><div class="ti-h">Signaltabellen (sektion 5)</div><div id="ti-sig">Laddar…</div></div>
+  <div class="ti-box"><div class="ti-h">Signaltabellen (sektion 5)</div><div id="ti-sig">Laddar…</div>
+    <form id="cs-form" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap" autocomplete="off">
+      <input id="cs-input" placeholder="Lägg till mynt, t.ex. PEPE" maxlength="20" style="flex:1;min-width:120px;background:#0f141c;border:1px solid #2a3140;color:#e6e6e6;border-radius:6px;padding:4px 8px;font:inherit">
+      <button type="submit" style="background:#f0b90b;color:#111;border:0;border-radius:6px;padding:4px 10px;font-weight:700;cursor:pointer">+ Lägg till</button>
+    </form>
+    <div id="cs-msg" style="font-size:11px;margin-top:4px"></div>
+    <div id="cs-list" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px"></div>
+  </div>
+  <script>
+  (function () {
+    // Egna mynt: tips från grupper. Kontrolleras mot Bybit EU innan de läggs till.
+    var form = document.getElementById("cs-form"); if (!form) return;
+    var msg = document.getElementById("cs-msg"), list = document.getElementById("cs-list");
+    function esc2(t) { return String(t).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+    async function load() {
+      try {
+        var d = await (await fetch("/api/custom-symbols")).json();
+        list.innerHTML = (d.symbols || []).map(function (c) {
+          return '<span style="border:1px solid #2a3140;border-radius:12px;padding:2px 8px;font-size:12px">' + esc2(c.base)
+            + (c.usdc ? "" : ' <span title="Bara USDT-par på Bybit EU" style="color:#8b95a7">(USDT)</span>')
+            + ' <button data-cs="' + esc2(c.base) + '" title="Ta bort" style="background:none;border:0;color:#f85149;cursor:pointer;padding:0 2px">×</button></span>';
+        }).join("");
+      } catch (_) {}
+    }
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      var v = document.getElementById("cs-input").value.trim(); if (!v) return;
+      msg.style.color = "#8b95a7"; msg.textContent = "Kollar " + v + " på Bybit EU…";
+      try {
+        var r = await fetch("/api/custom-symbols", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol: v }) });
+        var d = await r.json();
+        if (d.ok) { msg.style.color = "#3fb950"; msg.textContent = d.symbol.base + " tillagt. Agenterna analyserar det från nästa ljus."; document.getElementById("cs-input").value = ""; }
+        else { msg.style.color = "#f85149"; msg.textContent = d.error || "Gick inte"; }
+      } catch (err) { msg.style.color = "#f85149"; msg.textContent = "Fel: " + err.message; }
+      load();
+    });
+    list.addEventListener("click", async function (e) {
+      var b = e.target.closest("button[data-cs]"); if (!b) return;
+      if (!confirm("Sluta följa " + b.dataset.cs + "?")) return;
+      try { await fetch("/api/custom-symbols/" + encodeURIComponent(b.dataset.cs), { method: "DELETE" }); } catch (_) {}
+      load();
+    });
+    load();
+  })();
+  </script>
   <div class="ti-box"><div class="ti-h">Agenterna (sektion 3)</div><div id="ti-agents">Laddar…</div></div>
   <div class="ti-box"><div class="ti-h">Diagram och orderbok (sektion 1–2)</div><div id="ti-chart">Det par du väljer i diagrammet. Priserna kommer live från Bybit, samma som på bybit.eu. Orderboken visar samma mynt i USDC.</div></div>
   <div class="ti-box"><div class="ti-h">Läge</div><div id="ti-mode">Laddar…</div></div>
@@ -1870,6 +1914,22 @@ body.app-state-onboard .fc-panel{display:none !important}
       }
       window._pendSeen = open.length;
       showExecMode(d.executionMode);
+      // Möjlig vinst/förlust som på Forex: "Satsa $1 → +86 % → $1,86" (efter 0,25 % avgift per affär)
+      var payoutHtml = function (o) {
+        var entry = Number(o.limitPrice || o.refPrice);
+        if (o.side !== "BUY" || !(entry > 0)) return "";
+        var stake = Number(o.quoteUsd) || (Number(o.quantity) * entry);
+        if (!(stake > 0)) return "";
+        var part = function (px, label, color) {
+          if (!(Number(px) > 0)) return "";
+          var pct = ((Number(px) / entry) * (1 - 0.0025) * (1 - 0.0025) - 1) * 100;
+          var back = stake * (1 + pct / 100);
+          return '<span style="color:' + color + '">' + label + " " + (pct >= 0 ? "+" : "") + pct.toFixed(1).replace(".", ",") + " % = $" + back.toFixed(2) + "</span>";
+        };
+        var tp = part(o.takeProfit, "vinst", "#3fb950"), sl = part(o.stopLoss, "förlust", "#f85149");
+        if (!tp && !sl) return '<span style="font-size:12px">+1 % rörelse = +$' + (stake * 0.01).toFixed(2) + "</span>";
+        return '<span style="font-size:12px;font-weight:600">Satsa $' + stake.toFixed(2) + " → " + [tp, sl].filter(Boolean).join(" · ") + "</span>";
+      };
       var row = function (o, withButtons) {
         var col = o.live ? "#22c55e" : "#f0b90b";
         var st = { done: "✓ lagd", rejected: "✕ avvisad", failed: "⚠ misslyckades", pending: "väntar" }[o.status] || o.status;
@@ -1880,6 +1940,7 @@ body.app-state-onboard .fc-panel{display:none !important}
           + (o.orderType === "LIMIT" ? '<span style="font-size:12px">limit ' + esc(o.limitPrice) + '</span>' : "")
           + (o.takeProfit ? '<span style="font-size:12px;color:#3fb950">TP ' + esc(o.takeProfit) + '</span>' : "")
           + (o.stopLoss ? '<span style="font-size:12px;color:#f85149">SL ' + esc(o.stopLoss) + '</span>' : "")
+          + payoutHtml(o)
           + '<span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + col + ';color:' + col + '">' + (o.live ? "LIVE" : "TEST") + '</span>'
           + '<span style="font-size:12px">' + esc(o.venue.replace("broker:", "")) + ' · ' + esc(o.source) + '</span>'
           + (withButtons
@@ -9522,7 +9583,8 @@ document.addEventListener("DOMContentLoaded", boot);
     if(!(amt > 0) || !(px > 0)){ el.innerHTML = "Skriv ett belopp för att se möjlig vinst och förlust."; return; }
     const qty = amt / px, fee = amt * FEE * 2;
     const base = baseOf(STATE.symbol);
-    const row = (lbl, p, col) => { const pnl = qty * (p - px) - fee; return `<div>${lbl} ${fmt(p, px >= 100 ? 2 : 4)}: <b style="color:${pnl >= 0 ? "#3fb950" : "#f85149"}">${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}</b></div>`; };
+    // Som på Forex: "Satsa $1 → +86 % → du får $1,86" (avgift för köp + sälj räknad)
+    const row = (lbl, p, col) => { const pnl = qty * (p - px) - fee; const pct = pnl / amt * 100; return `<div>${lbl} ${fmt(p, px >= 100 ? 2 : 4)}: <b style="color:${pnl >= 0 ? "#3fb950" : "#f85149"}">${pct >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")} % → du får $${(amt + pnl).toFixed(2)}</b> (${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)})</div>`; };
     let html = `<div>≈ ${fmt(qty, qty < 1 ? 6 : 3)} ${base} för $${amt.toFixed(2)} · avgift ≈ $${fee.toFixed(2)} (köp + sälj)</div>`;
     const tp = parseFloat($("ot-tp").value), sl = parseFloat($("ot-sl").value);
     if($("ot-tpsl").checked && tp > 0) html += row("Vinst vid TP", tp);

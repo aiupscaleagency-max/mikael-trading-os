@@ -251,7 +251,17 @@ export function buildSignal(symbol: string, interval: string, candles: Candle[])
  *   toxiskt flöde > 0.7   flödet är informerat, vi handlar mot någon som vet mer
  *   JEV pekar tvärtom     med hög confidence mot vår riktning
  */
+// JEV-kostnad (Mike 2026-10-04): JEV frågades för VARJE par vid VARJE stängt
+// 1m-ljus (~850 anrop/timme). Nu: aldrig för NEUTRAL (inget att granska), och
+// samma par + riktning återanvänder svaret: ett STOPP i 15 min, ett OK bara i
+// JEV_CACHE_MIN minuter (5), så att ett nytt läge (t.ex. kris) hinner stoppa.
+const jevCache = new Map<string, { at: number; jev: JevVerdict; veto: boolean }>();
+function jevCacheMs(veto: boolean): number {
+  return veto ? 15 * 60_000 : (Number(process.env.JEV_CACHE_MIN ?? 5) || 5) * 60_000;
+}
+
 export async function applyJevVerdict(signal: Signal): Promise<Signal> {
+  if (signal.direction === "NEUTRAL") return signal;
   const state = {
     symbol: signal.symbol,
     interval: signal.interval,
@@ -269,12 +279,25 @@ export async function applyJevVerdict(signal: Signal): Promise<Signal> {
   agentStart("signal", `${signal.direction} ${signal.symbol}`, { coin: signal.symbol });
   agentDone("signal", `${signal.direction} ${signal.symbol} (score ${signal.score})`);
   agentStart("jev", `granskar signal ${signal.symbol}`, { from: "signal", coin: signal.symbol });
-  const jev = await askJev(state);
+  const cacheKey = `${signal.symbol}:${signal.direction}`;
+  const hit = jevCache.get(cacheKey);
+  let jev: JevVerdict;
+  if (hit && Date.now() - hit.at < jevCacheMs(hit.veto)) {
+    jev = hit.jev;
+  } else {
+    jev = await askJev(state);
+    if (jev.available) {
+      const a = jev.answers;
+      const veto = a.regime?.choice === "crisis" || (a.toxic_flow?.noul ?? 0) > 0.7
+        || ((a.direction?.confidence ?? 0) > 0.6 && a.direction?.choice === (signal.direction === "LONG" ? "down" : "up"));
+      jevCache.set(cacheKey, { at: Date.now(), jev, veto });
+    }
+  }
   const out: Signal = { ...signal, jev };
   const jevInfo = { available: jev.available, route: jev.mode, latencyMs: jev.latencyMs };
 
   // Utan JEV gäller signalen som den är — rules_only, tydligt märkt.
-  if (!jev.available || signal.direction === "NEUTRAL") {
+  if (!jev.available) {
     if (jev.available) agentDone("jev", `${signal.symbol}: ${signal.direction}`); else agentSkip("jev", `svarade inte: ${jev.note}`);
     treeEvent({ branch: "signal", subject: signal.symbol, jev: jevInfo, outcome: jev.available ? "ok" : "bara regler", why: jev.available ? `${signal.direction}` : jev.note });
     return out;

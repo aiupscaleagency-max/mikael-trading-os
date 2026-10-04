@@ -187,14 +187,22 @@ export class BybitPaperBroker implements BrokerAdapter {
 
     // TP/SL (bara efter köp): säljer automatiskt vid vinst eller förlust.
     // För ett LIMIT-köp som väntar läggs de först när köpet fyllts (check()).
-    if (marketable && order.side === "BUY") this.addTpSl(id, base, executedQty, order.takeProfit, order.stopLoss);
+    if (marketable && order.side === "BUY") this.addTpSl(id, base, executedQty, order.takeProfit, order.stopLoss, avg);
     this.save();
     this.schedule();
     return { orderId: id, symbol: order.symbol, side: order.side, type: order.type, status, executedQty, cummulativeQuoteQty: cost, avgFillPrice: avg, timestamp: Date.now() };
   }
 
-  private addTpSl(group: string, base: string, qty: number, tp?: number, sl?: number): void {
+  private addTpSl(group: string, base: string, qty: number, tp?: number, sl?: number, fillPx?: number): void {
     if (!(qty > 0)) return;
+    // Priset kan ha rört sig sedan ordern föreslogs (godkänn-läge). Ligger TP/SL
+    // redan på fel sida om köppriset sätts de om från köppriset (TEST_TP_PCT/TEST_SL_PCT),
+    // annars skulle traden säljas direkt.
+    if (fillPx && fillPx > 0) {
+      const tpPct = Number(process.env.TEST_TP_PCT ?? 3) || 3, slPct = Number(process.env.TEST_SL_PCT ?? 1.5) || 1.5;
+      if (tp !== undefined && tp <= fillPx) { tp = +(fillPx * (1 + tpPct / 100)).toPrecision(6); console.log(`[TEST] TP flyttad till ${tp} (låg under köppriset)`); }
+      if (sl !== undefined && sl >= fillPx) { sl = +(fillPx * (1 - slPct / 100)).toPrecision(6); console.log(`[TEST] SL flyttad till ${sl} (låg över köppriset)`); }
+    }
     if (tp !== undefined) this.state.open.push({ id: `${group}-tp`, base, side: "SELL", kind: "TP", qty, price: tp, group, createdAt: Date.now() });
     if (sl !== undefined) this.state.open.push({ id: `${group}-sl`, base, side: "SELL", kind: "SL", qty, price: sl, group, createdAt: Date.now() });
   }
@@ -226,7 +234,7 @@ export class BybitPaperBroker implements BrokerAdapter {
         try {
           const have = this.state.holdings[base]?.qty ?? 0;
           const r = this.fill(base, o.side, o.side === "SELL" ? Math.min(o.qty, have) : o.qty, px, o.kind, false);
-          if (o.kind === "LIMIT" && o.side === "BUY") this.addTpSl(o.id, base, r.qty, o.tp, o.sl);
+          if (o.kind === "LIMIT" && o.side === "BUY") this.addTpSl(o.id, base, r.qty, o.tp, o.sl, px);
         } catch (e) {
           console.warn(`[TEST] ${o.kind}-order ${o.id} togs bort: ${e instanceof Error ? e.message : String(e)}`);
         }
