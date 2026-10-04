@@ -12,13 +12,14 @@ Till ChatGPT och Hermes. Läs hela filen innan du gör något. Den beskriver lä
 |---|---|
 | Kod | GitHub `aiupscaleagency-max/mikael-trading-os`, gren **`claude/vibrant-noether-fgy8vh`** (huvudgren, PR:er går hit) |
 | På datorn | dator1 (Mac): `~/ai_upscale_work/mikael-trading-os` |
-| Sidan | http://localhost:3939 (direkt), eller Agent-OS → Trading (http://localhost:3737/trading) |
+| Sidan | **Agentic-OS → Trading: https://agentic-os.tail64d627.ts.net/trading** (fungerar från alla enheter i Tailscale). Boten direkt: https://aiupscale-dator1.tail64d627.ts.net:9443. Bara på Macen: http://localhost:3939 |
+| Autostart | launchd `com.aiupscale.trading-os` (startar vid inloggning, startas om vid krasch). Tailscale: `tailscale serve --bg --https=9443 http://127.0.0.1:3939`. I `.env`: `DASHBOARD_TAILNET_HOSTS=aiupscale-dator1.tail64d627.ts.net` |
 | Språk | TypeScript/Node. Kontroll: `npx tsc --noEmit -p .` |
 | Logg | `data/bot.log` |
 
-**Starta om boten** (kopiera hela raden):
+**Starta om boten** (kopiera hela raden). Boten körs av launchd, så starta ALDRIG en egen `nohup npm run agent` (då blir det två):
 ```
-cd ~/ai_upscale_work/mikael-trading-os && git pull origin claude/vibrant-noether-fgy8vh && npx tsc --noEmit -p . && kill $(lsof -ti tcp:3939 -sTCP:LISTEN) 2>/dev/null; sleep 3; nohup npm run agent >> data/bot.log 2>&1 & sleep 15; lsof -ti tcp:3939 -sTCP:LISTEN >/dev/null && echo "BOTEN ÄR IGÅNG" || echo "STARTADE INTE"
+cd ~/ai_upscale_work/mikael-trading-os && git pull origin claude/vibrant-noether-fgy8vh && npx tsc --noEmit -p . && launchctl kickstart -k gui/$(id -u)/com.aiupscale.trading-os && sleep 15 && curl -s -o /dev/null -w "%{http_code}\n" localhost:3939/ && echo "BOTEN ÄR IGÅNG"
 ```
 Om `git pull` klagar på lokala ändringar ska de inte raderas. Kör `git status` och fråga Mike.
 
@@ -115,4 +116,4 @@ Om `git pull` klagar på lokala ändringar ska de inte raderas. Kör `git status
 
 ## 6. Startprompt att klistra in
 
-> Du jobbar med Mikes Trading-OS. Läs först `OVERLAMNING-CHATGPT-HERMES.md` och följ reglerna i avsnitt 2 exakt: bara TEST, godkänn aldrig order, inga nycklar, LLM-ordningen är låst, lägg bara till. Svara på svenska, kort och rakt. Börja med: kör `git log --oneline -5` och `curl -s localhost:3939/api/results | head -c 400` i `~/ai_upscale_work/mikael-trading-os` och säg i en mening vad läget är.
+> Du jobbar med Mikes Trading-OS. Läs först `OVERLAMNING-CHATGPT-HERMES.md` och följ reglerna i avsnitt 2 exakt: bara TEST, godkänn aldrig order, inga nycklar, LLM-ordningen är låst, lägg bara till. Svara på svenska, kort och rakt. Börja med: kör `git log --oneline -5` och `curl -s https://aiupscale-dator1.tail64d627.ts.net:9443/api/results | head -c 400` i `~/ai_upscale_work/mikael-trading-os` och säg i en mening vad läget är.
