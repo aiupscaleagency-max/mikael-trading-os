@@ -1780,6 +1780,43 @@ body.app-state-onboard .fc-panel{display:none !important}
       if (Number(o.stopLoss) > 0) { var q = f(o.stopLoss); parts.push('<span style="color:#f85149">🔴 förlust ' + q.toFixed(1).replace(".", ",") + " % = " + money(stake * (1 + q / 100)) + "</span>"); }
       return '<div style="margin-top:4px">Satsa ' + money(stake) + " → " + parts.join(" · ") + "</div>";
     }
+    function rowHtml(o) {
+      var col = o.side === "BUY" ? "#3fb950" : "#f85149";
+      var hz = o.horizonSec ? Math.round(o.horizonSec / 60) + " min" : "";
+      return '<div class="am-row" data-row="' + esc(o.id) + '">'
+        + '<div class="am-big"><span style="color:' + col + '">' + (o.side === "BUY" ? "▲ KÖP" : "▼ SÄLJ") + "</span> " + esc(o.symbol)
+        + ' <span style="font-size:14px;color:#c9d1d9">' + (o.quoteUsd ? money(o.quoteUsd) : esc(o.quantity) + " st") + "</span>"
+        + ' <span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + (o.live ? "#22c55e" : "#f0b90b") + ";color:" + (o.live ? "#22c55e" : "#f0b90b") + '">' + (o.live ? "LIVE" : "TEST") + "</span></div>"
+        + '<div style="margin-top:2px;color:#8b95a7">Pris nu ~' + esc(o.refPrice) + (o.takeProfit ? " · målpris " + esc(o.takeProfit) : "") + (o.stopLoss ? " · stop-loss " + esc(o.stopLoss) : "") + (hz ? " · håll " + hz : "") + "</div>"
+        + outcome(o)
+        + (o.expiresAt ? '<div style="margin-top:4px">Giltig i <span class="am-cd" data-exp="' + esc(o.expiresAt) + '"></span></div>' : "")
+        + (o.reason ? '<div style="margin-top:4px;font-size:12px;color:#8b95a7">' + esc(o.reason) + "</div>" : "")
+        + '<div class="am-btns"><button type="button" class="am-ok" data-am="approve" data-id="' + esc(o.id) + '">✓ GODKÄNN</button>'
+        + '<button type="button" class="am-no" data-am="reject" data-id="' + esc(o.id) + '">Avvisa</button></div></div>';
+    }
+    // Minsta målpris per tidshorisont så att vinsten klarar avgiften (0,25 % in + ut)
+    var MIN_TP = { 1: 0.008, 5: 0.01, 15: 0.015, 30: 0.02 };
+    var bestCand = null;
+    async function bestBuy() {
+      try {
+        var r = await fetch("/api/signals"); var d = await r.json();
+        var longs = (d.signals || []).filter(function (x) { return x.direction === "LONG" && x.entry > 0; })
+          .sort(function (a, b) { return b.score - a.score; });
+        if (!longs.length) return null;
+        var x = longs[0], hz = window._hzMin || 1, tpPct = MIN_TP[hz] || 0.01;
+        // Utgå från priset JUST NU på Bybit EU (signalens pris är från senaste stängda ljus)
+        var usdc = x.symbol.replace(/USDT$/, "USDC"), entry = Number(x.entry);
+        try {
+          var tk = await (await fetch("https://api.bybit.eu/v5/market/tickers?category=spot&symbol=" + usdc)).json();
+          var live = Number(tk.result.list[0].lastPrice); if (live > 0) entry = live;
+        } catch (_) {}
+        var tp = Math.max(Number(x.target) || 0, entry * (1 + tpPct));
+        var sl = entry * (1 - tpPct * 0.6);
+        var dec = entry >= 1000 ? 1 : entry >= 1 ? 4 : 6;
+        return { symbol: x.symbol.replace(/USDT$/, "USDC"), score: x.score, reasons: (x.reasons || []).slice(0, 2), entry: entry,
+          tp: +tp.toFixed(dec), sl: +sl.toFixed(dec), hz: hz };
+      } catch (_) { return null; }
+    }
     async function openModal(a) {
       var list = [];
       try {
@@ -1787,26 +1824,33 @@ body.app-state-onboard .fc-panel{display:none !important}
         var since = Date.parse(a.startedAt || 0) - 5000;
         list = (d.orders || []).filter(function (o) { return o.status === "pending" && o.source === "agent" && Date.parse(o.createdAt) >= since; });
       } catch (_) {}
+      // Vad analyserades och med vilken tid
+      var hzNow = window._hzMin || 1, pairs = "";
+      try { var tr = await fetch("/api/team/last"); var td = await tr.json(); pairs = ((td.team && td.team.symbols) || []).map(function (s) { return s.replace(/USD[TC]$/, ""); }).join(", "); } catch (_) {}
+      var head = '<div style="margin-bottom:6px;color:#8b95a7">Tidshorisont <b style="color:#e6e6e6">' + hzNow + " min</b>"
+        + (pairs ? " · analyserade <b style=\"color:#e6e6e6\">" + esc(pairs) + "</b>" : "") + " · kl " + new Date().toLocaleTimeString("sv-SE").slice(0, 5) + "</div>";
       var html = "";
       if (!list.length) {
         var line = String(a.summary || "").split("\n").map(function (x) { return x.replace(/[*#>]/g, "").trim(); }).filter(Boolean)[0] || "Ingen tydlig signal just nu.";
-        html = '<div class="am-big" style="color:#8b95a7">VÄNTA – inget köp nu</div><div style="margin-top:6px">' + esc(line) + "</div>"
-          + '<div class="am-btns"><button type="button" class="am-no" data-am="close">OK</button></div>';
+        html = head + '<div class="am-big" style="color:#8b95a7">VÄNTA – agenterna föreslår inget köp</div><div style="margin-top:6px">' + esc(line) + "</div>";
+        bestCand = await bestBuy();
+        if (bestCand) {
+          var stake = Math.max(1.1, Number((document.getElementById("ot-amt") || {}).value) || 5);
+          var fake = { side: "BUY", refPrice: bestCand.entry, quoteUsd: stake, takeProfit: bestCand.tp, stopLoss: bestCand.sl };
+          html += '<div class="am-row"><div style="font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Bästa köpläge just nu (indikatorerna)</div>'
+            + '<div class="am-big"><span style="color:#3fb950">▲ ' + esc(bestCand.symbol) + "</span> <span style=\"font-size:13px;color:#c9d1d9\">poäng +" + esc(bestCand.score) + "</span></div>"
+            + '<div style="color:#8b95a7">' + esc(bestCand.reasons.join(" · ")) + "</div>"
+            + '<div style="margin-top:2px;color:#8b95a7">Pris ~' + esc(bestCand.entry) + " · målpris " + esc(bestCand.tp) + " · stop-loss " + esc(bestCand.sl) + " · håll " + bestCand.hz + " min</div>"
+            + outcome(fake)
+            + '<div style="margin-top:6px;color:#fbbf24;font-size:12px">⚠ Agenterna sa vänta. Detta är ditt eget beslut.</div>'
+            + '<div class="am-btns"><button type="button" class="am-ok" data-am="anyway" data-stake="' + stake + '">▲ Köp ändå ' + money(stake) + '</button>'
+            + '<button type="button" class="am-no" data-am="close">Nej, vänta</button></div></div>';
+        } else {
+          html += '<div class="am-row">Inget par har köpsignal just nu (alla pekar nedåt). Med vanlig krypto (spot) tjänar man bara när priset stiger.'
+            + '<div class="am-btns"><button type="button" class="am-no" data-am="close">OK</button></div></div>';
+        }
       } else {
-        html = list.map(function (o) {
-          var col = o.side === "BUY" ? "#3fb950" : "#f85149";
-          var hz = o.horizonSec ? Math.round(o.horizonSec / 60) + " min" : "";
-          return '<div class="am-row" data-row="' + esc(o.id) + '">'
-            + '<div class="am-big"><span style="color:' + col + '">' + (o.side === "BUY" ? "▲ KÖP" : "▼ SÄLJ") + "</span> " + esc(o.symbol)
-            + ' <span style="font-size:14px;color:#c9d1d9">' + (o.quoteUsd ? money(o.quoteUsd) : esc(o.quantity) + " st") + "</span>"
-            + ' <span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + (o.live ? "#22c55e" : "#f0b90b") + ";color:" + (o.live ? "#22c55e" : "#f0b90b") + '">' + (o.live ? "LIVE" : "TEST") + "</span></div>"
-            + '<div style="margin-top:2px;color:#8b95a7">Pris nu ~' + esc(o.refPrice) + (o.takeProfit ? " · målpris " + esc(o.takeProfit) : "") + (o.stopLoss ? " · stop-loss " + esc(o.stopLoss) : "") + (hz ? " · håll " + hz : "") + "</div>"
-            + outcome(o)
-            + (o.expiresAt ? '<div style="margin-top:4px">Giltig i <span class="am-cd" data-exp="' + esc(o.expiresAt) + '"></span></div>' : "")
-            + (o.reason ? '<div style="margin-top:4px;font-size:12px;color:#8b95a7">' + esc(o.reason) + "</div>" : "")
-            + '<div class="am-btns"><button type="button" class="am-ok" data-am="approve" data-id="' + esc(o.id) + '">✓ GODKÄNN</button>'
-            + '<button type="button" class="am-no" data-am="reject" data-id="' + esc(o.id) + '">Avvisa</button></div></div>';
-        }).join("");
+        html = head + list.map(rowHtml).join("");
       }
       body.innerHTML = html;
       modal.classList.add("open");
@@ -1829,6 +1873,20 @@ body.app-state-onboard .fc-panel{display:none !important}
     body.addEventListener("click", async function (e) {
       var b = e.target.closest("button[data-am]"); if (!b) return;
       if (b.dataset.am === "close") { closeModal(); return; }
+      if (b.dataset.am === "anyway" && bestCand) {
+        b.disabled = true;
+        try {
+          var rr = await fetch("/api/pending-orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+            symbol: bestCand.symbol, side: "BUY", quoteUsd: Number(b.dataset.stake), source: "popup: köp ändå",
+            takeProfit: bestCand.tp, stopLoss: bestCand.sl, horizonSec: bestCand.hz * 60,
+            reason: "Ditt val: " + bestCand.symbol + " poäng +" + bestCand.score + " (" + bestCand.reasons.join(", ") + ")" }) });
+          var dd = await rr.json().catch(function () { return {}; });
+          var host = b.closest(".am-row");
+          if (dd.ok && dd.pendingOrder) { host.outerHTML = rowHtml(dd.pendingOrder); }
+          else host.insertAdjacentHTML("beforeend", '<div style="margin-top:6px;color:#f85149">⚠ ' + esc(dd.error || ("HTTP " + rr.status)) + "</div>");
+        } catch (err) { alert("Fel: " + err.message); }
+        return;
+      }
       var row = b.closest(".am-row");
       row.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
       try {
@@ -2462,7 +2520,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     <div class="pp-tools">
       <span id="pp-mode" class="pp-chip">–</span>
       <label>Belopp (USDC) <input type="number" id="pp-amt" value="5" min="1" step="1"></label>
-      <label>Tidshorisont <select id="pp-tf"><option value="300">5 min</option><option value="900">15 min</option><option value="3600" selected>1 tim</option><option value="14400">4 tim</option><option value="86400">1 dag</option></select></label>
+      <label>Tidshorisont <select id="pp-tf"><option value="1">1 min</option><option value="5">5 min</option><option value="15">15 min</option><option value="30">30 min</option></select></label>
       <button type="button" id="pp-all" class="pp-btn">Markera alla</button>
       <button type="button" id="pp-run" class="pp-btn pp-go">▶ Analysera valda (0)</button>
     </div>
@@ -10159,17 +10217,17 @@ document.addEventListener("DOMContentLoaded", boot);
     if(typeof STATE !== "undefined" && STATE.killActive){ alert("Kill switch är aktiverad. Inga nya ordrar."); return; }
     const amt = parseFloat($("pp-amt").value);
     if(!(amt > 0)){ alert("Skriv ett belopp i USDC."); return; }
-    const tf = +$("pp-tf").value;
+    const tfMin = +$("pp-tf").value || 1;
     const tfTxt = $("pp-tf").selectedOptions[0].textContent;
     try{
       const r = await fetch("/api/pending-orders", { method:"POST", headers:{ "Content-Type":"application/json" },
         body: JSON.stringify({ symbol: b + "USDC", side, quoteUsd: amt, source: "alla-par",
+          ...(side === "BUY" ? { horizonSec: tfMin * 60 } : {}),
           reason: `Alla par: ${side === "BUY" ? "CALL" : "PUT"} ${b} · tidshorisont ${tfTxt}` }) });
       const d = await r.json().catch(()=>({}));
       if(!d.ok){ alert(`${b}: ordern lades inte i kön.\n\n` + (d.error || ("HTTP " + r.status))); return; }
       if(typeof pushInAppAlert === "function") pushInAppAlert(`⏳ ${side === "BUY" ? "KÖP" : "SÄLJ"} ${b} $${amt} ligger i Väntande ordrar. Tryck Godkänn på Trade-sidan.`, 6000);
     }catch(e){ alert("Fel: " + e.message); }
-    void tf;
   }
 
   grid.addEventListener("click", (e)=>{
@@ -10196,6 +10254,17 @@ document.addEventListener("DOMContentLoaded", boot);
     syncButtons();
   });
   $("pp-run").addEventListener("click", ()=>{ if(sel.size) runAnalysis([...sel]); });
+  // Tidshorisont: samma val som i analysrutan (1/5/15/30 min), sparas på servern
+  async function syncPpTf(){
+    try{ const d = await (await fetch("/api/trade-horizon")).json(); if(d && d.minutes && $("pp-tf").value != d.minutes){ $("pp-tf").value = String(d.minutes); } }catch(_){}
+  }
+  $("pp-tf").addEventListener("change", async ()=>{
+    try{
+      const r = await fetch("/api/trade-horizon", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ minutes: +$("pp-tf").value }) });
+      const d = await r.json(); if(d.ok){ window._hzMin = d.minutes; document.querySelectorAll(".hz-btn").forEach(x=>x.classList.toggle("on", +x.dataset.hz === d.minutes)); }
+    }catch(_){}
+  });
+  syncPpTf(); setInterval(syncPpTf, 10000);
 
   init();
   setInterval(()=>{ order.forEach(b=>{ if(P[b] && P[b].dirty){ P[b].dirty = false; draw(b); } }); }, 250);
