@@ -1936,7 +1936,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:7px 0;border-top:1px solid #222834">'
           + '<span style="font-weight:700;color:' + (o.side === "BUY" ? "#3fb950" : "#f85149") + '">' + (o.side === "BUY" ? "KÖP" : "SÄLJ") + '</span>'
           + '<span style="font-weight:600;color:#e6e6e6">' + esc(o.symbol) + '</span>'
-          + '<span>' + (o.quoteUsd ? "$" + esc(o.quoteUsd) : esc(o.quantity) + " st") + '</span>'
+          + '<span>' + (o.sellAll ? "allt" : o.quoteUsd ? "$" + esc(o.quoteUsd) : esc(o.quantity) + " st") + '</span>'
           + (o.orderType === "LIMIT" ? '<span style="font-size:12px">limit ' + esc(o.limitPrice) + '</span>' : "")
           + (o.takeProfit ? '<span style="font-size:12px;color:#3fb950">TP ' + esc(o.takeProfit) + '</span>' : "")
           + (o.stopLoss ? '<span style="font-size:12px;color:#f85149">SL ' + esc(o.stopLoss) + '</span>' : "")
@@ -2147,6 +2147,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         <button type="button" id="ot-buy" class="bet-call" style="margin:0">▲ Köp (CALL)</button>
         <button type="button" id="ot-sell" class="bet-put" style="margin:0">▼ Sälj (PUT)</button>
       </div>
+      <button type="button" id="ot-sell-all" class="bet-put" style="margin:6px 0 0;width:100%;opacity:.85" title="Säljer allt du har av myntet (efter avgiften), inget belopp behövs">▼ Sälj allt</button>
       <div id="ot-est" style="margin-top:8px;font-size:11px;line-height:1.6;padding:6px 8px;border:1px solid var(--border);border-radius:5px;background:var(--card2)"></div>
       <div class="sim-note" id="ot-note" style="margin-top:6px">Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. Tidshorisonten sparas på ordern som påminnelse; den stänger inte ordern själv, det gör TP/SL. Samma gränser gäller som för alla ordrar.</div>
     </div>
@@ -9510,12 +9511,24 @@ document.addEventListener("DOMContentLoaded", boot);
     if(e.target.checked && otType !== "LIMIT"){ otType = "LIMIT"; syncType(); bk.dirty = true; } // TP/SL går med limit-order
   });
 
-  async function submit(side){
+  async function submit(side, sellAll){
     if(typeof CFG !== "undefined" && CFG.mode !== "live"){ alert("Boten är inte ansluten. Starta Trading OS-boten först."); return; }
-    if(typeof STATE !== "undefined" && STATE.killActive){ alert("Kill switch är aktiverad. Inga nya ordrar."); return; }
-    const amt = parseFloat($("ot-amt").value);
-    if(!(amt > 0)){ alert("Skriv ett belopp i USDC."); return; }
-    const body = { symbol: bk.pair || (baseOf(STATE.symbol) + "USDC"), side, quoteUsd: amt, source: "orderpanel", orderType: otType };
+    if(typeof STATE !== "undefined" && STATE.killActive && side === "BUY"){ alert("Kill switch är aktiverad. Inga nya köp."); return; }
+    const amt = sellAll ? 0 : parseFloat($("ot-amt").value);
+    if(!sellAll && !(amt > 0)){ alert("Skriv ett belopp i USDC."); return; }
+    const body = { symbol: bk.pair || (baseOf(STATE.symbol) + "USDC"), side, quoteUsd: amt, source: "orderpanel", orderType: sellAll ? "MARKET" : otType };
+    if(sellAll){
+      body.sellAll = true;
+      body.reason = `Orderpanelen: sälj allt ${body.symbol} till marknadspris`;
+      if(!confirm(`Sälja ALLT du har av ${baseOf(body.symbol)} till marknadspris? Ordern hamnar i Väntande ordrar.`)) return;
+      try{
+        const r = await fetch("/api/pending-orders", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
+        const d = await r.json().catch(()=>({}));
+        if(!d.ok){ alert("Ordern lades inte i kön.\n\n" + (d.error || ("HTTP " + r.status))); return; }
+        if(typeof pushInAppAlert === "function") pushInAppAlert(`⏳ SÄLJ ALLT ${body.symbol} ligger i Väntande ordrar. Tryck Godkänn för att lägga den.`, 7000);
+      }catch(e){ alert("Fel: " + e.message); }
+      return;
+    }
     if(otType === "LIMIT"){
       const p = parseFloat($("ot-price").value);
       if(!(p > 0)){ alert("Skriv ett limitpris, eller välj Market."); return; }
@@ -9614,6 +9627,7 @@ document.addEventListener("DOMContentLoaded", boot);
   });
   $("ot-buy").addEventListener("click", ()=>submit("BUY"));
   $("ot-sell").addEventListener("click", ()=>submit("SELL"));
+  $("ot-sell-all").addEventListener("click", ()=>submit("SELL", true));
 
   async function syncVenue(){
     try{

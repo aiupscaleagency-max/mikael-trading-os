@@ -70,6 +70,11 @@ export class BybitBroker implements BrokerAdapter {
     };
   }
 
+  /** Minsta köpbelopp i USD som går att sälja tillbaka (minsta order + 10 %). */
+  async minBuyUsd(symbol: string): Promise<number> {
+    return sellableMinUsd(await this.instrument(this.pairOf(symbol)));
+  }
+
   private baseOf(symbol: string): string {
     const s = symbol.toUpperCase().replace("/", "");
     for (const q of STABLES) if (s.endsWith(q) && s.length > q.length) return s.slice(0, -q.length);
@@ -240,17 +245,34 @@ export class BybitBroker implements BrokerAdapter {
       if (!(rounded >= Number(inst.lotSizeFilter.minOrderAmt))) {
         throw new Error(`Bybit: minsta belopp för ${pair} är ${inst.lotSizeFilter.minOrderAmt} ${this.cfg.quote}`);
       }
+      // Köper man för exakt minsta beloppet går det inte att sälja tillbaka
+      // (avgiften drar ned värdet under minsta order). Kräv 10 % marginal.
+      const sellable = sellableMinUsd(inst);
+      if (rounded < sellable) {
+        throw new Error(`Bybit: ${pair} kräver minst ${inst.lotSizeFilter.minOrderAmt} ${this.cfg.quote} per order, så köp för minst $${sellable.toFixed(2)} för att kunna sälja tillbaka (eller välj BTC, minst $1)`);
+      }
       params.marketUnit = "quoteCoin";
       params.qty = rounded.toFixed(qd);
     } else {
       let qty = order.quantity;
+      const ref = order.type === "LIMIT" && order.price ? order.price : (await this.getTicker(order.symbol)).price;
       if (qty === undefined) {
         if (order.quoteOrderQty === undefined) throw new Error("Bybit: ange antal eller belopp");
-        const ref = order.type === "LIMIT" && order.price ? order.price : (await this.getTicker(order.symbol)).price;
         qty = order.quoteOrderQty / ref;
+      }
+      // Sälj aldrig mer än vi har fritt (köpavgiften dras i myntet, så "$5" kan vara för mycket)
+      if (order.side === "SELL") {
+        const base = this.baseOf(order.symbol);
+        const acc = await this.getAccount();
+        const free = acc.balances.find((b) => b.asset === base)?.free ?? 0;
+        if (!(free > 0)) throw new Error(`Bybit: du har inga ${base} att sälja`);
+        if (qty > free) qty = free;
       }
       const bd = decimals(inst.lotSizeFilter.basePrecision);
       qty = Math.floor(qty * 10 ** bd) / 10 ** bd;
+      if (order.side === "SELL" && qty * ref < Number(inst.lotSizeFilter.minOrderAmt)) {
+        throw new Error(`Bybit: ${pair} kräver minst ${inst.lotSizeFilter.minOrderAmt} ${this.cfg.quote} per order, innehavet är värt ca $${(qty * ref).toFixed(2)}`);
+      }
       if (!(qty >= Number(inst.lotSizeFilter.minOrderQty))) {
         throw new Error(`Bybit: minsta antal för ${pair} är ${inst.lotSizeFilter.minOrderQty}`);
       }
@@ -263,10 +285,11 @@ export class BybitBroker implements BrokerAdapter {
       }
     }
 
-    // TP/SL följer med ordern hos Bybit (säljer automatiskt vid vinst eller förlust)
+    // TP/SL följer med LIMIT-ordrar hos Bybit. MARKET-köp i LIVE bevakas i
+    // stället av boten (src/server/liveTpSl.ts) och säljs vid TP/SL.
     const tick = decimals(inst.priceFilter.tickSize);
-    if (order.takeProfit !== undefined) { params.takeProfit = order.takeProfit.toFixed(tick); params.tpOrderType = "Market"; }
-    if (order.stopLoss !== undefined) { params.stopLoss = order.stopLoss.toFixed(tick); params.slOrderType = "Market"; }
+    if (order.type === "LIMIT" && order.takeProfit !== undefined) { params.takeProfit = order.takeProfit.toFixed(tick); params.tpOrderType = "Market"; }
+    if (order.type === "LIMIT" && order.stopLoss !== undefined) { params.stopLoss = order.stopLoss.toFixed(tick); params.slOrderType = "Market"; }
 
     const created = await this.request<{ orderId: string }>("POST", "/v5/order/create", params, true);
     const orderId = created.orderId;
@@ -306,4 +329,10 @@ export class BybitBroker implements BrokerAdapter {
   async cancelOrder(symbol: string, orderId: string): Promise<void> {
     await this.request("POST", "/v5/order/cancel", { category: "spot", symbol: this.pairOf(symbol), orderId }, true);
   }
+}
+
+/** Minsta order + 10 % marginal (avgift och kursrörelse), så att köpet går att sälja. */
+function sellableMinUsd(inst: BybitInstrument): number {
+  const min = Number(inst.lotSizeFilter.minOrderAmt) || 0;
+  return Math.ceil(min * 1.1 * 100) / 100;
 }

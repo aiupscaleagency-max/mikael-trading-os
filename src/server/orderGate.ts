@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import crypto from "node:crypto";
 import { config } from "../config.js";
 import { loadState } from "../memory/store.js";
@@ -36,14 +37,31 @@ export const MAX_LIVE_DAILY_SPEND_USD = parseFloat(
   process.env.MAX_LIVE_DAILY_SPEND_USD || process.env.MAX_LIVE_DAILY_LOSS_USD || "10",
 );
 
+// Dagens LIVE-köp sparas i data/live-spend.json så att $-taket per dag
+// gäller även efter en omstart.
+const LIVE_SPEND_FILE = path.resolve("data/live-spend.json");
 let liveSpentTodayUsd = 0;
 let liveSpendDay = new Date().toISOString().slice(0, 10);
+try {
+  const saved = JSON.parse(readFileSync(LIVE_SPEND_FILE, "utf8")) as { day?: string; usd?: number };
+  if (saved.day === liveSpendDay && Number(saved.usd) > 0) liveSpentTodayUsd = Number(saved.usd);
+} catch { /* ingen fil än */ }
+
+function persistLiveSpend(): void {
+  try {
+    mkdirSync(path.dirname(LIVE_SPEND_FILE), { recursive: true });
+    writeFileSync(LIVE_SPEND_FILE, JSON.stringify({ day: liveSpendDay, usd: liveSpentTodayUsd }));
+  } catch (err) {
+    log.warn(`Kunde inte spara dagens LIVE-köp: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 function rollDay(): void {
   const today = new Date().toISOString().slice(0, 10);
   if (today !== liveSpendDay) {
     liveSpendDay = today;
     liveSpentTodayUsd = 0;
+    persistLiveSpend();
   }
 }
 
@@ -55,12 +73,20 @@ export function getLiveSpentTodayUsd(): number {
 /** Räkna upp dagens LIVE-köp. Anropas efter att ett LIVE-köp gått igenom. */
 export function recordLiveSpend(usd: number): void {
   rollDay();
-  if (Number.isFinite(usd) && usd > 0) liveSpentTodayUsd += usd;
+  if (Number.isFinite(usd) && usd > 0) { liveSpentTodayUsd += usd; persistLiveSpend(); }
+}
+
+/** Justera dagens LIVE-köp (t.ex. ge tillbaka en reservation när köpet misslyckades). */
+export function adjustLiveSpend(deltaUsd: number): void {
+  rollDay();
+  if (!Number.isFinite(deltaUsd) || deltaUsd === 0) return;
+  liveSpentTodayUsd = Math.max(0, liveSpentTodayUsd + deltaUsd);
+  persistLiveSpend();
 }
 
 /** Är servern startad för riktiga pengar? Bara .env kan säga ja. */
 export function liveAllowedByServer(): boolean {
-  return config.mode === "live" && process.env.LIVE_TRADING_CONFIRMED === "true";
+  return config.mode === "live" && process.env.LIVE_TRADING_CONFIRMED?.trim().toLowerCase() === "true";
 }
 
 export interface GateInput {
@@ -138,6 +164,8 @@ export interface PendingOrder {
   stopLoss?: number;
   /** Pris när ordern föreslogs (för att visa möjlig vinst/förlust) */
   refPrice?: number;
+  /** Sälj hela innehavet (antalet räknas fram när ordern godkänns) */
+  sellAll?: boolean;
   reason?: string;
   status: "pending" | "done" | "rejected" | "failed";
   decidedAt?: string;
