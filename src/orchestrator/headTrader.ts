@@ -10,6 +10,7 @@ import { toolDefinitions, runTool, type ToolContext } from "../agent/tools.js";
 import { computeIndicators } from "../indicators/ta.js";
 import type { StrategyEngine } from "../strategies/types.js";
 import { summarizePastPerformance } from "../memory/store.js";
+import { memorySummary } from "../memory/tradeMemory.js";
 import type {
   MacroReport,
   TechnicalReport,
@@ -79,7 +80,12 @@ export async function runHeadTrader(params: {
 }): Promise<HeadTraderResult> {
   const { apiKey, config, state, broker, brokers, risk, engines, reports } = params;
 
-  const performance = await summarizePastPerformance();
+  // Tradingminnet: hur TEST-affärerna gått + tidigare beslut för de här paren
+  const [pastPerf, memory] = await Promise.all([
+    summarizePastPerformance(),
+    memorySummary(params.symbols ?? []).catch(() => ""),
+  ]);
+  const performance = memory ? `${pastPerf}\n\n${memory}` : pastPerf;
 
   const systemPrompt = buildHeadTraderPrompt(config, state, performance);
   const briefingContent = formatAllReports(reports);
