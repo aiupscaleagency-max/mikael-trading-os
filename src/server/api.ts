@@ -2008,6 +2008,16 @@ Regler:
     }
   });
 
+  // Upptagen port = en bot kör redan. Avsluta i stället för att köra en andra
+  // agent-loop i bakgrunden (dubbla analyser, dubbel AI-kostnad).
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      log.error(`Port ${port} används redan — en bot kör redan. Den här kopian stängs.`);
+      process.exit(1);
+    }
+    log.error(`Dashboard-servern: ${err.message}`);
+  });
+
   server.listen(port, () => {
     log.ok(`Dashboard: http://localhost:${port}`);
     if (process.env.DASHBOARD_NO_LOGIN === "true") {

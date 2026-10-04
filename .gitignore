@@ -21,3 +21,6 @@ id_rsa*
 id_ed25519*
 *.p12
 credentials*
+
+# Säkerhetskopior av .env (innehåller nycklar)
+.env.bak-*
