@@ -5,6 +5,7 @@ import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { createLlmClient, hasLlmCredentials } from "../llm/gateway.js";
 import { loadState, saveState, loadRecentDecisions } from "../memory/store.js";
+import { closedTrades, loadAnalyses, memorySummary } from "../memory/tradeMemory.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { computeIndicators } from "../indicators/ta.js";
 import { log } from "../logger.js";
@@ -1062,6 +1063,12 @@ export function startServer(
       }
 
       // ── Egna mynt (tips från grupper) ──
+      // Tradingminnet: sammanfattningen Hanna får + stängda TEST-affärer
+      if (url.pathname === "/api/trade-memory" && method === "GET") {
+        const [summary, trades, analyses] = await Promise.all([memorySummary(), closedTrades(), loadAnalyses(20)]);
+        json(res, { summary, trades: trades.slice(-50), analyses });
+        return;
+      }
       if (url.pathname === "/api/custom-symbols" && method === "GET") {
         json(res, { symbols: listCustomSymbols(), all: config.crypto.symbols });
         return;

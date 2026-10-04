@@ -18,7 +18,9 @@ import { Scheduler, createDefaultSchedule } from "./scheduler.js";
 import { runOrchestratedTurn } from "./orchestrator/orchestrator.js";
 import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback } from "./server/api.js";
 import { startKlineStream } from "./server/klineStream.js";
-import { jevReviewSymbols, startSignalEngine, subscribeSignals } from "./server/signalEngine.js";
+import { getSignals, jevReviewSymbols, startSignalEngine, subscribeSignals } from "./server/signalEngine.js";
+import { recordAnalysis } from "./memory/tradeMemory.js";
+import { listPendingOrders } from "./server/orderGate.js";
 import { type PrescreenResult, prescreenPairs, prescreenEnabled, rememberPrescreen } from "./orchestrator/prescreen.js";
 import { analysisModeInfo, autoLoopEnabled, scheduleTimes, signalTriggerEnabled, startFixedTimes } from "./server/analysisMode.js";
 import { setTeamLast } from "./server/teamLast.js";
@@ -232,6 +234,8 @@ async function runOnce(
     instruction,
     scheduled,
   });
+  const turnStartedAt = Date.now();
+  let jevStopped: { symbol: string; why: string }[] = [];
   // JEV granskar bara paren den här analysen valt (signalerna i sig är gratis matte).
   if (screen.enabled && screen.flagged.length && !screen.skip) {
     const maxPairs = Math.max(1, Number(process.env.PRESCREEN_MAX_PAIRS ?? 3) || 3);
@@ -239,6 +243,7 @@ async function runOnce(
     const picked = new Set(screen.symbols);
     if (candidates.some((c) => picked.has(c))) {
       const { kept, stopped } = await jevReviewSymbols(candidates, maxPairs);
+      jevStopped = stopped;
       if (stopped.length) {
         const top = kept.slice(0, maxPairs);
         const stopNote = `JEV stoppade ${stopped.map((x) => x.symbol).join(", ")}`;
@@ -314,6 +319,32 @@ async function runOnce(
     };
     const teamPayload = { ...result.reports, head: headReport };
     setTeamLast(teamPayload, screen.symbols);
+
+    // Tradingminnet: spara vad teamet såg och beslöt (resultatet kopplas
+    // senare från TEST-kontots stängda affärer).
+    void (async () => {
+      const wanted = new Set(screen.symbols.map((x) => x.toUpperCase()));
+      const pending = (await listPendingOrders().catch(() => []))
+        .filter((o) => Date.parse(o.createdAt) >= turnStartedAt && wanted.has(o.symbol.toUpperCase()));
+      const proposals = [
+        ...pending.map((o) => ({ symbol: o.symbol, side: o.side, usd: o.quoteUsd, takeProfit: o.takeProfit, stopLoss: o.stopLoss, refPrice: o.refPrice })),
+        ...headOrders.map((o) => ({ symbol: o.request.symbol, side: o.request.side, usd: o.request.quoteOrderQty })),
+      ];
+      await recordAnalysis({
+        at: turnStartedAt,
+        trigger: scheduled ? "scheduled" : "manual",
+        instruction,
+        symbols: screen.symbols,
+        note: screen.note,
+        signals: getSignals()
+          .filter((x) => wanted.has(x.symbol.toUpperCase()))
+          .map((x) => ({ symbol: x.symbol, direction: x.direction, score: x.score, reasons: x.reasons })),
+        jevStopped,
+        decision: proposals.length ? proposals.map((p) => `${p.side} ${p.symbol}`).join(", ") : "HOLD",
+        summary: result.headTrader.decision.briefingSummary ?? "",
+        proposals,
+      });
+    })().catch((err) => log.warn(`[minne] ${err instanceof Error ? err.message : String(err)}`));
     broadcastEvent("team-reports", {
       ...teamPayload,
       timing: result.timingMs,
