@@ -71,6 +71,12 @@ Om `git pull` klagar på lokala ändringar ska de inte raderas. Kör `git status
 
 **CALL och PUT på spot.** CALL betyder köp och ger vinst när priset stiger. PUT säljer bara mynt man redan äger, eftersom spot inte kan tjäna på fallande pris. Derivat eller marginal är inte påslaget och ska inte läggas till under TEST.
 
+**Bybit CLI.** Bybits officiella CLI är installerad. Kommandot `bybit-eu` pekar om den mot api.bybit.eu, läser nycklarna från `.env` och tillåter **bara läsning** (`get-*`). Ordrar blockeras och går bara via Trading-OS. Exempel: `bybit-eu market get-tickers --category spot --symbol BTCUSDC --pretty`. Koden ligger i `tools/bybit-eu/`.
+
+**Demo.** Bybit EU har ingen API för demokonton (404). Därför är TEST `bybit-paper`. Demo-raderna i `.env` är bortkommenterade.
+
+**Minsta order (Bybit EU).** BTC/USDC $1, ETH/SOL/XRP $5. LIVE-köp kräver minsta order + 10 % (BTC $1,10, övriga $5,50) så att de går att sälja tillbaka.
+
 **Data.** Allt kommer från Bybit EU (WebSocket och REST). Tiingo används inte i Trading-OS, bara i PTQA-kursprojektet (`~/ai_upscale_work/projects/ptqa-trading`).
 
 ---
@@ -96,7 +102,7 @@ Om `git pull` klagar på lokala ändringar ska de inte raderas. Kör `git status
 
 | Vad | Läge |
 |---|---|
-| Popupen visar alltid par och tid, och visar bästa kandidaten med en **"Köp ändå"**-knapp vid "vänta". Tidsvalet på sidan "Alla par" blir också 1/5/15/30 min | **Klart** (PR #53) |
+| Popupen visar par, tid och klockslag. Vid "vänta" visas bästa köpläget med **"Köp ändå"** (går till Väntande för Godkänn). Alla par har 1/5/15/30 min | ✅ Klart (PR #53) |
 | Mike kör TEST-trades och läser resultatfönstret | Mike gör själv |
 | Vercel AI Gateway-krediter är slut (402), så allt går via OpenRouter | Mike fyller på |
 | LIVE: Bybit-saldot är $0. Mike sätter in pengar och säger själv till | Väntar på Mike |
