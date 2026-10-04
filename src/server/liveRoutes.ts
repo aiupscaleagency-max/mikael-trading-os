@@ -1,4 +1,5 @@
 import type http from "node:http";
+import { analysisModeInfo } from "./analysisMode.js";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { BybitBroker } from "../brokers/bybit.js";
@@ -272,6 +273,7 @@ export async function handleLiveRoutes(
       send(res, 200, {
         agentSymbols: config.crypto.symbols,
         loopMinutes: Math.round(config.loopIntervalSeconds / 60),
+        analysis: analysisModeInfo(),
         signalSymbols: k.symbols,
         signalInterval: k.interval,
         // Försållning: vilka par AI-teamet skulle titta på just nu, och senaste turen
