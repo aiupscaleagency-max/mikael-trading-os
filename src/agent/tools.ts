@@ -280,6 +280,7 @@ export const TOOLS: Record<string, ToolDef> = {
         // Lägg förslaget i kön så Mike ser det i dashboarden och kan trycka Godkänn.
         try {
           const { addPendingOrder } = await import("../server/orderGate.js");
+          const { getHorizonMin } = await import("../server/tradeHorizon.js");
           await addPendingOrder({
             source: "agent",
             venue: `broker:${ctx.broker.name}`,
@@ -295,6 +296,8 @@ export const TOOLS: Record<string, ToolDef> = {
             stopLoss: finalOrder.stopLoss,
             refPrice,
             reason: String(reasoning ?? "").slice(0, 200),
+            // Köp får Mikes valda horisont: förslaget försvinner och positionen säljs när tiden gått
+            ...(finalOrder.side === "BUY" ? { horizonSec: getHorizonMin() * 60 } : {}),
           });
         } catch (err) {
           log.warn(`Kunde inte spara väntande order: ${err instanceof Error ? err.message : String(err)}`);

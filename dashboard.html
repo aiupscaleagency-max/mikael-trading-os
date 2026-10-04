@@ -1650,7 +1650,38 @@ body.app-state-onboard .fc-panel{display:none !important}
         <button id="analysisRun" style="padding:4px 12px;border:1px solid #3fb950;background:#0d2a14;color:#3fb950;border-radius:6px;font-weight:700;cursor:pointer">▶ Kör analys</button>
       </span>
     </div>
+    <div id="hzRow" style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px;color:#8b95a7">
+      <span>Tidshorisont för trades:</span>
+      <button type="button" class="hz-btn" data-hz="1">1 min</button>
+      <button type="button" class="hz-btn" data-hz="5">5 min</button>
+      <button type="button" class="hz-btn" data-hz="15">15 min</button>
+      <button type="button" class="hz-btn" data-hz="30">30 min</button>
+      <span id="hzHint" style="flex-basis:100%"></span>
+    </div>
     <div id="analysisRows" style="margin-top:8px;font-size:13px;color:#8b95a7">Ingen analys än. Tryck Kör analys.</div>
+  </div>
+  <style>
+    .hz-btn{padding:3px 10px;border:1px solid #2a3140;background:#0f141c;color:#c9d1d9;border-radius:6px;cursor:pointer;font-size:12px}
+    .hz-btn.on{border-color:#3fb950;background:#0d2a14;color:#3fb950;font-weight:700}
+    #anaModal{position:fixed;inset:0;z-index:9500;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.6)}
+    #anaModal.open{display:flex}
+    #anaModal .am-card{width:min(560px,94vw);max-height:86vh;overflow:auto;background:#151a23;border:2px solid #3fb950;border-radius:12px;padding:16px 18px;box-shadow:0 10px 40px rgba(0,0,0,.6)}
+    #anaModal .am-row{border-top:1px solid #2a3140;padding:10px 0}
+    #anaModal .am-big{font-size:18px;font-weight:800}
+    #anaModal .am-btns{display:flex;gap:8px;margin-top:8px}
+    #anaModal .am-btns button{flex:1;padding:10px;border-radius:8px;font-weight:800;font-size:15px;cursor:pointer}
+    #anaModal .am-ok{background:#16a34a;border:1px solid #22c55e;color:#fff}
+    #anaModal .am-no{background:transparent;border:1px solid #8b95a7;color:#c9d1d9}
+    #anaModal .am-cd{font-variant-numeric:tabular-nums;color:#fbbf24;font-weight:700}
+  </style>
+  <div id="anaModal" role="dialog" aria-modal="true">
+    <div class="am-card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <strong style="font-size:15px">Analysen är klar</strong>
+        <button type="button" id="anaClose" style="background:none;border:none;color:#8b95a7;font-size:20px;cursor:pointer" title="Stäng (Esc)">✕</button>
+      </div>
+      <div id="anaBody" style="margin-top:6px;font-size:13px;color:#c9d1d9"></div>
+    </div>
   </div>
   <script>
   (function () {
@@ -1712,6 +1743,113 @@ body.app-state-onboard .fc-panel{display:none !important}
     });
     load();
     setInterval(load, 3000);
+
+    // ── Tidshorisont (1/5/15/30 min) ──
+    var hzMin = 1;
+    function showHz() {
+      document.querySelectorAll(".hz-btn").forEach(function (b) { b.classList.toggle("on", Number(b.dataset.hz) === hzMin); });
+      var h = document.getElementById("hzHint");
+      if (h) h.textContent = "Agenterna föreslår trades för " + hzMin + " min. Förslaget försvinner efter " + Math.max(2, hzMin) + " min om du inte godkänt, och köpet säljs automatiskt när " + hzMin + " min gått (om målpris/stop-loss inte nåtts innan).";
+    }
+    fetch("/api/trade-horizon").then(function (r) { return r.json(); }).then(function (d) { if (d && d.minutes) { hzMin = d.minutes; window._hzMin = hzMin; showHz(); } }).catch(function () {});
+    document.getElementById("hzRow").addEventListener("click", async function (e) {
+      var b = e.target.closest(".hz-btn"); if (!b) return;
+      try {
+        var r = await fetch("/api/trade-horizon", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes: Number(b.dataset.hz) }) });
+        var d = await r.json();
+        if (d.ok) { hzMin = d.minutes; window._hzMin = hzMin; showHz(); } else alert(d.error || "Kunde inte spara");
+      } catch (err) { alert("Fel: " + err.message); }
+    });
+    showHz();
+
+    // ── Popup när analysen är klar: förslaget + GODKÄNN/AVVISA direkt ──
+    var modal = document.getElementById("anaModal"), body = document.getElementById("anaBody");
+    var seenEnd = null, cdTimer = null;
+    function mmss(ms) { var s = Math.max(0, Math.round(ms / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+    function closeModal() { modal.classList.remove("open"); if (cdTimer) { clearInterval(cdTimer); cdTimer = null; } }
+    document.getElementById("anaClose").addEventListener("click", closeModal);
+    modal.addEventListener("click", function (e) { if (e.target === modal) closeModal(); });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape" && modal.classList.contains("open")) closeModal(); });
+    function money(n) { return "$" + Number(n).toFixed(2); }
+    function outcome(o) {
+      var entry = Number(o.limitPrice || o.refPrice), stake = Number(o.quoteUsd) || (Number(o.quantity) * entry);
+      if (!(entry > 0) || !(stake > 0) || o.side !== "BUY") return "";
+      var f = function (px) { return ((Number(px) / entry) * 0.9975 * 0.9975 - 1) * 100; };
+      var parts = [];
+      if (Number(o.takeProfit) > 0) { var p = f(o.takeProfit); parts.push('<span style="color:#3fb950">🟢 vinst +' + p.toFixed(1).replace(".", ",") + " % = " + money(stake * (1 + p / 100)) + "</span>"); }
+      if (Number(o.stopLoss) > 0) { var q = f(o.stopLoss); parts.push('<span style="color:#f85149">🔴 förlust ' + q.toFixed(1).replace(".", ",") + " % = " + money(stake * (1 + q / 100)) + "</span>"); }
+      return '<div style="margin-top:4px">Satsa ' + money(stake) + " → " + parts.join(" · ") + "</div>";
+    }
+    async function openModal(a) {
+      var list = [];
+      try {
+        var r = await fetch("/api/pending-orders"); var d = await r.json();
+        var since = Date.parse(a.startedAt || 0) - 5000;
+        list = (d.orders || []).filter(function (o) { return o.status === "pending" && o.source === "agent" && Date.parse(o.createdAt) >= since; });
+      } catch (_) {}
+      var html = "";
+      if (!list.length) {
+        var line = String(a.summary || "").split("\n").map(function (x) { return x.replace(/[*#>]/g, "").trim(); }).filter(Boolean)[0] || "Ingen tydlig signal just nu.";
+        html = '<div class="am-big" style="color:#8b95a7">VÄNTA – inget köp nu</div><div style="margin-top:6px">' + esc(line) + "</div>"
+          + '<div class="am-btns"><button type="button" class="am-no" data-am="close">OK</button></div>';
+      } else {
+        html = list.map(function (o) {
+          var col = o.side === "BUY" ? "#3fb950" : "#f85149";
+          var hz = o.horizonSec ? Math.round(o.horizonSec / 60) + " min" : "";
+          return '<div class="am-row" data-row="' + esc(o.id) + '">'
+            + '<div class="am-big"><span style="color:' + col + '">' + (o.side === "BUY" ? "▲ KÖP" : "▼ SÄLJ") + "</span> " + esc(o.symbol)
+            + ' <span style="font-size:14px;color:#c9d1d9">' + (o.quoteUsd ? money(o.quoteUsd) : esc(o.quantity) + " st") + "</span>"
+            + ' <span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + (o.live ? "#22c55e" : "#f0b90b") + ";color:" + (o.live ? "#22c55e" : "#f0b90b") + '">' + (o.live ? "LIVE" : "TEST") + "</span></div>"
+            + '<div style="margin-top:2px;color:#8b95a7">Pris nu ~' + esc(o.refPrice) + (o.takeProfit ? " · målpris " + esc(o.takeProfit) : "") + (o.stopLoss ? " · stop-loss " + esc(o.stopLoss) : "") + (hz ? " · håll " + hz : "") + "</div>"
+            + outcome(o)
+            + (o.expiresAt ? '<div style="margin-top:4px">Giltig i <span class="am-cd" data-exp="' + esc(o.expiresAt) + '"></span></div>' : "")
+            + (o.reason ? '<div style="margin-top:4px;font-size:12px;color:#8b95a7">' + esc(o.reason) + "</div>" : "")
+            + '<div class="am-btns"><button type="button" class="am-ok" data-am="approve" data-id="' + esc(o.id) + '">✓ GODKÄNN</button>'
+            + '<button type="button" class="am-no" data-am="reject" data-id="' + esc(o.id) + '">Avvisa</button></div></div>';
+        }).join("");
+      }
+      body.innerHTML = html;
+      modal.classList.add("open");
+      try {
+        var ac = window._pendAudio || (window._pendAudio = new (window.AudioContext || window.webkitAudioContext)());
+        var o1 = ac.createOscillator(), g = ac.createGain();
+        o1.frequency.value = list.length ? 988 : 660; g.gain.setValueAtTime(0.12, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.4);
+        o1.connect(g); g.connect(ac.destination); o1.start(); o1.stop(ac.currentTime + 0.4);
+      } catch (_) {}
+      if (cdTimer) clearInterval(cdTimer);
+      var tick = function () {
+        body.querySelectorAll(".am-cd").forEach(function (el) {
+          var left = Date.parse(el.dataset.exp) - Date.now();
+          el.textContent = left > 0 ? mmss(left) : "för sent";
+          if (left <= 0) { var row = el.closest(".am-row"); if (row) row.querySelectorAll("button[data-am=approve]").forEach(function (b) { b.disabled = true; b.style.opacity = ".4"; }); }
+        });
+      };
+      tick(); cdTimer = setInterval(tick, 1000);
+    }
+    body.addEventListener("click", async function (e) {
+      var b = e.target.closest("button[data-am]"); if (!b) return;
+      if (b.dataset.am === "close") { closeModal(); return; }
+      var row = b.closest(".am-row");
+      row.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
+      try {
+        var r = await fetch("/api/pending-orders/" + b.dataset.id + "/" + b.dataset.am, { method: "POST" });
+        var d = await r.json().catch(function () { return {}; });
+        row.insertAdjacentHTML("beforeend", '<div style="margin-top:6px;font-weight:700;color:' + (d.ok ? "#3fb950" : "#f85149") + '">'
+          + (d.ok ? (b.dataset.am === "approve" ? "✓ Lagd" : "✕ Avvisad") : "⚠ " + esc(d.error || ("HTTP " + r.status))) + "</div>");
+      } catch (err) { row.insertAdjacentHTML("beforeend", '<div style="color:#f85149">⚠ ' + esc(err.message) + "</div>"); }
+      if (!body.querySelector("button[data-am=approve]:not(:disabled)")) setTimeout(closeModal, 2500);
+    });
+    // Öppna när en analys blivit klar (inte för en gammal analys vid sidladdning)
+    setInterval(async function () {
+      try {
+        var r = await fetch("/api/live/analysis"); if (!r.ok) return;
+        var a = (await r.json()).analysis;
+        // Första kollen: kom ihåg senaste analysen (visa inte en gammal analys vid sidladdning)
+        if (seenEnd === null) { seenEnd = (a && a.endedAt) || ""; return; }
+        if (!a || a.status !== "done") return;
+        if (a.endedAt && a.endedAt !== seenEnd) { seenEnd = a.endedAt; openModal(a); }
+      } catch (_) {}
+    }, 3000);
   })();
   </script>
 
@@ -2019,7 +2157,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       };
       var row = function (o, withButtons) {
         var col = o.live ? "#22c55e" : "#f0b90b";
-        var st = { done: "✓ lagd", rejected: "✕ avvisad", failed: "⚠ misslyckades", pending: "väntar" }[o.status] || o.status;
+        var st = { done: "✓ lagd", rejected: "✕ avvisad", failed: "⚠ misslyckades", pending: "väntar", expired: "⌛ för gammal" }[o.status] || o.status;
         return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:7px 0;border-top:1px solid #222834">'
           + '<span style="font-weight:700;color:' + (o.side === "BUY" ? "#3fb950" : "#f85149") + '">' + (o.side === "BUY" ? "KÖP" : "SÄLJ") + '</span>'
           + '<span style="font-weight:600;color:#e6e6e6">' + esc(o.symbol) + '</span>'
@@ -2028,6 +2166,8 @@ body.app-state-onboard .fc-panel{display:none !important}
           + (o.takeProfit ? '<span style="font-size:12px;color:#3fb950">TP ' + esc(o.takeProfit) + '</span>' : "")
           + (o.stopLoss ? '<span style="font-size:12px;color:#f85149">SL ' + esc(o.stopLoss) + '</span>' : "")
           + payoutHtml(o)
+          + (withButtons && o.expiresAt ? '<span style="font-size:12px;color:#fbbf24">giltig <span class="pend-cd" data-exp="' + esc(o.expiresAt) + '"></span></span>' : "")
+          + (o.horizonSec ? '<span style="font-size:12px">håll ' + Math.round(o.horizonSec / 60) + ' min</span>' : "")
           + '<span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + col + ';color:' + col + '">' + (o.live ? "LIVE" : "TEST") + '</span>'
           + '<span style="font-size:12px">' + esc(o.venue.replace("broker:", "")) + ' · ' + esc(o.source) + '</span>'
           + (withButtons
@@ -2037,12 +2177,30 @@ body.app-state-onboard .fc-panel{display:none !important}
               : '<span style="margin-left:auto;font-size:12px">' + st + (o.error ? ": " + esc(o.error) : "") + '</span>')
           + '</div>';
       };
+      var exitsHtml = "";
+      try {
+        var xr = await fetch("/api/timed-exits"); var xd = await xr.json();
+        if ((xd.exits || []).length) exitsHtml = '<div style="margin-top:6px;font-size:11px;text-transform:uppercase;letter-spacing:.4px">Säljs automatiskt när tiden är slut</div>'
+          + xd.exits.map(function (x) {
+            return '<div style="padding:4px 0;border-top:1px solid #222834">' + esc(x.symbol) + " · " + (x.live ? "LIVE" : "TEST")
+              + ' · säljs om <span class="pend-cd" data-exp="' + new Date(x.exitAt).toISOString() + '" style="color:#fbbf24;font-weight:700"></span></div>';
+          }).join("");
+      } catch (_) {}
       pendingRowsEl.innerHTML = (open.length ? open.map(function (o) { return row(o, true); }).join("") : '<div style="padding:4px 0">Inga ordrar väntar.</div>')
+        + exitsHtml
         + (done.length ? '<div style="margin-top:6px;font-size:11px;text-transform:uppercase;letter-spacing:.4px">Senast avgjorda</div>' + done.map(function (o) { return row(o, false); }).join("") : "");
     } catch (_) {
       pendingRowsEl.textContent = "Kunde inte läsa väntande ordrar.";
     }
   }
+
+  // Nedräkningar (giltig mm:ss / säljs om mm:ss) uppdateras varje sekund
+  setInterval(function () {
+    document.querySelectorAll(".pend-cd").forEach(function (el) {
+      var left = Math.round((Date.parse(el.dataset.exp) - Date.now()) / 1000);
+      el.textContent = left > 0 ? Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0") : "nu";
+    });
+  }, 1000);
 
   // Auto / manuellt: tydligt vilket läge som gäller
   function showExecMode(mode) {
@@ -2236,7 +2394,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       </div>
       <button type="button" id="ot-sell-all" class="bet-put" style="margin:6px 0 0;width:100%;opacity:.85" title="Säljer allt du har av myntet (efter avgiften), inget belopp behövs">▼ Sälj allt</button>
       <div id="ot-est" style="margin-top:8px;font-size:11px;line-height:1.6;padding:6px 8px;border:1px solid var(--border);border-radius:5px;background:var(--card2)"></div>
-      <div class="sim-note" id="ot-note" style="margin-top:6px">Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. Tidshorisonten sparas på ordern som påminnelse; den stänger inte ordern själv, det gör TP/SL. Samma gränser gäller som för alla ordrar.</div>
+      <div class="sim-note" id="ot-note" style="margin-top:6px">Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. Köp med tidshorisont upp till 30 min säljs automatiskt när tiden är slut (om TP/SL inte sålt innan). Samma gränser gäller som för alla ordrar.</div>
     </div>
 
     <div class="card bet-panel">
@@ -9628,6 +9786,8 @@ document.addEventListener("DOMContentLoaded", boot);
       if(!body.takeProfit && !body.stopLoss){ alert("Fyll i TP, SL eller båda, eller bocka ur TP/SL."); return; }
     }
     const tfSec = otHorizon();
+    // Köp med tidshorisont: ≤ 30 min säljs automatiskt när tiden är slut
+    if(side === "BUY" && tfSec > 0) body.horizonSec = tfSec;
     const parts = [otType === "LIMIT" ? `limit ${body.limitPrice}` : "marknadspris", body.takeProfit ? `TP ${body.takeProfit}` : "", body.stopLoss ? `SL ${body.stopLoss}` : "", tfSec ? `tidshorisont ${fmtHorizon(tfSec)}` : ""].filter(Boolean);
     body.reason = `Orderpanelen: ${side === "BUY" ? "köp" : "sälj"} ${body.symbol} $${amt} · ${parts.join(" · ")}`;
     try{
@@ -9726,7 +9886,7 @@ document.addEventListener("DOMContentLoaded", boot);
       const live = a.mode === "live";
       el.textContent = a.name + (live ? " · LIVE" : " · TEST");
       el.style.color = live ? "#22c55e" : "#f0b90b";
-      $("ot-note").textContent = "Ordern hamnar i Väntande ordrar hos " + a.name + (live ? " (riktiga pengar)" : " (låtsaspengar)") + " och skickas först när du trycker Godkänn."
+      $("ot-note").textContent = "Ordern hamnar i Väntande ordrar hos " + a.name + (live ? " (riktiga pengar)" : " (låtsaspengar)") + " och skickas först när du trycker Godkänn. Köp med tidshorisont upp till 30 min säljs automatiskt när tiden är slut."
         + (a.name === "alpaca" ? " Alpaca har inte TP/SL för krypto, så TP/SL fungerar bara via Bybit." : "");
     }catch(_){}
   }

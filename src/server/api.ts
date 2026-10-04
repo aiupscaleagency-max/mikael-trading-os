@@ -26,7 +26,8 @@ import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
 import { getResults, recordLiveFill } from "./results.js";
 import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
-import { adjustLiveSpend, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
+import { addTimedExit, cancelTimedExit, getHorizonMin, HORIZON_CHOICES, listTimedExits, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
+import { adjustLiveSpend, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
@@ -246,6 +247,13 @@ async function executeApprovedOrder(
         // Fyllnaden syns ibland inte efter 1 s: uppskatta antalet (säljet tar ändå bara det som finns)
         const qty = order.executedQty > 0 ? order.executedQty : entry > 0 ? (Number(quoteUsd) || 0) / entry : 0;
         addLiveTpSl({ broker: name, symbol: p.symbol, qty, entry, takeProfit: p.takeProfit, stopLoss: p.stopLoss });
+      }
+      // Tidshorisont ≤ 30 min: köpet säljs automatiskt när tiden är slut
+      if (p.side === "BUY" && isMarket && p.horizonSec && p.horizonSec <= MAX_AUTO_EXIT_SEC
+        && (order.executedQty > 0 || !/reject|cancel/i.test(order.status))) {
+        const entryPx = order.avgFillPrice || p.refPrice || getCachedPrice(p.symbol) || 0;
+        const qtyHeld = order.executedQty > 0 ? order.executedQty : entryPx > 0 ? (Number(quoteUsd) || 0) / entryPx : 0;
+        addTimedExit({ broker: name, symbol: p.symbol, qty: qtyHeld, live: p.live, horizonSec: p.horizonSec });
       }
       log.trade(`[GODKÄND] ${p.side} ${p.symbol} via ${name} ${p.live ? "LIVE" : "TEST"} · status ${order.status}`);
       return { ok: true, result: order };
@@ -761,6 +769,7 @@ export function startServer(
   }
   // TP/SL för LIVE-marknadsköp (src/server/liveTpSl.ts)
   startLiveTpSl(brokers, broadcastEvent);
+  startTradeHorizon(brokers, broadcastEvent);
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -1205,6 +1214,9 @@ export function startServer(
         }
         if (orderType === "LIMIT" && limitPrice === undefined) { jsonStatus(res, 400, { ok: false, error: "Limit-order kräver ett pris" }); return; }
         const sellAll = side === "SELL" && b.sellAll === true;
+        // Tidshorisont i sekunder (köp ≤ 30 min säljs automatiskt när tiden är slut)
+        const hz = Number((b as { horizonSec?: unknown }).horizonSec);
+        const horizonSec = side === "BUY" && Number.isFinite(hz) && hz > 0 ? Math.round(Math.min(hz, 30 * 86400)) : undefined;
         const brokerName = b.broker || activeBrokerName || Object.keys(brokers)[0];
         const broker = brokerName ? brokers[brokerName] : undefined;
         // TP/SL på marknadsorder: Bybit (LIVE bevakas av boten) och TEST-kontot klarar det
@@ -1252,6 +1264,7 @@ export function startServer(
           ...(takeProfit !== undefined ? { takeProfit } : {}),
           ...(stopLoss !== undefined ? { stopLoss } : {}),
           reason: b.reason ? String(b.reason).slice(0, 200) : undefined,
+          ...(horizonSec ? { horizonSec } : {}),
         });
         broadcastEvent("pending-orders", { id: p.id });
         userAction(`la ${side} ${symbol} ${sellAll ? "allt" : `$${quoteUsd}`} i kön (${live ? "LIVE" : "TEST"})`, { to: "orders", coin: symbol });
@@ -1271,6 +1284,13 @@ export function startServer(
           const p = await getPendingOrder(id);
           if (!p) { approvingIds.delete(id); jsonStatus(res, 404, { ok: false, error: "Ordern finns inte" }); return; }
           if (p.status !== "pending") { approvingIds.delete(id); json(res, { ok: false, error: `Ordern är redan ${p.status}` }); return; }
+          if (action === "approve" && isExpired(p)) {
+            approvingIds.delete(id);
+            await updatePendingOrder(id, { status: "expired" });
+            broadcastEvent("pending-orders", { id });
+            json(res, { ok: false, error: "Förslaget är för gammalt (tiden har gått ut). Kör en ny analys." });
+            return;
+          }
           if (action === "reject") {
             const upd = await updatePendingOrder(id, { status: "rejected" });
             log.info(`Väntande order avvisad: ${p.side} ${p.symbol}`);
@@ -1302,6 +1322,29 @@ export function startServer(
           json(res, { ok: result.ok, order: upd, error: result.ok ? undefined : result.error });
           return;
         }
+      }
+
+      // ── Tidshorisont (1/5/15/30 min) + automatiska stängningar ──
+      if (url.pathname === "/api/trade-horizon" && method === "GET") {
+        json(res, { minutes: getHorizonMin(), choices: HORIZON_CHOICES });
+        return;
+      }
+      if (url.pathname === "/api/trade-horizon" && method === "POST") {
+        const b = JSON.parse((await readBody(req)) || "{}") as { minutes?: unknown };
+        const m = setHorizonMin(b.minutes);
+        if (m === null) { jsonStatus(res, 400, { ok: false, error: `Välj ${HORIZON_CHOICES.join(", ")} min` }); return; }
+        userAction(`tidshorisont ${m} min`);
+        broadcastEvent("trade-horizon", { minutes: m });
+        json(res, { ok: true, minutes: m });
+        return;
+      }
+      if (url.pathname === "/api/timed-exits" && method === "GET") {
+        json(res, { exits: listTimedExits(), now: Date.now() });
+        return;
+      }
+      {
+        const m = url.pathname.match(/^\/api\/timed-exits\/([\w-]+)$/);
+        if (m && method === "DELETE") { json(res, { ok: cancelTimedExit(m[1] as string) }); return; }
       }
 
       // ── Kill-switch ──
