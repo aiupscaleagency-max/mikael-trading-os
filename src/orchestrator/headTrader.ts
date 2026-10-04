@@ -280,6 +280,7 @@ ${performance}
 
 6. Kolla portföljen (get_all_positions) om du inte redan sett den.
 7. Lägg order via place_order om tydlig setup. Risk managern kontrollerar.
+   Vid KÖP: sätt alltid take_profit (vinstmål) och stop_loss (förlustgräns), t.ex. teknikerns tp1 och stopLoss. Saknas de sätts +3 % / −1,5 % i TEST.
 
 ═══ OUTPUT-FORMAT ═══
 Avsluta alltid med en "Rule of 3"-sammanfattning:

@@ -251,6 +251,26 @@ export async function startKlineStream(symbols: string[], interval = "1m"): Prom
   }
 }
 
+/** Lägger till ett par i en redan igång ström (egna mynt), utan omstart. */
+export async function addKlineSymbol(symbol: string): Promise<void> {
+  const s = symbol.toUpperCase();
+  if (watchedSymbols.includes(s)) return;
+  watchedSymbols.push(s);
+  await seedHistory(s, watchedInterval);
+  const iv = BYBIT_IV[watchedInterval];
+  if (iv && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op: "subscribe", args: [`kline.${iv}.${s}`] }));
+}
+
+/** Slutar följa ett par (egna mynt som tas bort). */
+export function removeKlineSymbol(symbol: string): void {
+  const s = symbol.toUpperCase();
+  const i = watchedSymbols.indexOf(s);
+  if (i < 0) return;
+  watchedSymbols.splice(i, 1);
+  const iv = BYBIT_IV[watchedInterval];
+  if (iv && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op: "unsubscribe", args: [`kline.${iv}.${s}`] }));
+}
+
 export function stopKlineStream(): void {
   if (watchdog) { clearInterval(watchdog); watchdog = null; }
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }

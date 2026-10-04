@@ -196,6 +196,14 @@ export const TOOLS: Record<string, ToolDef> = {
             type: "number",
             description: "Endast för LIMIT: priset per enhet",
           },
+          take_profit: {
+            type: "number",
+            description: "För BUY: pris där vinsten tas hem (sälj automatiskt). Sätt alltid, t.ex. teknikerns tp1.",
+          },
+          stop_loss: {
+            type: "number",
+            description: "För BUY: pris där förlusten stoppas (sälj automatiskt). Sätt alltid, t.ex. teknikerns stopLoss.",
+          },
           reasoning: {
             type: "string",
             description: "Din motivering för varför denna trade ska tas",
@@ -212,6 +220,8 @@ export const TOOLS: Record<string, ToolDef> = {
       const quoteQty = optNum(input, "quote_qty");
       const baseQty = optNum(input, "base_qty");
       const limitPrice = optNum(input, "limit_price");
+      let takeProfit = optNum(input, "take_profit");
+      let stopLoss = optNum(input, "stop_loss");
 
       const orderReq: OrderRequest = {
         symbol,
@@ -247,6 +257,20 @@ export const TOOLS: Record<string, ToolDef> = {
 
       const finalOrder = check.adjustedOrder ?? orderReq;
 
+      // TEST: varje köp får en utgång (TP/SL) så att traden avslutas och
+      // resultatet syns. Saknas den sätts standard: +3 % vinst, −1,5 % förlust
+      // (TEST_TP_PCT / TEST_SL_PCT). LIVE ändras inte här.
+      if (side === "BUY" && ctx.broker.name === "bybit-paper") {
+        const entry = limitPrice ?? ticker.price;
+        const tpPct = Number(process.env.TEST_TP_PCT ?? 3) || 3;
+        const slPct = Number(process.env.TEST_SL_PCT ?? 1.5) || 1.5;
+        if (!(takeProfit && takeProfit > entry)) takeProfit = +(entry * (1 + tpPct / 100)).toPrecision(6);
+        if (!(stopLoss && stopLoss < entry)) stopLoss = +(entry * (1 - slPct / 100)).toPrecision(6);
+        finalOrder.takeProfit = takeProfit;
+        finalOrder.stopLoss = stopLoss;
+      }
+      const refPrice = limitPrice ?? ticker.price;
+
       // I approve-läge lägger vi INTE ordern nu — vi bara förbereder den för
       // mänsklig bekräftelse. I auto-läge skickar vi direkt.
       if (ctx.config.executionMode === "approve") {
@@ -264,6 +288,12 @@ export const TOOLS: Record<string, ToolDef> = {
             side: finalOrder.side,
             quoteUsd: finalOrder.quoteOrderQty,
             quantity: finalOrder.quoteOrderQty === undefined ? finalOrder.quantity : undefined,
+            // LIVE oförändrat: bara TEST-ordrar bär med sig limit/TP/SL in i kön
+            orderType: ctx.broker.name === "bybit-paper" && finalOrder.type === "LIMIT" ? "LIMIT" : undefined,
+            limitPrice: ctx.broker.name === "bybit-paper" && finalOrder.type === "LIMIT" ? finalOrder.price : undefined,
+            takeProfit: finalOrder.takeProfit,
+            stopLoss: finalOrder.stopLoss,
+            refPrice,
             reason: String(reasoning ?? "").slice(0, 200),
           });
         } catch (err) {

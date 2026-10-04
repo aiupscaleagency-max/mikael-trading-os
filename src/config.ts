@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { z } from "zod";
 import type { ExecutionMode, Mode } from "./types.js";
 
@@ -313,3 +315,14 @@ export const config = {
 } as const;
 
 export type Config = typeof config;
+
+// Egna mynt (Mike 2026-10-04): tips från grupper läggs till i dashboarden och
+// sparas i data/custom-symbols.json. De läses in här, innan strömmarna startar,
+// så att signalmotorn, JEV och agenterna följer dem precis som de 15 vanliga.
+try {
+  const extra = JSON.parse(readFileSync(resolvePath("data/custom-symbols.json"), "utf8")) as { symbols?: Array<{ symbol: string }> };
+  for (const c of extra.symbols ?? []) {
+    const sym = String(c.symbol || "").toUpperCase();
+    if (/^[A-Z0-9]{2,20}USDT$/.test(sym) && !config.crypto.symbols.includes(sym)) config.crypto.symbols.push(sym);
+  }
+} catch { /* inga egna mynt ännu */ }

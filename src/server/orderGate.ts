@@ -5,6 +5,7 @@ import { config } from "../config.js";
 import { loadState } from "../memory/store.js";
 import { log } from "../logger.js";
 import { currentStake } from "../risk/stakeLadder.js";
+import { getCachedPrice } from "./marketStream.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ORDER-GRIND — en enda kontroll som ALLA order-vägar går igenom
@@ -135,6 +136,8 @@ export interface PendingOrder {
   limitPrice?: number;
   takeProfit?: number;
   stopLoss?: number;
+  /** Pris när ordern föreslogs (för att visa möjlig vinst/förlust) */
+  refPrice?: number;
   reason?: string;
   status: "pending" | "done" | "rejected" | "failed";
   decidedAt?: string;
@@ -175,6 +178,7 @@ export async function addPendingOrder(
   const list = await load();
   const entry: PendingOrder = {
     ...o,
+    refPrice: o.refPrice ?? o.limitPrice ?? getCachedPrice(o.symbol) ?? undefined,
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
     status: "pending",
