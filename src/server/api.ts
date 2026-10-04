@@ -217,6 +217,14 @@ async function executeApprovedOrder(
         }
       }
       const isMarket = p.orderType !== "LIMIT";
+      // Tidshorisont: läs saldot FÖRE köpet, så att den automatiska försäljningen
+      // aldrig rör mynt du redan hade
+      const wantsTimedExit = p.side === "BUY" && isMarket && !!p.horizonSec && p.horizonSec <= MAX_AUTO_EXIT_SEC;
+      let baseline: number | undefined;
+      if (wantsTimedExit) {
+        const baseCoin = p.symbol.toUpperCase().replace("/", "").replace(/(USDT|USDC|USD|EUR)$/, "");
+        baseline = await broker.getAccount().then((a) => a.balances.find((x) => x.asset === baseCoin)?.free ?? 0).catch(() => undefined);
+      }
       let order;
       try {
         order = await broker.placeOrder({
@@ -238,6 +246,7 @@ async function executeApprovedOrder(
       if (p.live && order.executedQty > 0) {
         recordLiveFill({ symbol: p.symbol, side: p.side, qty: order.executedQty, price: order.avgFillPrice || (order.cummulativeQuoteQty / order.executedQty), usd: order.cummulativeQuoteQty || undefined, kind: p.sellAll ? "Sälj allt" : p.source === "agent" ? "agent" : "manuell" });
       }
+      let tpslId: string | undefined;
       // LIVE marknadsköp med TP/SL: boten bevakar och säljer vid TP eller SL
       // Du sålde själv i LIVE → gamla TP/SL-bevakningar för myntet tas bort
       if (p.live && p.side === "SELL") removeLiveTpSlForSymbol(p.symbol);
@@ -246,14 +255,20 @@ async function executeApprovedOrder(
         const entry = order.avgFillPrice || p.refPrice || getCachedPrice(p.symbol) || 0;
         // Fyllnaden syns ibland inte efter 1 s: uppskatta antalet (säljet tar ändå bara det som finns)
         const qty = order.executedQty > 0 ? order.executedQty : entry > 0 ? (Number(quoteUsd) || 0) / entry : 0;
-        addLiveTpSl({ broker: name, symbol: p.symbol, qty, entry, takeProfit: p.takeProfit, stopLoss: p.stopLoss });
+        tpslId = addLiveTpSl({ broker: name, symbol: p.symbol, qty, entry, takeProfit: p.takeProfit, stopLoss: p.stopLoss });
       }
       // Tidshorisont ≤ 30 min: köpet säljs automatiskt när tiden är slut
-      if (p.side === "BUY" && isMarket && p.horizonSec && p.horizonSec <= MAX_AUTO_EXIT_SEC
-        && (order.executedQty > 0 || !/reject|cancel/i.test(order.status))) {
-        const entryPx = order.avgFillPrice || p.refPrice || getCachedPrice(p.symbol) || 0;
-        const qtyHeld = order.executedQty > 0 ? order.executedQty : entryPx > 0 ? (Number(quoteUsd) || 0) / entryPx : 0;
-        addTimedExit({ broker: name, symbol: p.symbol, qty: qtyHeld, live: p.live, horizonSec: p.horizonSec });
+      if (wantsTimedExit && p.horizonSec && (order.executedQty > 0 || !/reject|cancel/i.test(order.status))) {
+        if (baseline === undefined) {
+          log.warn(`[horisont] kunde inte läsa saldot före köpet av ${p.symbol}, ingen automatisk försäljning. Sälj själv.`);
+        } else {
+          const entryPx = order.avgFillPrice || p.refPrice || getCachedPrice(p.symbol) || 0;
+          const qtyHeld = order.executedQty > 0 ? order.executedQty : entryPx > 0 ? (Number(quoteUsd) || 0) / entryPx : 0;
+          addTimedExit({
+            broker: name, symbol: p.symbol, qty: qtyHeld, live: p.live, horizonSec: p.horizonSec, baseline,
+            tpslId, paperGroup: !p.live && name === "bybit-paper" ? order.orderId : undefined,
+          });
+        }
       }
       log.trade(`[GODKÄND] ${p.side} ${p.symbol} via ${name} ${p.live ? "LIVE" : "TEST"} · status ${order.status}`);
       return { ok: true, result: order };

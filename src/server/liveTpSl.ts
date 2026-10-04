@@ -52,13 +52,21 @@ function save(): void {
 
 export function listLiveTpSl(): LiveTpSl[] { return [...watches]; }
 
-export function addLiveTpSl(w: Omit<LiveTpSl, "id" | "openedAt">): void {
-  if (!(w.qty > 0) || (w.takeProfit === undefined && w.stopLoss === undefined)) return;
+export function addLiveTpSl(w: Omit<LiveTpSl, "id" | "openedAt">): string | undefined {
+  if (!(w.qty > 0) || (w.takeProfit === undefined && w.stopLoss === undefined)) return undefined;
   const entry: LiveTpSl = { ...w, id: `tpsl-${Date.now()}`, openedAt: Date.now() };
   watches.push(entry);
   save();
   log.trade(`[LIVE TP/SL] bevakar ${w.symbol} ${w.qty} · TP ${w.takeProfit ?? "–"} · SL ${w.stopLoss ?? "–"}`);
+  return entry.id;
 }
+
+/** Säljer TP/SL-bevakningen just nu? (så att tidsgränsen inte säljer samtidigt) */
+export function isLiveTpSlSelling(id: string): boolean { return selling.has(id); }
+
+/** Anropas när en TP/SL-bevakning sålt (tidsgränsen för samma köp tas då bort) */
+const soldHooks: Array<(id: string) => void> = [];
+export function onLiveTpSlSold(cb: (id: string) => void): void { soldHooks.push(cb); }
 
 /** Ta bort alla bevakningar för ett mynt (t.ex. när du själv sålt det). */
 export function removeLiveTpSlForSymbol(symbol: string): void {
@@ -101,6 +109,7 @@ export function startLiveTpSl(brokers: Record<string, BrokerAdapter>, onEvent?: 
       void broker.placeOrder({ symbol: w.symbol, side: "SELL", type: "MARKET", quantity: w.qty })
         .then((r) => {
           removeLiveTpSl(w.id);
+          for (const cb of soldHooks) { try { cb(w.id); } catch { /* ignorera */ } }
           if (r.executedQty > 0) recordLiveFill({ symbol: w.symbol, side: "SELL", qty: r.executedQty, price: r.avgFillPrice || price, usd: r.cummulativeQuoteQty || undefined, kind: hitTp ? "TP" : "SL" });
           log.trade(`[LIVE TP/SL] ${why}: sålde ${w.symbol} ${r.executedQty || w.qty} @ ~${price} · status ${r.status}`);
           onEvent?.("live-tpsl", { symbol: w.symbol, why, price });

@@ -314,8 +314,21 @@ export const TOOLS: Record<string, ToolDef> = {
 
       // AUTO-läge: skicka ordern på riktigt
       try {
+        // Tidshorisont i AUTO: saldot före köpet, så att bara detta köp säljs när tiden är slut
+        const hz = await import("../server/tradeHorizon.js");
+        const baseCoin = finalOrder.symbol.toUpperCase().replace("/", "").replace(/(USDT|USDC|USD|EUR)$/, "");
+        const baseline = finalOrder.side === "BUY" && finalOrder.type === "MARKET"
+          ? await ctx.broker.getAccount().then((a) => a.balances.find((x) => x.asset === baseCoin)?.free ?? 0).catch(() => undefined)
+          : undefined;
         const result = await ctx.broker.placeOrder(finalOrder);
         ctx.sideEffects.placedOrders.push({ request: finalOrder, result });
+        if (baseline !== undefined && result.executedQty > 0) {
+          hz.addTimedExit({
+            broker: ctx.broker.name, symbol: finalOrder.symbol, qty: result.executedQty, live: ctx.broker.mode === "live",
+            horizonSec: hz.getHorizonMin() * 60, baseline,
+            paperGroup: ctx.broker.name === "bybit-paper" ? result.orderId : undefined,
+          });
+        }
         log.trade(
           `${result.side} ${result.executedQty} ${result.symbol} @ ${result.avgFillPrice.toFixed(4)} (${result.cummulativeQuoteQty.toFixed(2)} USDT)`,
           { orderId: result.orderId, reasoning },

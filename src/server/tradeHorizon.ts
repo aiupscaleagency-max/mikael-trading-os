@@ -15,7 +15,7 @@ import type { BrokerAdapter } from "../brokers/adapter.js";
 import { log } from "../logger.js";
 import { expireStalePendingOrders } from "./orderGate.js";
 import { recordLiveFill } from "./results.js";
-import { removeLiveTpSlForSymbol } from "./liveTpSl.js";
+import { isLiveTpSlSelling, onLiveTpSlSold, removeLiveTpSl } from "./liveTpSl.js";
 
 export const HORIZON_CHOICES = [1, 5, 15, 30] as const;
 /** Längsta horisont som säljs automatiskt (Mike: högst 30 min i början) */
@@ -92,6 +92,14 @@ export interface TimedExit {
   live: boolean;
   openedAt: number;
   exitAt: number;
+  /** Fritt saldo av myntet FÖRE köpet. Tidsgränsen säljer aldrig under detta,
+   *  så mynt du redan ägde (eller köpt senare utan horisont) rörs aldrig. */
+  baseline: number;
+  /** LIVE: TP/SL-bevakningen för just detta köp */
+  tpslId?: string;
+  /** TEST: köpets order-id (dess TP/SL-grupp i bybit-paper) */
+  paperGroup?: string;
+  attempts?: number;
 }
 
 let exits: TimedExit[] = (() => {
@@ -103,13 +111,14 @@ let timer: NodeJS.Timeout | null = null;
 
 export function listTimedExits(): TimedExit[] { return [...exits]; }
 
-export function addTimedExit(e: Omit<TimedExit, "id" | "openedAt" | "exitAt"> & { horizonSec: number }): void {
-  if (!(e.qty > 0) || !(e.horizonSec > 0) || e.horizonSec > MAX_AUTO_EXIT_SEC) return;
+export function addTimedExit(e: Omit<TimedExit, "id" | "openedAt" | "exitAt" | "attempts"> & { horizonSec: number }): void {
+  if (!(e.qty > 0) || !(e.horizonSec > 0) || e.horizonSec > MAX_AUTO_EXIT_SEC || !(e.baseline >= 0)) return;
   const now = Date.now();
   const entry: TimedExit = {
     id: `exit-${now}-${Math.random().toString(36).slice(2, 7)}`,
     broker: e.broker, symbol: e.symbol, qty: e.qty, live: e.live,
     openedAt: now, exitAt: now + e.horizonSec * 1000,
+    baseline: e.baseline, tpslId: e.tpslId, paperGroup: e.paperGroup, attempts: 0,
   };
   exits.push(entry);
   writeJson(EXITS_FILE, exits);
@@ -133,6 +142,10 @@ const baseOf = (s: string) => s.toUpperCase().replace("/", "").replace(/(USDT|US
 /** Startar bevakningen (var 5:e s): gamla förslag tas bort, tid-ute-positioner säljs. */
 export function startTradeHorizon(brokers: Record<string, BrokerAdapter>, onEvent?: (e: string, d: unknown) => void): void {
   if (timer) return;
+  // TP/SL sålde köpet först → dess tidsgräns behövs inte längre
+  onLiveTpSlSold((tpslId) => {
+    for (const x of exits.filter((y) => y.tpslId === tpslId)) { removeExit(x.id); log.info(`[horisont] ${x.symbol}: TP/SL sålde först, tidsgränsen borttagen`); }
+  });
   timer = setInterval(() => {
     // 1) Förslag som blivit för gamla
     void expireStalePendingOrders()
@@ -142,30 +155,38 @@ export function startTradeHorizon(brokers: Record<string, BrokerAdapter>, onEven
     const now = Date.now();
     for (const x of [...exits]) {
       if (x.exitAt > now || selling.has(x.id)) continue;
+      // TP/SL säljer just detta köp just nu → vänta till nästa varv
+      if (x.tpslId && isLiveTpSlSelling(x.tpslId)) continue;
       const broker = brokers[x.broker];
       if (!broker) { removeExit(x.id); continue; }
       selling.add(x.id);
       void (async () => {
         try {
-          // Sälj högst det som finns kvar (TP/SL eller du själv kan redan ha sålt)
+          // Köpets egen TP/SL tas bort FÖRST, så att den inte säljer samtidigt
+          if (x.tpslId) removeLiveTpSl(x.tpslId);
+          if (x.paperGroup) await broker.cancelOrder(x.symbol, x.paperGroup).catch(() => {});
+          // Sälj bara det köpet gav: högst antalet, och aldrig under saldot före köpet
           const acc = await broker.getAccount();
           const free = acc.balances.find((b) => b.asset === baseOf(x.symbol))?.free ?? 0;
-          const qty = Math.min(x.qty, free);
+          const qty = Math.min(x.qty, free - (x.baseline ?? free));
           if (!(qty > 0)) { removeExit(x.id); log.info(`[horisont] ${x.symbol}: redan sålt, inget att stänga`); return; }
           const r = await broker.placeOrder({ symbol: x.symbol, side: "SELL", type: "MARKET", quantity: qty });
           removeExit(x.id);
-          if (x.live) {
-            removeLiveTpSlForSymbol(x.symbol);
-            if (r.executedQty > 0) recordLiveFill({ symbol: x.symbol, side: "SELL", qty: r.executedQty, price: r.avgFillPrice, usd: r.cummulativeQuoteQty || undefined, kind: "tid ute" });
+          if (x.live && r.executedQty > 0) {
+            recordLiveFill({ symbol: x.symbol, side: "SELL", qty: r.executedQty, price: r.avgFillPrice, usd: r.cummulativeQuoteQty || undefined, kind: "tid ute" });
           }
           log.trade(`[horisont] tiden ute: sålde ${x.symbol} ${r.executedQty || qty} @ ~${r.avgFillPrice} (${x.live ? "LIVE" : "TEST"}) · status ${r.status}`);
           onEvent?.("timed-exit", { symbol: x.symbol, price: r.avgFillPrice });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           log.error(`[horisont] kunde inte sälja ${x.symbol} när tiden gick ut: ${msg}`);
-          // Under minsta order eller inget att sälja → sluta försöka; annars nytt försök om 1 min
-          if (/kräver minst|inga .* att sälja|insufficient/i.test(msg)) removeExit(x.id);
-          else { const e = exits.find((y) => y.id === x.id); if (e) { e.exitAt = Date.now() + 60_000; writeJson(EXITS_FILE, exits); } }
+          // Under minsta order / inget att sälja, eller 3 försök → sluta (baslinjen skyddar mot dubbelsälj)
+          const e = exits.find((y) => y.id === x.id);
+          const attempts = (e?.attempts ?? 0) + 1;
+          if (/kräver minst|minsta|inga .* att sälja|insufficient/i.test(msg) || attempts >= 3) {
+            removeExit(x.id);
+            log.warn(`[horisont] ${x.symbol}: slutar försöka stänga automatiskt (${attempts} försök). Sälj själv vid behov.`);
+          } else if (e) { e.attempts = attempts; e.exitAt = Date.now() + 60_000; writeJson(EXITS_FILE, exits); }
         } finally {
           selling.delete(x.id);
         }
