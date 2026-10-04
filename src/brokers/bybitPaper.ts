@@ -151,6 +151,10 @@ export class BybitPaperBroker implements BrokerAdapter {
       h.qty -= qty;
       if (h.qty <= 1e-12) delete this.state.holdings[base];
       this.state.usdc += cost - fee;
+      // TP/SL får aldrig sälja mer än som finns kvar (t.ex. efter "Sälj allt")
+      const left = this.state.holdings[base]?.qty ?? 0;
+      this.state.open = this.state.open.filter((o) => !(o.base === base && (o.kind === "TP" || o.kind === "SL") && left <= 1e-12));
+      for (const o of this.state.open) if (o.base === base && (o.kind === "TP" || o.kind === "SL") && o.qty > left) o.qty = left;
     }
     this.state.fills.push({ id: `f${Date.now()}`, base, side, qty, price, fee, at: Date.now(), kind, pnl });
     console.log(`[TEST] ${side === "BUY" ? "KÖP" : "SÄLJ"} ${qty} ${base} @ ${price} USDC (Bybit EU orderbok, ${kind}), avgift ${fee.toFixed(4)}`);
