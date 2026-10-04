@@ -79,6 +79,29 @@ function isLocalNoLogin(req: http.IncomingMessage): boolean {
   return true;
 }
 
+// Tailscale: samma "utan inloggning" även via Mikes tailnet (mobil, andra datorn).
+// Bara när DASHBOARD_TAILNET_HOSTS anger värdnamnet, anslutningen kommer från
+// `tailscale serve` på den här datorn (127.0.0.1) och avsändaren har en
+// Tailscale-adress (100.64.0.0/10 eller fd7a:115c:a1e0::/48). Funnel/internet nekas.
+function isTailnetNoLogin(req: http.IncomingMessage): boolean {
+  if (process.env.DASHBOARD_NO_LOGIN !== "true") return false;
+  const hosts = (process.env.DASHBOARD_TAILNET_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (!hosts.length) return false;
+  const ip = req.socket.remoteAddress ?? "";
+  if (ip !== "127.0.0.1" && ip !== "::1" && ip !== "::ffff:127.0.0.1") return false;
+  const host = (req.headers.host ?? "").replace(/:\d+$/, "").toLowerCase();
+  if (!hosts.includes(host)) return false;
+  const fwd = String(req.headers["x-forwarded-for"] ?? "").split(",")[0]?.trim() ?? "";
+  const tailnetIp = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(fwd) || /^fd7a:115c:a1e0:/i.test(fwd);
+  if (!tailnetIp) return false;
+  const origin = req.headers.origin;
+  if (origin) {
+    const o = origin.toLowerCase().replace(/:\d+$/, "");
+    if (!hosts.some((h) => o === `https://${h}`)) return false;
+  }
+  return true;
+}
+
 function parseCookies(header: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!header) return out;
@@ -815,7 +838,7 @@ export function startServer(
           jsonStatus(res, 401, { error: "unauthorized" });
           return;
         }
-      } else if (url.pathname.startsWith("/api/") && !AUTH_EXEMPT_PATHS.has(url.pathname) && !isLocalNoLogin(req)) {
+      } else if (url.pathname.startsWith("/api/") && !AUTH_EXEMPT_PATHS.has(url.pathname) && !(isLocalNoLogin(req) || isTailnetNoLogin(req))) {
         const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
         const session = await verifyAccessToken(token);
         if (!session) {
@@ -870,7 +893,7 @@ export function startServer(
       // Samma kontroll som släpper igenom API-anropen, så svaret är bara
       // true från den egna datorn med DASHBOARD_NO_LOGIN=true.
       if (url.pathname === "/api/auth/mode" && method === "GET") {
-        json(res, { noLogin: isLocalNoLogin(req) });
+        json(res, { noLogin: isLocalNoLogin(req) || isTailnetNoLogin(req) });
         return;
       }
 
