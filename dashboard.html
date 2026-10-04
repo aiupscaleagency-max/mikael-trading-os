@@ -1915,9 +1915,10 @@ body.app-state-onboard .fc-panel{display:none !important}
        Läser /api/movers. "+ Lägg till" lägger myntet i analysen (/api/custom-symbols). -->
   <div id="moversBox" data-sec="Mest rörelse just nu · mynten med störst rörelse på vald tid" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-      <strong style="font-size:13px">🔥 Mest rörelse just nu <span id="mvIv" style="font-size:11px;color:#8b95a7"></span></strong>
+      <strong style="font-size:13px">🔥 Marknaden just nu <span id="mvIv" style="font-size:11px;color:#8b95a7"></span></strong>
       <span id="mvUpd" style="font-size:11px;color:#8b95a7"></span>
     </div>
+    <div id="mvTabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
     <div id="mvRows" style="margin-top:8px;font-size:13px;color:#8b95a7">Laddar…</div>
     <div style="margin-top:8px;font-size:11px;color:#8b95a7;line-height:1.5"><b>Rörelse</b> = hur mycket priset brukar röra sig under en trade på vald tid. <b>Efter avgift</b> = det som kan bli vinst när 0,5 % avgift (in + ut) är dragen. Grönt = rörelsen är större än avgiften. Mer rörelse betyder större vinst <b>och</b> större förlust.</div>
   </div>
@@ -1927,6 +1928,17 @@ body.app-state-onboard .fc-panel{display:none !important}
     function p2(v) { return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2).replace(".", ",") + " %"; }
     function big(v) { return v >= 1e9 ? (v / 1e9).toFixed(1) + " md" : v >= 1e6 ? (v / 1e6).toFixed(1) + " mn" : Math.round(v / 1e3) + " k"; }
     var inList = {};
+    var CATS = [["move","🔥 Mest rörelse"],["gainers","🟢 Mest upp"],["losers","🔴 Mest ner"],["trending","📈 Trendar"],["volume","💧 Mest handlade"],["cheapest","🪙 Billigast"],["priciest","💎 Dyrast"]];
+    var cat = "move";
+    try { cat = localStorage.getItem("mvCat") || "move"; } catch (_) {}
+    function tabs() {
+      document.getElementById("mvTabs").innerHTML = CATS.map(function (c) {
+        var on = c[0] === cat;
+        return '<button type="button" data-mvcat="' + c[0] + '" style="padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid ' + (on ? "#f0b90b" : "#2a3140") + ';background:' + (on ? "#2a2410" : "transparent") + ';color:' + (on ? "#f0b90b" : "#8b95a7") + '">' + c[1] + '</button>';
+      }).join("");
+      document.querySelectorAll("#mvTabs [data-mvcat]").forEach(function (b) { b.addEventListener("click", function () { cat = b.getAttribute("data-mvcat"); try { localStorage.setItem("mvCat", cat); } catch (_) {} tabs(); document.getElementById("mvRows").textContent = "Laddar…"; load(); }); });
+    }
+    function px(v) { return v >= 100 ? "$" + v.toFixed(2) : v >= 1 ? "$" + v.toFixed(4) : "$" + v.toPrecision(4); }
     async function add(base, btn) {
       btn.disabled = true; btn.textContent = "…";
       try {
@@ -1940,28 +1952,31 @@ body.app-state-onboard .fc-panel{display:none !important}
       try {
         var cs = await fetch("/api/custom-symbols").then(function (r) { return r.json(); }).catch(function () { return {}; });
         inList = {}; (cs.all || []).forEach(function (s) { inList[String(s).replace(/(USDT|USDC)$/, "")] = true; });
-        var r = await fetch("/api/movers"); var d = await r.json();
+        var r = await fetch("/api/movers?cat=" + encodeURIComponent(cat)); var d = await r.json();
         var box = document.getElementById("mvRows");
         if (!d.ok) { box.textContent = "Kunde inte hämta: " + (d.error || r.status); return; }
-        document.getElementById("mvIv").textContent = "· per " + d.interval + " min-trade";
+        document.getElementById("mvIv").textContent = cat === "move" ? "· rörelse per " + d.interval + " min-trade" : "· senaste 24 h, Bybit EU";
         box.innerHTML = d.movers.length ? d.movers.map(function (m, i) {
-          var ok = m.afterFeePct > 0, col = ok ? "#3fb950" : "#f85149";
+          var hasMove = typeof m.avgMovePct === "number";
+          var ok = hasMove && m.afterFeePct > 0, col = ok ? "#3fb950" : "#f85149";
+          var c24 = m.change24hPct >= 0 ? "#3fb950" : "#f85149";
           var btn = inList[m.base]
             ? '<span style="margin-left:auto;font-size:12px;color:#3fb950">✓ med i analysen</span>'
             : '<button type="button" data-mvadd="' + esc(m.base) + '" style="margin-left:auto;padding:3px 10px;border:1px solid #f0b90b;background:transparent;color:#f0b90b;border-radius:6px;font-weight:700;cursor:pointer">+ Lägg till</button>';
           return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #222834">'
             + '<span style="color:#8b95a7;min-width:18px">' + (i + 1) + '</span>'
             + '<b style="color:#e6e6e6;min-width:60px">' + esc(m.base) + '</b>'
-            + '<span>rörelse <b style="color:#e6e6e6">' + m.avgMovePct.toFixed(2).replace(".", ",") + ' %</b></span>'
-            + '<span>efter avgift <b style="color:' + col + '">' + p2(m.afterFeePct) + '</b></span>'
-            + '<span style="font-size:12px;color:#8b95a7">24h ' + p2(m.change24hPct) + ' · omsättning $' + big(m.turnover24hUsd) + '</span>'
+            + '<span style="color:#e6e6e6">' + px(m.price) + '</span>'
+            + (hasMove ? '<span>rörelse <b style="color:#e6e6e6">' + m.avgMovePct.toFixed(2).replace(".", ",") + ' %</b></span><span>efter avgift <b style="color:' + col + '">' + p2(m.afterFeePct) + '</b></span>' : "")
+            + '<span>24h <b style="color:' + c24 + '">' + p2(m.change24hPct) + '</b></span>'
+            + '<span style="font-size:12px;color:#8b95a7">omsättning $' + big(m.turnover24hUsd) + '</span>'
             + btn + '</div>';
         }).join("") : "Inga mynt hittades.";
         box.querySelectorAll("[data-mvadd]").forEach(function (b) { b.addEventListener("click", function () { add(b.getAttribute("data-mvadd"), b); }); });
         document.getElementById("mvUpd").textContent = "uppdaterad " + new Date().toLocaleTimeString("sv-SE");
       } catch (_) { /* behåll senaste vyn */ }
     }
-    load(); setInterval(load, 60000);
+    tabs(); load(); setInterval(load, 60000);
   })();
   </script>
   <!-- Resultat: alla affärer i grönt (vinst) / rött (förlust), öppna innehav
