@@ -24,7 +24,7 @@ import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
 import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
-import { addLiveTpSl, listLiveTpSl, startLiveTpSl } from "./liveTpSl.js";
+import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
 import { adjustLiveSpend, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
@@ -207,7 +207,13 @@ async function executeApprovedOrder(
       // LIVE-köp: reservera beloppet mot dagstaket INNAN ordern skickas, så att
       // två snabba godkännanden inte båda kommer igenom. Ges tillbaka vid fel.
       const reserved = p.live && p.side === "BUY" ? Number(quoteUsd) || 0 : 0;
-      if (reserved) recordLiveSpend(reserved);
+      if (reserved) {
+        recordLiveSpend(reserved);
+        if (getLiveSpentTodayUsd() > MAX_LIVE_DAILY_SPEND_USD + 1e-9) {
+          adjustLiveSpend(-reserved);
+          return { ok: false, error: `Dagens LIVE-gräns $${MAX_LIVE_DAILY_SPEND_USD} är nådd.`, keepPending: true };
+        }
+      }
       const isMarket = p.orderType !== "LIMIT";
       let order;
       try {
@@ -227,8 +233,10 @@ async function executeApprovedOrder(
       }
       if (reserved) adjustLiveSpend((order.cummulativeQuoteQty || reserved) - reserved);
       // LIVE marknadsköp med TP/SL: boten bevakar och säljer vid TP eller SL
+      // Du sålde själv i LIVE → gamla TP/SL-bevakningar för myntet tas bort
+      if (p.live && p.side === "SELL") removeLiveTpSlForSymbol(p.symbol);
       if (p.live && p.side === "BUY" && isMarket && (p.takeProfit !== undefined || p.stopLoss !== undefined)
-        && !/reject|cancel/i.test(order.status)) {
+        && (order.executedQty > 0 || !/reject|cancel/i.test(order.status))) {
         const entry = order.avgFillPrice || p.refPrice || getCachedPrice(p.symbol) || 0;
         // Fyllnaden syns ibland inte efter 1 s: uppskatta antalet (säljet tar ändå bara det som finns)
         const qty = order.executedQty > 0 ? order.executedQty : entry > 0 ? (Number(quoteUsd) || 0) / entry : 0;
@@ -1031,7 +1039,9 @@ export function startServer(
           executionMode: config.executionMode,
           // Härled UI-läge från kombination
           uiMode: config.mode === "paper" ? "paper" :
+                  liveAllowedByServer() && activeBrokerName === "bybit" ? "live" :
                   config.executionMode === "approve" ? "propose" : "live",
+          activeBroker: activeBrokerName,
           // Ärligt svar till UI:t: kan LIVE över huvud taget användas just nu?
           liveAllowed: liveAllowedByServer(),
           liveKeys: { binance: !!binanceLiveCreds, oanda: !!oandaCreds && !oandaCreds.practice, alpaca: Object.values(brokers).some((b) => b.name === "alpaca" && b.mode === "live"), kraken: !!brokers.kraken, bybit: !!brokers.bybit },
@@ -1085,6 +1095,15 @@ export function startServer(
       if (url.pathname === "/api/live-tpsl" && method === "GET") {
         json(res, { watches: listLiveTpSl() });
         return;
+      }
+      {
+        const m = url.pathname.match(/^\/api\/live-tpsl\/([\w-]+)$/);
+        if (m && method === "DELETE") {
+          const ok = removeLiveTpSl(m[1] as string);
+          if (ok) userAction(`tog bort LIVE TP/SL-bevakning ${m[1]}`, { to: "orders" });
+          json(res, { ok });
+          return;
+        }
       }
 
       // ── Auto / manuellt för agenternas ordrar (knappen på Trade-sidan) ──
@@ -1249,14 +1268,20 @@ export function startServer(
           }
           userAction(`godkände ${p.side} ${p.symbol}`, { to: "broker", coin: p.symbol });
           let result: Awaited<ReturnType<typeof executeApprovedOrder>>;
-          try { result = await executeApprovedOrder(p, brokers); } finally { approvingIds.delete(id); }
+          // Låset släpps först när statusen är sparad (annars kan ett nytt
+          // godkännande hinna se "pending" och skicka ordern en gång till)
+          try { result = await executeApprovedOrder(p, brokers); } catch (err) { approvingIds.delete(id); throw err; }
           if (!result.ok && result.keepPending) {
+            approvingIds.delete(id);
             json(res, { ok: false, order: p, error: `${result.error} Ordern ligger kvar och väntar.` });
             return;
           }
-          const upd = await updatePendingOrder(id, result.ok
-            ? { status: "done", result: result.result }
-            : { status: "failed", error: result.error });
+          let upd: Awaited<ReturnType<typeof updatePendingOrder>>;
+          try {
+            upd = await updatePendingOrder(id, result.ok
+              ? { status: "done", result: result.result }
+              : { status: "failed", error: result.error });
+          } finally { approvingIds.delete(id); }
           broadcastEvent("pending-orders", { id });
           // Utfallet syns i trädet: lagd eller fel, med orsaken
           if (result.ok) agentDone("broker", `${p.side} ${p.symbol} lagd`);

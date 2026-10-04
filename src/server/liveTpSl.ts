@@ -59,6 +59,14 @@ export function addLiveTpSl(w: Omit<LiveTpSl, "id" | "openedAt">): void {
   log.trade(`[LIVE TP/SL] bevakar ${w.symbol} ${w.qty} · TP ${w.takeProfit ?? "–"} · SL ${w.stopLoss ?? "–"}`);
 }
 
+/** Ta bort alla bevakningar för ett mynt (t.ex. när du själv sålt det). */
+export function removeLiveTpSlForSymbol(symbol: string): void {
+  const base = (s: string) => s.toUpperCase().replace(/(USDT|USDC|USD)$/, "");
+  const before = watches.length;
+  watches = watches.filter((w) => base(w.symbol) !== base(symbol));
+  if (watches.length !== before) { save(); log.info(`[LIVE TP/SL] slutar bevaka ${base(symbol)} (sålt)`); }
+}
+
 export function removeLiveTpSl(id: string): boolean {
   const before = watches.length;
   watches = watches.filter((w) => w.id !== id);
@@ -99,7 +107,7 @@ export function startLiveTpSl(brokers: Record<string, BrokerAdapter>, onEvent?: 
           const msg = err instanceof Error ? err.message : String(err);
           log.error(`[LIVE TP/SL] kunde inte sälja ${w.symbol} vid ${why}: ${msg}`);
           // Inget kvar att sälja → sluta bevaka; annat fel → försök igen nästa varv
-          if (/inga .* att sälja/.test(msg)) removeLiveTpSl(w.id);
+          if (/inga .* att sälja|kräver minst/.test(msg)) removeLiveTpSl(w.id);
           else retryAt.set(w.id, Date.now() + 60_000);
         })
         .finally(() => selling.delete(w.id));
