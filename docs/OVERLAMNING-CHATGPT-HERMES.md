@@ -96,7 +96,7 @@ Om `git pull` klagar på lokala ändringar ska de inte raderas. Kör `git status
 
 | Vad | Läge |
 |---|---|
-| Popupen visar alltid par och tid, och visar bästa kandidaten med en **"Köp ändå"**-knapp vid "vänta". Tidsvalet på sidan "Alla par" blir också 1/5/15/30 min | Byggs nu. Kolla `git log` om det är inne |
+| Popupen visar alltid par och tid, och visar bästa kandidaten med en **"Köp ändå"**-knapp vid "vänta". Tidsvalet på sidan "Alla par" blir också 1/5/15/30 min | **Klart** (PR #53) |
 | Mike kör TEST-trades och läser resultatfönstret | Mike gör själv |
 | Vercel AI Gateway-krediter är slut (402), så allt går via OpenRouter | Mike fyller på |
 | LIVE: Bybit-saldot är $0. Mike sätter in pengar och säger själv till | Väntar på Mike |
