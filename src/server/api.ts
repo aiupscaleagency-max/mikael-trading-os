@@ -24,7 +24,8 @@ import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
 import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
-import { checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
+import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
+import { adjustLiveSpend, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
@@ -195,17 +196,52 @@ async function executeApprovedOrder(
       if ((broker.mode === "live") !== p.live) {
         return { ok: false, error: "Mäklarens läge (TEST/LIVE) har ändrats sedan ordern skapades. Lägg den igen." };
       }
-      const order = await broker.placeOrder({
-        symbol: p.symbol,
-        side: p.side,
-        type: p.orderType === "LIMIT" ? "LIMIT" : "MARKET",
-        quoteOrderQty: p.quantity === undefined ? p.quoteUsd : undefined,
-        quantity: p.quantity,
-        price: p.orderType === "LIMIT" ? p.limitPrice : undefined,
-        takeProfit: p.takeProfit,
-        stopLoss: p.stopLoss,
-      });
-      if (p.live && p.side === "BUY") recordLiveSpend(order.cummulativeQuoteQty || p.quoteUsd || 0);
+      // "Sälj allt": antalet = det du har fritt just nu
+      let quantity = p.quantity;
+      if (p.side === "SELL" && p.sellAll) {
+        const base = p.symbol.toUpperCase().replace("/", "").replace(/(USDT|USDC|USD|EUR)$/, "");
+        const acc = await broker.getAccount();
+        quantity = acc.balances.find((b) => b.asset === base)?.free ?? 0;
+        if (!(quantity > 0)) return { ok: false, error: `Du har inga ${base} att sälja.` };
+      }
+      // LIVE-köp: reservera beloppet mot dagstaket INNAN ordern skickas, så att
+      // två snabba godkännanden inte båda kommer igenom. Ges tillbaka vid fel.
+      const reserved = p.live && p.side === "BUY" ? Number(quoteUsd) || 0 : 0;
+      if (reserved) {
+        recordLiveSpend(reserved);
+        if (getLiveSpentTodayUsd() > MAX_LIVE_DAILY_SPEND_USD + 1e-9) {
+          adjustLiveSpend(-reserved);
+          return { ok: false, error: `Dagens LIVE-gräns $${MAX_LIVE_DAILY_SPEND_USD} är nådd.`, keepPending: true };
+        }
+      }
+      const isMarket = p.orderType !== "LIMIT";
+      let order;
+      try {
+        order = await broker.placeOrder({
+          symbol: p.symbol,
+          side: p.side,
+          type: isMarket ? "MARKET" : "LIMIT",
+          quoteOrderQty: quantity === undefined ? p.quoteUsd : undefined,
+          quantity,
+          price: p.orderType === "LIMIT" ? p.limitPrice : undefined,
+          takeProfit: p.takeProfit,
+          stopLoss: p.stopLoss,
+        });
+      } catch (err) {
+        if (reserved) adjustLiveSpend(-reserved);
+        throw err;
+      }
+      if (reserved) adjustLiveSpend((order.cummulativeQuoteQty || reserved) - reserved);
+      // LIVE marknadsköp med TP/SL: boten bevakar och säljer vid TP eller SL
+      // Du sålde själv i LIVE → gamla TP/SL-bevakningar för myntet tas bort
+      if (p.live && p.side === "SELL") removeLiveTpSlForSymbol(p.symbol);
+      if (p.live && p.side === "BUY" && isMarket && (p.takeProfit !== undefined || p.stopLoss !== undefined)
+        && (order.executedQty > 0 || !/reject|cancel/i.test(order.status))) {
+        const entry = order.avgFillPrice || p.refPrice || getCachedPrice(p.symbol) || 0;
+        // Fyllnaden syns ibland inte efter 1 s: uppskatta antalet (säljet tar ändå bara det som finns)
+        const qty = order.executedQty > 0 ? order.executedQty : entry > 0 ? (Number(quoteUsd) || 0) / entry : 0;
+        addLiveTpSl({ broker: name, symbol: p.symbol, qty, entry, takeProfit: p.takeProfit, stopLoss: p.stopLoss });
+      }
       log.trade(`[GODKÄND] ${p.side} ${p.symbol} via ${name} ${p.live ? "LIVE" : "TEST"} · status ${order.status}`);
       return { ok: true, result: order };
     }
@@ -712,6 +748,14 @@ export function startServer(
   const uiDir = path.resolve(import.meta.dirname, "ui");
   // Bybit-websocket, live-lampor och strategibiblioteket (src/server/liveRoutes.ts)
   initLiveLayer(brokers, broadcastEvent);
+  // Startad i LIVE (MODE=live + LIVE_TRADING_CONFIRMED) → Bybit LIVE är aktiv
+  // mäklare direkt, så att en LIVE-order aldrig tyst blir TEST efter omstart.
+  if (liveAllowedByServer() && brokers.bybit && !activeBrokerName) {
+    activeBrokerName = "bybit";
+    log.warn("LIVE: aktiv mäklare = Bybit EU (riktiga pengar, varje order väntar på Godkänn)");
+  }
+  // TP/SL för LIVE-marknadsköp (src/server/liveTpSl.ts)
+  startLiveTpSl(brokers, broadcastEvent);
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -995,7 +1039,9 @@ export function startServer(
           executionMode: config.executionMode,
           // Härled UI-läge från kombination
           uiMode: config.mode === "paper" ? "paper" :
+                  liveAllowedByServer() && activeBrokerName === "bybit" ? "live" :
                   config.executionMode === "approve" ? "propose" : "live",
+          activeBroker: activeBrokerName,
           // Ärligt svar till UI:t: kan LIVE över huvud taget användas just nu?
           liveAllowed: liveAllowedByServer(),
           liveKeys: { binance: !!binanceLiveCreds, oanda: !!oandaCreds && !oandaCreds.practice, alpaca: Object.values(brokers).some((b) => b.name === "alpaca" && b.mode === "live"), kraken: !!brokers.kraken, bybit: !!brokers.bybit },
@@ -1023,6 +1069,7 @@ export function startServer(
             return;
           }
           log.warn("Dashboard bad om LIVE-vy (servern är redan startad i LIVE)");
+          if (brokers.bybit) activeBrokerName = "bybit";
           broadcastEvent("mode-changed", { uiMode: "live", mode: config.mode, executionMode: config.executionMode });
           json(res, { ok: true, uiMode: "live", mode: config.mode, executionMode: config.executionMode });
           return;
@@ -1036,9 +1083,27 @@ export function startServer(
           jsonStatus(res, 400, { ok: false, error: `Okänt läge: ${String(uiMode)}` });
           return;
         }
+        // TEST-knappen byter tillbaka till TEST-mäklaren (låtsaskontot)
+        const testBroker = brokers["bybit-paper"] ? "bybit-paper" : brokers["bybit-demo"] ? "bybit-demo" : null;
+        if (testBroker && activeBrokerName === "bybit") activeBrokerName = testBroker;
         broadcastEvent("mode-changed", { uiMode, mode: config.mode, executionMode: config.executionMode });
-        json(res, { ok: true, uiMode, mode: config.mode, executionMode: config.executionMode });
+        json(res, { ok: true, uiMode, mode: config.mode, executionMode: config.executionMode, activeBroker: activeBrokerName });
         return;
+      }
+
+      // LIVE-köp som boten bevakar för TP/SL
+      if (url.pathname === "/api/live-tpsl" && method === "GET") {
+        json(res, { watches: listLiveTpSl() });
+        return;
+      }
+      {
+        const m = url.pathname.match(/^\/api\/live-tpsl\/([\w-]+)$/);
+        if (m && method === "DELETE") {
+          const ok = removeLiveTpSl(m[1] as string);
+          if (ok) userAction(`tog bort LIVE TP/SL-bevakning ${m[1]}`, { to: "orders" });
+          json(res, { ok });
+          return;
+        }
       }
 
       // ── Auto / manuellt för agenternas ordrar (knappen på Trade-sidan) ──
@@ -1109,7 +1174,7 @@ export function startServer(
       // POST /api/pending-orders — lägg en order som väntar på godkännande
       // body: { symbol, side, quoteUsd, source?, broker? }  (broker saknas = aktiv broker)
       if (url.pathname === "/api/pending-orders" && method === "POST") {
-        const b = JSON.parse(await readBody(req)) as { symbol?: string; side?: string; quoteUsd?: number; source?: string; broker?: string; reason?: string; orderType?: string; limitPrice?: number; takeProfit?: number; stopLoss?: number };
+        const b = JSON.parse(await readBody(req)) as { symbol?: string; side?: string; quoteUsd?: number; source?: string; broker?: string; reason?: string; orderType?: string; limitPrice?: number; takeProfit?: number; stopLoss?: number; sellAll?: boolean };
         const symbol = String(b.symbol || "").toUpperCase();
         const side = b.side === "SELL" ? "SELL" : b.side === "BUY" ? "BUY" : null;
         const quoteUsd = Number(b.quoteUsd);
@@ -1126,8 +1191,17 @@ export function startServer(
           if (v !== undefined && !(Number.isFinite(v) && v > 0)) { jsonStatus(res, 400, { ok: false, error: `${label} måste vara ett pris över 0` }); return; }
         }
         if (orderType === "LIMIT" && limitPrice === undefined) { jsonStatus(res, 400, { ok: false, error: "Limit-order kräver ett pris" }); return; }
-        // Bybit spot tar TP/SL tillsammans med limit-ordrar
-        if ((takeProfit !== undefined || stopLoss !== undefined) && orderType !== "LIMIT") { jsonStatus(res, 400, { ok: false, error: "TP/SL kräver en limit-order" }); return; }
+        const sellAll = side === "SELL" && b.sellAll === true;
+        const brokerName = b.broker || activeBrokerName || Object.keys(brokers)[0];
+        const broker = brokerName ? brokers[brokerName] : undefined;
+        // TP/SL på marknadsorder: Bybit (LIVE bevakas av boten) och TEST-kontot klarar det
+        const tpslOnMarket = broker?.name === "bybit" || broker?.name === "bybit-paper";
+        if ((takeProfit !== undefined || stopLoss !== undefined) && orderType !== "LIMIT" && !tpslOnMarket) { jsonStatus(res, 400, { ok: false, error: "TP/SL kräver en limit-order" }); return; }
+        if (orderType === "MARKET" && side === "BUY" && (takeProfit !== undefined || stopLoss !== undefined)) {
+          const ref = getCachedPrice(symbol) ?? getCachedPrice(symbol.replace(/USDC$/, "USDT"));
+          if (ref && takeProfit !== undefined && takeProfit <= ref) { jsonStatus(res, 400, { ok: false, error: `TP ska vara över nuvarande pris (${ref})` }); return; }
+          if (ref && stopLoss !== undefined && stopLoss >= ref) { jsonStatus(res, 400, { ok: false, error: `SL ska vara under nuvarande pris (${ref})` }); return; }
+        }
         if (side === "SELL" && limitPrice !== undefined) {
           if (takeProfit !== undefined && takeProfit >= limitPrice) { jsonStatus(res, 400, { ok: false, error: "När du säljer ska TP vara under säljpriset" }); return; }
           if (stopLoss !== undefined && stopLoss <= limitPrice) { jsonStatus(res, 400, { ok: false, error: "När du säljer ska SL vara över säljpriset" }); return; }
@@ -1136,14 +1210,22 @@ export function startServer(
           if (takeProfit !== undefined && takeProfit <= limitPrice) { jsonStatus(res, 400, { ok: false, error: "TP ska vara över köppriset" }); return; }
           if (stopLoss !== undefined && stopLoss >= limitPrice) { jsonStatus(res, 400, { ok: false, error: "SL ska vara under köppriset" }); return; }
         }
-        const brokerName = b.broker || activeBrokerName || Object.keys(brokers)[0];
-        const broker = brokerName ? brokers[brokerName] : undefined;
         if (!broker) {
           jsonStatus(res, 409, { ok: false, error: "Ingen mäklare är kopplad på servern. Lägg in Alpaca- eller Binance-nycklar i .env." });
           return;
         }
         const live = broker.mode === "live";
-        const gate = await checkOrderGate({ live, side, quoteUsd, source: b.source || "dashboard" });
+        if (!sellAll && !(quoteUsd > 0)) { jsonStatus(res, 400, { ok: false, error: "Skriv ett belopp i USD" }); return; }
+        // LIVE-köp: måste gå att sälja tillbaka (Bybits minsta order + marginal)
+        const minBuy = (broker as { minBuyUsd?: (s: string) => Promise<number> }).minBuyUsd;
+        if (live && side === "BUY" && minBuy) {
+          const need = await minBuy.call(broker, symbol).catch(() => 0);
+          if (need > 0 && quoteUsd < need) {
+            json(res, { ok: false, error: `${symbol} kräver minst $${need.toFixed(2)} per köp för att kunna säljas tillbaka. Välj BTC (minst $1.10) eller höj beloppet.` });
+            return;
+          }
+        }
+        const gate = await checkOrderGate({ live, side, quoteUsd: sellAll ? undefined : quoteUsd, source: b.source || "dashboard" });
         if (!gate.ok) { json(res, { ok: false, error: gate.error }); return; }
         const p = await addPendingOrder({
           source: String(b.source || "dashboard").slice(0, 60),
@@ -1151,14 +1233,15 @@ export function startServer(
           live,
           symbol,
           side,
-          quoteUsd,
+          quoteUsd: sellAll ? undefined : quoteUsd,
+          ...(sellAll ? { sellAll: true } : {}),
           ...(orderType === "LIMIT" ? { orderType, limitPrice } : {}),
           ...(takeProfit !== undefined ? { takeProfit } : {}),
           ...(stopLoss !== undefined ? { stopLoss } : {}),
           reason: b.reason ? String(b.reason).slice(0, 200) : undefined,
         });
         broadcastEvent("pending-orders", { id: p.id });
-        userAction(`la ${side} ${symbol} $${quoteUsd} i kön (${live ? "LIVE" : "TEST"})`, { to: "orders", coin: symbol });
+        userAction(`la ${side} ${symbol} ${sellAll ? "allt" : `$${quoteUsd}`} i kön (${live ? "LIVE" : "TEST"})`, { to: "orders", coin: symbol });
         json(res, { ok: true, pendingOrder: p });
         return;
       }
@@ -1170,9 +1253,11 @@ export function startServer(
           const id = m[1] as string;
           const action = m[2] as string;
           if (approvingIds.has(id)) { json(res, { ok: false, error: "Ordern håller redan på att läggas" }); return; }
+          // Lås direkt (före första await) så att ett dubbelklick aldrig skickar två ordrar
+          if (action === "approve") approvingIds.add(id);
           const p = await getPendingOrder(id);
-          if (!p) { jsonStatus(res, 404, { ok: false, error: "Ordern finns inte" }); return; }
-          if (p.status !== "pending") { json(res, { ok: false, error: `Ordern är redan ${p.status}` }); return; }
+          if (!p) { approvingIds.delete(id); jsonStatus(res, 404, { ok: false, error: "Ordern finns inte" }); return; }
+          if (p.status !== "pending") { approvingIds.delete(id); json(res, { ok: false, error: `Ordern är redan ${p.status}` }); return; }
           if (action === "reject") {
             const upd = await updatePendingOrder(id, { status: "rejected" });
             log.info(`Väntande order avvisad: ${p.side} ${p.symbol}`);
@@ -1181,17 +1266,22 @@ export function startServer(
             json(res, { ok: true, order: upd });
             return;
           }
-          approvingIds.add(id);
           userAction(`godkände ${p.side} ${p.symbol}`, { to: "broker", coin: p.symbol });
           let result: Awaited<ReturnType<typeof executeApprovedOrder>>;
-          try { result = await executeApprovedOrder(p, brokers); } finally { approvingIds.delete(id); }
+          // Låset släpps först när statusen är sparad (annars kan ett nytt
+          // godkännande hinna se "pending" och skicka ordern en gång till)
+          try { result = await executeApprovedOrder(p, brokers); } catch (err) { approvingIds.delete(id); throw err; }
           if (!result.ok && result.keepPending) {
+            approvingIds.delete(id);
             json(res, { ok: false, order: p, error: `${result.error} Ordern ligger kvar och väntar.` });
             return;
           }
-          const upd = await updatePendingOrder(id, result.ok
-            ? { status: "done", result: result.result }
-            : { status: "failed", error: result.error });
+          let upd: Awaited<ReturnType<typeof updatePendingOrder>>;
+          try {
+            upd = await updatePendingOrder(id, result.ok
+              ? { status: "done", result: result.result }
+              : { status: "failed", error: result.error });
+          } finally { approvingIds.delete(id); }
           broadcastEvent("pending-orders", { id });
           // Utfallet syns i trädet: lagd eller fel, med orsaken
           if (result.ok) agentDone("broker", `${p.side} ${p.symbol} lagd`);

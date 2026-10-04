@@ -2,7 +2,7 @@ import type { Config } from "../config.js";
 import type { Account, OrderRequest, Position } from "../types.js";
 import type { AgentState } from "../memory/store.js";
 import { currentStake } from "./stakeLadder.js";
-import { testStakeCapUsd } from "../server/orderGate.js";
+import { MAX_LIVE_STAKE_USD, testStakeCapUsd } from "../server/orderGate.js";
 
 export interface RiskCheckResult {
   allowed: boolean;
@@ -92,7 +92,10 @@ export class RiskManager {
       // Insats-trappan (1 → 5 % av TEST-kontot) styr storleken BARA i TEST.
       // LIVE behåller .env-taket oförändrat.
       const stake = ctx.paper ? currentStake() : null;
-      const maxPos = ctx.paper ? testStakeCapUsd() : risk.maxPositionUsd;
+      // LIVE: aldrig över LIVE-taket per order ($5), och golvet följer med ned
+      // (annars stoppas varje LIVE-förslag på MIN_POSITION_USD).
+      const maxPos = ctx.paper ? testStakeCapUsd() : Math.min(risk.maxPositionUsd, MAX_LIVE_STAKE_USD);
+      const minPos = ctx.paper ? risk.minPositionUsd : Math.min(risk.minPositionUsd, MAX_LIVE_STAKE_USD);
       let adjustedOrder: OrderRequest | undefined;
       if (orderUsd > maxPos) {
         const scaled: OrderRequest = {
@@ -102,10 +105,10 @@ export class RiskManager {
         };
         adjustedOrder = scaled;
         orderUsd = maxPos;
-      } else if (risk.minPositionUsd && orderUsd < risk.minPositionUsd) {
+      } else if (minPos && orderUsd < minPos) {
         return {
           allowed: false,
-          reason: `Order $${orderUsd.toFixed(2)} under MIN_POSITION_USD ($${risk.minPositionUsd}). Höj eller skip.`,
+          reason: `Order $${orderUsd.toFixed(2)} under MIN_POSITION_USD ($${minPos}). Höj eller skip.`,
         };
       }
 
