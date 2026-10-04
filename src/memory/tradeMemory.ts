@@ -57,6 +57,10 @@ export async function recordAnalysis(entry: AnalysisMemory): Promise<void> {
     };
     await fs.appendFile(MEMORY_FILE, JSON.stringify(slim) + "\n", "utf8");
     log.info(`[minne] analys sparad: ${entry.symbols.length} par, beslut ${entry.decision}, ${entry.proposals.length} förslag`);
+    // Egna kategorier utanför boten: Obsidian "Trading-minne" + Supabase trading_memory
+    const { writeObsidian, writeSupabase } = await import("./memorySinks.js");
+    const summary = await memorySummary(entry.symbols).catch(() => "");
+    await Promise.allSettled([writeObsidian(slim, summary), writeSupabase(slim)]);
   } catch (err) {
     log.warn(`[minne] kunde inte spara analysen: ${err instanceof Error ? err.message : String(err)}`);
   }

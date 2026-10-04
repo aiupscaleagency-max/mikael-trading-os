@@ -342,16 +342,45 @@ export function startSignalEngine(): () => void {
   return subscribeClosedCandles((symbol, interval, _candle, history) => {
     const base = buildSignal(symbol, interval, history);
     if (!base) return;
-    // Signalerna är ren matte och gratis. JEV (kostar pengar) granskar dem
-    // bara när du kör en analys (jevReviewSymbols), inte vid varje ljus.
-    // JEV_ON_SIGNALS=true slår på den gamla granskningen av varje signal.
-    if (!jevOnSignals()) { publish(base); return; }
-    void applyJevVerdict(base).then(publish);
+    // Signalerna är ren matte och gratis. JEV (via Vercel) ser tidiga tecken:
+    // den granskar ett par när det får en ny riktning (eller var
+    // JEV_REFRESH_MIN minut, 60), inte vid varje 1m-ljus. Däremellan används
+    // JEV:s senaste bedömning för paret.
+    //   JEV_ON_SIGNALS=change (standard) · every (gamla, varje ljus) · off
+    const modeJ = jevOnSignals();
+    if (modeJ === "off") { publish(base); return; }
+    if (modeJ === "change" && base.direction !== "NEUTRAL") {
+      const last = lastJev.get(key(symbol, interval));
+      const refreshMs = (Number(process.env.JEV_REFRESH_MIN ?? 60) || 60) * 60_000;
+      if (last && last.direction === base.direction && Date.now() - last.at < refreshMs) {
+        publish(reuseVerdict(base, last)); return;
+      }
+    }
+    if (base.direction === "NEUTRAL") { publish(base); return; }
+    void applyJevVerdict(base).then((signal) => {
+      // Bara riktiga JEV-svar sparas: svarade JEV inte frågar vi igen nästa ljus.
+      if (signal.jev?.available) lastJev.set(key(symbol, interval), {
+        direction: base.direction, at: Date.now(), jev: signal.jev,
+        downgraded: Boolean(signal.jevDowngraded), vetoes: signal.reasons.slice(base.reasons.length),
+      });
+      publish(signal);
+    });
   });
 }
 
-function jevOnSignals(): boolean {
-  return process.env.JEV_ON_SIGNALS === "true";
+function jevOnSignals(): "change" | "every" | "off" {
+  const v = (process.env.JEV_ON_SIGNALS ?? "change").toLowerCase();
+  if (v === "every" || v === "true") return "every";
+  if (v === "off" || v === "false") return "off";
+  return "change";
+}
+
+/** JEV:s senaste bedömning per par (för att slippa fråga varje minut). */
+const lastJev = new Map<string, { direction: Direction; at: number; jev?: JevVerdict; downgraded: boolean; vetoes: string[] }>();
+
+function reuseVerdict(base: Signal, last: { jev?: JevVerdict; downgraded: boolean; vetoes: string[] }): Signal {
+  if (!last.downgraded) return { ...base, jev: last.jev };
+  return { ...base, jev: last.jev, direction: "NEUTRAL", jevDowngraded: true, reasons: [...base.reasons, ...last.vetoes] };
 }
 
 function publish(signal: Signal): void {

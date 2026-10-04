@@ -182,7 +182,14 @@ function resolveRoutes(): JevRoute[] {
   const openRouter = process.env.OPENROUTER_API_KEY?.trim();
   if (openRouter) add(asOpenRouter(openRouter));
 
-  return routes;
+  // LÅST ORDNING (Mike 2026-10-04, samma som kursen): JEV går via Vercel
+  // först, TypeSafe direkt sedan, OpenRouter ALLTID sist som reserv så att
+  // credits aldrig tar slut. Ändra inte utan att Mike bett om det.
+  const rank: Record<JevMode, number> = { gateway: 0, direct: 1, openrouter: 2, rules_only: 3 };
+  return routes
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => rank[a.r.mode] - rank[b.r.mode] || a.i - b.i)
+    .map((x) => x.r);
 }
 
 /** Nyckeln avvisades av en rutt. Säger inget om de andra rutterna. */
