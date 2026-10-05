@@ -8,9 +8,11 @@ process.chdir(temp);
 try {
   const { BybitPaperBroker } = await import("../src/brokers/bybitPaper.js");
   mkdirSync("data");
-  writeFileSync("data/bybit-paper.json", JSON.stringify({usdc:8093,holdings:{},open:[],fills:[]}));
+  writeFileSync("data/bybit-paper.json", JSON.stringify({usdc:8093,holdings:{ETH:{qty:1,avg:100,openedAt:1}},open:[],fills:[{id:"historik",base:"ETH",side:"BUY",qty:1,price:100,fee:0.1,at:1,kind:"MARKET"}]}));
   const broker = new BybitPaperBroker();
   assert.equal(broker.snapshot().usdc, 998093);
+  assert.equal(broker.snapshot().holdings.ETH.qty, 1);
+  assert.equal(broker.snapshot().fills.length, 1);
   assert.equal(new BybitPaperBroker().snapshot().usdc, 998093);
 
   // Injicera fasta priser: testet får aldrig nå nätverket.

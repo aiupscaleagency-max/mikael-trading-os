@@ -4,7 +4,7 @@ import { config } from "../config.js";
 import { hasUsdcPair } from "./customSymbols.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Bybit Public Market Stream — realtidspriser via WebSocket (tidigare Binance)
+// Bybit Public Market Stream — realtidspriser via WebSocket
 //
 // Eliminerar REST-polling för pris/ticker-data:
 //  - !miniTicker@arr      → tick-by-tick price + 24h-stats för ALLA symbols

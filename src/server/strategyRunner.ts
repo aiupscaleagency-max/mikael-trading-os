@@ -359,7 +359,7 @@ export async function queueSignal(signalId: string, venueOverride?: "test" | "li
   if (!broker || !brokerName) return fail(venue === "live" ? "Ingen LIVE-mäklare (Bybit) är kopplad" : "Ingen TEST-mäklare (Bybit TEST) är kopplad");
   const live = broker.mode === "live";
 
-  const symbol = `${sig.coin}USDC`; // mäklarna mappar själva (Bybit → USDC, Alpaca → BTC/USD)
+  const symbol = `${sig.coin}USDC`; // Bybit EU använder USDC-par
   let quoteUsd: number | undefined;
   let quantity: number | undefined;
   let note = "";

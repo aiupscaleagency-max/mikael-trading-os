@@ -39,9 +39,9 @@ ${performanceSummary}
 
 3. PORTFÖLJSTATUS. \`get_all_positions\` för att se hela bilden. Finns det positioner som behöver justeras/stängas?
 
-4. KÖR MOTORERNA. \`run_strategy_scan engine=all\` för att se vad varje motor signalerar. Motorerna gör den tunga analysen — du syntetiserar.
+4. TEKNISK ANALYS. Kör \`get_indicators\` för relevanta Bybit EU USDC-par och den valda tidshorisonten. Använd färska marknadsdata och syntetisera indikatorerna.
 
-5. SYNTES + BESLUT. Slå ihop makro + nyheter + teknik + motor-signaler. Fatta beslut:
+5. SYNTES + BESLUT. Slå ihop makro + nyheter + teknik + indikatorer. Fatta beslut:
    - Om en signal har "high confidence" och makro stödjer → agera
    - Om makro säger risk-off, var extra försiktig — kräv starkare signaler
    - Om inget övertygar → HOLD. 80% av tiden är det rätt.
@@ -74,7 +74,7 @@ export function buildMorningBriefingPrompt(): string {
 
 1. Kör get_macro_snapshot + search_news för att se vad som hänt under natten.
 2. Kör get_all_positions för att se portföljens status.
-3. Kör run_strategy_scan engine=all för att se om det finns nya setups.
+3. Kör get_indicators för relevanta Bybit EU USDC-par för att se om det finns nya setups.
 
 Sammanfatta sedan i detta format:
 
