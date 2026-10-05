@@ -287,54 +287,16 @@ export async function applyJevVerdict(signal: Signal): Promise<Signal> {
     jev = hit.jev;
   } else {
     jev = await askJev(state);
-    if (jev.available) {
-      const a = jev.answers;
-      const veto = a.regime?.choice === "crisis" || (a.toxic_flow?.noul ?? 0) > 0.7
-        || ((a.direction?.confidence ?? 0) > 0.6 && a.direction?.choice === (signal.direction === "LONG" ? "down" : "up"));
-      jevCache.set(cacheKey, { at: Date.now(), jev, veto });
-    }
+    if (jev.available) jevCache.set(cacheKey, { at: Date.now(), jev, veto: false });
   }
   const out: Signal = { ...signal, jev };
   const jevInfo = { available: jev.available, route: jev.mode, latencyMs: jev.latencyMs };
 
-  // Utan JEV gäller signalen som den är — rules_only, tydligt märkt.
-  if (!jev.available) {
-    if (jev.available) agentDone("jev", `${signal.symbol}: ${signal.direction}`); else agentSkip("jev", `svarade inte: ${jev.note}`);
-    treeEvent({ branch: "signal", subject: signal.symbol, jev: jevInfo, outcome: jev.available ? "ok" : "bara regler", why: jev.available ? `${signal.direction}` : jev.note });
-    return out;
-  }
-
-  const regime = jev.answers.regime?.choice;
-  const toxic = jev.answers.toxic_flow?.noul ?? 0;
-  const bias = jev.answers.direction?.choice;
-  const biasConf = jev.answers.direction?.confidence ?? 0;
-
-  const vetoes: string[] = [];
-  if (regime === "crisis") vetoes.push("JEV: krisregim — ingen ny position");
-  if (toxic > 0.7) vetoes.push(`JEV: toxiskt flöde ${toxic.toFixed(2)} — informerad motpart`);
-
-  const opposes =
-    (signal.direction === "LONG" && bias === "down") ||
-    (signal.direction === "SHORT" && bias === "up");
-  if (opposes && biasConf > 0.6) {
-    vetoes.push(`JEV: bedömer riktningen som ${bias} (säkerhet ${biasConf.toFixed(2)})`);
-  }
-
-  if (!vetoes.length) {
-    agentDone("jev", `godkände ${signal.direction} ${signal.symbol}`);
-    treeEvent({ branch: "signal", subject: signal.symbol, jev: jevInfo, outcome: "ok", why: `${signal.direction} godkänd av JEV` });
-    return out;
-  }
-  treeEvent({ branch: "signal", subject: signal.symbol, jev: jevInfo, outcome: "stoppad", why: vetoes[0] });
-  agentDone("jev", `stoppade ${signal.symbol}: ${vetoes[0]}`);
-
-  log.info(`[signal] ${signal.symbol}: ${signal.direction} sänkt till AVVAKTA — ${vetoes[0]}`);
-  return {
-    ...out,
-    direction: "NEUTRAL",
-    jevDowngraded: true,
-    reasons: [...signal.reasons, ...vetoes],
-  };
+  // JEV får endast uppgiftskategorin och kan därför aldrig godkänna en marknadssignal.
+  if (jev.available) agentDone("jev", "Uppgiftsdjup bedömt; marknadssignalen kommer från verifierade regler");
+  else agentSkip("jev", `svarade inte: ${jev.note}`);
+  treeEvent({ branch: "signal", subject: signal.symbol, jev: jevInfo, outcome: "bara regler", why: "JEV bedömer uppgiftsdjup, inte riktning eller vinst" });
+  return out;
 }
 
 /** Startar motorn. Räknar om vid varje stängt ljus. */

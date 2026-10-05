@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { BrokerAdapter } from "./adapter.js";
@@ -37,13 +38,22 @@ interface OpenOrder {
   sl?: number;
   createdAt: number;
 }
-interface PaperState {
+export interface PaperLot {
+  base: string; remaining: number;
+  buyQty?: number | null; entryPrice?: number | null; entryFee?: number | null;
+  costBasisRemaining?: number | null; openedAt?: number | null;
+}
+export interface PaperFill {
+  id: string; base: string; side: string; qty: number; price: number; fee: number;
+  at: number; kind: string; pnl?: number; tradeId?: string; orderId?: string; group?: string;
+}
+export interface PaperState {
   initialCapital: number;
-  lots: Record<string, { base: string; remaining: number }>;
+  lots: Record<string, PaperLot>;
   usdc: number;
   holdings: Record<string, Holding>;
   open: OpenOrder[];
-  fills: Array<{ id: string; base: string; side: string; qty: number; price: number; fee: number; at: number; kind: string; pnl?: number }>;
+  fills: PaperFill[];
 }
 
 export class BybitPaperBroker implements BrokerAdapter {
@@ -64,7 +74,7 @@ export class BybitPaperBroker implements BrokerAdapter {
   }
 
   /** Ögonblicksbild för resultatfönstret (affärer, innehav, TP/SL). */
-  snapshot(): { feeRate: number; usdc: number; holdings: Record<string, { qty: number; avg: number; openedAt: number }>; open: Array<{ base: string; kind: string; side: string; qty: number; price: number }>; fills: Array<{ base: string; side: string; qty: number; price: number; fee: number; at: number; kind: string; pnl?: number }> } {
+  snapshot(): PaperState & { feeRate: number } {
     return { ...JSON.parse(JSON.stringify(this.state)), feeRate: FEE };
   }
 
@@ -74,6 +84,10 @@ export class BybitPaperBroker implements BrokerAdapter {
       if (!s.lots) {
         s.lots = {};
         for (const o of s.open ?? []) if (o.group) s.lots[o.group] = { base: o.base, remaining: o.qty };
+      }
+      for (const lot of Object.values(s.lots)) {
+        lot.buyQty ??= null; lot.entryPrice ??= null; lot.entryFee ??= null;
+        lot.costBasisRemaining ??= null; lot.openedAt ??= null;
       }
       if (typeof s.usdc === "number") {
         // Höj befintligt TEST-startkapital en gång; behåll positioner, avgifter och resultat.
@@ -90,8 +104,11 @@ export class BybitPaperBroker implements BrokerAdapter {
   private save(): void {
     try {
       fs.mkdirSync(path.dirname(FILE), { recursive: true });
-      fs.writeFileSync(FILE, JSON.stringify(this.state, null, 2));
-    } catch { /* saldot finns kvar i minnet */ }
+      fs.writeFileSync(FILE + ".tmp", JSON.stringify(this.state, null, 2));
+      fs.renameSync(FILE + ".tmp", FILE);
+    } catch (err) {
+      throw new Error(`TEST-kontot kunde inte sparas: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private baseOf(symbol: string): string {
@@ -112,51 +129,55 @@ export class BybitPaperBroker implements BrokerAdapter {
   }
 
   /** USDC som väntande LIMIT-köp håller undan. */
-  private reservedUsdc(): number {
-    return this.state.open.filter((o) => o.kind === "LIMIT" && o.side === "BUY").reduce((t, o) => t + o.qty * o.price * (1 + FEE), 0);
+  private reservedUsdc(state: PaperState = this.state): number {
+    return state.open.filter((o) => o.kind === "LIMIT" && o.side === "BUY").reduce((t, o) => t + o.qty * o.price * (1 + FEE), 0);
   }
   /** Mynt som väntande LIMIT-sälj håller undan. */
-  private reservedQty(base: string): number {
-    return this.state.open.filter((o) => o.base === base && o.kind === "LIMIT" && o.side === "SELL").reduce((t, o) => t + o.qty, 0);
+  private reservedQty(base: string, state: PaperState = this.state): number {
+    return state.open.filter((o) => o.base === base && o.kind === "LIMIT" && o.side === "SELL").reduce((t, o) => t + o.qty, 0);
   }
 
   getTicker(symbol: string): Promise<Ticker> { return this.market.getTicker(symbol); }
   getKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> { return this.market.getKlines(symbol, interval, limit); }
 
   async getAccount(): Promise<Account> {
-    const res = Math.min(this.state.usdc, this.reservedUsdc());
-    const balances: Balance[] = [{ asset: "USDC", free: this.state.usdc - res, locked: res }];
-    let total = this.state.usdc;
-    for (const [base, h] of Object.entries(this.state.holdings)) {
-      if (!(h.qty > 0)) continue;
-      const locked = this.reservedQty(base);
+    // Frys kontot före asynkrona prisfrågor så att en samtidig fill inte blandar gammalt och nytt saldo.
+    const state = this.snapshot();
+    const updatedAt = Date.now();
+    const res = Math.min(state.usdc, this.reservedUsdc(state));
+    const balances: Balance[] = [{ asset: "USDC", free: state.usdc - res, locked: res }];
+    const values = await Promise.all(Object.entries(state.holdings).map(async ([base, h]) => {
+      if (!(h.qty > 0)) return 0;
+      const locked = this.reservedQty(base, state);
       balances.push({ asset: base, free: Math.max(0, h.qty - locked), locked: Math.min(h.qty, locked) });
-      try { total += h.qty * (await this.market.getTicker(`${base}USDC`)).price; } catch { total += h.qty * h.avg; }
-    }
-    return { balances, totalValueUsdt: total, updatedAt: Date.now() };
+      const ticker = await this.market.getTicker(`${base}USDC`);
+      if (!Number.isFinite(ticker.price) || !(ticker.price > 0)) throw new Error(`Verifierat Bybit EU-pris saknas för ${base}USDC; kontovärdet är otillgängligt`);
+      return h.qty * ticker.price;
+    }));
+    const totalValueUsdt = state.usdc + values.reduce((sum, value) => sum + value, 0);
+    if (!Number.isFinite(totalValueUsdt)) throw new Error("TEST-kontots värde kunde inte verifieras");
+    return { balances, totalValueUsdt, updatedAt };
   }
 
   async getPositions(): Promise<Position[]> {
-    const out: Position[] = [];
-    for (const [base, h] of Object.entries(this.state.holdings)) {
-      if (!(h.qty > 0) || STABLES.includes(base)) continue;
-      let price = h.avg;
-      try { price = (await this.market.getTicker(`${base}USDC`)).price; } catch { /* senaste kända */ }
-      out.push({
-        symbol: `${base}USDC`, baseAsset: base, quoteAsset: "USDC", quantity: h.qty,
-        avgEntryPrice: h.avg, currentPrice: price, unrealizedPnlUsdt: (price - h.avg) * h.qty, openedAt: h.openedAt,
-      });
-    }
+    const state = this.snapshot();
+    const out = await Promise.all(Object.entries(state.holdings).filter(([base, h]) => h.qty > 0 && !STABLES.includes(base)).map(async ([base, h]): Promise<Position> => {
+      const ticker = await this.market.getTicker(`${base}USDC`);
+      const price = ticker.price;
+      if (!Number.isFinite(price) || !(price > 0)) throw new Error(`Verifierat Bybit EU-pris saknas för ${base}USDC; positionens nuvärde är otillgängligt`);
+      return { symbol: `${base}USDC`, baseAsset: base, quoteAsset: "USDC", quantity: h.qty,
+        avgEntryPrice: h.avg, currentPrice: price, unrealizedPnlUsdt: (price - h.avg) * h.qty, openedAt: h.openedAt };
+    }));
     return out;
   }
 
   /** Fyller en affär och uppdaterar saldot. Kastar fel om pengarna/innehavet inte räcker. */
   // reserved=true: väntande ordrar räknas bort (nya ordrar). false: en väntande order som nu fylls.
-  private fill(base: string, side: "BUY" | "SELL", qty: number, price: number, kind: string, reserved = true, group?: string): { qty: number; cost: number } {
+  private fill(base: string, side: "BUY" | "SELL", qty: number, price: number, kind: string, reserved = true, group?: string, orderId?: string): { qty: number; cost: number } {
     if (!(qty > 0) || !Number.isFinite(qty) || !(price > 0) || !Number.isFinite(price)) throw new Error("TEST: ogiltigt antal eller pris");
     if (side === "SELL" && group && qty > (this.state.lots[group]?.remaining ?? 0) + 1e-12) throw new Error("TEST: köpets kvarvarande antal räcker inte");
     const cost = qty * price, fee = cost * FEE;
-    let pnl: number | undefined;
+    const allocations: Array<{ tradeId: string | null; qty: number; basis: number | null }> = [];
     if (side === "BUY") {
       const free = this.state.usdc - (reserved ? this.reservedUsdc() : 0);
       if (cost + fee > free + 1e-9) throw new Error(`TEST: för lite USDC (fritt ${free.toFixed(2)}, behöver ${(cost + fee).toFixed(2)})`);
@@ -165,30 +186,46 @@ export class BybitPaperBroker implements BrokerAdapter {
       h.qty += qty;
       this.state.holdings[base] = h;
       this.state.usdc -= cost + fee;
-      if (group) this.state.lots[group] = { base, remaining: qty };
+      if (group) this.state.lots[group] = { base, remaining: qty, buyQty: qty, entryPrice: price, entryFee: fee, costBasisRemaining: cost + fee, openedAt: Date.now() };
+      allocations.push({ tradeId: group ?? null, qty, basis: null });
     } else {
       const h = this.state.holdings[base];
       const free = (h?.qty ?? 0) - (reserved ? this.reservedQty(base) : 0);
       if (!h || free + 1e-12 < qty) throw new Error(`TEST: du har bara ${Math.max(0, free)} ${base} fritt`);
-      pnl = (price - h.avg) * qty - fee; // vinst/förlust på affären (köpavgiften ligger i snittpriset)
-      h.qty -= qty;
-      if (h.qty <= 1e-12) delete this.state.holdings[base];
-      this.state.usdc += cost - fee;
-      // Manuell försäljning minskar lotterna i köpsordning; automatisk försäljning bara sin egen lott.
+      const oldAverage = h.avg;
+      const oldCost = h.avg * h.qty;
       let consume = qty;
+      let removedCost = 0;
       const lots = group ? [[group, this.state.lots[group]] as const] : Object.entries(this.state.lots);
-      for (const [, lot] of lots) {
+      for (const [tradeId, lot] of lots) {
         if (!lot || lot.base !== base || consume <= 0) continue;
         const used = Math.min(lot.remaining, consume);
-        lot.remaining -= used;
+        if (!(used > 0)) continue;
+        const basis = typeof lot.costBasisRemaining === "number" ? lot.costBasisRemaining * used / lot.remaining : null;
+        allocations.push({ tradeId, qty: used, basis });
+        if (basis !== null) lot.costBasisRemaining = Math.max(0, lot.costBasisRemaining! - basis);
+        removedCost += basis ?? oldAverage * used;
+        lot.remaining = Math.max(0, lot.remaining - used);
         consume -= used;
       }
+      if (consume > 1e-12) {
+        allocations.push({ tradeId: null, qty: consume, basis: null });
+        removedCost += oldAverage * consume;
+      }
+      h.qty = Math.max(0, h.qty - qty);
+      if (h.qty <= 1e-12) delete this.state.holdings[base];
+      else h.avg = Math.max(0, oldCost - removedCost) / h.qty;
+      this.state.usdc += cost - fee;
       this.state.open = this.state.open.filter((o) => !o.group || (this.state.lots[o.group]?.remaining ?? o.qty) > 1e-12);
       for (const o of this.state.open) if (o.group && this.state.lots[o.group]) o.qty = Math.min(o.qty, this.state.lots[o.group]!.remaining);
 
     }
-    this.state.fills.push({ id: `f${Date.now()}`, base, side, qty, price, fee, at: Date.now(), kind, pnl });
-    console.log(`[TEST] ${side === "BUY" ? "KÖP" : "SÄLJ"} ${qty} ${base} @ ${price} USDC (Bybit EU orderbok, ${kind}), avgift ${fee.toFixed(4)}`);
+    for (const allocation of allocations) {
+      const allocationFee = fee * allocation.qty / qty;
+      const pnl = side === "SELL" && allocation.basis !== null ? price * allocation.qty - allocationFee - allocation.basis : undefined;
+      this.state.fills.push({ id: randomUUID(), base, side, qty: allocation.qty, price, fee: allocationFee, at: Date.now(), kind, pnl,
+        tradeId: allocation.tradeId ?? undefined, group: allocation.tradeId ?? undefined, orderId: orderId ?? group });
+    }
     if (this.state.fills.length > 500) this.state.fills.shift();
     return { qty, cost };
   }
@@ -227,13 +264,14 @@ export class BybitPaperBroker implements BrokerAdapter {
     }
     if (!(qty > 0)) throw new Error("TEST: antalet måste vara större än 0");
 
+    const before = JSON.parse(JSON.stringify(this.state)) as PaperState;
     let status = "New", executedQty = 0, cost = 0, avg = 0;
     const marketable = order.type === "MARKET" ||
       (order.price !== undefined && (order.side === "BUY" ? order.price >= ask : order.price <= bid));
     if (order.type === "LIMIT" && order.price === undefined) throw new Error("TEST: LIMIT kräver pris");
 
     if (marketable) {
-      const r = this.fill(base, order.side, qty, ref, order.type, true, order.side === "BUY" ? id : sellGroup);
+      const r = this.fill(base, order.side, qty, ref, order.type, true, order.side === "BUY" ? id : sellGroup, id);
       status = "Filled"; executedQty = r.qty; cost = r.cost; avg = ref;
     } else {
       if (order.side === "BUY" && qty * order.price! * (1 + FEE) > this.state.usdc - this.reservedUsdc() + 1e-9) throw new Error("TEST: för lite fritt USDC för limit-ordern");
@@ -244,7 +282,8 @@ export class BybitPaperBroker implements BrokerAdapter {
     // TP/SL (bara efter köp): säljer automatiskt vid vinst eller förlust.
     // För ett LIMIT-köp som väntar läggs de först när köpet fyllts (check()).
     if (marketable && order.side === "BUY") this.addTpSl(id, base, executedQty, order.takeProfit, order.stopLoss, avg);
-    this.save();
+    try { this.save(); } catch (err) { this.state = before; throw err; }
+    if (executedQty > 0) console.log(`[TEST] ${order.side === "BUY" ? "KÖP" : "SÄLJ"} ${executedQty} ${base} @ ${avg} USDC (Bybit EU orderbok, ${order.type}), avgift ${(cost * FEE).toFixed(4)}`);
     this.schedule();
     return { orderId: id, symbol: order.symbol, side: order.side, type: order.type, status, executedQty, cummulativeQuoteQty: cost, avgFillPrice: avg, timestamp: Date.now() };
   }
@@ -276,7 +315,6 @@ export class BybitPaperBroker implements BrokerAdapter {
   private async check(): Promise<void> {
     if (!this.state.open.length) return;
     const bases = [...new Set(this.state.open.map((o) => o.base))];
-    let changed = false;
     for (const base of bases) {
       let b: { bid: number; ask: number };
       try { b = await this.book(base); } catch { continue; }
@@ -288,19 +326,21 @@ export class BybitPaperBroker implements BrokerAdapter {
           : b.bid <= o.price; // SL
         if (!hit) continue;
         const px = o.kind === "LIMIT" ? o.price : b.bid; // TP/SL säljs till marknadspris, som hos Bybit
+        const before = JSON.parse(JSON.stringify(this.state)) as PaperState;
         try {
           const have = this.state.holdings[base]?.qty ?? 0;
           const owned = o.group ? this.state.lots[o.group]?.remaining ?? 0 : have;
-          const r = this.fill(base, o.side, o.side === "SELL" ? Math.min(o.qty, have, owned) : o.qty, px, o.kind, false, o.side === "BUY" ? o.id : o.group);
+          const r = this.fill(base, o.side, o.side === "SELL" ? Math.min(o.qty, have, owned) : o.qty, px, o.kind, false, o.side === "BUY" ? o.id : o.group, o.id);
           this.state.open = this.state.open.filter((x) => x !== o && (!o.group || x.group !== o.group));
           if (o.kind === "LIMIT" && o.side === "BUY") this.addTpSl(o.id, base, r.qty, o.tp, o.sl, px);
+          this.save();
+          console.log(`[TEST] ${o.side === "BUY" ? "KÖP" : "SÄLJ"} ${r.qty} ${base} @ ${px} USDC (${o.kind}), avgift ${(r.cost * FEE).toFixed(4)}`);
         } catch (e) {
+          this.state = before;
           console.warn(`[TEST] ${o.kind}-order ${o.id} väntar på nytt försök: ${e instanceof Error ? e.message : String(e)}`);
         }
-        changed = true;
       }
     }
-    if (changed) this.save();
   }
 
   private schedule(): void {

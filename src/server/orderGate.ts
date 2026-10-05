@@ -153,6 +153,8 @@ export function needsApproval(): boolean {
 // ─── Väntande ordrar ──────────────────────────────────────────────────────
 
 export interface PendingOrder {
+  /** TEST: uttryckligt vald köplott för ett tidigt avslut. */
+  tradeId?: string;
   id: string;
   createdAt: string;
   source: string;

@@ -120,6 +120,7 @@ export async function runTechnicalAnalyst(
   broker: BrokerAdapter,
   symbols: string[],
   engines: StrategyEngine[],
+  timeframe = "1m",
 ): Promise<TechnicalReport> {
   log.agent("[Team] Teknisk analytiker startar…");
 
@@ -130,10 +131,10 @@ export async function runTechnicalAnalyst(
     ticker: { price: number; changePct24h: number; volume24h: number };
   }> = [];
 
-  for (const symbol of symbols.slice(0, 6)) {
+  for (const symbol of symbols) {
     try {
       const [klines, ticker] = await Promise.all([
-        broker.getKlines(symbol, "4h", 100),
+        broker.getKlines(symbol, timeframe, 200),
         broker.getTicker(symbol),
       ]);
       const indicators = computeIndicators(klines);
@@ -142,6 +143,8 @@ export async function runTechnicalAnalyst(
       log.warn(`[Teknisk] Kunde inte hämta ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  if (!analyses.length) throw new Error("Verifierade marknadsdata saknas för valda par; teknisk agent startas inte");
 
   // Kör motor-scans
   const motorSignals = [];
@@ -154,7 +157,7 @@ export async function runTechnicalAnalyst(
     }
   }
 
-  const dataContext = JSON.stringify({ analyses, motorSignals });
+  const dataContext = JSON.stringify({ timeframe, selectedSymbols: symbols, analyses, motorSignals });
 
   const client = createLlmClient(apiKey);
   const response = await client.messages.create({
@@ -163,13 +166,12 @@ export async function runTechnicalAnalyst(
     system: `Du är en senior kvantitativ trader i samma stil som Citadel: kombinerar teknisk analys med statistiska modeller för att tajma in/ut.
 Din uppgift: leverera en fullständig teknisk analys för varje symbol — inte bara siffror, utan tolkning + actionable plan.
 
-REGEL: Du MÅSTE alltid analysera ALLA dessa tidsramar (inte bara 1h):
-1m / 5m / 15m / 1h / 4h / 1d / 1v / 1m (månad)
+REGEL: Analysera endast valda par och det verifierade analysintervallet ${timeframe}. Uppgifter för andra tidsramar saknas; hitta aldrig på dem.
 
 REGEL: Om entry inte är optimal NU, säg så. Föreslå att vänta 1-5 min för bättre price action istället för att tvinga en trade.
 
 ANALYSERA FÖR VARJE SYMBOL:
-1. Trendriktning på alla 8 tidsramar (1m till 1M)
+1. Trendriktning för analysintervallet ${timeframe}
 2. Exakta support/resistance-nivåer (priser, inte luddiga zoner)
 3. 50/100/200-MA + crossover-signaler
 4. RSI + MACD + Bollinger Band — med tolkning på vanlig svenska
@@ -203,7 +205,7 @@ Svara i EXAKT detta JSON-format:
       "confidenceRating": "buy" | "strong_buy" | etc
     }
   ],
-  "topPick": "BTCUSDT" eller null,
+  "topPick": "BTCUSDC" eller null,
   "marketWideObservation": "1 mening om hela krypto-marknaden just nu"
 }
 
@@ -221,11 +223,14 @@ Svara BARA med JSON.`,
 
   try {
     const parsed = JSON.parse(extractJson(text)) as Omit<TechnicalReport, "role" | "rawText">;
+    parsed.analyses = parsed.analyses.filter((a) => symbols.includes(a.symbol));
+    if (parsed.topPick && !symbols.includes(parsed.topPick)) parsed.topPick = null;
+    if (!parsed.analyses.length) throw new Error("Den tekniska agenten gav ingen analys för valda par");
     log.agent(`[Teknisk] Top pick: ${parsed.topPick ?? "ingen"}, ${parsed.analyses.length} symboler`);
     return { role: "technical_analyst", ...parsed, rawText: text };
   } catch {
     log.warn(`[Teknisk] Parsningsfel (stop_reason=${response.stop_reason}, ${text.length} tecken).`);
-    return { role: "technical_analyst", analyses: [], topPick: null, rawText: text };
+    throw new Error("Teknisk analys kunde inte verifieras; Hanna startas inte");
   }
 }
 

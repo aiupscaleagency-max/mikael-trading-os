@@ -9,7 +9,7 @@
 //    TP/SL inte redan sålt det. Sparas i data/timed-exits.json (överlever omstart).
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { getTradeFeeRate } from "../risk/tradeSizing.js";
@@ -23,6 +23,7 @@ export const HORIZON_CHOICES = [1, 5, 15, 30] as const;
 export const MAX_AUTO_EXIT_SEC = 30 * 60;
 /** Ett förslag gäller minst så här länge, även för 1-minuters trades */
 const MIN_VALID_SEC = 120;
+const MAX_EXIT_ATTEMPTS = 6;
 
 const HORIZON_FILE = path.resolve("data/trade-horizon.json");
 const EXITS_FILE = path.resolve("data/timed-exits.json");
@@ -30,12 +31,15 @@ const EXITS_FILE = path.resolve("data/timed-exits.json");
 function readJson<T>(file: string, fallback: T): T {
   try { return JSON.parse(readFileSync(file, "utf8")) as T; } catch { return fallback; }
 }
-function writeJson(file: string, data: unknown): void {
+function writeJson(file: string, data: unknown): boolean {
   try {
     mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify(data, null, 2));
+    writeFileSync(file + ".tmp", JSON.stringify(data, null, 2));
+    renameSync(file + ".tmp", file);
+    return true;
   } catch (err) {
     log.warn(`[horisont] kunde inte spara ${path.basename(file)}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
   }
 }
 
@@ -117,11 +121,18 @@ export interface TimedExit {
   stopLoss?: number;
   refPrice?: number;
   buyRecordedQty?: number;
+  retryExhausted?: boolean;
+  manualResyncRequired?: boolean;
 }
 
 let exits: TimedExit[] = (() => {
   const v = readJson<TimedExit[]>(EXITS_FILE, []);
-  return Array.isArray(v) ? v : [];
+  if (!Array.isArray(v)) return [];
+  const restored = v.map((x) => x.status === "closing" && !x.pendingOrderId
+    ? { ...x, status: "needs_review" as const, lastError: "Omstart mitt under försäljning; ordern kan ha accepterats, avstämning krävs före nytt försök" }
+    : x);
+  if (restored.some((x, i) => x !== v[i])) writeJson(EXITS_FILE, restored);
+  return restored;
 })();
 const selling = new Set<string>();
 let timer: NodeJS.Timeout | null = null;
@@ -139,6 +150,8 @@ export function addTimedExit(e: Omit<TimedExit, "id" | "openedAt" | "exitAt" | "
     takeProfit: e.takeProfit, stopLoss: e.stopLoss, refPrice: e.refPrice, buyRecordedQty: e.buyRecordedQty ?? 0,
     pendingBuyOrderId: e.pendingBuyOrderId, horizonSec: e.horizonSec, status: e.pendingBuyOrderId ? "waiting_fill" : "waiting",
   };
+  const paused = exits.find((x) => x.live && entry.live && x.broker === entry.broker && x.manualResyncRequired && baseOf(x.symbol) === baseOf(entry.symbol));
+  if (paused) { entry.manualResyncRequired = true; entry.status = "needs_review"; entry.lastError = paused.lastError; }
   exits.push(entry);
   writeJson(EXITS_FILE, exits);
   log.trade(`[horisont] ${e.symbol} säljs automatiskt om ${Math.round(e.horizonSec / 60)} min (${e.live ? "LIVE" : "TEST"})`);
@@ -156,12 +169,28 @@ export function cancelTimedExit(id: string): boolean {
   return exits.length !== before;
 }
 
+/** Manuell delförsäljning ändrar lottägandet: behåll skydden men skicka inga nya automatiska ordrar. */
+export function pauseLiveExitsForManualSale(symbol: string, reason: string): number {
+  const matching = exits.filter((x) => x.live && baseOf(x.symbol) === baseOf(symbol));
+  for (const x of matching) {
+    x.manualResyncRequired = true; x.status = "needs_review";
+    x.lastError = `${reason}; återstående lottägande måste stämmas av före automatisk stängning`;
+  }
+  if (matching.length && !writeJson(EXITS_FILE, exits)) throw new Error("LIVE-tidsstängningarna kunde inte pausas på disk; avstå manuell order");
+  return matching.length;
+}
+
+/** Manuell order får inte överlappa en redan skickad/obekräftad automatisk säljorder. */
+export function isLiveTimedExitSelling(symbol: string): boolean {
+  return exits.some((x) => x.live && baseOf(x.symbol) === baseOf(symbol) && (selling.has(x.id) || !!x.pendingOrderId));
+}
+
 const baseOf = (s: string) => s.toUpperCase().replace("/", "").replace(/(USDT|USDC|USD|EUR)$/, "");
 
 /** Kör ett varv. Exporterat så att fel, omstart och delavslut kan testas utan timer. */
 export async function processTimedExits(brokers: Record<string, BrokerAdapter>, onEvent?: (e: string, d: unknown) => void): Promise<void> {
   for (const x of [...exits]) {
-    if (x.status === "needs_review" && !x.pendingOrderId) continue;
+    if (x.manualResyncRequired || x.retryExhausted || (x.status === "needs_review" && !x.pendingOrderId)) continue;
     if (!exits.some((e) => e.id === x.id) || (!x.pendingBuyOrderId && x.exitAt > Date.now()) || (x.retryAt ?? 0) > Date.now() || selling.has(x.id)) continue;
 
     if (x.tpslId && isLiveTpSlSelling(x.tpslId)) continue;
@@ -177,6 +206,7 @@ export async function processTimedExits(brokers: Record<string, BrokerAdapter>, 
       if (x.pendingBuyOrderId) {
         if (!groupBroker.getOrderResult) throw new Error("Köporderns fyllning kan inte verifieras");
         const buy = await groupBroker.getOrderResult(x.symbol, x.pendingBuyOrderId);
+        if (x.manualResyncRequired) continue;
         if (!buy) throw new Error("Köporderns status saknas; inväntar verifiering");
         const newlyBought = Math.max(0, buy.executedQty - (x.buyRecordedQty ?? 0));
         if (x.live && newlyBought > 0) recordLiveFill({ symbol: x.symbol, side: "BUY", qty: newlyBought, price: buy.avgFillPrice || x.refPrice || 0, kind: "LIMIT fyllt" });
@@ -204,6 +234,7 @@ export async function processTimedExits(brokers: Record<string, BrokerAdapter>, 
       if (x.pendingOrderId) {
         if (!groupBroker.getOrderResult) continue;
         const result = await groupBroker.getOrderResult(x.symbol, x.pendingOrderId);
+        if (x.manualResyncRequired) continue;
         if (!result) throw new Error("Väntande orders slutstatus kunde inte verifieras");
         const delta = Math.max(0, result.executedQty - (x.pendingExecutedQty ?? 0));
         x.remainingQty = Math.max(0, (x.remainingQty ?? x.qty) - delta);
@@ -231,9 +262,11 @@ export async function processTimedExits(brokers: Record<string, BrokerAdapter>, 
       }
       if (remaining <= 0) { removeExit(x.id); continue; }
       // Ta bort köpets TP/SL innan ordern skickas så att två bevakare inte säljer samtidigt.
+      if (x.manualResyncRequired) continue;
       if (x.tpslId) removeLiveTpSl(x.tpslId);
       if (x.paperGroup) await broker.cancelOrder(x.symbol, x.paperGroup);
       const acc = await broker.getAccount();
+      if (x.manualResyncRequired) continue;
       const balance = acc.balances.find((b) => b.asset.toUpperCase() === baseOf(x.symbol));
       const free = balance?.free ?? 0;
       const total = free + (balance?.locked ?? 0);
@@ -246,7 +279,7 @@ export async function processTimedExits(brokers: Record<string, BrokerAdapter>, 
         throw new Error("Inget verifierat fritt antal att stänga; innehavet kan vara låst eller ägandet oklart");
       }
       x.status = "closing";
-      writeJson(EXITS_FILE, exits);
+      if (!writeJson(EXITS_FILE, exits)) throw new Error("Stängningen kunde inte sparas; ingen säljorder skickad");
       const order = { symbol: x.symbol, side: "SELL" as const, type: "MARKET" as const, quantity: qty };
       orderAttempted = true;
       const r = x.paperGroup && groupBroker.placeTimedExitOrder
@@ -271,11 +304,15 @@ export async function processTimedExits(brokers: Record<string, BrokerAdapter>, 
       onEvent?.("timed-exit", { ...x, executedQty: executed, price: r.avgFillPrice });
     } catch (err) {
       x.attempts = (x.attempts ?? 0) + 1;
-      x.status = "retry";
+      x.status = x.manualResyncRequired ? "needs_review" : "retry";
       x.lastError = err instanceof Error ? err.message : String(err);
       if (orderAttempted && /timeout|timed out|ECONN|fetch failed|socket|network/i.test(x.lastError)) {
         x.status = "needs_review";
         x.lastError += "; ordern kan ha accepterats, kontrollera mäklaren före nytt försök";
+      }
+      if (x.attempts >= MAX_EXIT_ATTEMPTS) {
+        x.retryExhausted = true; x.status = "needs_review";
+        x.lastError += `; ${MAX_EXIT_ATTEMPTS} försök förbrukade, återstående innehav behöver manuell hantering`;
       }
       x.retryAt = Date.now() + Math.min(300_000, 15_000 * 2 ** Math.min(x.attempts - 1, 5));
       writeJson(EXITS_FILE, exits);
@@ -295,7 +332,8 @@ export function startTradeHorizon(brokers: Record<string, BrokerAdapter>, onEven
   onLiveTpSlSold((tpslId) => {
     for (const x of exits.filter((e) => e.tpslId === tpslId)) {
       for (const sibling of exits) if (sibling.broker === x.broker && baseOf(sibling.symbol) === baseOf(x.symbol) && sibling.baseline > x.baseline) sibling.baseline = Math.max(x.baseline, sibling.baseline - x.qty);
-      x.remainingQty = 0; x.exitAt = Date.now(); x.retryAt = 0;
+      x.remainingQty = 0;
+      removeExit(x.id); // Hooken körs nu bara efter verifierat fullständigt TP/SL-avslut.
     }
     writeJson(EXITS_FILE, exits);
   });

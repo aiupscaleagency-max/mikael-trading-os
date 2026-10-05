@@ -29,7 +29,7 @@ import {
   INTERVALS, REVIEW_MODELS, type Strategy,
 } from "../strategies/library.js";
 import { INDICATORS, OPERATORS } from "../strategies/ruleEngine.js";
-import { createLlmClient, extractJson, hasLlmCredentials, modelFor, toDirectModel, usingGateway } from "../llm/gateway.js";
+import { createLlmClient, getLlmDiagnostics, extractJson, hasLlmCredentials, modelFor, toDirectModel, usingGateway } from "../llm/gateway.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Live-lagret: Bybit-saldo, live-lampor och strategibiblioteket
@@ -131,6 +131,7 @@ function liveStatus() {
   const k = getKlineStreamStatus();
   const by = getBybitStreamStatus();
   const jev = getJevStatus();
+  const llm = getLlmDiagnostics(), lastLlm = llm.attempts.at(-1);
   const runner = getRunnerStatus();
   const w = getBybitWallet();
   return {
@@ -141,14 +142,14 @@ function liveStatus() {
       bybitMarket: lamp(by.public.connected, by.public.lastMessageAgoMs, `Bybit priser + ljus · ${by.public.detail}`),
       bybitAccount: lamp(by.private.connected, by.private.lastMessageAgoMs, `Bybit konto · ${by.private.detail}`),
       jev: {
-        connected: jev.route !== "rules_only" && !jev.circuitOpen,
-        lastMessageAgoMs: null,
-        detail: jev.route === "rules_only" ? "ingen JEV-nyckel — bara regler" : `JEV via ${jev.route}${jev.circuitOpen ? " · pausad efter fel" : ""}`,
+        connected: Boolean(jev.lastVerdict?.available && Date.now()-jev.lastVerdict.at < 300_000 && !jev.circuitOpen),
+        lastMessageAgoMs: jev.lastVerdict ? Date.now()-jev.lastVerdict.at : null,
+        detail: jev.lastVerdict ? `JEV ${jev.lastVerdict.available ? "verifierad" : "otillgänglig"} via ${jev.route}${jev.circuitOpen ? " · pausad efter fel" : ""}` : `JEV konfigurerad via ${jev.configuredRoute} · inget verifierat anrop ännu`,
       },
       ai: {
-        connected: hasLlmCredentials(),
-        lastMessageAgoMs: null,
-        detail: !hasLlmCredentials() ? "ingen AI-nyckel" : usingGateway() ? "AI-modeller via gateway (Claude, GPT m.fl.)" : "Claude direkt (bara Claude-modeller)",
+        connected: Boolean(lastLlm?.outcome === "success" && Date.now()-lastLlm.at < 300_000),
+        lastMessageAgoMs: lastLlm ? Date.now()-lastLlm.at : null,
+        detail: !hasLlmCredentials() ? "ingen AI-nyckel" : lastLlm ? `${lastLlm.outcome === "success" ? "Verifierat" : "Misslyckat"} anrop · ${lastLlm.route} · ${lastLlm.model}` : "AI-nycklar kopplade · inget verifierat anrop ännu",
       },
       strategies: {
         connected: runner.started,
