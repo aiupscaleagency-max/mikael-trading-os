@@ -15,7 +15,7 @@ const EU = "https://api.bybit.eu";
 
 
 export interface CustomSymbol {
-  symbol: string;   // BASEUSDT (så som signalmotorn och strömmarna följer paren)
+  symbol: string;   // BASEUSDC på Bybit EU
   base: string;
   usdc: boolean;    // finns BASE/USDC på Bybit EU (dit ordrarna går)
   addedAt: string;
@@ -33,14 +33,17 @@ function load(): CustomSymbol[] {
 
 function save(): void {
   fs.mkdirSync(path.dirname(FILE), { recursive: true });
-  fs.writeFileSync(FILE, JSON.stringify({ symbols: load() }, null, 2));
+  const temp = `${FILE}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify({ symbols: load() }, null, 2));
+  fs.renameSync(temp, FILE);
 }
 
 export function listCustomSymbols(): CustomSymbol[] {
-  return [...load()];
+  // Äldre sparade signalpar kan heta USDT trots verifierat USDC-handelspar.
+  return load().map((c) => ({ ...c, symbol: c.usdc ? `${c.base.toUpperCase()}USDC` : c.symbol }));
 }
 
-/** False om myntet är tillagt utan USDC-par (då prenumereras bara USDT-paret). */
+/** Bara verifierade USDC-par ingår i marknadskatalogen. */
 export function hasUsdcPair(base: string): boolean {
   const c = load().find((x) => x.base === base);
   return c ? c.usdc : true;
@@ -69,7 +72,7 @@ export async function addCustomSymbol(input: string, note?: string): Promise<Cus
   if (!/^[A-Z0-9]{2,15}$/.test(base)) throw new Error("Skriv myntets kortnamn, t.ex. PEPE eller WIF");
   if (["USDC", "USDT", "USD", "DAI", "FDUSD", "BUSD", "TUSD", "PYUSD", "EUR", "USDE"].includes(base)) throw new Error(`${base} är en stablecoin, inget att handla`);
   const symbol = `${base}USDC`;
-  if (config.crypto.symbols.includes(symbol) || adding.has(base)) throw new Error(`${base} följs redan`);
+  if (config.crypto.symbols.includes(symbol) || load().some((s) => s.base.toUpperCase() === base) || adding.has(base)) throw new Error(`${base} följs redan`);
   adding.add(base);
   try { return await addChecked(base, symbol, note); } finally { adding.delete(base); }
 }
@@ -81,8 +84,9 @@ async function addChecked(base: string, symbol: string, note?: string): Promise<
   if (euUsdc === null) throw new Error("Kunde inte nå Bybit EU. Försök igen om en stund.");
   if (!euUsdc) throw new Error(`${base} saknar USDC-par på Bybit EU`);
   const c: CustomSymbol = { symbol, base, usdc: euUsdc, addedAt: new Date().toISOString(), note: note?.slice(0, 100) };
+  const before = load().slice();
   load().push(c);
-  save();
+  try { save(); } catch (err) { list = before; throw err; }
   config.crypto.symbols.push(symbol);
   log.ok(`[egna mynt] ${base} tillagt${euUsdc ? "" : " (bara USDT-par på Bybit EU)"}`);
   return c;
@@ -93,10 +97,13 @@ export function removeCustomSymbol(input: string): CustomSymbol {
   const l = load();
   const i = l.findIndex((x) => x.base === base);
   if (i < 0) throw new Error(`${base} är inte ett eget mynt (de 15 vanliga tas bort i .env)`);
+  const before = l.slice();
   const [c] = l.splice(i, 1);
-  save();
-  const j = config.crypto.symbols.indexOf(c!.symbol);
-  if (j >= 0) config.crypto.symbols.splice(j, 1);
+  try { save(); } catch (err) { list = before; throw err; }
+  for (const symbol of [c!.symbol, `${c!.base.toUpperCase()}USDC`]) {
+    const j = config.crypto.symbols.indexOf(symbol);
+    if (j >= 0) config.crypto.symbols.splice(j, 1);
+  }
   log.info(`[egna mynt] ${base} borttaget`);
-  return c!;
+  return { ...c!, symbol: c!.usdc ? `${c!.base.toUpperCase()}USDC` : c!.symbol };
 }
