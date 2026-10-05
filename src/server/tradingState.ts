@@ -9,6 +9,7 @@ import { listPendingOrders } from "./orderGate.js";
 import { getAnalysisSelection } from "./analysisSelection.js";
 import { getAnalysisSession } from "./analysisSession.js";
 import { getAnalysis, snapshot as agentSnapshot } from "./agentActivity.js";
+import { listCustomSymbols } from "./customSymbols.js";
 import { getCachedTicker } from "./marketStream.js";
 
 interface Lot {
@@ -54,6 +55,17 @@ export function paperPositions(snap: PaperSnapshot, exits: TimedExit[], now: num
       unrealizedNet: null, unrealizedPct: null, tp: null, sl: null, potentialNet: null, potentialPct: null,
       stopNet: null, stopPct: null, exitStatus: null, lastError: null, retryAt: null}];
   }));
+}
+
+/** Tillgängliga marknader är en katalog, aldrig ett automatiskt analysurval. */
+export function mergeMarketSymbols(...groups: readonly (readonly string[])[]): string[] {
+  return [...new Set(groups.flat().map((s) => s.trim().toUpperCase()).filter((s) => /^[A-Z0-9]{2,20}USDC$/.test(s)))].sort();
+}
+const observedMarkets = new Map<string, string[]>();
+function marketCatalogue(extra: readonly string[] = []): string[] {
+  return mergeMarketSymbols(config.crypto.symbols, listCustomSymbols().filter((s) => s.usdc).map((s) => s.symbol),
+    getAnalysisSelection("TEST").selectedSymbols, getAnalysisSelection("LIVE").selectedSymbols,
+    ...observedMarkets.values(), extra);
 }
 
 // Samma ögonblicksbild delas av samtidiga vyer; innehållsrevisionen ändras inte av klockan.
@@ -102,8 +114,21 @@ async function collect(brokers: Record<string, BrokerAdapter>, broker: "bybit" |
     tp: o.tp ?? null, sl: o.sl ?? null, potentialNet: o.potentialPnl ?? null, potentialPct: o.potentialPnlPct ?? null,
     stopNet: o.stopPnl ?? null, stopPct: o.stopPnlPct ?? null, exitStatus: null, lastError: null, retryAt: null }));
   const selected = getAnalysisSelection(mode);
-  const orders = (await listPendingOrders()).filter((p) => p.venue === `broker:${broker}`);
-  const data = { schemaVersion: 1, broker, mode, executionMode: config.executionMode, quote: "USDC", account,
+  const allOrders = await listPendingOrders();
+  const orders = allOrders.filter((p) => p.venue === `broker:${broker}`);
+  const brokerMarkets = mergeMarketSymbols(positions.map((p) => p.symbol), orders.map((p) => p.symbol),
+    snap?.open.map((o) => `${o.base}USDC`) ?? [], listTimedExits().filter((x) => x.broker === broker).map((x) => x.symbol));
+  if (account.status === "ready" && JSON.stringify(observedMarkets.get(broker)) !== JSON.stringify(brokerMarkets)) {
+    observedMarkets.set(broker, brokerMarkets);
+    invalidateTradingState();
+  }
+  const paperMarketSnapshot = (brokers["bybit-paper"] as unknown as { snapshot?: () => PaperSnapshot })?.snapshot?.();
+  const sharedMarketNames = mergeMarketSymbols(brokerMarkets, allOrders.map((p) => p.symbol),
+    listTimedExits().map((x) => x.symbol),
+    Object.entries(paperMarketSnapshot?.holdings ?? {}).filter(([, h]) => h.qty > 0).map(([base]) => `${base}USDC`),
+    paperMarketSnapshot?.open.map((o) => `${o.base}USDC`) ?? []);
+  const marketSymbols = marketCatalogue(sharedMarketNames);
+  const data = { marketSymbols, schemaVersion: 1, broker, mode, executionMode: config.executionMode, quote: "USDC", account,
     sizing: { percent: getTradePercent(), amount, feeRate: getTradeFeeRate() }, selection: selected,
     selectedSymbols: selected.selectedSymbols, session: getAnalysisSession()?.broker === broker ? getAnalysisSession() : null,
     analysis: getAnalysis()?.broker === broker ? getAnalysis() : null, agents: { scope: "global_runtime", ...agentSnapshot() }, pendingOrders: orders, positions, results, totals: results?.totals ?? null,

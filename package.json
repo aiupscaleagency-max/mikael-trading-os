@@ -17,7 +17,7 @@
     "test:signal": "npm run build && node scripts/test-signal-engine.mjs",
     "export:candles": "npm run build && node scripts/export-candles.mjs",
     "serve": "tsx src/run.ts --serve",
-    "test:trading": "node --import tsx scripts/test-sizing-sessions.ts && node --import tsx scripts/test-timed-exits.ts && node --import tsx scripts/test-paper-lots.ts && node --import tsx scripts/test-analysis-scope.ts && node --import tsx scripts/test-trading-state.ts && node --import tsx scripts/test-llm-routing.ts && node --import tsx scripts/test-jev-routing.ts && node --import tsx scripts/test-two-agent-pipeline.ts"
+    "test:trading": "node --import tsx scripts/test-sizing-sessions.ts && node --import tsx scripts/test-timed-exits.ts && node --import tsx scripts/test-paper-lots.ts && node --import tsx scripts/test-analysis-scope.ts && node --import tsx scripts/test-trading-state.ts && node --import tsx scripts/test-llm-routing.ts && node --import tsx scripts/test-jev-routing.ts && node --import tsx scripts/test-two-agent-pipeline.ts && node --import tsx scripts/test-market-catalogue.ts && node scripts/test-dashboard-sync.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

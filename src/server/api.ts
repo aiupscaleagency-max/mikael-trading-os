@@ -841,6 +841,7 @@ export function startServer(
           const c = await addCustomSymbol(String(b.symbol ?? ""), b.note);
           void addKlineSymbol(c.symbol).catch((err) => log.warn(`[egna mynt] kline: ${err instanceof Error ? err.message : String(err)}`));
           addTickerBase(c.base, c.usdc);
+          broadcastEvent("markets-changed", { symbol: c.symbol, action: "added" });
           userAction(`lade till ${c.base}`, { coin: c.symbol });
           json(res, { ok: true, symbol: c, all: config.crypto.symbols });
         } catch (err) {
@@ -854,6 +855,7 @@ export function startServer(
           try {
             const c = removeCustomSymbol(m[1]!);
             removeKlineSymbol(c.symbol);
+            broadcastEvent("markets-changed", { symbol: c.symbol, action: "removed" });
             json(res, { ok: true, removed: c.base, all: config.crypto.symbols });
           } catch (err) {
             jsonStatus(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });

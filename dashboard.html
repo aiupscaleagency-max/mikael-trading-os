@@ -1001,8 +1001,8 @@ body.app-state-onboard .fc-panel{display:none !important}
     const url=new URL(path,location.origin);const d=await state(url.searchParams.get('broker')||broker());let body;
     if(url.pathname==='/api/results'){if(d.account.status!=='ready')throw Error(d.account.error||'Kontosaldot är inte verifierat');body=d.results;}
     else if(url.pathname==='/api/trade-sizing'){if(d.account.status!=='ready')throw Error(d.account.error||'Kontosaldot är inte verifierat');body={...d.sizing,...d.account,mode:d.mode,ok:true};}
-    else if(url.pathname==='/api/analysis-session')body={session:d.session,now:d.serverNow};
-    else if(url.pathname==='/api/pending-orders')body={orders:d.pendingOrders,executionMode:d.executionMode||'approve'};
+    else if(url.pathname==='/api/analysis-session')body={session:d.session,now:d.serverNow,executionMode:d.executionMode};
+    else if(url.pathname==='/api/pending-orders')body={orders:d.pendingOrders,executionMode:d.executionMode||'approve',serverNow:d.serverNow};
     else if(url.pathname==='/api/live/analysis')body={analysis:d.analysis};
     else throw Error('Okänd handelsvy');
     return {ok:true,status:200,json:async()=>body};
@@ -1018,7 +1018,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       if(selectionVersions.get(account)===version&&account===broker()){selectionDirty=false;invalidate();}return d;
     });selectionQueues.set(account,job);return job;
   }
-  window.TradingUI={state,read,broker,select,invalidate,resetSelection:()=>{invalidate();selection=null;selectionDirty=false;}};
+  window.TradingUI={state,read,broker,select,invalidate,proposalMatches:(o,a,account,now)=>o.status==='pending'&&o.source==='agent'&&o.venue==='broker:'+account&&Date.parse(o.createdAt)>=Date.parse(a.startedAt)&&Date.parse(o.expiresAt)>Number(now)&&(!a.endedAt||Date.parse(o.createdAt)<=Date.parse(a.endedAt))&&(!o.requestId||!a.requestId||o.requestId===a.requestId),scenarioPct:(entry,exit,fee)=>(exit/entry*(1-fee)/(1+fee)-1)*100,resetSelection:()=>{invalidate();selection=null;selectionDirty=false;}};
 })();
 </script>
 
@@ -1770,7 +1770,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 
     // ── Popup när analysen är klar: förslaget + GODKÄNN/AVVISA direkt ──
     var modal = document.getElementById("anaModal"), body = document.getElementById("anaBody");
-    var seenEnd = null, cdTimer = null;
+    var seenEnd = null, cdTimer = null,modalClockSkew=0;
     function mmss(ms) { var s = Math.max(0, Math.round(ms / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
     function closeModal() { modal.classList.remove("open"); if (cdTimer) { clearInterval(cdTimer); cdTimer = null; } }
     document.getElementById("anaClose").addEventListener("click", closeModal);
@@ -1778,13 +1778,13 @@ body.app-state-onboard .fc-panel{display:none !important}
     document.addEventListener("keydown", function (e) { if (e.key === "Escape" && modal.classList.contains("open")) closeModal(); });
     function money(n) { return "$" + Number(n).toFixed(2); }
     function outcome(o) {
-      var entry = Number(o.limitPrice || o.refPrice), stake = Number(o.quoteUsd) || (Number(o.quantity) * entry);
+      var entry = Number(o.limitPrice || o.refPrice),fee=Number(window.tradeSizing?.feeRate), stake = Number(o.quoteUsd) || (Number(o.quantity) * entry*(1+fee));
       if (!(entry > 0) || !(stake > 0) || o.side !== "BUY") return "";
-      var f = function (px) { return ((Number(px) / entry) * 0.9975 * 0.9975 - 1) * 100; };
+      if(!Number.isFinite(fee))return "<p>Netto kan inte uppskattas: avgift saknas.</p>";
+      var f = function (px) { return window.TradingUI.scenarioPct(entry,Number(px),fee); };
       var parts = [];
-      if (Number(o.takeProfit) > 0) { var p = f(o.takeProfit); parts.push('<span style="color:#3fb950">🟢 vinst +' + p.toFixed(1).replace(".", ",") + " % = " + money(stake * (1 + p / 100)) + "</span>"); }
-      if (Number(o.stopLoss) > 0) { var q = f(o.stopLoss); parts.push('<span style="color:#f85149">🔴 förlust ' + q.toFixed(1).replace(".", ",") + " % = " + money(stake * (1 + q / 100)) + "</span>"); }
-      return '<div style="margin-top:4px">Satsa ' + money(stake) + " → " + parts.join(" · ") + "</div>";
+      [['Målscenario',o.takeProfit],['Stoppscenario',o.stopLoss]].forEach(function(item){if(!(Number(item[1])>0))return;var p=f(item[1]);parts.push('<span style="color:'+(p>=0?'#3fb950':'#f85149')+'">'+item[0]+': '+(p>=0?'+':'')+p.toFixed(2)+' % · '+money(stake*p/100)+' netto · uppskattat slutvärde '+money(stake*(1+p/100))+'</span>');});
+      return '<div style="margin-top:4px">Satsa ' + money(stake) + " → " + parts.join(" · ") + " · Scenario efter uppskattade avgifter, ingen garanti." + "</div>";
     }
     function rowHtml(o) {
       var col = o.side === "BUY" ? "#3fb950" : "#f85149";
@@ -1800,61 +1800,26 @@ body.app-state-onboard .fc-panel{display:none !important}
         + '<div class="am-btns"><button type="button" class="am-ok" data-am="approve" data-id="' + esc(o.id) + '">✓ GODKÄNN</button>'
         + '<button type="button" class="am-no" data-am="reject" data-id="' + esc(o.id) + '">Avvisa</button></div></div>';
     }
-    // Minsta målpris per tidshorisont så att vinsten klarar avgiften (0,25 % in + ut)
-    var MIN_TP = { 1: 0.008, 5: 0.01, 15: 0.015, 30: 0.02 };
-    var bestCand = null;
-    async function bestBuy() {
-      try {
-        var r = await fetch("/api/signals"); var d = await r.json();
-        var longs = (d.signals || []).filter(function (x) { return x.direction === "LONG" && x.entry > 0; })
-          .sort(function (a, b) { return b.score - a.score; });
-        if (!longs.length) return null;
-        var x = longs[0], hz = window._hzMin || 1, tpPct = MIN_TP[hz] || 0.01;
-        // Utgå från priset JUST NU på Bybit EU (signalens pris är från senaste stängda ljus)
-        var usdc = x.symbol.replace(/USDT$/, "USDC"), entry = Number(x.entry);
-        try {
-          var tk = await (await fetch("https://api.bybit.eu/v5/market/tickers?category=spot&symbol=" + usdc)).json();
-          var live = Number(tk.result.list[0].lastPrice); if (live > 0) entry = live;
-        } catch (_) {}
-        var tp = Math.max(Number(x.target) || 0, entry * (1 + tpPct));
-        var sl = entry * (1 - tpPct * 0.6);
-        var dec = entry >= 1000 ? 1 : entry >= 1 ? 4 : 6;
-        return { symbol: x.symbol.replace(/USDT$/, "USDC"), score: x.score, reasons: (x.reasons || []).slice(0, 2), entry: entry,
-          tp: +tp.toFixed(dec), sl: +sl.toFixed(dec), hz: hz };
-      } catch (_) { return null; }
-    }
     async function openModal(a) {
       var list = [];
       try {
         var r = await window.TradingUI.read("/api/pending-orders"); var d = await r.json();
-        var since = Date.parse(a.startedAt || 0) - 5000;
-        list = (d.orders || []).filter(function (o) { return o.status === "pending" && o.source === "agent" && Date.parse(o.createdAt) >= since; });
+        modalClockSkew=Number(d.serverNow)-Date.now();
+        list=(d.orders||[]).filter(function(o){return window.TradingUI.proposalMatches(o,a,window.TradingUI.broker(),d.serverNow);});
       } catch (_) {}
-      // Vad analyserades och med vilken tid
-      var hzNow = window._hzMin || 1, pairs = "";
-      try { var tr = await fetch("/api/team/last"); var td = await tr.json(); pairs = ((td.team && td.team.symbols) || []).map(function (s) { return s.replace(/USD[TC]$/, ""); }).join(", "); } catch (_) {}
-      var head = '<div style="margin-bottom:6px;color:#8b95a7">Tidshorisont <b style="color:#e6e6e6">' + hzNow + " min</b>"
-        + (pairs ? " · analyserade <b style=\"color:#e6e6e6\">" + esc(pairs) + "</b>" : "") + " · kl " + new Date().toLocaleTimeString("sv-SE").slice(0, 5) + "</div>";
+      // Analyskontexten hör till denna körning och ändras inte av senare formulärval.
+      var pairs=(a.selectedSymbols||[]).join(', '),horizons=[...new Set(list.map(o=>o.horizonSec).filter(v=>v>0))];
+      var head='<div style="margin-bottom:6px;color:#8b95a7">Analyserade par: '+esc(pairs||'saknas')+' · candleintervall '+esc(a.timeframe||'saknas')+' · tradehorisont '+esc(horizons.length?horizons.map(v=>v/60+' min').join(', '):'ej verifierad')+'</div>';
       var html = "";
       if (!list.length) {
         var line = String(a.summary || "").split("\n").map(function (x) { return x.replace(/[*#>]/g, "").trim(); }).filter(Boolean)[0] || "Ingen tydlig signal just nu.";
-        html = head + '<div class="am-big" style="color:#8b95a7">VÄNTA – agenterna föreslår inget köp</div><div style="margin-top:6px">' + esc(line) + "</div>";
-        bestCand = await bestBuy();
-        if (bestCand) {
-          var stake = Math.max(1.1, Number((document.getElementById("ot-amt") || {}).value) || 0);
-          var fake = { side: "BUY", refPrice: bestCand.entry, quoteUsd: stake, takeProfit: bestCand.tp, stopLoss: bestCand.sl };
-          html += '<div class="am-row"><div style="font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Bästa köpläge just nu (indikatorerna)</div>'
-            + '<div class="am-big"><span style="color:#3fb950">▲ ' + esc(bestCand.symbol) + "</span> <span style=\"font-size:13px;color:#c9d1d9\">poäng +" + esc(bestCand.score) + "</span></div>"
-            + '<div style="color:#8b95a7">' + esc(bestCand.reasons.join(" · ")) + "</div>"
-            + '<div style="margin-top:2px;color:#8b95a7">Pris ~' + esc(bestCand.entry) + " · målpris " + esc(bestCand.tp) + " · stop-loss " + esc(bestCand.sl) + " · håll " + bestCand.hz + " min</div>"
-            + outcome(fake)
-            + '<div style="margin-top:6px;color:#fbbf24;font-size:12px">⚠ Agenterna sa vänta. Detta är ditt eget beslut.</div>'
-            + '<div class="am-btns"><button type="button" class="am-ok" data-am="anyway" data-stake="' + stake + '">▲ Köp ändå ' + money(stake) + '</button>'
-            + '<button type="button" class="am-no" data-am="close">Nej, vänta</button></div></div>';
-        } else {
-          html += '<div class="am-row">Inget par har köpsignal just nu (alla pekar nedåt). Med vanlig krypto (spot) tjänar man bara när priset stiger.'
-            + '<div class="am-btns"><button type="button" class="am-no" data-am="close">OK</button></div></div>';
-        }
+        var reported=(a.orders||[]),hasSent=reported.some(o=>o.status==='skickad'),hasBuy=(a.picks||[]).some(p=>p.action==='buy');
+        var title=!hasSent&&!hasBuy&&(a.picks||[]).length&&(a.picks||[]).every(p=>p.action==='hold')?'AVVAKTA · analysens beslut är HOLD':'Inga giltiga förslag att godkänna';
+        html=head+'<div class="am-big" style="color:#8b95a7">'+esc(title)+'</div><div style="margin-top:6px">'+esc(line)+'</div>';
+        if(reported.length)html+='<div class="am-row">'+reported.map(o=>'<div>'+esc(o.side)+' '+esc(o.symbol)+' · '+esc(o.status)+'</div>').join('')+'</div>';
+        if(hasSent)html+='<p>Analysen rapporterade skickad order. Kontrollera verifierade fills under Trades; skickad betyder inte att ordern är fylld.</p>';
+        else if(hasBuy)html+='<p>Analysen föreslog köp, men inget giltigt förslag väntar här. Kontrollera orderstatus och giltighet under Trades.</p>';
+        html += '<div class="am-btns"><button type="button" class="am-no" data-am="close">Stäng</button><button type="button" class="am-no" data-am="analysis">Se analys</button></div>';
       } else {
         html = head + list.map(rowHtml).join("");
       }
@@ -1869,7 +1834,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       if (cdTimer) clearInterval(cdTimer);
       var tick = function () {
         body.querySelectorAll(".am-cd").forEach(function (el) {
-          var left = Date.parse(el.dataset.exp) - Date.now();
+          var left = Date.parse(el.dataset.exp) - Date.now()-modalClockSkew;
           el.textContent = left > 0 ? mmss(left) : "för sent";
           if (left <= 0) { var row = el.closest(".am-row"); if (row) row.querySelectorAll("button[data-am=approve]").forEach(function (b) { b.disabled = true; b.style.opacity = ".4"; }); }
         });
@@ -1879,20 +1844,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     body.addEventListener("click", async function (e) {
       var b = e.target.closest("button[data-am]"); if (!b) return;
       if (b.dataset.am === "close") { closeModal(); return; }
-      if (b.dataset.am === "anyway" && bestCand) {
-        b.disabled = true;
-        try {
-          var rr = await fetch("/api/pending-orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-            symbol: bestCand.symbol, side: "BUY", quoteUsd: Number(b.dataset.stake), source: "popup: köp ändå",
-            takeProfit: bestCand.tp, stopLoss: bestCand.sl, horizonSec: bestCand.hz * 60,
-            reason: "Ditt val: " + bestCand.symbol + " poäng +" + bestCand.score + " (" + bestCand.reasons.join(", ") + ")" }) });
-          var dd = await rr.json().catch(function () { return {}; });
-          var host = b.closest(".am-row");
-          if (dd.ok && dd.pendingOrder) { host.outerHTML = rowHtml(dd.pendingOrder); }
-          else host.insertAdjacentHTML("beforeend", '<div style="margin-top:6px;color:#f85149">⚠ ' + esc(dd.error || ("HTTP " + rr.status)) + "</div>");
-        } catch (err) { alert("Fel: " + err.message); }
-        return;
-      }
+      if(b.dataset.am==='analysis'){closeModal();document.getElementById('analysisRows')?.scrollIntoView({behavior:'smooth'});return;}
       var row = b.closest(".am-row");
       row.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
       try {
@@ -8445,8 +8397,7 @@ document.addEventListener("DOMContentLoaded", boot);
 
   async function init(){
     let syms = [];
-    try{ const r = await fetch("/api/live/watchlist"); if(r.ok) syms = (await r.json()).agentSymbols || []; }catch(_){}
-    if(!syms.length) syms = ["BTCUSDC","ETHUSDC","SOLUSDC","XRPUSDC"];
+    try{syms=(await window.TradingUI.state()).marketSymbols||[];}catch(_){}
     order = [...new Set(syms.map(baseOf).filter(Boolean))];
     grid.innerHTML = order.map(colHtml).join("");
     order.forEach(b=>{ P[b] = { el: grid.querySelector(`.pp-col[data-b="${b}"]`), bars: [] }; });
@@ -8663,6 +8614,11 @@ document.addEventListener("DOMContentLoaded", boot);
   });
   syncPpTf(); setInterval(syncPpTf, 10000);
 
+  window.addEventListener('trading-market-catalog',()=>{
+    const catalog=(window.tradingMarketSymbols||[]).map(baseOf);
+    catalog.forEach(b=>{if(P[b])return;grid.insertAdjacentHTML('beforeend',colHtml(b));P[b]={el:grid.querySelector(`.pp-col[data-b="${b}"]`),bars:[]};loadBars(b);});
+    order=catalog;Object.entries(P).forEach(([b,p])=>{p.el.hidden=!catalog.includes(b);});connect();syncButtons();
+  });
   init();
   setInterval(()=>{ order.forEach(b=>{ if(P[b] && P[b].dirty){ P[b].dirty = false; draw(b); } }); }, 250);
   setInterval(loadSignals, 5000);
@@ -8679,7 +8635,8 @@ document.addEventListener("DOMContentLoaded", boot);
    till det paret. Synk: samma intervall och/eller samma hårkors. Valen sparas. */
 (function(){
   const box = document.getElementById("mcGrid"); if(!box || typeof LightweightCharts === "undefined") return;
-  const PAIRS = ["BTC","ETH","SOL","XRP","ADA","AVAX","DOGE","DOT","LINK","LTC"];
+  const PAIRS = [];
+  window.addEventListener("trading-market-catalog",()=>{PAIRS.splice(0,PAIRS.length,...(window.tradingMarketSymbols||[]).map(s=>s.replace(/USDC$/,"")));box.querySelectorAll(".mc-s").forEach(el=>{const chosen=el.value;el.innerHTML=[...new Set([...PAIRS,...(chosen?[chosen]:[])])].map(b=>`<option value="${b}">${b}/USDC${PAIRS.includes(b)?"":" · tidigare valt"}</option>`).join("");el.value=chosen;});});
   const IVS = {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","4h":"240","1d":"D","1w":"W","1M":"M"};
   const URLS = ["wss://stream.bybit.eu/v5/public/spot"];
   const KEY = "trade-multichart-eu";
@@ -8935,17 +8892,18 @@ document.addEventListener("DOMContentLoaded", boot);
 (function(){
   const body=document.getElementById("session-body");if(!body)return;
   const card=document.getElementById("session-card");
-  let session=null,loaded=false,lastKey="",polling=false,serverSkew=0;
+  let session=null,loaded=false,lastKey="",polling=false,serverSkew=0,executionMode="unknown";
+  const sessionSelection=document.createElement("p");card.insertBefore(sessionSelection,body);setInterval(()=>{let symbols=[];try{symbols=window.getAnalysisSymbols();}catch(_){}sessionSelection.textContent="Valda analyspar: "+(symbols.join(", ")||"inga")+" · candleintervall "+window.getAnalysisTimeframe();},1000);
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const selector=(id,label,options,selected)=>`<label>${label}<select id="${id}">${options.map(v=>`<option value="${v}"${v===selected?' selected':''}>${v} minuter</option>`).join('')}</select></label>`;
   function render(){
-    const key=JSON.stringify(session);if(key===lastKey && loaded)return;lastKey=key;
+    const key=JSON.stringify({session,executionMode});if(key===lastKey && loaded)return;lastKey=key;
     const active=session && session.status==='running';if(card)card.classList.toggle('active',!!active);
     body.innerHTML=active ? `<h3>Agentsession · ${esc(session.broker==='bybit'?'LIVE · riktiga pengar':'TEST · låtsaspengar')}</h3>
       <p>Analyser körs var ${esc(session.intervalMinutes)} minut. Förslag hamnar i Väntande ordrar och kräver Godkänn.</p>
       <div class="sess-grid"><div class="sess-cell"><div class="sl">Sessionens tid kvar</div><div class="sv" id="as-countdown">–</div></div><div class="sess-cell"><div class="sl">Tid per trade</div><div class="sv">${esc(session.horizonMinutes)} min</div></div><div class="sess-cell"><div class="sl">Belopp per trade</div><div class="sv">${esc(session.percent)} %</div></div><div class="sess-cell"><div class="sl">Körda analyser</div><div class="sv">${esc(session.analyses||0)}</div></div></div>
       <p>Sessionens sluttid stoppar nya analyser. Varje godkänd trade har en egen sluttid för automatisk försäljning.</p><p id="as-error" style="color:var(--red)">${esc(session.lastError||'')}</p><button class="sess-btn danger" id="as-stop">Stoppa session</button>` : `<h3>Starta agentsession · Bybit EU</h3>
-      <p>Riktiga analyser av EU-priser. TEST handlar med separat demosaldo; LIVE handlar med riktiga pengar. Alla nya brokerordrar kräver ditt godkännande.</p>
+      <p>Riktiga analyser av EU-priser. TEST handlar med separat demosaldo; LIVE handlar med riktiga pengar. Agentsessioner använder MANUELL-läget.</p>${executionMode!=="approve"?'<p class="negative">Agentsession kräver MANUELL-läget. Välj MANUELL i Väntande ordrar först.</p>':'<p>MANUELL är valt: nya orderförslag kräver Godkänn.</p>'}
       <div class="sess-grid" style="gap:12px;margin:12px 0">
         <label>Konto<select id="as-broker"><option value="bybit-paper">TEST · låtsaspengar</option><option value="bybit">LIVE · riktiga pengar</option></select></label>
         ${selector('as-duration','Sessionens längd',[15,30,60,120],30)}
@@ -8954,7 +8912,7 @@ document.addEventListener("DOMContentLoaded", boot);
         <label>Andel av aktuellt kontovärde per trade<input type="number" id="as-percent" min="0.1" max="5" step="0.1" value="${esc(window.tradeSizing?.percent||1)}"> %</label>
       </div><p>Belopp räknas om från valt kontos aktuella värde. 1 % på $1 000 000 innebär $10 000 per trade. Procenten avser investerat belopp.</p>
       ${session?`<p>Senaste session: ${esc(session.status)} · ${esc(session.analyses||0)} analyser ${session.lastError?'· '+esc(session.lastError):''}</p>`:''}<p id="as-error" style="color:var(--red)"></p><button class="sess-btn" id="as-start">Starta agentsession</button>`;
-    if(!active){document.getElementById('as-broker').value=document.getElementById('broker-select')?.value==='bybit'?'bybit':'bybit-paper';document.getElementById('as-start').onclick=start;}
+    if(!active){document.getElementById('as-broker').value=document.getElementById('broker-select')?.value==='bybit'?'bybit':'bybit-paper';document.getElementById('as-start').onclick=start;document.getElementById('as-start').disabled=executionMode!=="approve";}
     else document.getElementById('as-stop').onclick=()=>mutate({action:'stop'});
     countdown();
   }
@@ -8962,15 +8920,16 @@ document.addEventListener("DOMContentLoaded", boot);
     const btn=document.getElementById(payload.action==='start'?'as-start':'as-stop');if(btn)btn.disabled=true;
     try{const r=await fetch('/api/analysis-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await r.json();if(!r.ok)throw Error(d.error||'Sessionen kunde inte ändras');window.TradingUI.invalidate();await poll();}
     catch(e){const el=document.getElementById('as-error');if(el)el.textContent=e.message;}
-    finally{if(btn)btn.disabled=false;}
+    finally{if(btn)btn.disabled=payload.action==='start'&&executionMode!=="approve";}
   }
   function start(){
+    if(executionMode!=="approve"){document.getElementById("as-error").textContent="Välj MANUELL i Väntande ordrar först.";return;}
     let symbols;try{symbols=window.getAnalysisSymbols();}catch(e){document.getElementById('as-error').textContent=e.message;return;}
     const payload={selectedSymbols:symbols,timeframe:window.getAnalysisTimeframe(),action:'start',broker:document.getElementById('as-broker').value,durationMinutes:+document.getElementById('as-duration').value,intervalMinutes:+document.getElementById('as-interval').value,horizonMinutes:+document.getElementById('as-horizon').value,percent:+document.getElementById('as-percent').value};
     if(!(payload.percent>=.1 && payload.percent<=5)){document.getElementById('as-error').textContent='Välj 0,1–5 % per trade.';return;}
     mutate(payload);
   }
-  async function poll(){if(polling)return;polling=true;try{const r=await window.TradingUI.read('/api/analysis-session');const d=await r.json();if(!r.ok)throw Error(d.error||'Sessionsstatus saknas');session=d.session;serverSkew=Number(d.now)-Date.now();loaded=true;render();}catch(e){body.innerHTML='<p>Agentsessionens status kunde inte hämtas: '+esc(e.message)+'</p>';lastKey='';}finally{polling=false;}}
+  async function poll(){if(polling)return;polling=true;try{const r=await window.TradingUI.read('/api/analysis-session');const d=await r.json();if(!r.ok)throw Error(d.error||'Sessionsstatus saknas');session=d.session;executionMode=d.executionMode||"unknown";serverSkew=Number(d.now)-Date.now();loaded=true;render();}catch(e){body.innerHTML='<p>Agentsessionens status kunde inte hämtas: '+esc(e.message)+'</p>';lastKey='';}finally{polling=false;}}
   function countdown(){const el=document.getElementById('as-countdown');if(!el||!session)return;const ms=typeof session.endsAt==='number'?session.endsAt:Date.parse(session.endsAt);const sec=Math.max(0,Math.ceil((ms-Date.now()-serverSkew)/1000));el.textContent=Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0');}
   // Gamla slumpbaserade träningen ersätts i det aktiva sessionskortet.
   renderSession=()=>{if(!loaded){body.textContent='Hämtar agentsession…';}};
@@ -8995,13 +8954,20 @@ document.addEventListener("DOMContentLoaded", boot);
   const filters={period:'all',symbol:'all',status:'all',count:5,from:'',to:''};let current=null,offset=0,busy=false,lastError='',seen=new Set(),notificationAccounts=new Set();
   const hosts=[];
   const selectionPanel=document.createElement('section');selectionPanel.className='shared-trading';selectionPanel.id='analysis-selection';const chart=document.getElementById('mainChartCard');if(chart)chart.parentElement.insertBefore(selectionPanel,chart);
+  let catalogKey='';
+  function syncMarketCatalog(symbols){
+    const key=JSON.stringify(symbols);if(key===catalogKey)return;catalogKey=key;window.tradingMarketSymbols=symbols.slice();SYMBOLS.usdc.splice(0,SYMBOLS.usdc.length,...symbols);
+    ['sym-select','bet-sym'].forEach(id=>{const el=document.getElementById(id);if(!el)return;const selected=el.value;el.innerHTML=[...new Set([...symbols,...(selected?[selected]:[])])].map(symbol=>`<option value="${esc(symbol)}">${esc(symbol)}${symbols.includes(symbol)?"":" · tidigare valt"}</option>`).join('');el.value=selected;});
+    window.dispatchEvent(new Event('trading-market-catalog'));
+  }
   function renderSelection(){
-    if(!current)return;const symbols=[...new Set([...(current.selectedSymbols||[]),...SYMBOLS.usdc])];let selected=[];try{selected=window.getAnalysisSymbols();}catch(_){}
+    if(!current)return;const symbols=[...new Set([...(current.selectedSymbols||[]),...(current.marketSymbols||[])])];let selected=[];try{selected=window.getAnalysisSymbols();}catch(_){}
     selectionPanel.innerHTML=`<h3>Par som nästa analys och session ska använda</h3><p>Endast markerade par körs. Diagramvalet ändrar inte analysurvalet.</p><div class="shared-toolbar">${symbols.map(symbol=>`<label><input type="checkbox" data-analysis-symbol="${esc(symbol)}"${selected.includes(symbol)?' checked':''}>${esc(symbol)}</label>`).join('')}</div><label>Analysens candleintervall <select id="analysis-selected-timeframe">${['1m','5m','15m','30m','1h','4h','1d'].map(tf=>`<option${tf===window.getAnalysisTimeframe()?' selected':''}>${tf}</option>`).join('')}</select></label><p id="analysis-selection-status">${selected.length} par valda.</p>`;
   }
   function host(id,parent){if(!parent)return;const el=document.createElement('section');el.id=id;el.className='shared-trading';parent.appendChild(el);hosts.push(el);return el;}
   host('shared-trade-column',document.querySelector('#page-trade .right'));
-  const trades=document.getElementById('session-card');const tradeHost=host('shared-trades-page',trades?.parentElement);if(trades&&tradeHost)trades.parentElement.insertBefore(tradeHost,trades);
+  const sessionCard=document.getElementById('session-card');if(sessionCard)selectionPanel.after(sessionCard);
+  const trades=document.querySelector('#page-trades .paper-card')||document.getElementById('page-trades');const tradeHost=host('shared-trades-page',trades?.parentElement);if(trades&&tradeHost)trades.parentElement.insertBefore(tradeHost,trades);
   const floating=document.createElement('details');floating.id='shared-side-window';floating.innerHTML='<summary>Trades och köpförslag · Visa mer</summary>';document.body.appendChild(floating);host('shared-floating-body',floating);
   function source(){return `<p class="shared-status">${esc(current.mode)} · ${esc(current.broker)} · revision ${esc(current.revision)} · server ${esc(time(current.serverNow))}${lastError?' · INAKTUELLT: '+esc(lastError):''}${current.completeness?.prices===false?' · Prisdata ofullständiga':''}${current.completeness?.positions===false?' · Innehav kunde inte verifieras fullständigt':''}</p>`;}
   function select(id,label,options,value){return `<label>${label}<select data-shared-filter="${id}">${options.map(([v,l])=>`<option value="${esc(v)}"${v===value?' selected':''}>${esc(l)}</option>`).join('')}</select></label>`;}
@@ -9011,7 +8977,7 @@ document.addEventListener("DOMContentLoaded", boot);
   function history(x){return `<article class="shared-row"><b>${esc(x.symbol||x.coin)} · ${esc(x.side)} · ${esc(time(x.at))}</b><div>${x.side==='SELL'?'Realiserat netto '+money(x.pnl)+' · '+pct(x.pnlPct):'Verifierat köp · '+money(x.usd)}</div><details><summary>Visa mer</summary><div>ID ${esc(x.id||x.orderId||'saknas')} · pris ${money(x.price)} · avgift ${money(x.fee)}</div>${x.side==='SELL'&&x.pnl==null?'<div>Anskaffningspris saknas; netto kan inte beräknas.</div>':''}</details></article>`;}
   function render(){
     if(!current){hosts.forEach(el=>el.innerHTML='<h3>Trades och köpförslag</h3><p>'+esc(lastError||'Hämtar gemensam handelsstatus…')+'</p>');return;}
-    const available=current.account.status==='ready';const symbols=[...new Set([...(current.selectedSymbols||[]),...(current.positions||[]).map(p=>p.symbol)])];
+    const available=current.account.status==='ready';const symbols=[...new Set([...(current.marketSymbols||[]),...(current.selectedSymbols||[]),...(current.positions||[]).map(p=>p.symbol)])];
     const controls=select('period','Historikperiod',[['all','Alla tider'],['today','Senaste 24 timmar'],['week','Senaste 7 dagar'],['month','Senaste 30 dagar'],['custom','Eget datumintervall']],filters.period)+select('symbol','Par',[['all','Alla par'],...symbols.map(s=>[s,s])],filters.symbol)+select('status','Status',[['all','Alla'],['BUY','Köp'],['SELL','Sälj'],['open','Öppen'],['pending','Väntande'],['filled','Fylld'],['partially_filled','Delvis fylld'],['submitted','Skickad'],['failed','Misslyckad'],['rejected','Avvisad'],['expired','Utgången']],filters.status);
     const positions=(current.positions||[]).filter(filter),orders=(current.pendingOrders||[]).filter(filter),hist=(current.results?.trades||[]).filter(filter);
     const analysis=current.analysis;
@@ -9035,7 +9001,7 @@ document.addEventListener("DOMContentLoaded", boot);
     set('trades-summary',`${current.mode} · ${current.positions.length} lots · revision ${current.revision}`);
     ['trade-positions-table','trade-decisions-table','trade-history-table','lifetime-stats','audit-summary'].forEach(id=>{const el=document.getElementById(id);if(el)el.innerHTML=`<p>Verifierade ${current.mode}-data visas i Trades och köpförslag ovan · revision ${esc(current.revision)}. Äldre lokala data är arkiverade.</p>`;});
   }
-  async function refresh(force=false){if(busy)return;busy=true;const broker=window.TradingUI.broker();try{const d=await window.TradingUI.state(broker,force);if(broker!==window.TradingUI.broker())return;current=d;STATE.agentRuntime=d.agents;STATE.analysisSession=d.session;STATE.sharedSelectedSymbols=d.selectedSymbols;renderAgents();offset=epoch(d.serverNow)-Date.now();lastError='';render();const notifyNew=notificationAccounts.has(broker);notificationAccounts.add(broker);(d.pendingOrders||[]).filter(o=>o.side==='BUY'&&o.status==='pending'&&epoch(o.expiresAt)>epoch(d.serverNow)).forEach(o=>{if(!seen.has(o.id)){seen.add(o.id);if(notifyNew&&typeof pushInAppAlert==='function')pushInAppAlert(`Nytt köpförslag: ${o.symbol} · ${d.mode}. Granska förslaget; ingen trade är lagd ännu.`,6000);}});}catch(e){lastError=e.message;render();}finally{busy=false;}}
+  async function refresh(force=false){if(busy)return;busy=true;const broker=window.TradingUI.broker();try{const d=await window.TradingUI.state(broker,force);if(broker!==window.TradingUI.broker())return;current=d;syncMarketCatalog(d.marketSymbols||[]);STATE.agentRuntime=d.agents;STATE.analysisSession=d.session;STATE.sharedSelectedSymbols=d.selectedSymbols;renderAgents();offset=epoch(d.serverNow)-Date.now();lastError='';render();const notifyNew=notificationAccounts.has(broker);notificationAccounts.add(broker);(d.pendingOrders||[]).filter(o=>o.side==='BUY'&&o.status==='pending'&&epoch(o.expiresAt)>epoch(d.serverNow)).forEach(o=>{if(!seen.has(o.id)){seen.add(o.id);if(notifyNew&&typeof pushInAppAlert==='function')pushInAppAlert(`Nytt köpförslag: ${o.symbol} · ${d.mode}. Granska förslaget; ingen trade är lagd ännu.`,6000);}});}catch(e){lastError=e.message;render();}finally{busy=false;}}
   function countdown(){document.querySelectorAll('[data-shared-countdown]').forEach(el=>{const end=Number(el.dataset.sharedCountdown);if(!end)return;const sec=Math.max(0,Math.ceil((end-Date.now()-offset)/1000));el.textContent=sec?Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'):'Tid ute · inväntar verifierad säljfill';});}
   async function sell(symbol,tradeId){if(!current||current.account.status!=='ready')return;if(!confirm(current.mode==='LIVE'?`Skapa försäljning av hela ${symbol}-innehavet i LIVE? Enskilda lots saknas. Ordern väntar på Godkänn.`:`Skapa avslut av trade ${tradeId} i TEST? Ordern väntar på Godkänn.`))return;try{const r=await fetch('/api/pending-orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol,side:'SELL',...(current.mode==='LIVE'?{sellAll:true}:{tradeId,quantity:current.positions.find(p=>p.tradeId===tradeId)?.remainingQty}),broker:current.broker,orderType:'MARKET',source:'trade-kolumn',reason:'Manuellt avslut av vald trade'})});const d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'Orderförslaget kunde inte skapas');window.TradingUI.invalidate();await refresh(true);}catch(e){alert(e.message);}}
   document.addEventListener('change',e=>{
