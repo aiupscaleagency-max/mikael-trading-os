@@ -572,6 +572,8 @@ export function startServer(
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
         });
+        // Bekräfta anslutningen direkt även när inga handelsbeslut skickas.
+        res.write(": ansluten\n\n");
         sseClients.add(res);
         req.on("close", () => sseClients.delete(res));
         return;
