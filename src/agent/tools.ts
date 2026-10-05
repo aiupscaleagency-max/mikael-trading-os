@@ -13,10 +13,6 @@ import { log } from "../logger.js";
 // definition som skickas till API:et, plus en handler som faktiskt kör.
 
 import type { StrategyEngine } from "../strategies/types.js";
-import {
-  getRecentPoliticianTrades,
-  filterTopPerformers,
-} from "../data/capitol.js";
 
 export interface ToolContext {
   broker: BrokerAdapter;
@@ -66,7 +62,7 @@ export const TOOLS: Record<string, ToolDef> = {
     definition: {
       name: "get_account",
       description:
-        "Hämtar aktuella saldon och totalvärdet på kontot i USDT. Använd detta för att veta hur mycket kapital som finns att arbeta med.",
+        "Hämtar aktuella saldon och totalvärdet på kontot i USDC. Använd detta för att veta hur mycket kapital som finns att arbeta med.",
       input_schema: { type: "object", properties: {} },
     },
     handler: async (_input, ctx) => {
@@ -117,7 +113,7 @@ export const TOOLS: Record<string, ToolDef> = {
       input_schema: {
         type: "object",
         properties: {
-          symbol: { type: "string", description: "Binance spot-symbol, t.ex. BTCUSDT" },
+          symbol: { type: "string", description: "Bybit EU spot-symbol, t.ex. BTCUSDC" },
         },
         required: ["symbol"],
       },
@@ -135,7 +131,7 @@ export const TOOLS: Record<string, ToolDef> = {
       input_schema: {
         type: "object",
         properties: {
-          symbol: { type: "string", description: "Binance spot-symbol, t.ex. BTCUSDT" },
+          symbol: { type: "string", description: "Bybit EU spot-symbol, t.ex. BTCUSDC" },
           interval: {
             type: "string",
             enum: ["1m", "5m", "15m", "1h", "4h", "1d"],
@@ -177,16 +173,16 @@ export const TOOLS: Record<string, ToolDef> = {
     definition: {
       name: "place_order",
       description:
-        "Lägger en riktig order mot brokern. Detta verktyg går genom risk managern som kan blockera eller skala ner ordern. För BUY: specificera `quote_qty` (hur många USDT du vill spendera). För SELL: specificera `base_qty` (hur mycket av tokenen du vill sälja). Ange alltid en kort `reasoning` som förklarar varför.",
+        "Lägger en riktig order mot brokern. Detta verktyg går genom risk managern som kan blockera eller skala ner ordern. För BUY: specificera `quote_qty` (hur många USDC du vill spendera). För SELL: specificera `base_qty` (hur mycket av tokenen du vill sälja). Ange alltid en kort `reasoning` som förklarar varför.",
       input_schema: {
         type: "object",
         properties: {
-          symbol: { type: "string", description: "Binance spot-symbol, t.ex. BTCUSDT" },
+          symbol: { type: "string", description: "Bybit EU spot-symbol, t.ex. BTCUSDC" },
           side: { type: "string", enum: ["BUY", "SELL"] },
           type: { type: "string", enum: ["MARKET", "LIMIT"], description: "Orderstyp. MARKET för omedelbart." },
           quote_qty: {
             type: "number",
-            description: "För BUY MARKET: hur många USDT du vill spendera",
+            description: "För BUY MARKET: hur många USDC du vill spendera",
           },
           base_qty: {
             type: "number",
@@ -336,7 +332,7 @@ export const TOOLS: Record<string, ToolDef> = {
           });
         }
         log.trade(
-          `${result.side} ${result.executedQty} ${result.symbol} @ ${result.avgFillPrice.toFixed(4)} (${result.cummulativeQuoteQty.toFixed(2)} USDT)`,
+          `${result.side} ${result.executedQty} ${result.symbol} @ ${result.avgFillPrice.toFixed(4)} (${result.cummulativeQuoteQty.toFixed(2)} USDC)`,
           { orderId: result.orderId, reasoning },
         );
         return {
@@ -432,83 +428,11 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   },
 
-  run_strategy_scan: {
-    definition: {
-      name: "run_strategy_scan",
-      description:
-        "Kör en eller alla aktiva strategi-motorer och returnerar deras signaler. " +
-        "Motor A (politician_copy): spårar Congress-trades. Motor B (wheel_strategy): " +
-        "Wheel-signaler (puts/calls). Motor C (crypto_momentum): krypto momentum-setup. " +
-        "Returnerar en lista signaler med action, symbol, reasoning och confidence.",
-      input_schema: {
-        type: "object",
-        properties: {
-          engine: {
-            type: "string",
-            enum: ["politician_copy", "wheel_strategy", "crypto_momentum", "all"],
-            description: "Vilken motor att köra, eller 'all' för alla aktiva",
-          },
-        },
-        required: ["engine"],
-      },
-    },
-    handler: async (input, ctx) => {
-      const engineName = str(input, "engine");
-      const toRun =
-        engineName === "all"
-          ? ctx.engines
-          : ctx.engines.filter((e) => e.name === engineName);
-
-      if (toRun.length === 0) {
-        return { error: `Ingen motor '${engineName}' aktiv. Aktiva: ${ctx.engines.map((e) => e.name).join(", ")}` };
-      }
-
-      const allSignals = [];
-      for (const engine of toRun) {
-        const signals = await engine.scan();
-        allSignals.push(...signals);
-      }
-
-      return {
-        enginesRun: toRun.map((e) => e.name),
-        totalSignals: allSignals.length,
-        signals: allSignals,
-      };
-    },
-  },
-
-  get_politician_trades: {
-    definition: {
-      name: "get_politician_trades",
-      description:
-        "Hämtar senaste aktietransaktioner från US Congress-medlemmar (STOCK Act disclosures). " +
-        "OBS: Data har 1-45 dagars fördröjning. Visar politiker, parti, ticker, belopp och datum. " +
-        "Kan filtreras till bara top performers.",
-      input_schema: {
-        type: "object",
-        properties: {
-          limit: { type: "number", description: "Antal trades, default 20" },
-          topOnly: {
-            type: "boolean",
-            description: "true = bara top-performande politiker (Pelosi, McCaul, etc.)",
-          },
-        },
-      },
-    },
-    handler: async (input) => {
-      const limit = optNum(input, "limit") ?? 20;
-      const topOnly = input.topOnly === true;
-      let trades = await getRecentPoliticianTrades(limit);
-      if (topOnly) trades = filterTopPerformers(trades);
-      return { count: trades.length, trades };
-    },
-  },
-
   get_all_positions: {
     definition: {
       name: "get_all_positions",
       description:
-        "Hämtar positioner från ALLA anslutna brokers (Alpaca, Blofin, Binance). " +
+        "Hämtar positioner separat från Bybit TEST och LIVE. " +
         "Returnerar en sammanfattning per broker med totalt värde och individuella positioner. " +
         "Använd för att se hela portföljen innan du fattar beslut.",
       input_schema: { type: "object", properties: {} },

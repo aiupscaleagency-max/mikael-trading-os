@@ -38,6 +38,7 @@ interface OpenOrder {
   createdAt: number;
 }
 interface PaperState {
+  initialCapital: number;
   lots: Record<string, { base: string; remaining: number }>;
   usdc: number;
   holdings: Record<string, Holding>;
@@ -58,6 +59,7 @@ export class BybitPaperBroker implements BrokerAdapter {
     this.baseUrl = cfg.baseUrl || "https://api.bybit.eu";
     this.market = new BybitBroker({ apiKey: "", apiSecret: "", quote: cfg.quote || "USDC", baseUrl: this.baseUrl });
     this.state = this.load();
+    this.save();
     this.schedule();
   }
 
@@ -73,9 +75,16 @@ export class BybitPaperBroker implements BrokerAdapter {
         s.lots = {};
         for (const o of s.open ?? []) if (o.group) s.lots[o.group] = { base: o.base, remaining: o.qty };
       }
-      if (typeof s.usdc === "number") return { lots: s.lots ?? {}, usdc: s.usdc, holdings: s.holdings ?? {}, open: s.open ?? [], fills: s.fills ?? [] };
+      if (typeof s.usdc === "number") {
+        // Höj befintligt TEST-startkapital en gång; behåll positioner, avgifter och resultat.
+        const target = Number(process.env.PAPER_START_USDC ?? 1_000_000) || 1_000_000;
+        const previous = s.initialCapital ?? 10_000;
+        if (target > previous) s.usdc += target - previous;
+        s.initialCapital = Math.max(previous, target);
+        return { initialCapital: s.initialCapital, lots: s.lots ?? {}, usdc: s.usdc, holdings: s.holdings ?? {}, open: s.open ?? [], fills: s.fills ?? [] };
+      }
     } catch { /* första gången */ }
-    return { lots: {}, usdc: Number(process.env.PAPER_START_USDC ?? 1_000_000) || 1_000_000, holdings: {}, open: [], fills: [] };
+    return { initialCapital: Number(process.env.PAPER_START_USDC ?? 1_000_000) || 1_000_000, lots: {}, usdc: Number(process.env.PAPER_START_USDC ?? 1_000_000) || 1_000_000, holdings: {}, open: [], fills: [] };
   }
 
   private save(): void {

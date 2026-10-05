@@ -52,7 +52,7 @@ header{position:sticky;top:0;z-index:100;background:var(--card);border-bottom:1p
 .badge.paper{background:rgba(16,185,129,.15);color:var(--green);border:1px solid var(--green)}
 .badge.live{background:rgba(239,68,68,.15);color:var(--red);border:1px solid var(--red)}
 
-/* Mode-switcher (Test / Propose / Live) — Blofin-inspirerad, tydlig */
+/* Tydligt kontoval mellan TEST och LIVE. */
 .mode-switcher{display:flex;gap:0;background:var(--card2);padding:3px;border-radius:7px;border:1px solid var(--border)}
 .mode-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:7px 16px;font-size:13px;font-weight:800;border-radius:5px;color:var(--label);transition:all .15s;letter-spacing:.6px;min-width:84px;line-height:1.1;gap:3px}
 .mode-btn .mode-sub{font-size:9px;font-weight:600;letter-spacing:.5px;opacity:.85;text-transform:uppercase}
@@ -1168,8 +1168,6 @@ body.app-state-onboard .fc-panel{display:none !important}
       <div class="ob-hint">💡 Tips: börja med ~$10 i krediter på Anthropic-kontot. Det räcker för 30+ dagars körning.</div>
       <div class="ob-status" id="ob-anthropic-status"></div>
     </div>
-
-    <!-- STEG 2: BINANCE -->
 
 
     <!-- STEG 3: PERPLEXITY (valfri) -->
@@ -2567,7 +2565,6 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
 
-
   </div>
   <p style="margin:14px 12px;font-size:11px;color:var(--dim);line-height:1.5">
     💡 Klicka på ett par för att ladda det i charten på Trade-sidan. Hovra för att pausa rullningen.
@@ -2782,7 +2779,6 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <div style="display:grid;grid-template-columns:1fr;gap:10px;margin:0 10px">
-    <!-- Konto-saldo card — visar Binance TESTNET eller LIVE beroende på mode -->
     <div class="paper-card" id="paper-card">
       <div class="pc-row">
         <div class="pc-col">
@@ -2812,8 +2808,6 @@ body.app-state-onboard .fc-panel{display:none !important}
         <button class="pc-reset" id="pc-reset" style="display:none">↻ Reset</button>
       </div>
     </div>
-
-
 
 
     <!-- Session Mode card -->
@@ -2948,9 +2942,6 @@ body.app-state-onboard .fc-panel{display:none !important}
     <p style="font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:8px">Bybit-nycklarna ligger i .env på din dator (BYBIT_API_KEY för LIVE, separat paper-konto för TEST). TEST är ett separat paper-konto; LIVE använder ditt riktiga Bybit EU-konto.</p>
 
 
-
-
-
     <h4 style="margin-top:18px">Risk &amp; Position-sizing</h4>
     <p style="font-size:11px;color:var(--dim);line-height:1.5">Sätts i <code style="background:var(--bg);padding:1px 4px;border-radius:2px">.env</code>-filen på VPS:en (DEFAULT/MIN/MAX_POSITION_USD, MAX_DAILY_SPEND_USD osv). Belopp per trade väljs i procentpanelen på Trade-sidan. Sessionslängd och tid per trade väljs under Trades.</p>
   </div>
@@ -2970,7 +2961,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   <div class="live-modal">
     <h2>⚠ LIVE-LÄGE AKTIVERAS</h2>
     <div class="warning" style="font-size:14px;line-height:1.6">
-      Du växlar till <b>LIVE</b>. Alla trades blir <b>RIKTIGA orders</b> med <b>RIKTIGA pengar</b> på din Binance.<br><br>
+      Du växlar till <b>LIVE</b>. Alla trades blir <b>RIKTIGA orders</b> med <b>RIKTIGA pengar</b> på ditt Bybit EU-konto.<br><br>
       Säkerhetslås: <b id="live-cap-stake">max $5/order</b> · <b id="live-cap-day">max $10 köp per dag</b> · kill-switch tillgänglig längst ner i sidomenyn.
       <div id="live-lock-note" style="margin-top:10px;font-size:13px"></div>
     </div>
@@ -3062,7 +3053,6 @@ const CFG = {
   key: localStorage.getItem("trading_key") || "",
   mode: (SAVED_URL_OK ? localStorage.getItem("trading_mode") : null) || (SAME_ORIGIN ? "live" : "demo")
 };
-// Riktiga marknadspriser (Binance publik data) när vi är kopplade till boten.
 // Påverkar bara vad som visas, inte vilka ordrar som läggs: det styrs av
 // MODE/EXECUTION_MODE på servern.
 function useRealPrices(sym){
@@ -3905,22 +3895,9 @@ function executeConfirmedTrade(c){
 }
 
 // Smart trade-router — väljer watch eller direkt-execute beroende på session
-// Routing: TEST = paper-sim, PROPOSE/TESTNET = Binance Testnet, LIVE = Binance Mainnet
-async function executeBinanceOrder(sym, side, amount, mode){ return {ok:false,error:"Endast Bybit EU stöds"}; }
 
-function requestTradeExecution(sym, side, amount, timeframeSec){
-  // Mikes regel: ALLT går till Binance API (testnet eller live)
-  // Ingen lokal paper-simulering — saldo speglas alltid från Binance
-  // - TEST/paper + PROPOSE = Binance Testnet (gratis demo USDT)
-  // - LIVE = Binance Mainnet (riktiga pengar, max $5/trade)
-  const mode = currentUiMode === "live" ? "live" : "testnet";
-  if(mode === "live" && amount > 5){
-    pushInAppAlert(`🛡 LIVE-säkerhetslås: max $5/trade. Sänk beloppet eller byt till TEST/PROPOSE.`, 6000);
-    return null;
-  }
-  executeBinanceOrder(sym, side, amount, mode);
-  return { id: mode+"-pending-"+Date.now(), sym, side, amount, mode };
-}
+
+function requestTradeExecution(sym, side, amount, timeframeSec){ placeRealBet(side === "BUY" ? "UP" : "DOWN", sym.replace(/USDT$/, "USDC"), timeframeSec, amount); return null; }
 
 /* ======================================================================
    CHART
@@ -4318,7 +4295,6 @@ function tick(){
 
   // evaluate active positions (READ-ONLY: live PnL för rendering)
   evalPositions();
-  // PAPER-LOOPS DISABLED: dessa körde mot STATE.tradePositions vilket nu är 437 Binance-positioner
   // → 437 spam-notiser till Telegram per tick. Auto-sell/trailing hanteras nu av positionMonitor.ts (backend).
   // evalScalpTrades();
   // evaluateTrailingStops();
@@ -4369,7 +4345,6 @@ function updateTickerStrip(){
    BET / POSITIONS
    ====================================================================== */
 // Kopplad till boten: CALL = köp, PUT = sälj, som en riktig order i Väntande
-// ordrar hos aktiv mäklare (TEST = Alpaca paper). Inget läggs förrän du trycker
 // Godkänn, och samma gränser gäller som för alla andra ordrar.
 function betsAreReal(){ return CFG.mode === "live"; }
 function syncBetLabels(){
@@ -4377,7 +4352,7 @@ function syncBetLabels(){
   const badge = document.getElementById("bet-badge"), note = document.getElementById("bet-note");
   if(badge){ badge.textContent = real ? "VÄNTANDE ORDER" : "SIMULERING"; badge.title = real ? "Lägger en riktig order i Väntande ordrar. Inget skickas förrän du trycker Godkänn." : "Låtsasdata i webbläsaren. Ingen riktig order, ingen riktig analys."; }
   if(note) note.textContent = real
-    ? "CALL = köp, PUT = sälj (krypto går inte att blanka, så PUT kräver att du äger myntet). Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. Tidshorisonten är en påminnelse; ordern stängs inte av sig själv."
+    ? "CALL = köp, PUT = sälj (krypto går inte att blanka, så PUT kräver att du äger myntet). Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. Godkända köp med tidshorisont upp till 30 minuter stängs automatiskt när tiden gått ut."
     : "Låtsas-vad i webbläsaren med påhittad utbetalning (85%). Ingen order skickas till någon mäklare.";
 }
 async function placeRealBet(direction, sym, tf, amt){
@@ -4385,7 +4360,7 @@ async function placeRealBet(direction, sym, tf, amt){
   try{
     const r = await fetch("/api/pending-orders", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol: sym, side, quoteUsd: amt, source: "snabb-trade",
+      body: JSON.stringify({ symbol: sym, side, quoteUsd: amt, source: "snabb-trade", horizonSec: tf,
         reason: `Snabb-trade ${direction === "UP" ? "CALL" : "PUT"} · tidshorisont ${tf >= 60 ? Math.round(tf/60) + " min" : tf + " s"}` }),
     });
     const d = await r.json().catch(()=>({}));
@@ -4936,7 +4911,7 @@ function simulateAgentAnswer(key, q, history){
         `${randSym} har bästa risk/reward — Karin kalibrerar 1.0x sizing`,
         `${randSym} ligger nära 200-EMA stöd, Albert ser uppstuds-setup`
       ]);
-      return `OK. Jag tar **${action} ${randSym}** för $${amount} (price ~${randPrice}).\n\nGrund: ${reasons}. Stop -2% från entry.\n\n${CFG.mode==="live"?"Ska jag köra ordern direkt?":"⚠️ Du är i TEST-läge — ordern går till testnet, inte real Binance."}`;
+      return `OK. Jag tar **${action} ${randSym}** för $${amount} (price ~${randPrice}).\n\nGrund: ${reasons}. Stop -2% från entry.\n\n${CFG.mode==="live"?"Ska jag köra ordern direkt?":"TEST använder Bybit EU paper och låtsaspengar. Inget skickas innan ditt godkännande."}`;
     }
     if(challenging){
       return `Schysst utmaning. ${pick([
@@ -5508,7 +5483,6 @@ async function sendTeamChat(){
   renderTeamChatLog();
 
   try{
-    // BINANCE-AGENT via Claude API — mänsklig dialog + tool_use för riktiga orders
     const mode = currentUiMode === "live" ? "live" : "testnet";
     const history = teamChatLog
       .filter(m => m.role === "user" || m.role === "team")
@@ -5533,11 +5507,7 @@ async function sendTeamChat(){
         executed: data.executed
       });
       // Om tool exekverades → trigger refresh av saldo + trade-history
-      if(data.toolCall && typeof refreshBinanceSync === "function"){
-        _lastPtFetch.testnet = 0; _lastPtFetch.live = 0;
-        _lastBinTrades.ts = 0;
-        setTimeout(refreshBinanceSync, 500);
-      }
+
     }
   } catch(e) {
     teamChatLog.pop();
@@ -5947,10 +5917,9 @@ function saveTradeData(){
 }
 
 function loadTradeData(){
-  // PAPER-DATA RENSAS: alla siffror speglas nu från Binance via /api/binance/*
   // Gammalt paper-state i localStorage rensas vid first-load med ny version-tag
   const PAPER_DATA_VERSION_KEY = "trading_data_version";
-  const CURRENT_DATA_VERSION = "binance-only-v1";
+  const CURRENT_DATA_VERSION = "bybit-eu-v2";
   if(localStorage.getItem(PAPER_DATA_VERSION_KEY) !== CURRENT_DATA_VERSION){
     localStorage.removeItem("trading_positions");
     localStorage.removeItem("trading_history");
@@ -6411,7 +6380,6 @@ function log_ok(msg){ console.log("[OK]", msg); }
 
 // Render paper-balance i header + på Trades-sidan
 function renderPaperBadge(){
-  // DISABLED — header pb-equity uppdateras nu från Binance Testnet (refreshBinanceSync)
   // Lämnar funktionen för bakåtkompatibilitet men gör ingenting
   return;
   // Hero-card
@@ -6797,9 +6765,8 @@ function renderTradesPage(){
   renderWatchesAndConfirms();
   renderLifetimeStats();
   renderAuditTrail();
-  // BINANCE-SPEGLING: hämta riktiga positions/decisions/trades från Binance
   // Throttlad så vi inte spammar API:et
-  maybeRefreshBinanceTradeData();
+
   // Agent Learnings: persistent lärdoms-panel
   refreshAgentLearnings();
   const positions = STATE.tradePositions || [];
@@ -6811,8 +6778,7 @@ function renderTradesPage(){
   if(posTbl){
     if(!positions.length){
       posTbl.innerHTML = `<div class="tt-empty">Inga öppna positioner. Skriv "Köp BTC för $50" i chatten — eller klicka "Kör analys" så jobbar Hanna automatiskt.</div>`;
-    } else if(positions[0]?.fromBinance){
-      // Binance-positioner: enklare rendering (ingen scalp/timeframe), avrundat värde
+    } else if(positions[0]?.importedPosition){
       posTbl.innerHTML = `<div class="tt-tbl">${positions.map(p=>{
         const valueStr = p.amount >= 100 ? "$"+p.amount.toFixed(2) : "$"+p.amount.toFixed(4);
         const qtyStr = p.qty >= 1 ? p.qty.toFixed(4) : p.qty.toFixed(6);
@@ -6826,7 +6792,7 @@ function renderTradesPage(){
           <div class="tt-meta">→ värde nu</div>
           <div class="tt-pnl up">${valueStr}</div>
           <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
-            <span class="tt-time" style="font-size:9px;color:var(--dim)">på Binance</span>
+            <span class="tt-time" style="font-size:9px;color:var(--dim)">äldre importerad position</span>
             <button class="tt-act" data-close="${p.id}">Sälj</button>
           </div>
         </div>`;
@@ -6837,7 +6803,8 @@ function renderTradesPage(){
         b.addEventListener("click", ()=>{
           if(!confirm("Sälja denna position via market-order?")) return;
           // Skicka SELL-instruction till Hanna via chatt
-          const sym = b.dataset.close.replace(/^binance-(live|test)-/, "");
+          const sym = positions.find(p=>p.id===b.dataset.close)?.sym;
+          if(!sym)return;
           if(typeof teamChatLog !== "undefined"){
             teamChatLog.push({role:"user", text:`sälj ${sym}`, timestamp:Date.now()});
             renderTeamChatLog();
@@ -7051,11 +7018,7 @@ async function sendFromFloating(){
       teamChatLog.push({role:"system", text:`❌ ${data.error}`, timestamp:Date.now()});
     } else {
       teamChatLog.push({role:"team", text: data.reply || "(tomt svar)", timestamp:Date.now(), instruction, toolCall: data.toolCall, executed: data.executed});
-      if(data.toolCall && typeof refreshBinanceSync === "function"){
-        _lastPtFetch.testnet = 0; _lastPtFetch.live = 0;
-        _lastBinTrades.ts = 0;
-        setTimeout(refreshBinanceSync, 500);
-      }
+
     }
   }catch(e){
     teamChatLog.pop();
@@ -7185,7 +7148,6 @@ function renderLiveStrips(){
     {id:"lsr-crypto", syms:SYMBOLS.usdc, dur:60},
 
 
-
   ];
   for(const s of sets){
     const el = document.getElementById(s.id);
@@ -7308,11 +7270,10 @@ function closeCostModal(){ document.getElementById("cost-modal-bg").classList.re
    MODE SWITCHER (Paper / Propose / Live)
    ====================================================================== */
 let currentUiMode = "paper";
-let binancePollInterval = null;
-let binanceLastUpdate = null;
+let bybitQuotePollInterval = null;
+let bybitQuoteLastUpdate = null;
 
-// Poll riktiga Binance-priser när PROPOSE-mode är aktivt
-async function pollBinancePrices(){
+async function pollBybitQuotes(){
   try {
     const symbols = SYMBOLS.usdc;
     const r = await fetch(`/api/bybit/prices?symbols=${symbols.join(",")}`);
@@ -7325,7 +7286,7 @@ async function pollBinancePrices(){
         if(!(sym === STATE.symbol && bybitChartLive())) STATE.livePrices[sym] = price;
         count++;
       }
-      binanceLastUpdate = Date.now();
+      bybitQuoteLastUpdate = Date.now();
       // UI-indikator
       const ind = document.getElementById("data-source-indicator");
       if(false && ind && count > 0 && !bybitChartLive()){
@@ -7333,26 +7294,26 @@ async function pollBinancePrices(){
       }
     }
   } catch(e){
-    console.warn("Binance poll-fel:", e);
+    console.warn("Bybit EU prisdata kunde inte hämtas:", e);
   }
 }
 
-function startBinancePolling(){
-  if(binancePollInterval) return;
-  pollBinancePrices(); // omedelbar
-  binancePollInterval = setInterval(pollBinancePrices, 3000); // Bybit-cachen på servern, var 3s
+function startBybitQuotePolling(){
+  if(bybitQuotePollInterval) return;
+  pollBybitQuotes(); // omedelbar
+  bybitQuotePollInterval = setInterval(pollBybitQuotes, 3000); // Bybit-cachen på servern, var 3s
   log_ok("📡 Live-priser från Bybit startade");
 }
-function stopBinancePolling(){
-  if(binancePollInterval){
-    clearInterval(binancePollInterval);
-    binancePollInterval = null;
-    binanceLastUpdate = null;
+function stopBybitQuotePolling(){
+  if(bybitQuotePollInterval){
+    clearInterval(bybitQuotePollInterval);
+    bybitQuotePollInterval = null;
+    bybitQuoteLastUpdate = null;
     const ind = document.getElementById("data-source-indicator");
     if(ind){
       ind.innerHTML = `<span style="color:var(--label)">○</span> Bybit EU · laddar riktiga priser`;
     }
-    log_ok("Binance-poll stoppad — tillbaka till simulerad data");
+    log_ok("Bybit EU prispollning stoppad");
   }
 }
 
@@ -7392,12 +7353,11 @@ function setActiveMode(uiMode){
     try { renderTradesPage(); } catch(_){}
   }
   // Trigga saldo-card-refresh direkt så panelen byter mellan TESTNET/LIVE-data
-  if(typeof refreshBinanceSync === "function") refreshBinanceSync();
-  // PROPOSE = riktiga priser från Binance, och alltid när vi är kopplade till boten
+
   if(uiMode === "propose" || useRealPrices()){
-    startBinancePolling();
+    startBybitQuotePolling();
   } else {
-    stopBinancePolling();
+    stopBybitQuotePolling();
   }
 }
 
@@ -7878,7 +7838,6 @@ function postLoginInit(){
   initApp();
 }
 
-// Kollar om user har nycklar nog att tradea (Anthropic + Binance).
 // Admins använder system-default-nycklar (VPS .env) — alltid OK.
 function hasTradingKeys(){
   if(currentUser?.isAdmin) return true;
@@ -7955,41 +7914,7 @@ function loadTelegramIntoSettings(){
   if(c) c.value = cfg.chatId;
   if(e) e.checked = cfg.enabled;
 }
-// ─── Live Broker-integrations (Binance + Oanda) ───
-async function bncConnect(){ return {ok:false,error:"Endast Bybit EU stöds"}; }
 
-async function bncFetchAccount(){ return {ok:false,error:"Endast Bybit EU stöds"}; }
-
-async function oandaConnect(){ return {ok:false,error:"Endast Bybit EU stöds"}; }
-
-async function oandaFetchAccount(){ return {ok:false,error:"Endast Bybit EU stöds"}; }
-
-// Binance Live Sync — dual mode: visar BÅDA testnet + live samtidigt
-let binanceSyncInterval = null;
-
-function renderModeCard(mode, data, accentColor){ return {ok:false,error:"Endast Bybit EU stöds"}; }
-
-async function refreshBinanceSync(){ return {ok:false,error:"Endast Bybit EU stöds"}; }
-
-function startBinanceSync(){
-  if(binanceSyncInterval) return;
-  refreshBinanceSync();
-  binanceSyncInterval = setInterval(refreshBinanceSync, 3000); // var 3s polling baseline för balans
-  // Bybit överallt: Binance-strömmarna i webbläsaren startas inte längre
-  // (priserna kommer från Bybits WebSocket och /api/bybit/prices).
-}
-
-// ─── BINANCE MARKET WEBSOCKET — realtid-priser för aktiva positioner ───
-// Mike's krav: 'event-driven, inte manuell'. Binance public WS ger millisekund-precision.
-let binanceMarketWS = null;
-let binanceMarketSyms = new Set();
-let binanceMarketReconnect = null;
-
-function buildMarketStreamUrl(symbols){ return {ok:false,error:"Endast Bybit EU stöds"}; }
-
-function startBinanceMarketStream(){ return {ok:false,error:"Endast Bybit EU stöds"}; }
-
-function updateMarketStreamSubs(){ return {ok:false,error:"Endast Bybit EU stöds"}; }
 
 // Light-weight PnL-uppdaterare (anropas från WS onmessage, max 1x per 100ms throttled)
 let _lastPnLUpdate = 0;
@@ -8062,19 +7987,12 @@ async function refreshAgentLearnings(){
   } catch(_){}
 }
 
-// Throttlad Binance trade-data hämtning (decisions + history) — speglar Binance 1:1
 // Hämtar /portfolio-trades (recent trades + per-symbol stats) och fyller STATE
 const _lastBinTrades = { ts: 0 };
-async function maybeRefreshBinanceTradeData(){ return {ok:false,error:"Endast Bybit EU stöds"}; }
 
-// Throttlad portfolio-trades fetch (max 1 per 30s per mode för att skydda Binance rate-limit)
+
 const _lastPtFetch = { testnet: 0, live: 0 };
-async function maybeRefreshPortfolioTrades(mode){ return {ok:false,error:"Endast Bybit EU stöds"}; }
 
-let binanceUserStreamES = null;
-function startBinanceUserStream(){ return {ok:false,error:"Endast Bybit EU stöds"}; }
-
-function wireBrokerIntegrations(){ return {ok:false,error:"Endast Bybit EU stöds"}; }
 
 function wireTelegramSettings(){
   const saveBtn = document.getElementById("save-tg-btn");
@@ -8135,8 +8053,7 @@ function initApp(){
   loadKeysIntoSettings();
   loadTelegramIntoSettings();
   wireTelegramSettings();
-  wireBrokerIntegrations();
-  startBinanceSync(); // pollar Binance var 3s, visar i Binance Live Sync card
+
   document.getElementById("setup-banner-go")?.addEventListener("click", ()=>switchPage("settings"));
   document.getElementById("save-keys-btn")?.addEventListener("click", saveKeysFromSettings);
   fillSymbols();
@@ -8174,7 +8091,7 @@ function initApp(){
   }
   if(CFG.mode === "live"){
     loadFromBackend(); startSSE(); loadTeamLast(); loadCurrentMode(); syncBrokers();
-    startBinancePolling();
+    startBybitQuotePolling();
     // Hämta om riktiga ljus regelbundet så nya ljus dyker upp i diagrammet.
     // (med Bybit-strömmen live behövs ingen omhämtning; den är bara reserv)
     setInterval(()=>{ if(useRealPrices(STATE.symbol) && !bybitChartLive()) loadRealCandles(STATE.symbol, STATE.tf); }, 30000);
@@ -9826,12 +9743,9 @@ document.addEventListener("DOMContentLoaded", boot);
   }
   load();summaries();setInterval(load,15000);setInterval(summaries,15000);
   // Äldre integrationer ligger kvar som dolda kompatibilitetsfält för sparad konfiguration.
-  ['set-binance-key','set-binance-secret','set-oanda-key','set-oanda-account'].forEach(id=>{const el=document.getElementById(id);if(el)el.parentElement.hidden=true;});
-  ['oanda-token-2','binance-sync-body'].forEach(id=>{const el=document.getElementById(id);if(el){const box=el.closest('.card') || el.closest('.key-grid')?.parentElement;if(box)box.hidden=true;}});
   ['lsr-cross','lsr-forex','lsr-other'].forEach(id=>{const el=document.getElementById(id);if(el){el.hidden=true;const row=el.closest('.lsr-row');if(row)row.hidden=true;}});
 
   // Kontonycklar för Bybit är serverkonfiguration; äldre brokerfält är inte aktiva.
-  document.querySelectorAll('[id*="oanda"],[id*="binance"]').forEach(el=>{if(el.tagName==='INPUT'||el.tagName==='BUTTON')el.disabled=true;});
 })();
 </script>
 

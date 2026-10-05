@@ -100,7 +100,7 @@ export interface GateInput {
   side: "BUY" | "SELL";
   /** USD-belopp för köp (quoteOrderQty/notional). Okänt för sälj per antal. */
   quoteUsd?: number;
-  /** Sant för ordrar i antal enheter (t.ex. Oanda) där USD-belopp inte är känt. */
+  /** Sant för ordrar i antal enheter (antal av basvalutan) där USD-belopp inte är känt. */
   unitsOrder?: boolean;
   source: string;
 }
