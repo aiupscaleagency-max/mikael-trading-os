@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { createLlmClient, extractJson, modelFor } from "../llm/gateway.js";
 import type { AdvisorReport } from "./types.js";
 import { log } from "../logger.js";
 import { trackClaudeCall } from "../cost/tracker.js";
@@ -6,10 +7,12 @@ import { trackClaudeCall } from "../cost/tracker.js";
 // ═══════════════════════════════════════════════════════════════════════════
 //  Claude Advisor — strategisk rådgivare som kör parallellt med specialisterna.
 //
-//  Modellval:
-//    Specialister → Haiku 4.5 (snabb, billig, fokuserad)
-//    Advisor      → Opus 4.6  (strategiskt djup, samma nivå som Head Trader)
-//    Head Trader  → Opus 4.6  (bäst reasoning för slutgiltigt beslut)
+//  Modellval (se src/llm/gateway.ts):
+//    Via Vercel AI Gateway: Specialister Haiku 4.5, Advisor GPT-6 Astra,
+//                           Head Trader Opus 5.5.
+//    Direkt mot Anthropic:  Specialister Haiku 4.5, Advisor Opus 4.7,
+//                           Head Trader Sonnet 4.6 (som tidigare).
+//  JEV avgör per turn om Advisorn behövs alls (src/llm/jev.ts).
 //
 //  Advisor är en "second brain" som ser helheten. Istället för att
 //  analysera enskilda trades fokuserar den på:
@@ -19,7 +22,7 @@ import { trackClaudeCall } from "../cost/tracker.js";
 //    - Portfölj-nivå-effekter
 // ═══════════════════════════════════════════════════════════════════════════
 
-const ADVISOR_MODEL = "claude-opus-4-7";
+const advisorModel = () => modelFor("advisor", "claude-opus-4-7");
 
 export async function runClaudeAdvisor(
   apiKey: string,
@@ -62,7 +65,7 @@ export async function runClaudeAdvisor(
     ),
   });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   // Prompt caching: Advisor är dyraste anropet (Opus 4.7).
   // Om Mike triggar 2+ manual sessions inom 5 min → cache hits = -90% input cost.
   // Schemalagda 12h-sessions: cache TTL passerat, ingen besparing där.
@@ -97,14 +100,14 @@ Viktiga riktlinjer:
 - Svara BARA med JSON. Ingen annan text.`;
 
   const response = await client.messages.create({
-    model: ADVISOR_MODEL,
+    model: advisorModel(),
     max_tokens: 2500,
     system: [
       { type: "text", text: ADVISOR_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
     ],
     messages: [{ role: "user", content: `Här är teamets nuvarande läge:\n${dataContext}` }],
   });
-  trackClaudeCall("advisor", ADVISOR_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("advisor", advisorModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -112,7 +115,7 @@ Viktiga riktlinjer:
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<AdvisorReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<AdvisorReport, "role" | "rawText">;
     log.agent(`[Advisor] Outlook: ${parsed.strategicOutlook}, Cykel: ${parsed.marketCyclePhase}, Confidence: ${parsed.confidence}`);
     return { role: "claude_advisor", ...parsed, rawText: text };
   } catch {

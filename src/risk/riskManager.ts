@@ -1,6 +1,8 @@
 import type { Config } from "../config.js";
 import type { Account, OrderRequest, Position } from "../types.js";
 import type { AgentState } from "../memory/store.js";
+import { getTradePercent, percentageAmount } from "./tradeSizing.js";
+import { MAX_LIVE_STAKE_USD, testStakeCapUsd } from "../server/orderGate.js";
 
 export interface RiskCheckResult {
   allowed: boolean;
@@ -31,6 +33,8 @@ export class RiskManager {
       account: Account;
       positions: Position[];
       lastPrice: number;
+      /** true = TEST/låtsaskonto. Bara då gäller insats-trappan. */
+      paper?: boolean;
     },
   ): RiskCheckResult {
     const { state, account, positions, lastPrice } = ctx;
@@ -39,8 +43,6 @@ export class RiskManager {
     // Samla alla tillåtna symboler från alla motorer
     const allowedSymbols = [
       ...this.config.crypto.symbols,
-      ...this.config.stocks.symbols,
-      ...this.config.wheel.underlyings,
     ];
 
     if (state.killSwitchActive) {
@@ -48,8 +50,8 @@ export class RiskManager {
     }
 
     // Om symbolen finns i en av listorna ELLER är ett options-kontrakt (innehåller siffror), tillåt.
-    const isOption = /\d/.test(order.symbol) && order.symbol.length > 6;
-    if (!isOption && allowedSymbols.length > 0 && !allowedSymbols.includes(order.symbol)) {
+    const isOption = false;
+    if (!isOption && allowedSymbols.length > 0 && !allowedSymbols.some((s) => s.replace(/USDT$/, "USDC") === order.symbol.replace(/USDT$/, "USDC"))) {
       return {
         allowed: false,
         reason: `Symbol ${order.symbol} finns inte i tillåtna listor (${allowedSymbols.join(", ")}).`,
@@ -84,20 +86,24 @@ export class RiskManager {
         return { allowed: false, reason: "Kan inte beräkna order-storlek i USD." };
       }
 
-      // Per-position-ramar: golv (MIN), tak (MAX). Hanna får anpassa inom ramen.
+      // Samma procent av det färska kontovärdet i TEST och LIVE.
+      const stakeUsd = percentageAmount(account.totalValueUsdt, account.totalValueUsdt, getTradePercent());
+      const maxPos = stakeUsd;
+      const minPos = Math.min(risk.minPositionUsd, maxPos);
       let adjustedOrder: OrderRequest | undefined;
-      if (orderUsd > risk.maxPositionUsd) {
+      if (maxPos <= 0) return { allowed: false, reason: "Kontovärdet är tomt eller ogiltigt" };
+      if (Math.abs(orderUsd - maxPos) > 0.005) {
         const scaled: OrderRequest = {
           ...order,
-          quoteOrderQty: risk.maxPositionUsd,
+          quoteOrderQty: maxPos,
           quantity: undefined,
         };
         adjustedOrder = scaled;
-        orderUsd = risk.maxPositionUsd;
-      } else if (risk.minPositionUsd && orderUsd < risk.minPositionUsd) {
+        orderUsd = maxPos;
+      } else if (minPos && orderUsd < minPos) {
         return {
           allowed: false,
-          reason: `Order $${orderUsd.toFixed(2)} under MIN_POSITION_USD ($${risk.minPositionUsd}). Höj eller skip.`,
+          reason: `Order $${orderUsd.toFixed(2)} under MIN_POSITION_USD ($${minPos}). Höj eller skip.`,
         };
       }
 
@@ -106,12 +112,14 @@ export class RiskManager {
         (sum, p) => sum + p.quantity * p.currentPrice,
         0,
       );
-      if (currentExposure + orderUsd > risk.maxTotalExposureUsd) {
-        const remaining = risk.maxTotalExposureUsd - currentExposure;
+      // Insats-trappan: tillåt maxOpenPositions × insatsen, men aldrig under .env-värdet
+      const maxExposure = Math.max(risk.maxTotalExposureUsd, (risk.maxOpenPositions ?? 0) * stakeUsd);
+      if (currentExposure + orderUsd > maxExposure) {
+        const remaining = maxExposure - currentExposure;
         if (remaining < 10) {
           return {
             allowed: false,
-            reason: `Max total exponering (${risk.maxTotalExposureUsd} USDT) nådd. Nuvarande: ${currentExposure.toFixed(2)} USDT.`,
+            reason: `Max total exponering (${maxExposure} USDT) nådd. Nuvarande: ${currentExposure.toFixed(2)} USDT.`,
           };
         }
         // Skala ner till vad som får plats
@@ -122,14 +130,16 @@ export class RiskManager {
         };
       }
 
-      // Finns tillräckligt med USDT i kontot?
-      const usdtBal = account.balances.find((b) => b.asset === "USDT");
-      const usdtFree = usdtBal ? usdtBal.free : 0;
+      // Finns tillräckligt med kassa i kontot? Räknar dollar-valutorna som kassa:
+      // USDT (Binance), USDC (Bybit EU) och USD (Alpaca paper).
+      const usdtFree = account.balances
+        .filter((b) => b.asset === "USDT" || b.asset === "USDC" || b.asset === "USD")
+        .reduce((sum, b) => sum + (Number.isFinite(b.free) ? b.free : 0), 0);
       const finalUsd = adjustedOrder?.quoteOrderQty ?? orderUsd;
       if (usdtFree < finalUsd) {
         return {
           allowed: false,
-          reason: `För lite USDT i kontot (${usdtFree.toFixed(2)} < ${finalUsd.toFixed(2)}).`,
+          reason: `För lite kassa i kontot (USDT/USDC/USD ${usdtFree.toFixed(2)} < ${finalUsd.toFixed(2)}).`,
         };
       }
 

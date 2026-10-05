@@ -1,25 +1,26 @@
+import { getAnalysisSelection } from "./server/analysisSelection.js";
+import { resolveAnalysisBroker, scopeBroker, validateAnalysisRequest, intersectAnalysisSymbols, type AnalysisRequest } from "./orchestrator/analysisRequest.js";
 import { config } from "./config.js";
 import type { BrokerAdapter } from "./brokers/adapter.js";
-import { BinanceBroker } from "./brokers/binance.js";
-import { AlpacaBroker } from "./brokers/alpaca.js";
-import { BlofinBroker } from "./brokers/blofin.js";
-import { OandaBroker } from "./brokers/oanda.js";
+import { BybitPaperBroker } from "./brokers/bybitPaper.js";
+import { BybitBroker } from "./brokers/bybit.js";
 import { RiskManager } from "./risk/riskManager.js";
 import { runAgentTurn } from "./agent/claudeAgent.js";
-import {
-  buildMorningBriefingPrompt,
-  buildDailyPnlPrompt,
-} from "./agent/prompt.js";
 import { loadState, saveState, appendDecision } from "./memory/store.js";
 import { Scheduler, createDefaultSchedule } from "./scheduler.js";
 import { runOrchestratedTurn } from "./orchestrator/orchestrator.js";
 import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback } from "./server/api.js";
+import { startKlineStream } from "./server/klineStream.js";
+import { getSignals, jevReviewSymbols, startSignalEngine, subscribeSignals } from "./server/signalEngine.js";
+import { recordAnalysis } from "./memory/tradeMemory.js";
+import { listPendingOrders } from "./server/orderGate.js";
+import { type PrescreenResult, prescreenPairs, prescreenEnabled, rememberPrescreen, reviewPrescreenScope } from "./orchestrator/prescreen.js";
+import { analysisModeInfo, autoLoopEnabled, scheduleTimes, signalTriggerEnabled, startFixedTimes } from "./server/analysisMode.js";
+import { setTeamLast } from "./server/teamLast.js";
+import { restoreExecutionMode } from "./server/executionModeStore.js";
 import { log } from "./logger.js";
 import type { DecisionRecord } from "./types.js";
 import type { StrategyEngine } from "./strategies/types.js";
-import { PoliticianCopyEngine } from "./strategies/politicianCopy.js";
-import { WheelEngine } from "./strategies/wheel.js";
-import { CryptoMomentumEngine } from "./strategies/cryptoMomentum.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  MIKAEL TRADING OS — Entrypoint
@@ -32,45 +33,29 @@ import { CryptoMomentumEngine } from "./strategies/cryptoMomentum.js";
 //    npm run kill -- on|off  → kill-switch
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** Schema, CLI och tidiga signalstarter använder samma sparade urval som dashboarden. */
+function currentAnalysisRequest(): AnalysisRequest {
+  const broker = resolveAnalysisBroker({}, getActiveBrokerName());
+  return { ...getAnalysisSelection(broker === "bybit" ? "LIVE" : "TEST"), broker };
+}
+
 // ── Setup: brokers ──
 
 function createBrokers(): Record<string, BrokerAdapter> {
   const brokers: Record<string, BrokerAdapter> = {};
 
-  if (config.alpaca.enabled) {
-    brokers.alpaca = new AlpacaBroker({
-      keyId: config.alpaca.keyId,
-      secretKey: config.alpaca.secretKey,
-      baseUrl: config.alpaca.baseUrl,
-      dataUrl: config.alpaca.dataUrl,
-      mode: config.mode,
-    });
+  // Endast Bybit EU registreras; gamla mäklarnycklar kan inte aktivera andra börser.
+  // TEST läggs först så att en kopplad LIVE-nyckel aldrig byter standardkonto.
+  if (process.env.BYBIT_PAPER !== "false") {
+    brokers["bybit-paper"] = new BybitPaperBroker({ quote: config.bybit.quote, baseUrl: config.bybit.baseUrl });
   }
 
-  if (config.blofin.enabled) {
-    brokers.blofin = new BlofinBroker({
-      apiKey: config.blofin.apiKey,
-      apiSecret: config.blofin.apiSecret,
-      passphrase: config.blofin.passphrase,
-      baseUrl: config.blofin.baseUrl,
-      mode: config.mode,
-    });
-  }
-
-  if (config.binance.enabled) {
-    brokers.binance = new BinanceBroker({
-      apiKey: config.binance.apiKey,
-      apiSecret: config.binance.apiSecret,
-      baseUrl: config.binance.baseUrl,
-      mode: config.mode,
-    });
-  }
-
-  if (config.oanda.enabled) {
-    brokers.oanda = new OandaBroker({
-      apiKey: config.oanda.apiKey,
-      accountId: config.oanda.accountId,
-      baseUrl: config.oanda.baseUrl,
+  if (config.bybit.enabled) {
+    brokers.bybit = new BybitBroker({
+      apiKey: config.bybit.apiKey,
+      apiSecret: config.bybit.apiSecret,
+      quote: config.bybit.quote,
+      baseUrl: config.bybit.baseUrl,
     });
   }
 
@@ -79,66 +64,55 @@ function createBrokers(): Record<string, BrokerAdapter> {
 
 // ── Setup: strategi-motorer ──
 
-function createEngines(brokers: Record<string, BrokerAdapter>): StrategyEngine[] {
-  const engines: StrategyEngine[] = [];
-
-  for (const name of config.engines) {
-    switch (name) {
-      case "politician_copy":
-        engines.push(
-          new PoliticianCopyEngine({
-            allowedSymbols: config.stocks.symbols,
-          }),
-        );
-        break;
-
-      case "wheel_strategy":
-        if (brokers.alpaca && brokers.alpaca instanceof AlpacaBroker) {
-          engines.push(
-            new WheelEngine(brokers.alpaca, {
-              underlyings: config.wheel.underlyings,
-              putDelta: config.wheel.putDelta,
-              profitTargetPct: config.wheel.profitTargetPct,
-            }),
-          );
-        } else {
-          log.warn("Motor B (Wheel) kräver Alpaca. Skippar.");
-        }
-        break;
-
-      case "crypto_momentum": {
-        const cryptoBroker = brokers.blofin ?? brokers.binance;
-        if (cryptoBroker) {
-          engines.push(
-            new CryptoMomentumEngine(cryptoBroker, {
-              symbols: config.crypto.symbols,
-              leverage: config.crypto.leverage,
-              trailingStopPct: config.crypto.trailingStopPct,
-              takeProfitSteps: config.crypto.takeProfitSteps,
-            }),
-          );
-        } else {
-          log.warn("Motor C (Crypto Momentum) kräver Blofin eller Binance. Skippar.");
-        }
-        break;
-      }
-
-      default:
-        log.warn(`Okänd motor: ${name}. Skippar.`);
-    }
-  }
-
-  return engines;
+function createEngines(): StrategyEngine[] {
+  // Bybit-strategier körs av strategyRunner; äldre derivat-/aktiemotorer är bortkopplade.
+  return [];
 }
 
 // ── Huvudfunktion: en turn (stödjer single-agent OCH orchestrator) ──
 
+// Bara en AI-tur åt gången (schemat och tidiga starter delar på den).
+let turnRunning = false;
+async function runTurnOnce(fn: () => Promise<void>): Promise<void> {
+  if (turnRunning) { log.info("[JEV] en tur körs redan, hoppar över"); return; }
+  turnRunning = true;
+  try { await fn(); } finally { turnRunning = false; }
+}
+
 async function runOnce(
   brokers: Record<string, BrokerAdapter>,
   engines: StrategyEngine[],
-  instruction?: string,
+  request: AnalysisRequest,
   useTeam = true,
+  scheduled = false,
 ): Promise<void> {
+  // Konto och adapter låses innan JEV eller någon annan asynkron kontroll.
+  const activeName = resolveAnalysisBroker(request, getActiveBrokerName());
+  const primaryBroker = brokers[activeName];
+  if (!primaryBroker) throw new Error(`Analyskontot ${activeName} är inte tillgängligt`);
+  const saved = getAnalysisSelection(activeName === "bybit" ? "LIVE" : "TEST");
+  const allowedSymbols = [...new Set([...config.crypto.symbols, ...saved.selectedSymbols])];
+  request = validateAnalysisRequest({ ...request, broker: activeName }, allowedSymbols);
+  const instruction = request.instruction;
+  // Försållning: signalmotorn + JEV väljer par innan AI-teamet startas.
+  // En schemalagd tur utan någon signal hoppas över helt (inga AI-anrop).
+  let screen: PrescreenResult = prescreenPairs({
+    cryptoSymbols: allowedSymbols,
+    otherSymbols: [],
+    instruction,
+    request,
+    scheduled,
+  });
+  const turnStartedAt = Date.now();
+  const reviewed = await reviewPrescreenScope(screen, request, scheduled, jevReviewSymbols);
+  screen = reviewed.screen;
+  const jevStopped = reviewed.stopped;
+  if (reviewed.error) log.warn(`[JEV] urvalsgranskning otillgänglig: ${reviewed.error}`);
+  rememberPrescreen(screen);
+  log.info(`[JEV] försållning: ${screen.note}`);
+  screen.symbols = intersectAnalysisSymbols(request.selectedSymbols, screen.symbols);
+  if (screen.skip || !screen.symbols.length) return;
+
   const state = await loadState();
 
   if (state.killSwitchActive) {
@@ -146,18 +120,9 @@ async function runOnce(
     return;
   }
 
-  // Respektera broker-val från dashboard (runtime), fallback till default-prioritet
-  const activeName = getActiveBrokerName();
-  const primaryBroker = activeName
-    ? brokers[activeName]
-    : (brokers.alpaca ?? brokers.blofin ?? brokers.binance);
-  if (!primaryBroker) {
-    log.error("Ingen broker tillgänglig.");
-    return;
-  }
   log.info(`Aktiv broker: ${activeName ?? Object.keys(brokers).find((k) => brokers[k] === primaryBroker) ?? "?"} (${primaryBroker.mode})`);
 
-  const risk = new RiskManager(config);
+  const risk = new RiskManager({ ...config, crypto: { ...config.crypto, symbols: request.selectedSymbols } });
 
   log.info(
     `Agent-turn startar — mode=${useTeam ? "TEAM" : "SINGLE"} ` +
@@ -172,28 +137,66 @@ async function runOnce(
   if (useTeam) {
     // ── Orchestrator-mode: specialist-team ──
     const result = await runOrchestratedTurn({
-      config,
+      config: { ...config, crypto: { ...config.crypto, symbols: request.selectedSymbols } },
       state,
       broker: primaryBroker,
       brokers,
       risk,
       engines,
       userInstruction: instruction,
+      request: { ...request, selectedSymbols: screen.symbols },
     });
     finalText = result.headTrader.decision.briefingSummary;
     toolCalls = result.headTrader.toolCalls;
     placedOrders = result.headTrader.placedOrders;
 
+    // Hanna (Head Trader) med på korten: vilket beslut och hur många ordrar
+    const headOrders = result.headTrader.placedOrders;
+    const headReport = {
+      decision: headOrders.length ? (headOrders[0]!.request.side === "BUY" ? "BUY" : "SELL") : "HOLD",
+      actions: headOrders.map((o) => ({ symbol: o.request.symbol, side: o.request.side })),
+      summary: result.headTrader.decision.briefingSummary,
+    };
+    const teamPayload = { ...result.reports, head: headReport };
+    setTeamLast(teamPayload, screen.symbols);
+
+    // Tradingminnet: spara vad teamet såg och beslöt (resultatet kopplas
+    // senare från TEST-kontots stängda affärer).
+    void (async () => {
+      const wanted = new Set(screen.symbols.map((x) => x.toUpperCase()));
+      const pending = (await listPendingOrders().catch(() => []))
+        .filter((o) => Date.parse(o.createdAt) >= turnStartedAt && wanted.has(o.symbol.toUpperCase()));
+      const proposals = [
+        ...pending.map((o) => ({ symbol: o.symbol, side: o.side, usd: o.quoteUsd, takeProfit: o.takeProfit, stopLoss: o.stopLoss, refPrice: o.refPrice })),
+        ...headOrders.map((o) => ({ symbol: o.request.symbol, side: o.request.side, usd: o.request.quoteOrderQty })),
+      ];
+      await recordAnalysis({
+        at: turnStartedAt,
+        trigger: scheduled ? "scheduled" : "manual",
+        instruction,
+        symbols: screen.symbols,
+        note: screen.note,
+        signals: getSignals()
+          .filter((x) => wanted.has(x.symbol.toUpperCase()))
+          .map((x) => ({ symbol: x.symbol, direction: x.direction, score: x.score, reasons: x.reasons })),
+        jevStopped,
+        decision: proposals.length ? proposals.map((p) => `${p.side} ${p.symbol}`).join(", ") : "HOLD",
+        summary: result.headTrader.decision.briefingSummary ?? "",
+        proposals,
+      });
+    })().catch((err) => log.warn(`[minne] ${err instanceof Error ? err.message : String(err)}`));
     broadcastEvent("team-reports", {
-      ...result.reports,
+      ...teamPayload,
       timing: result.timingMs,
+      at: Date.now(),
+      symbols: screen.symbols,
     });
   } else {
     // ── Single-agent fallback ──
     const turn = await runAgentTurn({
-      config,
-      broker: primaryBroker,
-      brokers,
+      config: { ...config, crypto: { ...config.crypto, symbols: screen.symbols } },
+      broker: scopeBroker(primaryBroker, screen.symbols),
+      brokers: Object.fromEntries(Object.entries(brokers).map(([name, broker]) => [name, scopeBroker(broker, screen.symbols)])),
       risk,
       state,
       engines,
@@ -279,13 +282,17 @@ async function runOnce(
 
 // ── CLI ──
 
-function parseArgs(): { once: boolean; propose: boolean; instruction?: string } {
+function parseArgs(): { once: boolean; serve: boolean; propose: boolean; instruction?: string } {
   const args = process.argv.slice(2);
   const once = args.includes("--once");
+  // --serve: håll dashboard och marknadsströmmar igång utan att köra
+  // agent-loopen. Det är läget för en alltid-på-tjänst: systemet ska gå att
+  // nå när som helst utan att varje omstart kostar LLM-anrop.
+  const serve = args.includes("--serve");
   const propose = args.includes("--propose");
   const instArg = args.find((a) => a.startsWith("--instruction="));
   const instruction = instArg ? instArg.slice("--instruction=".length) : undefined;
-  return { once, propose, instruction };
+  return { once, serve, propose, instruction };
 }
 
 async function main(): Promise<void> {
@@ -293,19 +300,17 @@ async function main(): Promise<void> {
 
   log.info("╔══════════════════════════════════════════════════════════╗");
   log.info("║            MIKAEL TRADING OS                            ║");
-  log.info("║  Multi-Asset Trading Agent powered by Claude            ║");
+  log.info("║  Bybit EU — TEST och förberett LIVE                      ║");
   log.info("╚══════════════════════════════════════════════════════════╝");
+  await restoreExecutionMode();
   log.info(`  Mode: ${config.mode}  |  Execution: ${config.executionMode}`);
   log.info(`  Engines: ${config.engines.join(", ")}`);
-  log.info(`  Brokers: ${[
-    config.alpaca.enabled && "Alpaca",
-    config.blofin.enabled && "Blofin",
-    config.binance.enabled && "Binance",
-  ].filter(Boolean).join(", ")}`);
   log.info("──────────────────────────────────────────────────────────");
 
   const brokers = createBrokers();
-  const engines = createEngines(brokers);
+  // Visa separata Bybit TEST- och LIVE-konton.
+  log.info(`  Brokers: ${Object.keys(brokers).join(", ") || "inga"}`);
+  const engines = createEngines();
 
   if (engines.length === 0) {
     log.warn("Inga strategi-motorer aktiva. Agenten kör i friform-läge.");
@@ -315,16 +320,45 @@ async function main(): Promise<void> {
   const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? "3939", 10);
   startServer(DASHBOARD_PORT, brokers);
 
+  // ── Kline-ström + signal-motor ──────────────────────────────────────────
+  // Krävs för signalpanelen och diagrammet. Publik marknadsdata — inga
+  // nycklar behövs, så den startar även i vy-läge.
+  //
+  // Startas här och inte i startServer(): servern ska kunna svara på
+  // /api/signals även innan strömmen hunnit fylla på, och panelen visar då
+  // att den väntar istället för att endpointen saknas.
+  // Alla par agenterna följer (Bybit klarar alla på en anslutning)
+  const streamSymbols = config.crypto.symbols;
+  const streamInterval = process.env.SIGNAL_INTERVAL ?? "1m";
+  startSignalEngine();
+  void startKlineStream(streamSymbols, streamInterval)
+    .then(() => log.ok(
+      `[signal] ${streamSymbols.length} par @ ${streamInterval} — `
+      + `panelen fylls när första ljuset stängt`,
+    ))
+    .catch((err) => log.warn(
+      `[signal] kline-strömmen startade inte: ${err instanceof Error ? err.message : String(err)}`,
+    ));
+
   // Registrera API-nyckel + run-callback för manuella agent-frågor och dashboard-triggar
   setApiKey(config.anthropicApiKey);
-  setRunAgentCallback((instruction?: string) => runOnce(brokers, engines, instruction));
+  setRunAgentCallback((request: AnalysisRequest) => runTurnOnce(() => runOnce(brokers, engines, request)));
+
+  // Serve-läge: bara dashboard och strömmar. Ingen agent-körning, inga
+  // LLM-anrop vid start.
+  if (args.serve) {
+    log.ok(`Serve-läge — dashboard på http://localhost:${DASHBOARD_PORT}`);
+    log.info("Agent-loopen körs inte. Använd dashboarden eller --once för en körning.");
+    await new Promise(() => {});
+    return;
+  }
 
   // Engångs-körning
   if (args.once || args.propose) {
     if (args.propose) {
       (config as { executionMode: "auto" | "approve" }).executionMode = "approve";
     }
-    await runOnce(brokers, engines, args.instruction);
+    await runOnce(brokers, engines, { ...currentAnalysisRequest(), instruction: args.instruction });
     log.info(`Dashboard fortfarande aktiv på http://localhost:${DASHBOARD_PORT} — Ctrl+C för att stänga.`);
     // Håll processen igång så dashboarden inte dör
     await new Promise(() => {});
@@ -335,10 +369,47 @@ async function main(): Promise<void> {
   const scheduler = new Scheduler();
   const schedule = createDefaultSchedule(config);
 
-  scheduler.addTask({
-    ...schedule.agentLoop,
-    execute: () => runOnce(brokers, engines),
-  });
+  // AI kostar pengar, så standard är MANUELL: bara "Kör analys". Fasta tider
+  // med ANALYSIS_SCHEDULE, det gamla intervall-läget med AI_AUTO_LOOP=true.
+  if (autoLoopEnabled()) {
+    scheduler.addTask({
+      ...schedule.agentLoop,
+      execute: () => runTurnOnce(() => runOnce(brokers, engines, currentAnalysisRequest(), true, true)),
+    });
+  }
+  if (scheduleTimes().length) {
+    startFixedTimes((time) => {
+      log.info(`[analys] fast tid ${time}: AI-teamet startar`);
+      void runTurnOnce(() => runOnce(brokers, engines, currentAnalysisRequest(), true, true)).catch((err) =>
+        log.warn(`[analys] tur kl ${time} misslyckades: ${err instanceof Error ? err.message : String(err)}`));
+    });
+  }
+  log.ok(`[analys] ${analysisModeInfo().text}`);
+
+  // Tidig start (bara med PRESCREEN_TRIGGER=true): när ett par får en ny
+  // signal startar AI-teamet direkt i stället för att vänta på nästa tur.
+  // Högst en sådan start per PRESCREEN_TRIGGER_COOLDOWN_SEC (standard 300 s,
+  // samma takt som schemat) och samma par väcker teamet högst var 15:e minut.
+  if (prescreenEnabled() && signalTriggerEnabled()) {
+    const cooldownMs = (Number(process.env.PRESCREEN_TRIGGER_COOLDOWN_SEC ?? 300) || 300) * 1000;
+    const lastDir = new Map<string, string>();
+    const lastWake = new Map<string, number>();
+    let lastTrigger = 0;
+    subscribeSignals((sig) => {
+      if (!currentAnalysisRequest().selectedSymbols.includes(sig.symbol)) return;
+      const prev = lastDir.get(sig.symbol);
+      lastDir.set(sig.symbol, sig.direction);
+      if (sig.direction === "NEUTRAL" || prev === sig.direction) return;
+      const now = Date.now();
+      if (now - lastTrigger < cooldownMs || now - (lastWake.get(sig.symbol) ?? 0) < 15 * 60_000) return;
+      if (turnRunning) return;
+      lastTrigger = now;
+      lastWake.set(sig.symbol, now);
+      log.info(`[JEV] ny signal ${sig.symbol} ${sig.direction} (${sig.score}): AI-teamet startar tidigt`);
+      void runTurnOnce(() => runOnce(brokers, engines, currentAnalysisRequest(), true, true)).catch((err) =>
+        log.warn(`[JEV] tidig tur misslyckades: ${err instanceof Error ? err.message : String(err)}`));
+    });
+  }
 
   // LEGACY position-scan (trailing stops) DISABLED — ersatt av positionMonitor.ts
   // Den spammade 437 testnet-positioner med trailing-stop-notiser till Telegram.

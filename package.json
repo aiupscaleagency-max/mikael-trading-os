@@ -2,7 +2,7 @@
   "name": "mikael-trading-os",
   "version": "0.2.0",
   "private": true,
-  "description": "Multi-asset AI trading agent: crypto (Blofin/Binance), stocks + options (Alpaca). Powered by Claude.",
+  "description": "Trading-OS f\u00f6r Bybit EU spot: separata TEST/LIVE-konton och manuellt godk\u00e4nnande",
   "type": "module",
   "scripts": {
     "agent": "tsx src/run.ts",
@@ -11,13 +11,20 @@
     "account": "tsx src/scripts/account.ts",
     "kill": "tsx src/scripts/kill.ts",
     "ui": "DASHBOARD_PORT=3939 tsx src/run.ts --once",
-    "demo": "tsx src/scripts/demo.ts"
+    "demo": "tsx src/scripts/demo.ts",
+    "build": "tsc --outDir dist",
+    "verify": "npm run build && node scripts/verify-live.mjs",
+    "test:signal": "npm run build && node scripts/test-signal-engine.mjs",
+    "export:candles": "npm run build && node scripts/export-candles.mjs",
+    "serve": "tsx src/run.ts --serve",
+    "test:trading": "node --import tsx scripts/test-sizing-sessions.ts && node --import tsx scripts/test-timed-exits.ts && node --import tsx scripts/test-paper-lots.ts && node --import tsx scripts/test-analysis-scope.ts && node --import tsx scripts/test-trading-state.ts && node --import tsx scripts/test-llm-routing.ts && node --import tsx scripts/test-jev-routing.ts && node --import tsx scripts/test-two-agent-pipeline.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
     "@supabase/supabase-js": "^2.45.0",
     "@types/ws": "^8.18.1",
     "dotenv": "^17.3.1",
+    "lightweight-charts": "^4.1.3",
     "tsx": "^4.21.0",
     "ws": "^8.20.0",
     "zod": "^3.23.8"

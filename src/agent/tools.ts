@@ -13,10 +13,6 @@ import { log } from "../logger.js";
 // definition som skickas till API:et, plus en handler som faktiskt kör.
 
 import type { StrategyEngine } from "../strategies/types.js";
-import {
-  getRecentPoliticianTrades,
-  filterTopPerformers,
-} from "../data/capitol.js";
 
 export interface ToolContext {
   broker: BrokerAdapter;
@@ -66,7 +62,7 @@ export const TOOLS: Record<string, ToolDef> = {
     definition: {
       name: "get_account",
       description:
-        "Hämtar aktuella saldon och totalvärdet på kontot i USDT. Använd detta för att veta hur mycket kapital som finns att arbeta med.",
+        "Hämtar aktuella saldon och totalvärdet på kontot i USDC. Använd detta för att veta hur mycket kapital som finns att arbeta med.",
       input_schema: { type: "object", properties: {} },
     },
     handler: async (_input, ctx) => {
@@ -117,7 +113,7 @@ export const TOOLS: Record<string, ToolDef> = {
       input_schema: {
         type: "object",
         properties: {
-          symbol: { type: "string", description: "Binance spot-symbol, t.ex. BTCUSDT" },
+          symbol: { type: "string", description: "Bybit EU spot-symbol, t.ex. BTCUSDC" },
         },
         required: ["symbol"],
       },
@@ -135,7 +131,7 @@ export const TOOLS: Record<string, ToolDef> = {
       input_schema: {
         type: "object",
         properties: {
-          symbol: { type: "string", description: "Binance spot-symbol, t.ex. BTCUSDT" },
+          symbol: { type: "string", description: "Bybit EU spot-symbol, t.ex. BTCUSDC" },
           interval: {
             type: "string",
             enum: ["1m", "5m", "15m", "1h", "4h", "1d"],
@@ -150,7 +146,7 @@ export const TOOLS: Record<string, ToolDef> = {
       },
     },
     handler: async (input, ctx) => {
-      const symbol = str(input, "symbol");
+      const symbol = str(input, "symbol").replace(/USDT$/, "USDC");
       const interval = str(input, "interval");
       const limit = optNum(input, "limit") ?? 100;
       const klines = await ctx.broker.getKlines(symbol, interval, limit);
@@ -177,16 +173,16 @@ export const TOOLS: Record<string, ToolDef> = {
     definition: {
       name: "place_order",
       description:
-        "Lägger en riktig order mot brokern. Detta verktyg går genom risk managern som kan blockera eller skala ner ordern. För BUY: specificera `quote_qty` (hur många USDT du vill spendera). För SELL: specificera `base_qty` (hur mycket av tokenen du vill sälja). Ange alltid en kort `reasoning` som förklarar varför.",
+        "Lägger en riktig order mot brokern. Detta verktyg går genom risk managern som kan blockera eller skala ner ordern. För BUY: specificera `quote_qty` (hur många USDC du vill spendera). För SELL: specificera `base_qty` (hur mycket av tokenen du vill sälja). Ange alltid en kort `reasoning` som förklarar varför.",
       input_schema: {
         type: "object",
         properties: {
-          symbol: { type: "string", description: "Binance spot-symbol, t.ex. BTCUSDT" },
+          symbol: { type: "string", description: "Bybit EU spot-symbol, t.ex. BTCUSDC" },
           side: { type: "string", enum: ["BUY", "SELL"] },
           type: { type: "string", enum: ["MARKET", "LIMIT"], description: "Orderstyp. MARKET för omedelbart." },
           quote_qty: {
             type: "number",
-            description: "För BUY MARKET: hur många USDT du vill spendera",
+            description: "För BUY MARKET: hur många USDC du vill spendera",
           },
           base_qty: {
             type: "number",
@@ -195,6 +191,14 @@ export const TOOLS: Record<string, ToolDef> = {
           limit_price: {
             type: "number",
             description: "Endast för LIMIT: priset per enhet",
+          },
+          take_profit: {
+            type: "number",
+            description: "För BUY: pris där vinsten tas hem (sälj automatiskt). Sätt alltid, t.ex. teknikerns tp1.",
+          },
+          stop_loss: {
+            type: "number",
+            description: "För BUY: pris där förlusten stoppas (sälj automatiskt). Sätt alltid, t.ex. teknikerns stopLoss.",
           },
           reasoning: {
             type: "string",
@@ -205,13 +209,15 @@ export const TOOLS: Record<string, ToolDef> = {
       },
     },
     handler: async (input, ctx) => {
-      const symbol = str(input, "symbol");
+      const symbol = str(input, "symbol").replace(/USDT$/, "USDC");
       const side = str(input, "side") as "BUY" | "SELL";
       const type = str(input, "type") as "MARKET" | "LIMIT";
       const reasoning = str(input, "reasoning");
       const quoteQty = optNum(input, "quote_qty");
       const baseQty = optNum(input, "base_qty");
       const limitPrice = optNum(input, "limit_price");
+      let takeProfit = optNum(input, "take_profit");
+      let stopLoss = optNum(input, "stop_loss");
 
       const orderReq: OrderRequest = {
         symbol,
@@ -228,11 +234,18 @@ export const TOOLS: Record<string, ToolDef> = {
         ctx.broker.getPositions(),
         ctx.broker.getTicker(symbol),
       ]);
+      // Agenten väljer entry, användaren väljer investerad procent.
+      if (side === "BUY") {
+        const { percentageAmount, getTradePercent } = await import("../risk/tradeSizing.js");
+        orderReq.quoteOrderQty = percentageAmount(account.totalValueUsdt, account.totalValueUsdt, getTradePercent());
+        orderReq.quantity = undefined;
+      }
       const check = ctx.risk.checkOrder(orderReq, {
         state: ctx.state,
         account,
         positions: positions as Position[],
         lastPrice: ticker.price,
+        paper: ctx.broker.mode !== "live",
       });
 
       if (!check.allowed) {
@@ -246,12 +259,51 @@ export const TOOLS: Record<string, ToolDef> = {
 
       const finalOrder = check.adjustedOrder ?? orderReq;
 
+      // TEST: varje köp får en utgång (TP/SL) så att traden avslutas och
+      // resultatet syns. Saknas den sätts standard: +3 % vinst, −1,5 % förlust
+      // (TEST_TP_PCT / TEST_SL_PCT). LIVE ändras inte här.
+      if (side === "BUY" && ctx.broker.name === "bybit-paper") {
+        const entry = limitPrice ?? ticker.price;
+        const tpPct = Number(process.env.TEST_TP_PCT ?? 3) || 3;
+        const slPct = Number(process.env.TEST_SL_PCT ?? 1.5) || 1.5;
+        if (!(takeProfit && takeProfit > entry)) takeProfit = +(entry * (1 + tpPct / 100)).toPrecision(6);
+        if (!(stopLoss && stopLoss < entry)) stopLoss = +(entry * (1 - slPct / 100)).toPrecision(6);
+        finalOrder.takeProfit = takeProfit;
+        finalOrder.stopLoss = stopLoss;
+      }
+      const refPrice = limitPrice ?? ticker.price;
+
       // I approve-läge lägger vi INTE ordern nu — vi bara förbereder den för
       // mänsklig bekräftelse. I auto-läge skickar vi direkt.
-      if (ctx.config.executionMode === "approve") {
+      if (ctx.config.executionMode === "approve" || ctx.broker.name === "bybit" || ctx.broker.name === "bybit-paper") {
         log.agent(
           `[APPROVE-LÄGE] Claude vill lägga order: ${finalOrder.side} ${finalOrder.symbol} — ${reasoning}`,
         );
+        // Lägg förslaget i kön så Mike ser det i dashboarden och kan trycka Godkänn.
+        try {
+          const { addPendingOrder } = await import("../server/orderGate.js");
+          const { getHorizonMin } = await import("../server/tradeHorizon.js");
+          await addPendingOrder({
+            source: "agent",
+            venue: `broker:${ctx.broker.name}`,
+            live: ctx.broker.mode === "live",
+            symbol: finalOrder.symbol,
+            side: finalOrder.side,
+            quoteUsd: finalOrder.quoteOrderQty,
+            quantity: finalOrder.quoteOrderQty === undefined ? finalOrder.quantity : undefined,
+            // LIVE oförändrat: bara TEST-ordrar bär med sig limit/TP/SL in i kön
+            orderType: ctx.broker.name === "bybit-paper" && finalOrder.type === "LIMIT" ? "LIMIT" : undefined,
+            limitPrice: ctx.broker.name === "bybit-paper" && finalOrder.type === "LIMIT" ? finalOrder.price : undefined,
+            takeProfit: finalOrder.takeProfit,
+            stopLoss: finalOrder.stopLoss,
+            refPrice,
+            reason: String(reasoning ?? "").slice(0, 200),
+            // Köp får Mikes valda horisont: förslaget försvinner och positionen säljs när tiden gått
+            ...(finalOrder.side === "BUY" ? { horizonSec: getHorizonMin() * 60 } : {}),
+          });
+        } catch (err) {
+          log.warn(`Kunde inte spara väntande order: ${err instanceof Error ? err.message : String(err)}`);
+        }
         return {
           accepted: true,
           executed: false,
@@ -264,10 +316,23 @@ export const TOOLS: Record<string, ToolDef> = {
 
       // AUTO-läge: skicka ordern på riktigt
       try {
+        // Tidshorisont i AUTO: saldot före köpet, så att bara detta köp säljs när tiden är slut
+        const hz = await import("../server/tradeHorizon.js");
+        const baseCoin = finalOrder.symbol.toUpperCase().replace("/", "").replace(/(USDT|USDC|USD|EUR)$/, "");
+        const baseline = finalOrder.side === "BUY" && finalOrder.type === "MARKET"
+          ? await ctx.broker.getAccount().then((a) => a.balances.find((x) => x.asset === baseCoin)?.free ?? 0).catch(() => undefined)
+          : undefined;
         const result = await ctx.broker.placeOrder(finalOrder);
         ctx.sideEffects.placedOrders.push({ request: finalOrder, result });
+        if (baseline !== undefined && result.executedQty > 0) {
+          hz.addTimedExit({
+            broker: ctx.broker.name, symbol: finalOrder.symbol, qty: result.executedQty, live: ctx.broker.mode === "live",
+            horizonSec: hz.getHorizonMin() * 60, baseline,
+            paperGroup: ctx.broker.name === "bybit-paper" ? result.orderId : undefined,
+          });
+        }
         log.trade(
-          `${result.side} ${result.executedQty} ${result.symbol} @ ${result.avgFillPrice.toFixed(4)} (${result.cummulativeQuoteQty.toFixed(2)} USDT)`,
+          `${result.side} ${result.executedQty} ${result.symbol} @ ${result.avgFillPrice.toFixed(4)} (${result.cummulativeQuoteQty.toFixed(2)} USDC)`,
           { orderId: result.orderId, reasoning },
         );
         return {
@@ -363,83 +428,11 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   },
 
-  run_strategy_scan: {
-    definition: {
-      name: "run_strategy_scan",
-      description:
-        "Kör en eller alla aktiva strategi-motorer och returnerar deras signaler. " +
-        "Motor A (politician_copy): spårar Congress-trades. Motor B (wheel_strategy): " +
-        "Wheel-signaler (puts/calls). Motor C (crypto_momentum): krypto momentum-setup. " +
-        "Returnerar en lista signaler med action, symbol, reasoning och confidence.",
-      input_schema: {
-        type: "object",
-        properties: {
-          engine: {
-            type: "string",
-            enum: ["politician_copy", "wheel_strategy", "crypto_momentum", "all"],
-            description: "Vilken motor att köra, eller 'all' för alla aktiva",
-          },
-        },
-        required: ["engine"],
-      },
-    },
-    handler: async (input, ctx) => {
-      const engineName = str(input, "engine");
-      const toRun =
-        engineName === "all"
-          ? ctx.engines
-          : ctx.engines.filter((e) => e.name === engineName);
-
-      if (toRun.length === 0) {
-        return { error: `Ingen motor '${engineName}' aktiv. Aktiva: ${ctx.engines.map((e) => e.name).join(", ")}` };
-      }
-
-      const allSignals = [];
-      for (const engine of toRun) {
-        const signals = await engine.scan();
-        allSignals.push(...signals);
-      }
-
-      return {
-        enginesRun: toRun.map((e) => e.name),
-        totalSignals: allSignals.length,
-        signals: allSignals,
-      };
-    },
-  },
-
-  get_politician_trades: {
-    definition: {
-      name: "get_politician_trades",
-      description:
-        "Hämtar senaste aktietransaktioner från US Congress-medlemmar (STOCK Act disclosures). " +
-        "OBS: Data har 1-45 dagars fördröjning. Visar politiker, parti, ticker, belopp och datum. " +
-        "Kan filtreras till bara top performers.",
-      input_schema: {
-        type: "object",
-        properties: {
-          limit: { type: "number", description: "Antal trades, default 20" },
-          topOnly: {
-            type: "boolean",
-            description: "true = bara top-performande politiker (Pelosi, McCaul, etc.)",
-          },
-        },
-      },
-    },
-    handler: async (input) => {
-      const limit = optNum(input, "limit") ?? 20;
-      const topOnly = input.topOnly === true;
-      let trades = await getRecentPoliticianTrades(limit);
-      if (topOnly) trades = filterTopPerformers(trades);
-      return { count: trades.length, trades };
-    },
-  },
-
   get_all_positions: {
     definition: {
       name: "get_all_positions",
       description:
-        "Hämtar positioner från ALLA anslutna brokers (Alpaca, Blofin, Binance). " +
+        "Hämtar positioner separat från Bybit TEST och LIVE. " +
         "Returnerar en sammanfattning per broker med totalt värde och individuella positioner. " +
         "Använd för att se hela portföljen innan du fattar beslut.",
       input_schema: { type: "object", properties: {} },

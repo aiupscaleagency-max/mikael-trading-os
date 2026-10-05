@@ -53,10 +53,13 @@ export interface OrderRequest {
   type: OrderType;
   // Kvantitet uttryckt i BAS-valuta (t.ex. BTC i BTCUSDT)
   quantity?: number;
-  // Alternativt: spendera X av quote-valuta (t.ex. X USDT). Binance MARKET stöder quoteOrderQty.
+  // Alternativt: spendera X av quote-valuta (t.ex. X USDC). Bybit MARKET stöder quoteOrderQty.
   quoteOrderQty?: number;
   // Endast för LIMIT
   price?: number;
+  // Valfritt: sälj automatiskt vid vinst (takeProfit) eller förlust (stopLoss), som pris i quote-valutan.
+  takeProfit?: number;
+  stopLoss?: number;
 }
 
 export interface OrderResult {

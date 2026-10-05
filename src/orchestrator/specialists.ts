@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { createLlmClient, extractJson, modelFor } from "../llm/gateway.js";
 import { getMacroSnapshot } from "../data/macro.js";
 import { searchNews, getRedditTop } from "../data/news.js";
 import { getRecentPoliticianTrades, filterTopPerformers } from "../data/capitol.js";
@@ -20,7 +21,7 @@ import { trackClaudeCall } from "../cost/tracker.js";
 //  får lägga order — bara analysera och rapportera.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SPECIALIST_MODEL = "claude-haiku-4-5-20251001";
+const specialistModel = () => modelFor("specialist", "claude-haiku-4-5-20251001");
 
 // ── Makro-analytiker ──
 
@@ -44,10 +45,10 @@ export async function runMacroAnalyst(
     fedNews: fedNews.map((n) => n.title),
   });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const response = await client.messages.create({
-    model: SPECIALIST_MODEL,
-    max_tokens: 1500,
+    model: specialistModel(),
+    max_tokens: 4000,
     system: `Du är en senior partner på McKinsey Global Institute som rådger sovereign wealth funds om hur makro-trender påverkar marknader. Din uppgift: omsätta makroekonomiska faktorer till konkret crypto/forex trading-action.
 
 ANALYSERA:
@@ -84,7 +85,7 @@ Svara i EXAKT detta JSON-format:
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är dagens data:\n${dataContext}` }],
   });
-  trackClaudeCall("macro", SPECIALIST_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("macro", specialistModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -92,7 +93,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<MacroReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<MacroReport, "role" | "rawText">;
     log.agent(`[Makro] Regim: ${parsed.regime}, Confidence: ${parsed.confidence}`);
     return { role: "macro_analyst", ...parsed, rawText: text };
   } catch {
@@ -119,6 +120,7 @@ export async function runTechnicalAnalyst(
   broker: BrokerAdapter,
   symbols: string[],
   engines: StrategyEngine[],
+  timeframe = "1m",
 ): Promise<TechnicalReport> {
   log.agent("[Team] Teknisk analytiker startar…");
 
@@ -129,10 +131,10 @@ export async function runTechnicalAnalyst(
     ticker: { price: number; changePct24h: number; volume24h: number };
   }> = [];
 
-  for (const symbol of symbols.slice(0, 6)) {
+  for (const symbol of symbols) {
     try {
       const [klines, ticker] = await Promise.all([
-        broker.getKlines(symbol, "4h", 100),
+        broker.getKlines(symbol, timeframe, 200),
         broker.getTicker(symbol),
       ]);
       const indicators = computeIndicators(klines);
@@ -141,6 +143,8 @@ export async function runTechnicalAnalyst(
       log.warn(`[Teknisk] Kunde inte hämta ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  if (!analyses.length) throw new Error("Verifierade marknadsdata saknas för valda par; teknisk agent startas inte");
 
   // Kör motor-scans
   const motorSignals = [];
@@ -153,22 +157,21 @@ export async function runTechnicalAnalyst(
     }
   }
 
-  const dataContext = JSON.stringify({ analyses, motorSignals });
+  const dataContext = JSON.stringify({ timeframe, selectedSymbols: symbols, analyses, motorSignals });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const response = await client.messages.create({
-    model: SPECIALIST_MODEL,
-    max_tokens: 2000,
+    model: specialistModel(),
+    max_tokens: 8000, // 4000 räckte inte för 15 par — svaret klipptes och kunde inte läsas
     system: `Du är en senior kvantitativ trader i samma stil som Citadel: kombinerar teknisk analys med statistiska modeller för att tajma in/ut.
 Din uppgift: leverera en fullständig teknisk analys för varje symbol — inte bara siffror, utan tolkning + actionable plan.
 
-REGEL: Du MÅSTE alltid analysera ALLA dessa tidsramar (inte bara 1h):
-1m / 5m / 15m / 1h / 4h / 1d / 1v / 1m (månad)
+REGEL: Analysera endast valda par och det verifierade analysintervallet ${timeframe}. Uppgifter för andra tidsramar saknas; hitta aldrig på dem.
 
 REGEL: Om entry inte är optimal NU, säg så. Föreslå att vänta 1-5 min för bättre price action istället för att tvinga en trade.
 
 ANALYSERA FÖR VARJE SYMBOL:
-1. Trendriktning på alla 8 tidsramar (1m till 1M)
+1. Trendriktning för analysintervallet ${timeframe}
 2. Exakta support/resistance-nivåer (priser, inte luddiga zoner)
 3. 50/100/200-MA + crossover-signaler
 4. RSI + MACD + Bollinger Band — med tolkning på vanlig svenska
@@ -202,7 +205,7 @@ Svara i EXAKT detta JSON-format:
       "confidenceRating": "buy" | "strong_buy" | etc
     }
   ],
-  "topPick": "BTCUSDT" eller null,
+  "topPick": "BTCUSDC" eller null,
   "marketWideObservation": "1 mening om hela krypto-marknaden just nu"
 }
 
@@ -211,7 +214,7 @@ Inkludera entry/target/rrRatio BARA om |score| >= 3.
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: dataContext }],
   });
-  trackClaudeCall("technical", SPECIALIST_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("technical", specialistModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -219,12 +222,15 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<TechnicalReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<TechnicalReport, "role" | "rawText">;
+    parsed.analyses = parsed.analyses.filter((a) => symbols.includes(a.symbol));
+    if (parsed.topPick && !symbols.includes(parsed.topPick)) parsed.topPick = null;
+    if (!parsed.analyses.length) throw new Error("Den tekniska agenten gav ingen analys för valda par");
     log.agent(`[Teknisk] Top pick: ${parsed.topPick ?? "ingen"}, ${parsed.analyses.length} symboler`);
     return { role: "technical_analyst", ...parsed, rawText: text };
   } catch {
-    log.warn("[Teknisk] Parsningsfel.");
-    return { role: "technical_analyst", analyses: [], topPick: null, rawText: text };
+    log.warn(`[Teknisk] Parsningsfel (stop_reason=${response.stop_reason}, ${text.length} tecken).`);
+    throw new Error("Teknisk analys kunde inte verifieras; Hanna startas inte");
   }
 }
 
@@ -258,9 +264,9 @@ export async function runSentimentAnalyst(
     })),
   });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const response = await client.messages.create({
-    model: SPECIALIST_MODEL,
+    model: specialistModel(),
     max_tokens: 1500,
     system: `Du är en sentiment-analytiker i ett trading-team. Din ENDA uppgift är att läsa av marknadens stämning från Reddit-posts och politiker-aktivitet.
 
@@ -276,7 +282,7 @@ contrarySignal = true om sentimentet är extremt (extreme_fear ELLER extreme_gre
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: dataContext }],
   });
-  trackClaudeCall("sentiment", SPECIALIST_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("sentiment", specialistModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -284,7 +290,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<SentimentReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<SentimentReport, "role" | "rawText">;
     log.agent(`[Sentiment] ${parsed.overallSentiment}, contrary=${parsed.contrarySignal}`);
     return { role: "sentiment_analyst", ...parsed, rawText: text };
   } catch {

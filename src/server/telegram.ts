@@ -224,7 +224,7 @@ export async function handleUpdate(
       // Skicka instruktion: kör i dashboard, eller bygg shared backend-state senare.
       await sendMessage(
         `🔄 Kommandot <code>${intent.type}</code> kräver dashboarden just nu.\n\n` +
-        `Öppna https://trading.aiupscale.agency och kör där.\n\n` +
+        `Öppna ${process.env.PUBLIC_URL || "dashboarden (http://localhost:3939)"} och kör där.\n\n` +
         `Direktstyrning från Telegram (utan dashboard) kommer i nästa version.`,
       );
       break;

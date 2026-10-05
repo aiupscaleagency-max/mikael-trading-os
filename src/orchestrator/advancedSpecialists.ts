@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { createLlmClient, extractJson, modelFor } from "../llm/gateway.js";
 import { trackClaudeCall } from "../cost/tracker.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { computeIndicators } from "../indicators/ta.js";
@@ -21,9 +22,32 @@ import { log } from "../logger.js";
 //    Ingen av dem lägger order — bara analyserar och rapporterar.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SPECIALIST_MODEL = "claude-haiku-4-5-20251001";
+const specialistModel = () => modelFor("specialist", "claude-haiku-4-5-20251001");
 
 // ── Risk-analytiker ──
+
+// Risk-prompten ber om portfolioHeat/overallRisk/suggestedPositionSize medan
+// RiskReport (och Hanna) läser portfolioHeatPct/riskLevel/suggestedPositionSizing.
+// Översätt så att siffrorna faktiskt når Hanna.
+const RISK_LEVEL: Record<string, RiskReport["riskLevel"]> = {
+  conservative: "low", moderate: "medium", aggressive: "high", dangerous: "critical",
+  low: "low", medium: "medium", high: "high", critical: "critical",
+};
+function normalizeRisk(p: any): Omit<RiskReport, "role" | "rawText"> {
+  const dd = p.maxDrawdownScenario;
+  const size = p.suggestedPositionSizing ?? { maxNewPositionUsd: Number(p.suggestedPositionSize) || 0, reasoning: p.recommendation ?? "" };
+  return {
+    ...p,
+    portfolioHeatPct: Number(p.portfolioHeatPct ?? p.portfolioHeat) || 0,
+    riskLevel: RISK_LEVEL[String(p.riskLevel ?? p.overallRisk ?? "").toLowerCase()] ?? "high",
+    correlationRisk: p.correlationRisk ?? "medium",
+    correlationDetails: p.correlationDetails ?? (Array.isArray(p.correlatedPairs) ? p.correlatedPairs.map((c: any) => `${c.pair} ${c.correlation}`).join(", ") : ""),
+    maxDrawdownScenario: typeof dd === "object" && dd ? dd : { description: String(dd ?? ""), estimatedLossUsd: 0, estimatedLossPct: 0 },
+    suggestedPositionSizing: size,
+    warnings: Array.isArray(p.warnings) ? p.warnings : [],
+    recommendation: p.recommendation ?? "",
+  };
+}
 
 export async function runRiskAnalyst(
   apiKey: string,
@@ -68,9 +92,9 @@ export async function runRiskAnalyst(
     positionCount: positions.length,
   });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const response = await client.messages.create({
-    model: SPECIALIST_MODEL,
+    model: specialistModel(),
     max_tokens: 1500,
     system: `Du är senior risk-analytiker på Bridgewater Associates, tränad i Ray Dalios principer om radikal transparens och rigorös risk-bedömning. Din uppgift: utvärdera nuvarande portfölj med samma rigor som Bridgewaters All Weather-team.
 
@@ -111,7 +135,7 @@ suggestedPositionSize = max USD för nästa position givet nuvarande risk.
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är riskdata:\n${dataContext}` }],
   });
-  trackClaudeCall("risk", SPECIALIST_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("risk", specialistModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -119,22 +143,30 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<RiskReport, "role" | "rawText">;
-    log.agent(`[Risk] Nivå: ${parsed.overallRisk}, Heat: ${parsed.portfolioHeat}%`);
+    const parsed = normalizeRisk(JSON.parse(extractJson(text)));
+    log.agent(`[Risk] Nivå: ${parsed.riskLevel}, Heat: ${parsed.portfolioHeatPct}%`);
     return { role: "risk_analyst", ...parsed, rawText: text };
   } catch {
-    log.warn("[Risk] Kunde inte parsa JSON, returnerar fallback.");
+    log.warn(`[Risk] Kunde inte parsa JSON (stop_reason=${response.stop_reason}), returnerar fallback.`);
     return {
       role: "risk_analyst",
-      portfolioHeat: 0,
+      portfolioHeatPct: 0,
       correlationRisk: "medium",
-      correlatedPairs: [],
-      maxDrawdownScenario: "Parsningsfel — manuell granskning krävs",
-      suggestedPositionSize: 0,
-      overallRisk: "aggressive",
+      correlationDetails: "Ej tillgänglig",
+      maxDrawdownScenario: {
+        description: "Parsningsfel — manuell granskning krävs",
+        estimatedLossUsd: 0,
+        estimatedLossPct: 0,
+      },
+      suggestedPositionSizing: {
+        maxNewPositionUsd: 0,
+        reasoning: "Parsningsfel — ingen ny position föreslås",
+      },
+      // riskLevel tillåter low | medium | high | critical. Vid parsningsfel
+      // sätts "high" — det är säkrare att anta hög risk än låg när vi inte vet.
+      riskLevel: "high",
       warnings: ["Parsningsfel — avvakta"],
       recommendation: "Kunde inte analysera risk. Avvakta nya positioner.",
-      confidence: "low",
       rawText: text,
     };
   }
@@ -146,6 +178,7 @@ export async function runQuantAnalyst(
   apiKey: string,
   broker: BrokerAdapter,
   symbols: string[],
+  timeframe = "1m",
 ): Promise<QuantReport> {
   log.agent("[Team] Kvant-analytiker startar…");
 
@@ -156,10 +189,10 @@ export async function runQuantAnalyst(
     ticker: { price: number; changePct24h: number; volume24h: number };
   }> = [];
 
-  for (const symbol of symbols.slice(0, 6)) {
+  for (const symbol of symbols) {
     try {
       const [klines, ticker] = await Promise.all([
-        broker.getKlines(symbol, "4h", 100),
+        broker.getKlines(symbol, timeframe, 200),
         broker.getTicker(symbol),
       ]);
       const indicators = computeIndicators(klines);
@@ -187,9 +220,9 @@ export async function runQuantAnalyst(
     })),
   });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const response = await client.messages.create({
-    model: SPECIALIST_MODEL,
+    model: specialistModel(),
     max_tokens: 2000,
     system: `Du är en quant researcher på Renaissance Technologies — letar statistiska kanter i marknaden via data-driven mönster-detektion. Din uppgift: hitta hidden patterns och anomalier som ger oss matematisk fördel.
 
@@ -236,7 +269,7 @@ suggestedSizeMultiplier: 0.5-1.5. 1.0 standard. <1 vid hög vol, >1 vid låg vol
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är kvantdata:\n${dataContext}` }],
   });
-  trackClaudeCall("quant", SPECIALIST_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("quant", specialistModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -244,16 +277,17 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<QuantReport, "role" | "rawText">;
-    log.agent(`[Kvant] Regim: ${parsed.volatilityRegime}, Sharpe: ${parsed.estimatedSharpe}`);
+    const parsed = JSON.parse(extractJson(text)) as Omit<QuantReport, "role" | "rawText">;
+    parsed.symbolScores = parsed.symbolScores.filter((a) => symbols.includes(a.symbol));
+    log.agent(`[Kvant] Regim: ${parsed.volatilityRegime}, Sharpe: ${parsed.sharpeEstimate}`);
     return { role: "quant_analyst", ...parsed, rawText: text };
   } catch {
     log.warn("[Kvant] Parsningsfel.");
     return {
       role: "quant_analyst",
       volatilityRegime: "medium",
-      estimatedSharpe: 0,
-      winRate: 0,
+      sharpeEstimate: 0,
+      winRateFromHistory: 0,
       symbolScores: [],
       recommendation: "Kunde inte analysera. Avvakta.",
       confidence: "low",
@@ -280,7 +314,7 @@ export async function runOptionsStrategist(
     volume24h: number;
   }> = [];
 
-  for (const symbol of symbols.slice(0, 6)) {
+  for (const symbol of symbols) {
     try {
       const [klines, ticker] = await Promise.all([
         broker.getKlines(symbol, "1d", 30),
@@ -316,9 +350,9 @@ export async function runOptionsStrategist(
     })),
   });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const response = await client.messages.create({
-    model: SPECIALIST_MODEL,
+    model: specialistModel(),
     max_tokens: 2000,
     system: `Du är en options-strateg i ett trading-team. Din ENDA uppgift är att bedöma implicit volatilitet och föreslå optionsstrategier.
 
@@ -347,7 +381,7 @@ Om brokern inte stödjer optioner, returnera tomma opportunities och "none" som 
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är optionsdata:\n${dataContext}` }],
   });
-  trackClaudeCall("options", SPECIALIST_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("options", specialistModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -355,19 +389,18 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<OptionsReport, "role" | "rawText">;
-    log.agent(`[Options] IV-rank: ${parsed.ivRank}, Strategi: ${parsed.optimalStrategy}`);
+    const parsed = JSON.parse(extractJson(text)) as Omit<OptionsReport, "role" | "rawText">;
+    log.agent(`[Options] ${parsed.ivAssessments?.length ?? 0} bedömningar, miljö: ${parsed.overallIvEnvironment}`);
     return { role: "options_strategist", ...parsed, rawText: text };
   } catch {
     log.warn("[Options] Parsningsfel.");
     return {
       role: "options_strategist",
-      ivRank: "normal",
-      optimalStrategy: "none",
-      opportunities: [],
+      ivAssessments: [],
+      overallIvEnvironment: "normal",
       rollOpportunities: [],
+      applicable: false,
       recommendation: "Kunde inte analysera optioner. Avvakta.",
-      confidence: "low",
       rawText: text,
     };
   }
@@ -386,9 +419,9 @@ export async function runExecutionOptimizer(
     timestamp: new Date().toISOString(),
   });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const response = await client.messages.create({
-    model: SPECIALIST_MODEL,
+    model: specialistModel(),
     max_tokens: 1500,
     system: `Du är en exekverings-optimerare i ett trading-team. Din ENDA uppgift är att bestämma HUR trades ska exekveras för att minimera slippage och maximera fill-kvalitet.
 
@@ -416,7 +449,7 @@ timing: "avoid" om score är för låg eller marknaden är ogynsam.
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är föreslagna trades:\n${dataContext}` }],
   });
-  trackClaudeCall("execution", SPECIALIST_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("execution", specialistModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -424,17 +457,16 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<ExecutionReport, "role" | "rawText">;
-    log.agent(`[Exekvering] ${parsed.recommendations.length} trades optimerade, marknad: ${parsed.marketConditions}`);
+    const parsed = JSON.parse(extractJson(text)) as Omit<ExecutionReport, "role" | "rawText">;
+    log.agent(`[Exekvering] ${parsed.tradeOptimizations?.length ?? 0} trades optimerade, brådska: ${parsed.urgency}`);
     return { role: "execution_optimizer", ...parsed, rawText: text };
   } catch {
     log.warn("[Exekvering] Parsningsfel.");
     return {
       role: "execution_optimizer",
-      recommendations: [],
-      marketConditions: "normal",
-      overallAdvice: "Kunde inte optimera. Använd market orders med försiktighet.",
-      confidence: "low",
+      tradeOptimizations: [],
+      generalAdvice: "Kunde inte optimera. Använd market orders med försiktighet.",
+      urgency: "low",
       rawText: text,
     };
   }
@@ -479,9 +511,9 @@ export async function runPortfolioStrategist(
     positionCount: positions.length,
   });
 
-  const client = new Anthropic({ apiKey });
+  const client = createLlmClient(apiKey);
   const response = await client.messages.create({
-    model: SPECIALIST_MODEL,
+    model: specialistModel(),
     max_tokens: 2000,
     system: `Du är senior portfolio-strateg på BlackRock som hanterar multi-asset portföljer för institutionella kunder. Din uppgift: bygga en optimerad allokering anpassad till crypto/forex-trading med tydlig core-vs-satellite-struktur.
 
@@ -524,7 +556,7 @@ Svara i EXAKT detta JSON-format:
 Svara BARA med JSON.`,
     messages: [{ role: "user", content: `Här är portföljdata:\n${dataContext}` }],
   });
-  trackClaudeCall("portfolio", SPECIALIST_MODEL, response.usage).catch(() => {});
+  trackClaudeCall("portfolio", specialistModel(), response.usage).catch(() => {});
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -532,7 +564,7 @@ Svara BARA med JSON.`,
     .join("");
 
   try {
-    const parsed = JSON.parse(text) as Omit<PortfolioReport, "role" | "rawText">;
+    const parsed = JSON.parse(extractJson(text)) as Omit<PortfolioReport, "role" | "rawText">;
     log.agent(`[Portfölj] Diversifiering: ${parsed.diversificationScore}/100, Rebalansering: ${parsed.rebalancingNeeded}`);
     return { role: "portfolio_strategist", ...parsed, rawText: text };
   } catch {
@@ -542,8 +574,8 @@ Svara BARA med JSON.`,
       diversificationScore: 0,
       sectorConcentration: [],
       rebalancingNeeded: false,
-      suggestedChanges: [],
-      assetAllocation: { crypto: 0, stocks: 0, options: 0, cash: 100 },
+      rebalancingActions: [],
+      cashAllocationPct: 100,
       recommendation: "Kunde inte analysera portfölj. Avvakta.",
       confidence: "low",
       rawText: text,
