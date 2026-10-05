@@ -26,6 +26,10 @@ export interface LiveTpSl {
   takeProfit?: number;
   stopLoss?: number;
   openedAt: number;
+  pendingOrderId?: string;
+  pendingExecutedQty?: number;
+  status?: "needs_review";
+  lastError?: string;
 }
 
 let watches: LiveTpSl[] = load();
@@ -62,7 +66,7 @@ export function addLiveTpSl(w: Omit<LiveTpSl, "id" | "openedAt">): string | unde
 }
 
 /** Säljer TP/SL-bevakningen just nu? (så att tidsgränsen inte säljer samtidigt) */
-export function isLiveTpSlSelling(id: string): boolean { return selling.has(id); }
+export function isLiveTpSlSelling(id: string): boolean { return selling.has(id) || watches.some((w) => w.id === id && (!!w.pendingOrderId || w.status === "needs_review")); }
 
 /** Anropas när en TP/SL-bevakning sålt (tidsgränsen för samma köp tas då bort) */
 const soldHooks: Array<(id: string) => void> = [];
@@ -88,9 +92,26 @@ export function startLiveTpSl(brokers: Record<string, BrokerAdapter>, onEvent?: 
   if (timer) return;
   timer = setInterval(() => {
     for (const w of [...watches]) {
-      if (selling.has(w.id) || (retryAt.get(w.id) ?? 0) > Date.now()) continue;
+      if (w.status === "needs_review" || selling.has(w.id) || (retryAt.get(w.id) ?? 0) > Date.now()) continue;
       const broker = brokers[w.broker];
       if (!broker) continue;
+      if (w.pendingOrderId) {
+        const adapter = broker as BrokerAdapter & { getOrderResult?: (symbol: string, id: string) => Promise<import("../types.js").OrderResult | null> };
+        if (!adapter.getOrderResult) continue;
+        selling.add(w.id);
+        void adapter.getOrderResult(w.symbol, w.pendingOrderId).then((r) => {
+          if (!r) return;
+          const delta = Math.max(0, r.executedQty - (w.pendingExecutedQty ?? 0));
+          w.qty = Math.max(0, w.qty - delta); w.pendingExecutedQty = r.executedQty;
+          if (delta > 0) recordLiveFill({ symbol: w.symbol, side: "SELL", qty: delta, price: r.avgFillPrice, kind: "TP/SL" });
+          if (/^(FILLED|CANCELED|CANCELLED|PARTIALLYFILLEDCANCELED|PARTIALLYFILLEDCANCELLED|REJECTED|EXPIRED|DEACTIVATED)$/i.test(r.status)) {
+            delete w.pendingOrderId; delete w.pendingExecutedQty;
+            if (w.qty <= 1e-12) { removeLiveTpSl(w.id); for (const cb of soldHooks) cb(w.id); }
+          }
+          save();
+        }).catch((err) => { log.warn(`[LIVE TP/SL] orderstatus kunde inte verifieras: ${String(err)}`); retryAt.set(w.id, Date.now() + 30_000); }).finally(() => selling.delete(w.id));
+        continue;
+      }
       const base = w.symbol.toUpperCase().replace(/(USDT|USDC|USD)$/, "");
       const px = getCachedPrice(w.symbol) ?? getCachedPrice(`${base}USDT`) ?? getCachedPrice(`${base}USDC`);
       if (!px) {
@@ -108,8 +129,15 @@ export function startLiveTpSl(brokers: Record<string, BrokerAdapter>, onEvent?: 
       const why = hitTp ? "TP (vinst)" : "SL (förlust)";
       void broker.placeOrder({ symbol: w.symbol, side: "SELL", type: "MARKET", quantity: w.qty })
         .then((r) => {
-          removeLiveTpSl(w.id);
-          for (const cb of soldHooks) { try { cb(w.id); } catch { /* ignorera */ } }
+          const executed = Math.max(0, Math.min(w.qty, r.executedQty || 0));
+          w.qty = Math.max(0, w.qty - executed);
+          if (!/^(FILLED|CANCELED|CANCELLED|PARTIALLYFILLEDCANCELED|PARTIALLYFILLEDCANCELLED|REJECTED|EXPIRED|DEACTIVATED)$/i.test(r.status)) {
+            w.pendingOrderId = r.orderId; w.pendingExecutedQty = executed;
+          } else if (w.qty <= 1e-12) {
+            removeLiveTpSl(w.id);
+            for (const cb of soldHooks) { try { cb(w.id); } catch { /* ignorera */ } }
+          } else retryAt.set(w.id, Date.now() + 15_000);
+          save();
           if (r.executedQty > 0) recordLiveFill({ symbol: w.symbol, side: "SELL", qty: r.executedQty, price: r.avgFillPrice || price, usd: r.cummulativeQuoteQty || undefined, kind: hitTp ? "TP" : "SL" });
           log.trade(`[LIVE TP/SL] ${why}: sålde ${w.symbol} ${r.executedQty || w.qty} @ ~${price} · status ${r.status}`);
           onEvent?.("live-tpsl", { symbol: w.symbol, why, price });
@@ -118,8 +146,10 @@ export function startLiveTpSl(brokers: Record<string, BrokerAdapter>, onEvent?: 
           const msg = err instanceof Error ? err.message : String(err);
           log.error(`[LIVE TP/SL] kunde inte sälja ${w.symbol} vid ${why}: ${msg}`);
           // Inget kvar att sälja → sluta bevaka; annat fel → försök igen nästa varv
-          if (/inga .* att sälja|kräver minst/.test(msg)) removeLiveTpSl(w.id);
-          else retryAt.set(w.id, Date.now() + 60_000);
+          if (/timeout|timed out|ECONN|fetch failed|socket|network/i.test(msg)) {
+            w.status = "needs_review"; w.lastError = `${msg}; ordern kan ha accepterats, avstämning krävs`; save();
+            onEvent?.("live-tpsl", { symbol: w.symbol, status: w.status, error: w.lastError });
+          } else retryAt.set(w.id, Date.now() + 60_000);
         })
         .finally(() => selling.delete(w.id));
     }

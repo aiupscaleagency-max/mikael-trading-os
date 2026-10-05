@@ -6,6 +6,7 @@ import { config } from "../config.js";
 import { loadState } from "../memory/store.js";
 import { log } from "../logger.js";
 import { currentStake } from "../risk/stakeLadder.js";
+import { cachedTradeEquity, getTradePercent, percentageAmount } from "../risk/tradeSizing.js";
 import { getCachedPrice } from "./marketStream.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -29,9 +30,14 @@ export const MAX_TEST_STAKE_USD = parseFloat(process.env.MAX_TEST_STAKE_USD || "
 
 /** TEST-tak per order: insats-trappan (1 % → 5 % av låtsaskontot), annars MAX_TEST_STAKE_USD. */
 export function testStakeCapUsd(): number {
-  if (process.env.MAX_TEST_STAKE_USD) return MAX_TEST_STAKE_USD;
+  const equity = cachedTradeEquity("bybit-paper");
+  if (equity !== null) return percentageAmount(equity, equity, getTradePercent());
   const s = currentStake();
   return s && s.usd > 0 ? s.usd : MAX_TEST_STAKE_USD;
+}
+export function liveStakeCapUsd(): number {
+  const equity = cachedTradeEquity("bybit");
+  return equity === null ? MAX_LIVE_STAKE_USD : percentageAmount(equity, equity, getTradePercent());
 }
 export const MAX_LIVE_DAILY_SPEND_USD = parseFloat(
   process.env.MAX_LIVE_DAILY_SPEND_USD || process.env.MAX_LIVE_DAILY_LOSS_USD || "10",
@@ -125,7 +131,7 @@ export async function checkOrderGate(input: GateInput): Promise<GateResult> {
     if (!Number.isFinite(amt) || amt <= 0) {
       return deny("Beloppet saknas eller är ogiltigt.");
     }
-    const cap = input.live ? MAX_LIVE_STAKE_USD : testStakeCapUsd();
+    const cap = input.live ? liveStakeCapUsd() : testStakeCapUsd();
     if (amt > cap) {
       return deny(`Max $${cap} per order i ${input.live ? "LIVE" : "TEST"}. Du försökte $${amt}.`);
     }
@@ -150,7 +156,7 @@ export interface PendingOrder {
   id: string;
   createdAt: string;
   source: string;
-  /** "binance" eller "broker:<namn>" (t.ex. broker:alpaca) */
+  /** "broker:bybit-paper" eller "broker:bybit" */
   venue: string;
   live: boolean;
   symbol: string;

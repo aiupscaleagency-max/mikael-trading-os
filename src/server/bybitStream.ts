@@ -25,14 +25,9 @@ import type { Candle } from "./klineStream.js";
 // tvingar ny anslutning om inget kommit på 60 sekunder.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const PUBLIC_URLS = [
-  process.env.BYBIT_WS_PUBLIC || "wss://stream.bybit.eu/v5/public/spot",
-  // Reserv för publika priser om EU-adressen inte svarar. Används bara för
-  // marknadsdata, aldrig för kontot.
-  "wss://stream.bybit.com/v5/public/spot",
-];
-const PRIVATE_URL = process.env.BYBIT_WS_PRIVATE || "wss://stream.bybit.eu/v5/private";
-const REST_BASE = process.env.BYBIT_BASE_URL || "https://api.bybit.eu";
+const PUBLIC_URLS = ["wss://stream.bybit.eu/v5/public/spot"];
+const PRIVATE_URL = "wss://stream.bybit.eu/v5/private";
+const REST_BASE = "https://api.bybit.eu";
 
 const SEED_LIMIT = 500;
 const MAX_BUFFER = 1000;

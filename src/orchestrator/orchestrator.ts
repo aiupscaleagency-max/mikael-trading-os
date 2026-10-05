@@ -123,7 +123,7 @@ export async function runOrchestratedTurn(params: {
   turnPhase("Fas 1 · JEV + specialister + advisor");
   const specialistStart = Date.now();
 
-  const allSymbols = params.symbols?.length ? params.symbols : [...config.crypto.symbols, ...config.stocks.symbols];
+  const allSymbols = params.symbols?.length ? params.symbols : [...config.crypto.symbols, ];
 
   const recentDecisions = await loadRecentDecisions(20);
   const positions = await broker.getPositions().catch(() => []);

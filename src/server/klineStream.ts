@@ -29,8 +29,8 @@ import { log } from "../logger.js";
 
 // Bybit (2026-10-03): samma börs som Mike handlar på. Publik data, inga nycklar.
 // Bybit EU:s publika data är samma som bybit.com, så .com används först och .eu som reserv.
-const WS_URLS = ["wss://stream.bybit.com/v5/public/spot", "wss://stream.bybit.eu/v5/public/spot"];
-const REST_BASES = ["https://api.bybit.com", "https://api.bybit.eu"];
+const WS_URLS = ["wss://stream.bybit.eu/v5/public/spot"];
+const REST_BASES = ["https://api.bybit.eu"];
 /** Bybits intervallnamn ("1" = 1 min, "60" = 1 tim, "D" = dag). */
 const BYBIT_IV: Record<string, string> = { "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720", "1d": "D", "1w": "W" };
 const IV_MS: Record<string, number> = { "1m": 60e3, "3m": 180e3, "5m": 300e3, "15m": 900e3, "30m": 1800e3, "1h": 3600e3, "2h": 7200e3, "4h": 14400e3, "6h": 21600e3, "12h": 43200e3, "1d": 86400e3, "1w": 604800e3 };

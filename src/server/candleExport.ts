@@ -65,7 +65,7 @@ export async function exportCandles(
 
   const body = format === "csv"
     ? toCsv(candles)
-    : JSON.stringify({ symbol, interval, source: "binance-websocket", closedOnly: true, candles }, null, 2);
+    : JSON.stringify({ symbol, interval, source: "bybit-eu-websocket", closedOnly: true, candles }, null, 2);
 
   await fs.writeFile(filePath, body, "utf8");
 

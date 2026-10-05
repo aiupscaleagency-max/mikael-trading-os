@@ -12,25 +12,25 @@ import { hasUsdcPair } from "./customSymbols.js";
 //
 // Maintains in-memory price-cache som alla services kan läsa O(1).
 // Auto-reconnect med exponential backoff.
-// Server: stream.binance.com:9443 (mainnet — publika data, ingen auth).
+// Server: stream.bybit.eu (publika spotdata, ingen auth).
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Bybit (2026-10-03): tickers.<PAR> för alla mynt agenterna följer, i både
 // USDT- och USDC-form. Bybit pushar en ny ticker flera gånger per sekund.
-const WS_URLS = ["wss://stream.bybit.com/v5/public/spot", "wss://stream.bybit.eu/v5/public/spot"];
+const WS_URLS = ["wss://stream.bybit.eu/v5/public/spot"];
 let urlIdx = 0;
 let pingTimer: NodeJS.Timeout | null = null;
 function watchedPairs(): string[] {
   const bases = config.crypto.symbols.map((s) => s.toUpperCase().replace(/(USDT|USDC|USD)$/, ""));
   // Egna mynt utan USDC-par prenumereras bara på USDT (ett okänt par kan
   // få Bybit att avvisa hela prenumerationen det ligger i).
-  return [...new Set(bases.flatMap((b) => hasUsdcPair(b) ? [`${b}USDT`, `${b}USDC`] : [`${b}USDT`]))];
+  return [...new Set(bases.flatMap((b) => hasUsdcPair(b) ? [`${b}USDC`] : []))];
 }
 
 /** Prenumererar på ett nytt mynts tickers i den öppna strömmen (egna mynt). */
 export function addTickerBase(base: string, usdc: boolean): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return; // tas med vid nästa anslutning
-  for (const p of usdc ? [`${base}USDT`, `${base}USDC`] : [`${base}USDT`]) {
+  for (const p of usdc ? [`${base}USDC`] : []) {
     ws.send(JSON.stringify({ op: "subscribe", args: [`tickers.${p}`] }));
   }
 }

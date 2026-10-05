@@ -12,9 +12,9 @@
 
 import { log } from "../logger.js";
 
-const EU = process.env.BYBIT_BASE_URL || "https://api.bybit.eu";
-const GLOBAL = "https://api.bybit.com";
-const FEE_ROUND_TRIP_PCT = 0.5;
+const EU = "https://api.bybit.eu";
+import { getTradeFeeRate } from "../risk/tradeSizing.js";
+const FEE_ROUND_TRIP_PCT = (1 - (1 - getTradeFeeRate()) / (1 + getTradeFeeRate())) * 100;
 const MIN_TURNOVER_USD = Number(process.env.MOVERS_MIN_TURNOVER_USD || 250_000);
 const STABLE = new Set(["USDC", "USDT", "USD", "DAI", "FDUSD", "BUSD", "TUSD", "PYUSD", "EUR", "USDE", "EURI"]);
 
@@ -42,7 +42,7 @@ async function getJson<T>(url: string): Promise<T | null> {
 }
 
 async function avgMove(base: string, interval: string): Promise<number | null> {
-  for (const [host, pair] of [[GLOBAL, `${base}USDT`], [EU, `${base}USDC`]] as const) {
+  for (const [host, pair] of [[EU, `${base}USDC`]] as const) {
     const res = await getJson<{ list?: string[][] }>(`${host}/v5/market/kline?category=spot&symbol=${pair}&interval=${interval}&limit=31`);
     const rows = (res?.list ?? []).slice(1); // första raden är det pågående ljuset
     if (rows.length < 10) continue;
@@ -60,14 +60,12 @@ let tickCache: { at: number; list: Base[] } | null = null;
 async function tradeable(): Promise<Base[]> {
   if (tickCache && Date.now() - tickCache.at < 30_000) return tickCache.list;
   const eu = await getJson<{ list?: Ticker[] }>(`${EU}/v5/market/tickers?category=spot`);
-  const glob = await getJson<{ list?: Ticker[] }>(`${GLOBAL}/v5/market/tickers?category=spot`);
   if (!eu?.list) throw new Error("Bybit EU svarar inte just nu");
-  const globBy = new Map((glob?.list ?? []).map((t) => [t.symbol, t]));
   const list = eu.list
     .filter((t) => t.symbol.endsWith("USDC"))
     .map((t) => {
       const base = t.symbol.slice(0, -4);
-      const g = globBy.get(`${base}USDT`) ?? t; // USDT-paret har mer handel och ärligare spann
+      const g = t; // USDT-paret har mer handel och ärligare spann
       const hi = Number(g.highPrice24h), lo = Number(g.lowPrice24h);
       return {
         base,

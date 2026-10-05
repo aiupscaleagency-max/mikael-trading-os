@@ -150,7 +150,7 @@ export const TOOLS: Record<string, ToolDef> = {
       },
     },
     handler: async (input, ctx) => {
-      const symbol = str(input, "symbol");
+      const symbol = str(input, "symbol").replace(/USDT$/, "USDC");
       const interval = str(input, "interval");
       const limit = optNum(input, "limit") ?? 100;
       const klines = await ctx.broker.getKlines(symbol, interval, limit);
@@ -213,7 +213,7 @@ export const TOOLS: Record<string, ToolDef> = {
       },
     },
     handler: async (input, ctx) => {
-      const symbol = str(input, "symbol");
+      const symbol = str(input, "symbol").replace(/USDT$/, "USDC");
       const side = str(input, "side") as "BUY" | "SELL";
       const type = str(input, "type") as "MARKET" | "LIMIT";
       const reasoning = str(input, "reasoning");
@@ -238,6 +238,12 @@ export const TOOLS: Record<string, ToolDef> = {
         ctx.broker.getPositions(),
         ctx.broker.getTicker(symbol),
       ]);
+      // Agenten väljer entry, användaren väljer investerad procent.
+      if (side === "BUY") {
+        const { percentageAmount, getTradePercent } = await import("../risk/tradeSizing.js");
+        orderReq.quoteOrderQty = percentageAmount(account.totalValueUsdt, account.totalValueUsdt, getTradePercent());
+        orderReq.quantity = undefined;
+      }
       const check = ctx.risk.checkOrder(orderReq, {
         state: ctx.state,
         account,
@@ -273,7 +279,7 @@ export const TOOLS: Record<string, ToolDef> = {
 
       // I approve-läge lägger vi INTE ordern nu — vi bara förbereder den för
       // mänsklig bekräftelse. I auto-läge skickar vi direkt.
-      if (ctx.config.executionMode === "approve") {
+      if (ctx.config.executionMode === "approve" || ctx.broker.name === "bybit" || ctx.broker.name === "bybit-paper") {
         log.agent(
           `[APPROVE-LÄGE] Claude vill lägga order: ${finalOrder.side} ${finalOrder.symbol} — ${reasoning}`,
         );

@@ -19,6 +19,11 @@ const csvList = z
       .filter(Boolean),
   );
 
+/** Äldre USDT-listor migreras till samma USDC-par som TEST och LIVE använder. */
+function normalizeSymbol(value: string): string {
+  return value.toUpperCase().replace(/^MATIC/, "POL").replace(/USDT$/, "USDC");
+}
+
 const schema = z.object({
   // Krävs av agent-lagret, men inte för att starta och titta på marknadsdata.
   // Saknas den loggas det när en agent faktiskt anropas.
@@ -32,50 +37,12 @@ const schema = z.object({
     .default("false")
     .transform((v) => v.toLowerCase() === "true"),
 
-  // ── Alpaca (Aktier + Optioner) ──
-  ALPACA_KEY_ID: z.string().default(""),
-  ALPACA_SECRET_KEY: z.string().default(""),
-  ALPACA_BASE_URL: z
-    .string()
-    .default("https://paper-api.alpaca.markets"),
-  // Separata nycklar för Alpacas RIKTIGA konto. Alpaca ger olika nycklar för
-  // paper och live, så båda kan ligga inne samtidigt. Order mot live-kontot
-  // släpps ändå bara igenom när MODE=live och LIVE_TRADING_CONFIRMED=true.
-  ALPACA_LIVE_KEY_ID: z.string().default(""),
-  ALPACA_LIVE_SECRET_KEY: z.string().default(""),
-  ALPACA_LIVE_BASE_URL: z.string().default("https://api.alpaca.markets"),
-
-  // ── Kraken (krypto, tillåter API-handel från Sverige/EU). Alltid LIVE. ──
-  KRAKEN_API_KEY: z.string().default(""),
-  KRAKEN_API_SECRET: z.string().default(""),
-  // Valutan du har på Kraken-kontot (EUR för svenska konton, eller USD)
-  KRAKEN_QUOTE: z.string().default("EUR"),
-
   // ── Bybit EU (krypto, EU-licens, API-handel tillåten från Sverige). Alltid LIVE. ──
   BYBIT_API_KEY: z.string().default(""),
   BYBIT_API_SECRET: z.string().default(""),
-  // USDC som standard: USDT är begränsat i EU
-  BYBIT_QUOTE: z.string().default("USDC"),
-  BYBIT_BASE_URL: z.string().default("https://api.bybit.eu"),
-  // Bybit Demo Trading (TEST på samma börs som LIVE). Nyckeln skapas i Bybit under Demo Trading → API.
-  BYBIT_DEMO_API_KEY: z.string().default(""),
-  BYBIT_DEMO_API_SECRET: z.string().default(""),
-  BYBIT_DEMO_BASE_URL: z.string().default("https://api-demo.bybit.com"),
-
-  // ── Blofin (Krypto-derivat) ──
-  BLOFIN_API_KEY: z.string().default(""),
-  BLOFIN_API_SECRET: z.string().default(""),
-  BLOFIN_PASSPHRASE: z.string().default(""),
-  BLOFIN_BASE_URL: z
-    .string()
-    .default("https://openapi.blofin.com"),
-
-  // ── Binance (Krypto spot, valfritt fallback) ──
-  BINANCE_API_KEY: z.string().default(""),
-  BINANCE_API_SECRET: z.string().default(""),
-  BINANCE_LIVE_API_KEY: z.string().default(""),
-  BINANCE_LIVE_API_SECRET: z.string().default(""),
-
+  // TEST och LIVE delar alltid Bybit EU:s USDC-marknad.
+  BYBIT_QUOTE: z.literal("USDC").default("USDC"),
+  BYBIT_BASE_URL: z.literal("https://api.bybit.eu").default("https://api.bybit.eu"),
   // ── Perplexity (Lars — Research-Analytiker) ──
   PERPLEXITY_API_KEY: z.string().default(""),
 
@@ -85,22 +52,6 @@ const schema = z.object({
   // Admin-mode: när satt, backend kör som denna user (läser deras nycklar
   // från Supabase istället för .env). Lämna tom för fallback till .env.
   SUPABASE_USER_ID: z.string().default(""),
-
-  // ── Oanda (Forex-broker) ──
-  OANDA_API_KEY: z.string().default(""),
-  OANDA_ACCOUNT_ID: z.string().default(""),
-  OANDA_BASE_URL: z.string().default("https://api-fxpractice.oanda.com"),
-
-  // ── Vilka motorer ska vara aktiva? ──
-  ENGINES: z
-    .string()
-    .default("crypto_momentum")
-    .transform((v) =>
-      v
-        .split(",")
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean),
-    ),
 
   // ── Risk-ramar ──
   // DEFAULT_POSITION_USD = vad Hanna (Head Trader) använder som standard per trade.
@@ -118,23 +69,7 @@ const schema = z.object({
   MAX_WEEKLY_SPEND_USD: z.coerce.number().positive().default(10),
 
   // ── Symbol-listor per motor ──
-  CRYPTO_SYMBOLS: csvList.default("BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,AVAXUSDT,DOGEUSDT,DOTUSDT,LINKUSDT,POLUSDT,UNIUSDT,LTCUSDT,ATOMUSDT,NEARUSDT"),
-  STOCK_SYMBOLS: csvList.default("TSLA,NVDA,AAPL,MSFT"),
-  WHEEL_UNDERLYINGS: csvList.default("TSLA,NVDA"),
-  FOREX_SYMBOLS: csvList.default("EUR_USD,GBP_USD,USD_JPY,USD_CHF,AUD_USD,USD_CAD,EUR_GBP"),
-
-  // ── Crypto Momentum specifikt ──
-  CRYPTO_LEVERAGE: z.coerce.number().int().min(1).max(20).default(5),
-  CRYPTO_TRAILING_STOP_PCT: z.coerce.number().positive().default(2),
-  CRYPTO_TP_STEPS: z
-    .string()
-    .default("5,10,20")
-    .transform((v) => v.split(",").map(Number)),
-
-  // ── Wheel specifikt ──
-  WHEEL_PUT_DELTA: z.coerce.number().default(0.3),
-  WHEEL_PROFIT_TARGET_PCT: z.coerce.number().default(50),
-
+  CRYPTO_SYMBOLS: csvList.default("BTCUSDC,ETHUSDC,SOLUSDC,BNBUSDC,XRPUSDC,ADAUSDC,AVAXUSDC,DOGEUSDC,DOTUSDC,LINKUSDC,POLUSDC,UNIUSDC,LTCUSDC,ATOMUSDC,NEARUSDC"),
   // ── Timing ──
   LOOP_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
   SCAN_INTERVAL_SECONDS: z.coerce.number().int().positive().default(900),
@@ -165,15 +100,7 @@ if (env.MODE === "live" && !env.LIVE_TRADING_CONFIRMED) {
 }
 
 // Minst en broker måste vara konfigurerad.
-const hasAlpaca = !!(env.ALPACA_KEY_ID && env.ALPACA_SECRET_KEY);
-const hasAlpacaLive = !!(env.ALPACA_LIVE_KEY_ID && env.ALPACA_LIVE_SECRET_KEY);
-const hasKraken = !!(env.KRAKEN_API_KEY && env.KRAKEN_API_SECRET);
 const hasBybit = !!(env.BYBIT_API_KEY && env.BYBIT_API_SECRET);
-const hasBybitDemo = !!(env.BYBIT_DEMO_API_KEY && env.BYBIT_DEMO_API_SECRET);
-const hasBlofin = !!(env.BLOFIN_API_KEY && env.BLOFIN_API_SECRET && env.BLOFIN_PASSPHRASE);
-const hasBinance = !!(env.BINANCE_API_KEY && env.BINANCE_API_SECRET) ||
-  !!(env.BINANCE_LIVE_API_KEY && env.BINANCE_LIVE_API_SECRET);
-const hasOanda = !!(env.OANDA_API_KEY && env.OANDA_ACCOUNT_ID);
 const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 
 // ── Vy-läge ─────────────────────────────────────────────────────────────
@@ -184,14 +111,16 @@ const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 // Tidigare avbröts starten här. Det gjorde att man inte kunde titta på
 // systemet utan att först koppla ett riktigt konto — och att koppla ett
 // konto bara för att se ett diagram är fel ordning.
-const viewOnly = !hasAlpaca && !hasAlpacaLive && !hasKraken && !hasBybit && !hasBybitDemo && !hasBlofin && !hasBinance && !hasOanda;
+const viewOnly = process.env.BYBIT_PAPER === "false" && !hasBybit;
 if (viewOnly) {
   console.warn(
     "⚠️  Ingen broker konfigurerad — startar i VY-LÄGE.\n" +
     "   Marknadsdata, diagram och signaler fungerar. Inga ordrar kan läggas.\n" +
-    "   Fyll i Alpaca-, Blofin- eller Binance-nycklar i .env för att handla.",
+    "   Aktivera Bybit TEST eller koppla Bybit EU för att förbereda LIVE.",
   );
 }
+
+const cryptoSymbols: string[] = [...new Set(env.CRYPTO_SYMBOLS.map(normalizeSymbol).filter((x) => /^[A-Z0-9]{2,20}USDC$/.test(x)))];
 
 export const config = {
   anthropicApiKey: env.ANTHROPIC_API_KEY,
@@ -200,15 +129,7 @@ export const config = {
   mode: env.MODE as Mode,
   executionMode: env.EXECUTION_MODE as ExecutionMode,
 
-  engines: env.ENGINES as string[],
-
-  alpaca: {
-    enabled: hasAlpaca,
-    keyId: env.ALPACA_KEY_ID,
-    secretKey: env.ALPACA_SECRET_KEY,
-    baseUrl: env.ALPACA_BASE_URL,
-    dataUrl: "https://data.alpaca.markets",
-  },
+  engines: [] as string[],
 
   bybit: {
     enabled: hasBybit,
@@ -216,53 +137,6 @@ export const config = {
     apiSecret: env.BYBIT_API_SECRET,
     quote: env.BYBIT_QUOTE,
     baseUrl: env.BYBIT_BASE_URL,
-  },
-
-  bybitDemo: {
-    enabled: hasBybitDemo,
-    apiKey: env.BYBIT_DEMO_API_KEY,
-    apiSecret: env.BYBIT_DEMO_API_SECRET,
-    quote: env.BYBIT_QUOTE,
-    baseUrl: env.BYBIT_DEMO_BASE_URL,
-  },
-
-  kraken: {
-    enabled: hasKraken,
-    apiKey: env.KRAKEN_API_KEY,
-    apiSecret: env.KRAKEN_API_SECRET,
-    quote: env.KRAKEN_QUOTE,
-  },
-
-  alpacaLive: {
-    enabled: hasAlpacaLive,
-    keyId: env.ALPACA_LIVE_KEY_ID,
-    secretKey: env.ALPACA_LIVE_SECRET_KEY,
-    baseUrl: env.ALPACA_LIVE_BASE_URL,
-    dataUrl: "https://data.alpaca.markets",
-  },
-
-  blofin: {
-    enabled: hasBlofin,
-    apiKey: env.BLOFIN_API_KEY,
-    apiSecret: env.BLOFIN_API_SECRET,
-    passphrase: env.BLOFIN_PASSPHRASE,
-    baseUrl: env.BLOFIN_BASE_URL,
-  },
-
-  binance: {
-    enabled: hasBinance,
-    apiKey: env.MODE === "live" ? env.BINANCE_LIVE_API_KEY : env.BINANCE_API_KEY,
-    apiSecret: env.MODE === "live" ? env.BINANCE_LIVE_API_SECRET : env.BINANCE_API_SECRET,
-    baseUrl:
-      env.MODE === "live" ? "https://api.binance.com" : "https://testnet.binance.vision",
-  },
-
-  oanda: {
-    enabled: hasOanda,
-    apiKey: env.OANDA_API_KEY,
-    accountId: env.OANDA_ACCOUNT_ID,
-    baseUrl: env.OANDA_BASE_URL,
-    symbols: env.FOREX_SYMBOLS,
   },
 
   perplexity: {
@@ -293,20 +167,7 @@ export const config = {
 
   crypto: {
     // MATIC heter POL sedan 2024 (Bybit har inget MATIC-par), så en gammal .env byts ut här
-    symbols: env.CRYPTO_SYMBOLS.map((x: string) => x.replace(/^MATIC/, "POL")),
-    leverage: env.CRYPTO_LEVERAGE,
-    trailingStopPct: env.CRYPTO_TRAILING_STOP_PCT,
-    takeProfitSteps: env.CRYPTO_TP_STEPS,
-  },
-
-  stocks: {
-    symbols: env.STOCK_SYMBOLS,
-  },
-
-  wheel: {
-    underlyings: env.WHEEL_UNDERLYINGS,
-    putDelta: env.WHEEL_PUT_DELTA,
-    profitTargetPct: env.WHEEL_PROFIT_TARGET_PCT,
+    symbols: cryptoSymbols,
   },
 
   loopIntervalSeconds: env.LOOP_INTERVAL_SECONDS,
@@ -322,7 +183,7 @@ export type Config = typeof config;
 try {
   const extra = JSON.parse(readFileSync(resolvePath("data/custom-symbols.json"), "utf8")) as { symbols?: Array<{ symbol: string }> };
   for (const c of extra.symbols ?? []) {
-    const sym = String(c.symbol || "").toUpperCase();
-    if (/^[A-Z0-9]{2,20}USDT$/.test(sym) && !config.crypto.symbols.includes(sym)) config.crypto.symbols.push(sym);
+    const sym = normalizeSymbol(String(c.symbol || ""));
+    if (/^[A-Z0-9]{2,20}USDC$/.test(sym) && !config.crypto.symbols.includes(sym)) config.crypto.symbols.push(sym);
   }
 } catch { /* inga egna mynt ännu */ }
