@@ -1,0 +1,37 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+// Tester körs i ett isolerat konto och kan aldrig påverka användarens trades.
+process.chdir(mkdtempSync(path.join(os.tmpdir(), "sizing-sessions-")));
+const sizing = await import("../src/risk/tradeSizing.js");
+const sessions = await import("../src/server/analysisSession.js");
+assert.equal(sizing.percentageAmount(10000,10000),100);
+assert.equal(sizing.percentageAmount(1_000_000,1_000_000),10_000);
+assert.equal(sizing.percentageAmount(20000,20000),200);
+assert.equal(sizing.percentageAmount(10000,25),25);
+assert.equal(sizing.percentageAmount(NaN,100),0);
+assert.equal(sizing.setTradePercent(2),true);
+assert.equal(sizing.percentageAmount(10000,10000),200);
+assert.equal(sizing.setTradePercent(6),false);
+assert.equal(sizing.setTradePercent(null),false);
+assert.equal(sizing.setTradePercent(1),true);
+const account = { name:"bybit-paper", mode:"paper", getAccount:async()=>({totalValueUsdt:12000,balances:[{asset:"USDC",free:10000,locked:1000}],updatedAt:Date.now()}) };
+const s = await sizing.getTradeSizing(account as never);
+assert.equal(s.amount,120); assert.equal(s.available,10000); assert.equal(s.mode,"TEST");
+const live = await sizing.getTradeSizing({...account,name:"bybit",mode:"live",getAccount:async()=>({totalValueUsdt:200,balances:[{asset:"USDC",free:150,locked:0}],updatedAt:Date.now()})} as never);
+assert.equal(live.amount,2); assert.equal(live.mode,"LIVE");
+assert.throws(()=>sessions.startAnalysisSession({durationMinutes:2,intervalMinutes:1,horizonMinutes:1,percent:1,broker:"bybit-paper"}));
+const session = sessions.startAnalysisSession({durationMinutes:15,intervalMinutes:1,horizonMinutes:5,percent:1,broker:"bybit-paper"});
+assert.throws(()=>sessions.startAnalysisSession({durationMinutes:15,intervalMinutes:1,horizonMinutes:5,percent:1,broker:"bybit-paper"}));
+let runs=0;
+await sessions.tickAnalysisSession(async current=>{assert.equal(current.broker,"bybit-paper");runs++;},session.startedAt);
+await sessions.tickAnalysisSession(async()=>{runs++;},session.startedAt+30000);
+assert.equal(runs,1);
+await sessions.tickAnalysisSession(async()=>{throw Error("budget");},session.startedAt+60000);
+assert.equal(sessions.getAnalysisSession()?.lastError,"budget");
+await sessions.tickAnalysisSession(async()=>{runs++;},session.endsAt);
+assert.equal(runs,1); assert.equal(sessions.getAnalysisSession()?.status,"completed");
+assert.equal(JSON.parse(readFileSync('data/analysis-session.json','utf8')).status,"completed");
+console.log("PASS: procent av färskt kontovärde, TEST/LIVE separata, sessionens intervall/sluttid/fel/persistens");

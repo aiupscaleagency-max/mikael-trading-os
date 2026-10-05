@@ -136,8 +136,8 @@ function liveStatus() {
   return {
     time: Date.now(),
     lamps: {
-      binancePrices: lamp(m.connected, m.lastFrameMs, `Binance priser · ${m.cachedSymbols} par`),
-      binanceCandles: lamp(k.connected, k.lastFrameMs, `Binance ljus · ${k.symbols.length} par @ ${k.interval}`),
+      bybitPrices: lamp(m.connected, m.lastFrameMs, `Bybit EU priser · ${m.cachedSymbols} par`),
+      bybitCandles: lamp(k.connected, k.lastFrameMs, `Bybit EU ljus · ${k.symbols.length} par @ ${k.interval}`),
       bybitMarket: lamp(by.public.connected, by.public.lastMessageAgoMs, `Bybit priser + ljus · ${by.public.detail}`),
       bybitAccount: lamp(by.private.connected, by.private.lastMessageAgoMs, `Bybit konto · ${by.private.detail}`),
       jev: {
@@ -181,7 +181,7 @@ async function balance(refresh: boolean) {
   }
   return {
     connected: true,
-    quote: (process.env.BYBIT_QUOTE || "USDC").toUpperCase(),
+    quote: "USDC",
     unified,
     funding,
     fundingError,
@@ -192,8 +192,8 @@ async function balance(refresh: boolean) {
 
 async function bybitPairs(): Promise<string[]> {
   if (pairsCache && Date.now() - pairsCache.at < 3_600_000) return pairsCache.pairs;
-  const quote = (process.env.BYBIT_QUOTE || "USDC").toUpperCase();
-  const base = process.env.BYBIT_BASE_URL || "https://api.bybit.eu";
+  const quote = "USDC";
+  const base = "https://api.bybit.eu";
   const res = await fetch(`${base}/v5/market/instruments-info?category=spot&limit=1000`);
   const body = (await res.json()) as { result?: { list?: Array<{ baseCoin: string; quoteCoin: string; status: string }> } };
   const pairs = (body.result?.list ?? [])
@@ -218,7 +218,7 @@ async function parseStrategyText(text: string): Promise<Record<string, unknown>>
     "En regel: {\"left\": indikator, \"op\": operator, \"right\": tal eller indikator, \"factor\": valfri multiplikator när right är en indikator}.",
     "Alla regler i entry måste stämma samtidigt för köp; samma för exit.",
     `interval är ett av: ${INTERVALS.join(", ")}. coins är bas-coins som BTC, ETH, SOL.`,
-    "stopAtr och targetAtr är avstånd i ATR (standard 1.5 och 3). stakeUsd standard 5.",
+    "stopAtr och targetAtr är avstånd i ATR (standard 1.5 och 3). Insatsen väljs som procent av kontovärdet, standard 1 %.",
     "Hittar du inte på en regel som passar, välj den närmaste och förklara i description.",
     "Svara ENDAST med JSON: {\"name\",\"description\",\"coins\",\"interval\",\"entry\",\"exit\",\"stopAtr\",\"targetAtr\",\"stakeUsd\"}",
   ].join("\n");
@@ -304,7 +304,7 @@ export async function handleLiveRoutes(
     }
 
     // Senaste pris per par från Bybit (serverns WebSocket-cache, REST som reserv).
-    // Ersätter /api/binance/prices på sidan: Bybit överallt.
+    // Enbart Bybit EU-priser för dashboarden.
     if (p === "/api/bybit/prices" && method === "GET") {
       const symbols = (url.searchParams.get("symbols") || config.crypto.symbols.join(","))
         .split(",").map((x) => x.trim().toUpperCase().replace(/[^A-Z0-9]/g, "")).filter(Boolean).slice(0, 50);
@@ -312,7 +312,7 @@ export async function handleLiveRoutes(
       const missing: string[] = [];
       for (const s of symbols) { const px = getCachedPrice(s); if (px) prices[s] = px; else missing.push(s); }
       if (missing.length) {
-        for (const base of ["https://api.bybit.com", process.env.BYBIT_BASE_URL || "https://api.bybit.eu"]) {
+        for (const base of ["https://api.bybit.eu"]) {
           try {
             const r = await fetch(`${base}/v5/market/tickers?category=spot`);
             const body = (await r.json()) as { retCode: number; result?: { list?: Array<{ symbol: string; lastPrice: string }> } };
@@ -333,14 +333,14 @@ export async function handleLiveRoutes(
     // marknadsdata, ingen nyckel. Det pågående ljuset är med; sidan håller det
     // levande via Bybits WebSocket.
     if (p === "/api/bybit/klines" && method === "GET") {
-      const symbol = (url.searchParams.get("symbol") || "BTCUSDT").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const symbol = (url.searchParams.get("symbol") || "BTCUSDC").toUpperCase().replace(/[^A-Z0-9]/g, "");
       const iv = BYBIT_INTERVAL[url.searchParams.get("interval") || "1m"];
       const limit = Math.min(1000, Math.max(10, Number(url.searchParams.get("limit")) || 300));
-      if (!iv) { send(res, 400, { error: "okänt intervall", klines: [] }); return true; }
+      if (!iv || !/^[A-Z0-9]{2,16}USDC$/.test(symbol)) { send(res, 400, { error: "okänt intervall", klines: [] }); return true; }
       let lastErr = "";
       // USDC-par = samma marknad som på bybit.eu: fråga Bybit EU först
-      const euBase = process.env.BYBIT_BASE_URL || "https://api.bybit.eu";
-      const bases = symbol.endsWith("USDC") ? [euBase, "https://api.bybit.com"] : ["https://api.bybit.com", euBase];
+
+      const bases = ["https://api.bybit.eu"];
       for (const base of bases) {
         try {
           const r = await fetch(`${base}/v5/market/kline?category=spot&symbol=${symbol}&interval=${iv}&limit=${limit}`);
@@ -354,7 +354,7 @@ export async function handleLiveRoutes(
           return true;
         } catch (err) { lastErr = `${base}: ${err instanceof Error ? err.message : String(err)}`; }
       }
-      send(res, 200, { symbol, klines: [], error: lastErr });
+      send(res, 502, { symbol, klines: [], source: "bybit-eu", error: lastErr });
       return true;
     }
 
@@ -366,7 +366,7 @@ export async function handleLiveRoutes(
         operators: OPERATORS,
         intervals: INTERVALS,
         models: REVIEW_MODELS,
-        quote: (process.env.BYBIT_QUOTE || "USDC").toUpperCase(),
+        quote: "USDC",
         runner: getRunnerStatus(),
       });
       return true;

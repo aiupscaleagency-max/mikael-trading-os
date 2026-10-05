@@ -43,17 +43,14 @@ const headTraderModel = () => modelFor("head", "claude-sonnet-4-6");
 // gjorde att destrukturering av det gav typfel trots att fältet finns
 // i objektet som faktiskt skickas in.
 import type { AllReports } from "./orchestrator.js";
-import { currentStake } from "../risk/stakeLadder.js";
+import { getTradePercent, percentageAmount } from "../risk/tradeSizing.js";
 
-/** Insats-principen (Mike 2026-10-03): 1 % per trade, sedan stegvis upp mot 3–5 %. */
-function stakeBlock(): string {
-  const s = currentStake();
-  if (!s) return "";
-  return `INSATS (TEST-kontot $${Math.round(s.equityUsd)}): satsa ${s.pct} % av kontot = $${s.usd} per trade.
-  • Princip: börja på 1 % per trade. Insatsen höjs stegvis (2 → 3 → 4 → 5 %) först när
-    avslutade trades visar vinst och träffsäkerhet. Förlustsvit → tillbaka till 1 %.
-  • Nu: ${s.reason} (${s.closed} avslutade, träff ${Math.round(s.winRate * 100)} %, resultat $${s.totalPnl.toFixed(2)}).
-  • Använd $${s.usd} som storlek i TEST (risk-managern tar inte större). LIVE har egna, lägre tak.
+/** Insatsen följer valt kontos aktuella värde och användarens procent. */
+function stakeBlock(equity: number): string {
+  const pct = getTradePercent(), usd = percentageAmount(equity, equity, pct);
+  return `INSATS: ${pct} % av valt kontos aktuella värde $${equity.toFixed(2)} = $${usd.toFixed(2)} per trade.
+  Procenten höjs aldrig automatiskt. TEST och LIVE använder samma princip med separata saldon.
+  Riskkontrollen och tillgängligt saldo kan begränsa beloppet. Alla ordrar kräver manuellt godkännande.
 `;
 }
 export type { AllReports };
@@ -87,7 +84,7 @@ export async function runHeadTrader(params: {
   ]);
   const performance = memory ? `${pastPerf}\n\n${memory}` : pastPerf;
 
-  const systemPrompt = buildHeadTraderPrompt(config, state, performance);
+  const systemPrompt = buildHeadTraderPrompt(config, state, performance, (await broker.getAccount()).totalValueUsdt);
   const briefingContent = formatAllReports(reports);
 
   const toolCtx: ToolContext = {
@@ -231,7 +228,7 @@ export async function runHeadTrader(params: {
   };
 }
 
-function buildHeadTraderPrompt(config: Config, state: AgentState, performance: string): string {
+function buildHeadTraderPrompt(config: Config, state: AgentState, performance: string, equity: number): string {
   return `Du är HEAD TRADER i Mikaels trading-team. Du har precis fått rapporter från NIO specialister:
 
 ═══ DITT TEAM (9 specialister) ═══
@@ -252,15 +249,10 @@ Du SYNTETISERAR alla 9 rapporter och fattar det slutgiltiga beslutet. Du har ver
 Mode: ${config.mode.toUpperCase()} | Execution: ${config.executionMode}
 Kill-switch: ${state.killSwitchActive ? "AKTIV" : "OK"}
 Dagens PnL: ${state.dailyRealizedPnlUsdt.toFixed(2)} USDT
-${stakeBlock()}Position-sizing (USD per trade):
-  • DEFAULT: ${config.risk.defaultPositionUsd} (din standardstorlek)
-  • MIN: ${config.risk.minPositionUsd} | MAX: ${config.risk.maxPositionUsd}
-  • Total exponering: max ${config.risk.maxTotalExposureUsd} USD
-  • Anpassa storlek mellan MIN och MAX baserat på conviction:
-    - Hög conviction (≥3 specialister överens, Advisor stödjer) → upp mot MAX
-    - Medium conviction → DEFAULT
-    - Låg conviction → ner mot MIN
-  • Karin's suggestedSizeMultiplier multiplicerar din valda storlek (vol-justerat).
+${stakeBlock(equity)}Position-sizing (USD per trade):
+  • Vald procent av kontovärdet är standardstorleken, inte ett fast dollarbelopp.
+  • Total exponering och dagliga spärrar verifieras av riskkontrollen.
+  • Karin kan avråda från köp men ändrar inte användarens valda procent.
   • Risk Manager blockerar orders utanför MIN/MAX — håll dig inom ramen.
 
 ═══ HISTORIK ═══

@@ -15,6 +15,8 @@ import type { Candle } from "./klineStream.js";
 import {
   addPendingOrder, checkOrderGate, MAX_LIVE_STAKE_USD, testStakeCapUsd,
 } from "./orderGate.js";
+import { getTradeSizing } from "../risk/tradeSizing.js";
+import { getHorizonMin } from "./tradeHorizon.js";
 import { treeEvent } from "./treeLog.js";
 import { loadPaperLedger, recordPaperSignal, resetPaper } from "./paperLedger.js";
 import { createLlmClient, extractJson, hasLlmCredentials, toDirectModel, usingGateway } from "../llm/gateway.js";
@@ -357,14 +359,13 @@ export async function queueSignal(signalId: string, venueOverride?: "test" | "li
   if (!broker || !brokerName) return fail(venue === "live" ? "Ingen LIVE-mäklare (Bybit) är kopplad" : "Ingen TEST-mäklare (Bybit TEST) är kopplad");
   const live = broker.mode === "live";
 
-  const symbol = `${sig.coin}USDT`; // mäklarna mappar själva (Bybit → USDC, Alpaca → BTC/USD)
+  const symbol = `${sig.coin}USDC`; // mäklarna mappar själva (Bybit → USDC, Alpaca → BTC/USD)
   let quoteUsd: number | undefined;
   let quantity: number | undefined;
   let note = "";
   if (sig.side === "BUY") {
-    const cap = live ? MAX_LIVE_STAKE_USD : testStakeCapUsd();
-    quoteUsd = Math.min(strategy?.stakeUsd ?? 5, cap);
-    if ((strategy?.stakeUsd ?? 0) > cap) note = ` (sänkt till taket $${cap})`;
+    try { const sizing = await getTradeSizing(broker); quoteUsd = sizing.amount; note = ` (${sizing.percent} % av kontovärdet)`; }
+    catch (err) { return fail(`Kunde inte värdera kontot: ${err instanceof Error ? err.message : String(err)}`); }
   } else {
     try {
       const held = (await broker.getPositions()).find((p) => p.baseAsset.toUpperCase() === sig.coin);
@@ -386,6 +387,7 @@ export async function queueSignal(signalId: string, venueOverride?: "test" | "li
     side: sig.side,
     quoteUsd,
     quantity,
+    ...(sig.side === "BUY" ? { horizonSec: getHorizonMin() * 60 } : {}),
     reason: `${sig.strategyName}: ${sig.why}${note}`.slice(0, 200),
   });
   sig.queued = { pendingId: p.id, at: new Date().toISOString() };

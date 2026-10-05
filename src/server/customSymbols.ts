@@ -12,7 +12,7 @@ import { log } from "../logger.js";
 
 const FILE = path.resolve("data/custom-symbols.json");
 const EU = "https://api.bybit.eu";
-const GLOBAL = "https://api.bybit.com";
+
 
 export interface CustomSymbol {
   symbol: string;   // BASEUSDT (så som signalmotorn och strömmarna följer paren)
@@ -68,7 +68,7 @@ export async function addCustomSymbol(input: string, note?: string): Promise<Cus
   const base = toBase(input);
   if (!/^[A-Z0-9]{2,15}$/.test(base)) throw new Error("Skriv myntets kortnamn, t.ex. PEPE eller WIF");
   if (["USDC", "USDT", "USD", "DAI", "FDUSD", "BUSD", "TUSD", "PYUSD", "EUR", "USDE"].includes(base)) throw new Error(`${base} är en stablecoin, inget att handla`);
-  const symbol = `${base}USDT`;
+  const symbol = `${base}USDC`;
   if (config.crypto.symbols.includes(symbol) || adding.has(base)) throw new Error(`${base} följs redan`);
   adding.add(base);
   try { return await addChecked(base, symbol, note); } finally { adding.delete(base); }
@@ -77,12 +77,9 @@ export async function addCustomSymbol(input: string, note?: string): Promise<Cus
 const adding = new Set<string>();
 
 async function addChecked(base: string, symbol: string, note?: string): Promise<CustomSymbol> {
-  const [euUsdc, euUsdt, globalUsdt] = await Promise.all([
-    spotExists(EU, `${base}USDC`), spotExists(EU, `${base}USDT`), spotExists(GLOBAL, symbol),
-  ]);
-  if (euUsdc === null || euUsdt === null || globalUsdt === null) throw new Error("Kunde inte nå Bybit just nu. Försök igen om en stund.");
-  if (!euUsdc && !euUsdt) throw new Error(`${base} finns inte på Bybit EU, så det går inte att handla från ditt konto`);
-  if (!globalUsdt) throw new Error(`${base} saknar live-data (${symbol}) på Bybit, så agenterna kan inte analysera det`);
+  const euUsdc = await spotExists(EU, symbol);
+  if (euUsdc === null) throw new Error("Kunde inte nå Bybit EU. Försök igen om en stund.");
+  if (!euUsdc) throw new Error(`${base} saknar USDC-par på Bybit EU`);
   const c: CustomSymbol = { symbol, base, usdc: euUsdc, addedAt: new Date().toISOString(), note: note?.slice(0, 100) };
   load().push(c);
   save();

@@ -2,7 +2,7 @@
   "name": "mikael-trading-os",
   "version": "0.2.0",
   "private": true,
-  "description": "Multi-asset AI trading agent: crypto (Blofin/Binance), stocks + options (Alpaca). Powered by Claude.",
+  "description": "Trading-OS för Bybit EU spot: separata TEST/LIVE-konton och manuellt godkännande",
   "type": "module",
   "scripts": {
     "agent": "tsx src/run.ts",
@@ -16,7 +16,8 @@
     "verify": "npm run build && node scripts/verify-live.mjs",
     "test:signal": "npm run build && node scripts/test-signal-engine.mjs",
     "export:candles": "npm run build && node scripts/export-candles.mjs",
-    "serve": "tsx src/run.ts --serve"
+    "serve": "tsx src/run.ts --serve",
+    "test:trading": "node --import tsx scripts/test-sizing-sessions.ts && node --import tsx scripts/test-timed-exits.ts && node --import tsx scripts/test-paper-lots.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

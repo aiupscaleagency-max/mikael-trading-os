@@ -32,11 +32,7 @@ export function getSupabase(): SupabaseClient | null {
 
 export interface UserApiKeys {
   anthropic?: string;
-  binance_key?: string;
-  binance_secret?: string;
   perplexity?: string;
-  oanda_token?: string;
-  oanda_account?: string;
 }
 
 // Hämta nycklar för specifik user. Returnerar null om Supabase ej konfigurerad
@@ -47,7 +43,7 @@ export async function getUserKeys(userId: string): Promise<UserApiKeys | null> {
   try {
     const { data, error } = await sb
       .from("api_keys")
-      .select("anthropic, binance_key, binance_secret, perplexity, oanda_token, oanda_account")
+      .select("anthropic, perplexity")
       .eq("user_id", userId)
       .single();
     if (error) {

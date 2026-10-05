@@ -1,6 +1,7 @@
 import { computeIndicators } from "../indicators/ta.js";
 import { agentStart, agentDone, agentSkip } from "./agentActivity.js";
 import { subscribeClosedCandles, getClosedCandles, msUntilClose, type Candle } from "./klineStream.js";
+import { getBybitClosedCandles } from "./bybitStream.js";
 import { log } from "../logger.js";
 import { askJev, type JevVerdict } from "./jevClient.js";
 import { treeEvent } from "./treeLog.js";
@@ -432,7 +433,7 @@ export function getSignals(): Signal[] {
 
 /** Räknar om direkt ur bufferten — för när gränssnittet laddas mitt i ett ljus. */
 export function refreshSignal(symbol: string, interval: string): Signal | null {
-  const s = buildSignal(symbol, interval, getClosedCandles(symbol, interval));
+  const s = buildSignal(symbol, interval, getBybitClosedCandles(symbol, interval).length ? getBybitClosedCandles(symbol, interval) : getClosedCandles(symbol, interval));
   if (s) latest.set(key(symbol, interval), s);
   return s;
 }
