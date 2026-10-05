@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import { agentStart, agentDone, agentFail, agentSkip, agentScan, registerStrategies } from "./agentActivity.js";
 import path from "node:path";
 import crypto from "node:crypto";
-import type Anthropic from "@anthropic-ai/sdk";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { log } from "../logger.js";
 import { loadLibrary, type Strategy } from "../strategies/library.js";
@@ -19,7 +18,6 @@ import { getTradeSizing } from "../risk/tradeSizing.js";
 import { getHorizonMin } from "./tradeHorizon.js";
 import { treeEvent } from "./treeLog.js";
 import { loadPaperLedger, recordPaperSignal, resetPaper } from "./paperLedger.js";
-import { createLlmClient, extractJson, hasLlmCredentials, toDirectModel, usingGateway } from "../llm/gateway.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Strategi-löparen — kör alla påslagna strategier i biblioteket live
@@ -32,9 +30,7 @@ import { createLlmClient, extractJson, hasLlmCredentials, toDirectModel, usingGa
 //    1. Reglerna stämmer på det stängda ljuset
 //    2. JEV bedömer (krisregim, toxiskt flöde, motsatt riktning) — kan bara
 //       STOPPA, aldrig skapa en signal
-//    3. Vid "jev_ai": en AI-modell granskar. JEV avgör i auto-läget om en
-//       modell behövs och vilken: säker JEV-bedömning i TEST → ingen modell,
-//       annars Haiku, och i LIVE alltid Sonnet. Modellen kan också bara stoppa.
+//    3. Separat AI-granskning är avstängd; köp kräver ordinarie tvåagentskedja.
 //    4. Signalen visas i dashboarden. Den blir en väntande order först när
 //       Mike trycker (eller med autoQueue), och ordern körs först vid Godkänn.
 //
@@ -46,7 +42,6 @@ const quote = () => (process.env.BYBIT_QUOTE || "USDC").toUpperCase();
 const SIGNALS_FILE = path.resolve(process.cwd(), "data", "strategy-signals.json");
 const STATE_FILE = path.resolve(process.cwd(), "data", "strategy-state.json");
 const MAX_SIGNALS = 300;
-const AI_TIMEOUT_MS = 20_000;
 
 export interface StrategySignalRecord {
   id: string;
@@ -91,7 +86,6 @@ const lastHandled = new Map<string, number>();
 const cooldownUntil = new Map<string, number>();
 const COOLDOWN_CANDLES = 3;
 const INTERVAL_MS: Record<string, number> = { "1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000 };
-let llm: Anthropic | null = null;
 const stats = { evaluations: 0, lastEvalAt: 0, lastSignalAt: 0 };
 
 const posKey = (strategyId: string, coin: string) => `${strategyId}:${coin}`;
@@ -118,17 +112,6 @@ function scheduleSave(): void {
 
 // ─── Granskning: JEV + AI-modell ──────────────────────────────────────────
 
-function jevVeto(v: JevVerdict): string | undefined {
-  if (!v.available) return undefined;
-  if (v.answers.regime?.choice === "crisis") return "JEV: krisregim — ingen ny position";
-  const toxic = v.answers.toxic_flow?.noul ?? 0;
-  if (toxic > 0.7) return `JEV: toxiskt flöde ${toxic.toFixed(2)}`;
-  const bias = v.answers.direction?.choice;
-  const conf = v.answers.direction?.confidence ?? 0;
-  if (bias === "down" && conf > 0.6) return `JEV: bedömer riktningen nedåt (säkerhet ${conf.toFixed(2)})`;
-  return undefined;
-}
-
 /** Vilken modell ska granska? null = ingen behövs. */
 export function pickReviewModel(s: Strategy, jev: JevVerdict | undefined): { model: string | null; why: string } {
   if (s.reviewModel && s.reviewModel !== "auto") return { model: s.reviewModel, why: "vald i strategin" };
@@ -141,47 +124,12 @@ export function pickReviewModel(s: Strategy, jev: JevVerdict | undefined): { mod
   return { model: "anthropic/claude-haiku-4.5", why: "JEV osäker — snabb granskning av Haiku" };
 }
 
-async function aiReview(model: string, s: Strategy, sig: StrategySignalRecord, ind: Record<string, number | null>): Promise<{ approve: boolean; reason: string }> {
-  if (!hasLlmCredentials()) throw new Error("ingen AI-nyckel (AI_GATEWAY_API_KEY / ANTHROPIC_API_KEY)");
-  if (!usingGateway() && !model.startsWith("anthropic/")) throw new Error(`${model} kräver Vercel/OpenRouter-nyckel`);
-  llm ??= createLlmClient();
-  const body = {
-    model: usingGateway() ? model : toDirectModel(model),
-    max_tokens: 250,
-    system:
-      "Du granskar en köpsignal från en regelbaserad krypto-strategi (spot, bara köp/sälj). "
-      + "Du kan bara STOPPA en signal, aldrig skapa en. Stoppa om läget uppenbart motsäger signalen "
-      + "(t.ex. kraftig nedtrend, extrem volatilitet, uppenbart dålig risk/reward). Annars godkänn. "
-      + 'Svara ENDAST med JSON: {"approve": true|false, "reason": "en kort mening på svenska"}',
-    messages: [{
-      role: "user" as const,
-      content: JSON.stringify({
-        strategi: s.name,
-        beskrivning: s.description,
-        par: sig.pair,
-        intervall: sig.interval,
-        pris: sig.price,
-        stop: sig.stopLoss,
-        target: sig.target,
-        regler_som_stämde: sig.rules.map((r) => r.text),
-        indikatorer: ind,
-        läge: s.venue === "live" ? "LIVE (riktiga pengar)" : "TEST",
-      }),
-    }],
-  };
-  const res = await Promise.race([
-    llm.messages.create(body),
-    new Promise<never>((_, rej) => setTimeout(() => rej(new Error("AI svarade inte inom 20 s")), AI_TIMEOUT_MS)),
-  ]) as Anthropic.Message;
-  const text = res.content.map((c) => (c.type === "text" ? c.text : "")).join("");
-  const parsed = JSON.parse(extractJson(text)) as { approve?: unknown; reason?: unknown };
-  return { approve: parsed.approve === true, reason: String(parsed.reason ?? "").slice(0, 300) || "inget skäl" };
-}
-
 async function review(s: Strategy, sig: StrategySignalRecord, ind: Record<string, number | null>): Promise<StrategySignalRecord["review"]> {
   const t0 = Date.now();
   if (sig.side === "SELL") return { final: "ok", reason: "Sälj granskas inte — utgångar ska aldrig blockeras", totalMs: 0 };
   if (s.review === "off") return { final: "ok", reason: "Bara regler (ingen granskning vald)", totalMs: 0 };
+  // Separata AI-granskare får inte starta en tredje roll utanför ordinarie kedja.
+  if (s.review === "jev_ai") return { final: "stoppad", reason: "Separat AI-granskning är avstängd. Kör ordinarie JEV → Teknisk → Hanna för valt par.", totalMs: 0 };
 
   const out: StrategySignalRecord["review"] = { final: "ok", reason: "", totalMs: 0 };
   let jev: JevVerdict | undefined;
@@ -193,38 +141,17 @@ async function review(s: Strategy, sig: StrategySignalRecord, ind: Record<string
       rsi14: ind.rsi14, sma50: ind.sma50, ema20: ind.ema20, atr14: ind.atr14,
       proposed_direction: "LONG", strategy_rules: sig.rules.map((r) => r.text),
     });
-    const veto = jevVeto(jev);
+    const veto = undefined;
     out.jev = { available: jev.available, route: jev.mode, note: jev.note, latencyMs: jev.latencyMs, veto };
     if (veto) { agentDone("jev", `stoppade ${sig.coin}: ${veto}`); return { ...out, final: "stoppad", reason: veto, totalMs: Date.now() - t0 }; }
-    if (jev.available) agentDone("jev", `godkände ${sig.coin}`); else agentSkip("jev", `svarade inte: ${jev.note ?? "rules_only"}`);
+    if (jev.available) agentDone("jev", "Uppgiftsdjup bedömt; signalen kommer från regler"); else agentSkip("jev", `svarade inte: ${jev.note ?? "rules_only"}`);
   } catch (err) {
     out.jev = { available: false, route: "rules_only", note: err instanceof Error ? err.message : String(err) };
     agentFail("jev", out.jev.note ?? "fel");
   }
 
-  if (s.review === "jev_ai") {
-    const pick = pickReviewModel(s, jev);
-    if (!pick.model) {
-      out.ai = { model: "-", approve: true, reason: pick.why, ms: 0, skipped: pick.why };
-    } else {
-      const a0 = Date.now();
-      agentStart("review-ai", `${pick.model} granskar ${sig.coin}`, { from: "jev", coin: sig.coin });
-      try {
-        const r = await aiReview(pick.model, s, sig, ind);
-        out.ai = { model: pick.model, approve: r.approve, reason: r.reason, ms: Date.now() - a0 };
-        agentDone("review-ai", `${r.approve ? "godkände" : "stoppade"} ${sig.coin}: ${r.reason}`.slice(0, 160));
-        if (!r.approve) return { ...out, final: "stoppad", reason: `${pick.model}: ${r.reason}`, totalMs: Date.now() - t0 };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        agentFail("review-ai", msg.slice(0, 140));
-        out.ai = { model: pick.model, approve: s.venue !== "live", reason: `Granskning misslyckades: ${msg}`, ms: Date.now() - a0 };
-        // LIVE stängs vid fel (samma princip som positionsövervakningen). TEST släpps igenom, tydligt märkt.
-        if (s.venue === "live") return { ...out, final: "stoppad", reason: `AI-granskning misslyckades i LIVE: ${msg}`, totalMs: Date.now() - t0 };
-      }
-    }
-  }
 
-  out.reason = out.jev?.available ? `Godkänd av JEV${out.ai && !out.ai.skipped ? " + " + out.ai.model : ""}` : "JEV svarade inte — reglerna gäller (rules_only)";
+  out.reason = out.jev?.available ? "JEV har bedömt uppgiftsdjup; marknadssignalen kommer från verifierade regler" : "JEV svarade inte — reglerna gäller (rules_only)";
   out.totalMs = Date.now() - t0;
   return out;
 }

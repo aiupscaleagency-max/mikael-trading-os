@@ -3,7 +3,7 @@ import { userAction, agentDone, agentFail, analysisStart, analysisEnd, getAnalys
 import fs from "node:fs/promises";
 import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
-import { createLlmClient, hasLlmCredentials } from "../llm/gateway.js";
+import { createLlmClient, hasLlmCredentials, getLlmDiagnostics } from "../llm/gateway.js";
 import { loadState, saveState, loadRecentDecisions } from "../memory/store.js";
 import { closedTrades, loadAnalyses, memorySummary } from "../memory/tradeMemory.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
@@ -19,14 +19,18 @@ import { startMarketStream, getCachedPrice } from "./marketStream.js";
 import { initLiveLayer, handleLiveRoutes } from "./liveRoutes.js";
 import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 import { watchBybitKlines, getBybitClosedCandles, getBybitFormingCandle, BYBIT_INTERVAL } from "./bybitStream.js";
+import { getJevStatus } from "./jevClient.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
 import { getAnalysisSession, startAnalysisSession, stopAnalysisSession, tickAnalysisSession } from "./analysisSession.js";
 import { getTradeSizing, setTradePercent, refreshTradeSizing } from "../risk/tradeSizing.js";
 import { getResults, recordLiveFill } from "./results.js";
+import { getTradingState, invalidateTradingState } from "./tradingState.js";
+import { getAnalysisSelection, setAnalysisSelection, validateAnalysisSelection } from "./analysisSelection.js";
+import { validateAnalysisRequest, type AnalysisRequest } from "../orchestrator/analysisRequest.js";
 import { CATEGORIES, getCategory, type Category } from "./movers.js";
-import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
-import { addTimedExit, cancelTimedExit, getHorizonMin, HORIZON_CHOICES, listTimedExits, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
+import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl, pauseLiveTpSlForManualSale, isLiveTpSlSellingSymbol } from "./liveTpSl.js";
+import { addTimedExit, cancelTimedExit, getHorizonMin, HORIZON_CHOICES, listTimedExits, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon, pauseLiveExitsForManualSale, isLiveTimedExitSelling } from "./tradeHorizon.js";
 import { adjustLiveSpend, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, liveStakeCapUsd, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -170,9 +174,15 @@ async function executeApprovedOrder(
           return { ok: false, error: `Dagens LIVE-gräns $${MAX_LIVE_DAILY_SPEND_USD} är nådd.`, keepPending: true };
         }
       }
+      if (p.live && p.side === "SELL") {
+        if (isLiveTimedExitSelling(p.symbol) || isLiveTpSlSellingSymbol(p.symbol)) return {ok:false,error:"En automatisk försäljning stäms av. Vänta innan du avslutar samma innehav.",keepPending:true};
+        const reason = "Manuellt LIVE-avslut: återstående skydd kräver avstämning";
+        pauseLiveExitsForManualSale(p.symbol, reason);
+        pauseLiveTpSlForManualSale(p.symbol, reason);
+      }
       let order;
       try {
-        order = await broker.placeOrder({
+        const orderRequest = {
           symbol: p.symbol,
           side: p.side,
           type: isMarket ? "MARKET" : "LIMIT",
@@ -181,7 +191,14 @@ async function executeApprovedOrder(
           price: p.orderType === "LIMIT" ? p.limitPrice : undefined,
           takeProfit: p.live && wantsTimedExit ? undefined : p.takeProfit,
           stopLoss: p.live && wantsTimedExit ? undefined : p.stopLoss,
-        });
+        };
+        if (p.tradeId) {
+          if (p.live || p.side !== "SELL" || !isMarket) throw new Error("Lottavslut stöds endast för TEST spot-marknadsförsäljning");
+          const paper = broker as unknown as { getTimedExitQuantity: (symbol: string, id: string) => Promise<number | null>; placeTimedExitOrder: (order: import("../types.js").OrderRequest, id: string) => Promise<import("../types.js").OrderResult> };
+          const remaining = await paper.getTimedExitQuantity(p.symbol, p.tradeId);
+          if (!(remaining !== null && remaining > 0) || quantity === undefined || quantity > remaining + 1e-12) throw new Error("Den valda tradens antal har ändrats; skapa ett nytt avslut");
+          order = await paper.placeTimedExitOrder({ ...orderRequest, type: "MARKET" }, p.tradeId);
+        } else { order = await broker.placeOrder({ ...orderRequest, type: isMarket ? "MARKET" : "LIMIT" }); }
       } catch (err) {
         if (reserved) adjustLiveSpend(-reserved);
         throw err;
@@ -194,7 +211,14 @@ async function executeApprovedOrder(
       let tpslId: string | undefined;
       // LIVE marknadsköp med TP/SL: boten bevakar och säljer vid TP eller SL
       // Du sålde själv i LIVE → gamla TP/SL-bevakningar för myntet tas bort
-      if (p.live && p.side === "SELL") removeLiveTpSlForSymbol(p.symbol);
+      if (p.live && p.side === "SELL" && order.executedQty > 0) {
+        const left = await broker.getPositions().catch(() => null);
+        const base = p.symbol.replace(/USDC$/, "");
+        if (left && !left.some((ps) => ps.baseAsset === base && ps.quantity > 1e-12)) {
+          removeLiveTpSlForSymbol(p.symbol);
+          for (const exit of listTimedExits().filter((x) => x.live && x.symbol === p.symbol && !x.pendingBuyOrderId)) cancelTimedExit(exit.id);
+        }
+      }
       if (p.live && p.side === "BUY" && (p.takeProfit !== undefined || p.stopLoss !== undefined)
         && order.executedQty > 0 && /^(filled|cancelled|canceled|PartiallyFilledCanceled)$/i.test(order.status)) {
         const entry = order.avgFillPrice || p.refPrice || getCachedPrice(p.symbol) || 0;
@@ -267,6 +291,7 @@ export function setActiveBrokerName(name: string | null): void {
 }
 
 export function broadcastEvent(event: string, data: unknown): void {
+  invalidateTradingState();
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of sseClients) {
     try {
@@ -325,14 +350,26 @@ const AGENT_PROMPTS: Record<string, { model: string; system: string }> = {
   },
 };
 
+const verifiedAnalysisMarkets = new Map<string, number>();
+async function verifyAnalysisMarkets(selection: {selectedSymbols:string[]}, broker: BrokerAdapter | undefined): Promise<void> {
+  if (!broker) throw new Error("Analysens Bybit-konto saknas");
+  for (const symbol of selection.selectedSymbols) {
+    if ((verifiedAnalysisMarkets.get(symbol) ?? 0) > Date.now() - 300_000) continue;
+    const ticker = await broker.getTicker(symbol);
+    if (!Number.isFinite(ticker.price) || ticker.price <= 0) throw new Error(`Bybit EU-paret ${symbol} kunde inte verifieras`);
+    verifiedAnalysisMarkets.set(symbol, Date.now());
+    addTickerBase(symbol.replace(/USDC$/, ""), true);
+  }
+}
+
 let anthropicApiKey: string | null = null;
-let runAgentCallback: ((instruction?: string) => Promise<void>) | null = null;
+let runAgentCallback: ((request: AnalysisRequest) => Promise<void>) | null = null;
 
 export function setApiKey(key: string): void {
   anthropicApiKey = key;
 }
 
-export function setRunAgentCallback(cb: (instruction?: string) => Promise<void>): void {
+export function setRunAgentCallback(cb: (request: AnalysisRequest) => Promise<void>): void {
   runAgentCallback = cb;
 }
 
@@ -362,8 +399,8 @@ export function startServer(
       activeBrokerName = s.broker;
       setTradePercent(s.percent); setHorizonMin(s.horizonMinutes);
       await getTradeSizing(brokers[s.broker]!);
-      analysisStart("schema", `Session ${s.id}`);
-      try { await runAgentCallback(`Session: ${s.percent} % av kontovärdet per trade, tidshorisont ${s.horizonMinutes} min. Endast Bybit EU spot. Alla förslag kräver Mikes manuella godkännande.`); }
+      analysisStart("schema", `Session ${s.id}`, {broker:s.broker,requestId:s.id,selectedSymbols:s.selectedSymbols,timeframe:s.timeframe});
+      try { await runAgentCallback({ selectedSymbols: s.selectedSymbols, timeframe: s.timeframe, requestId: s.id, instruction: `Session: ${s.percent} % av kontovärdet per trade, tidshorisont ${s.horizonMinutes} min. Endast Bybit EU spot. Alla förslag kräver Mikes manuella godkännande.` }); }
       catch (err) { analysisEnd({ status: "failed", reason: err instanceof Error ? err.message : String(err) }); throw err; }
       if (getAnalysis()?.status === "running") { analysisEnd({ status: "stopped", reason: "Analysen avbröts av befintliga spärrar" }); throw new Error("Analysen kördes inte; kontrollera kill switch och AI-budget"); }
     }).catch((err) => log.error(`Sessionsbevakning: ${String(err)}`));
@@ -711,6 +748,23 @@ export function startServer(
         return;
       }
 
+      if (url.pathname === "/api/llm-status" && method === "GET") { json(res, {...getLlmDiagnostics(),jev:getJevStatus(),pipeline:["JEV", "Teknisk agent", "Hanna"],port}); return; }
+      if (["/api/trading-state", "/api/selected-symbols"].includes(url.pathname)) {
+        const body = method === "POST" ? JSON.parse(await readBody(req)) as Record<string, unknown> : {};
+        const name = String(body.broker ?? url.searchParams.get("broker") ?? (url.searchParams.get("mode") === "LIVE" ? "bybit" : activeBrokerName || "bybit-paper"));
+        if (name !== "bybit" && name !== "bybit-paper") { jsonStatus(res, 400, {error: "Välj Bybit TEST eller LIVE"}); return; }
+        const mode = name === "bybit" ? "LIVE" : "TEST";
+        if (url.pathname === "/api/trading-state" && method === "GET") { json(res, await getTradingState(brokers, name)); return; }
+        if (url.pathname === "/api/selected-symbols" && method === "GET") { json(res, {broker: name, ...getAnalysisSelection(mode)}); return; }
+        if (url.pathname === "/api/selected-symbols" && method === "POST") {
+          if (getAnalysisSession()?.status === "running" || getAnalysis()?.status === "running") { jsonStatus(res, 409, {error: "Vänta tills analysen är klar eller stoppa sessionen"}); return; }
+          try { const checked = validateAnalysisSelection(body); await verifyAnalysisMarkets(checked, brokers[name]); const selection = setAnalysisSelection(mode, checked); broadcastEvent("selection", {broker: name}); json(res, {ok: true, broker: name, ...selection}); }
+          catch (err) { jsonStatus(res, 400, {error: err instanceof Error ? err.message : "Ogiltigt urval"}); }
+          return;
+        }
+        jsonStatus(res, 405, {error: "Metoden stöds inte"}); return;
+      }
+
       // Resultatfönstret: affärer + öppna innehav med vinst/förlust (?mode=TEST|LIVE)
       if (url.pathname === "/api/results" && method === "GET") {
         const q = url.searchParams.get("mode");
@@ -815,7 +869,7 @@ export function startServer(
       // POST /api/pending-orders — lägg en order som väntar på godkännande
       // body: { symbol, side, quoteUsd, source?, broker? }  (broker saknas = aktiv broker)
       if (url.pathname === "/api/pending-orders" && method === "POST") {
-        const b = JSON.parse(await readBody(req)) as { symbol?: string; side?: string; quoteUsd?: number; source?: string; broker?: string; reason?: string; orderType?: string; limitPrice?: number; takeProfit?: number; stopLoss?: number; sellAll?: boolean };
+        const b = JSON.parse(await readBody(req)) as { symbol?: string; side?: string; quoteUsd?: number; source?: string; broker?: string; reason?: string; orderType?: string; limitPrice?: number; takeProfit?: number; stopLoss?: number; sellAll?: boolean; quantity?: number; tradeId?: string };
         const symbol = String(b.symbol || "").toUpperCase().replace(/[\/-]/g, "").replace(/USDT$/, "USDC");
         const side = b.side === "SELL" ? "SELL" : b.side === "BUY" ? "BUY" : null;
         const quoteUsd = Number(b.quoteUsd);
@@ -833,6 +887,10 @@ export function startServer(
         }
         if (orderType === "LIMIT" && limitPrice === undefined) { jsonStatus(res, 400, { ok: false, error: "Limit-order kräver ett pris" }); return; }
         const sellAll = side === "SELL" && b.sellAll === true;
+        const quantity = b.quantity === undefined ? undefined : Number(b.quantity);
+        if (quantity !== undefined && (side !== "SELL" || !Number.isFinite(quantity) || quantity <= 0)) { jsonStatus(res, 400, {error: "Ogiltigt antal för avslut"}); return; }
+        const tradeId = typeof b.tradeId === "string" ? b.tradeId : undefined;
+        if (tradeId && (side !== "SELL" || orderType !== "MARKET" || sellAll || !quantity || !/^[a-zA-Z0-9-]{1,100}$/.test(tradeId))) { jsonStatus(res, 400, {error: "Välj en TEST-trade och ett giltigt antal"}); return; }
         // Tidshorisont i sekunder (köp ≤ 30 min säljs automatiskt när tiden är slut)
         const hz = Number((b as { horizonSec?: unknown }).horizonSec);
         const horizonSec = side === "BUY" && Number.isFinite(hz) && hz > 0 ? Math.round(Math.min(hz, MAX_AUTO_EXIT_SEC)) : side === "BUY" ? getHorizonMin() * 60 : undefined;
@@ -859,7 +917,8 @@ export function startServer(
           return;
         }
         const live = broker.mode === "live";
-        if (!sellAll && !(quoteUsd > 0)) { jsonStatus(res, 400, { ok: false, error: "Skriv ett belopp i USD" }); return; }
+        if (tradeId && live) { jsonStatus(res, 400, {error: "LIVE-innehav har ännu ingen verifierad lottjournal"}); return; }
+        if (!sellAll && quantity === undefined && !(quoteUsd > 0)) { jsonStatus(res, 400, { ok: false, error: "Skriv ett belopp i USD" }); return; }
         // LIVE-köp: måste gå att sälja tillbaka (Bybits minsta order + marginal)
         const minBuy = (broker as { minBuyUsd?: (s: string) => Promise<number> }).minBuyUsd;
         if (live && side === "BUY" && minBuy) {
@@ -877,7 +936,9 @@ export function startServer(
           live,
           symbol,
           side,
-          quoteUsd: sellAll ? undefined : quoteUsd,
+          quoteUsd: sellAll || quantity !== undefined ? undefined : quoteUsd,
+          ...(quantity !== undefined ? {quantity} : {}),
+          ...(tradeId ? {tradeId} : {}),
           ...(sellAll ? { sellAll: true } : {}),
           ...(orderType === "LIMIT" ? { orderType, limitPrice } : {}),
           ...(takeProfit !== undefined ? { takeProfit } : {}),
@@ -954,7 +1015,7 @@ export function startServer(
           const name = String(b.broker);
           if (!brokers[name] || !["bybit", "bybit-paper"].includes(name)) { jsonStatus(res, 409, { error: "Kontot är inte kopplat" }); return; }
           if (name === "bybit" && !liveAllowedByServer()) { jsonStatus(res, 403, { error: "LIVE är låst på servern" }); return; }
-          try { startAnalysisSession(b); }
+          try { const selection = validateAnalysisSelection(b); await verifyAnalysisMarkets(selection, brokers[name]); setAnalysisSelection(name === "bybit" ? "LIVE" : "TEST", selection); startAnalysisSession({ ...b, ...selection }, selection.selectedSymbols); invalidateTradingState(); }
           catch (err) { jsonStatus(res, 400, { error: err instanceof Error ? err.message : String(err) }); return; }
         } else { jsonStatus(res, 400, { error: "Välj start eller stop" }); return; }
         json(res, { ok: true, session: getAnalysisSession(), now: Date.now() }); return;
@@ -1092,22 +1153,21 @@ export function startServer(
         }
         userAction("startade en analys (Kör analys)", { to: "orchestrator" });
 
-        // Body kan vara tom eller ha {instruction: "Köp BTC för $50"}
-        let instruction: string | undefined;
+        let request: AnalysisRequest;
         try {
-          const body = await readBody(req);
-          if (body) {
-            const parsed = JSON.parse(body) as { instruction?: string };
-            instruction = parsed.instruction?.trim() || undefined;
-          }
-        } catch { /* ignore parse fel — kör utan instruktion */ }
-
-        log.info(`[API] Manuell agent-turn triggad${instruction ? ` med instruktion: "${instruction}"` : ""}`);
-        json(res, { ok: true, message: "Agent-turn startar...", instruction });
-
-        // Kör async utan att blocka response
-        analysisStart("manuell", instruction);
-        runAgentCallback(instruction)
+          const parsed = JSON.parse((await readBody(req)) || "{}") as Record<string, unknown>;
+          const selection = validateAnalysisSelection(parsed);
+          const broker = parsed.broker ?? activeBrokerName ?? "bybit-paper";
+          if (broker !== "bybit" && broker !== "bybit-paper") throw new Error("Ogiltigt Bybit-konto");
+          await verifyAnalysisMarkets(selection, brokers[broker]);
+          request = validateAnalysisRequest({ ...selection, broker, instruction: typeof parsed.instruction === "string" ? parsed.instruction.trim().slice(0, 2000) : undefined,
+            requestId: typeof parsed.requestId === "string" ? parsed.requestId : undefined }, selection.selectedSymbols);
+          setAnalysisSelection(broker === "bybit" ? "LIVE" : "TEST", selection);
+        } catch (err) { jsonStatus(res, 400, { error: err instanceof Error ? err.message : "Ogiltigt analysval" }); return; }
+        log.info(`[API] Manuell analys: ${request.selectedSymbols.join(", ")} · ${request.timeframe}`);
+        analysisStart("manuell", request.instruction, {...request, broker:request.broker || "bybit-paper"});
+        json(res, { ok: true, message: "Analysen startar", selectedSymbols: request.selectedSymbols, timeframe: request.timeframe });
+        runAgentCallback(request)
           .then(() => {
             // Turen kom aldrig till agenterna (t.ex. kill switch eller ingen mäklare).
             if (getAnalysis()?.status === "running") analysisEnd({ status: "stopped", reason: "Analysen kördes inte: kill switch på eller ingen mäklare kopplad." });

@@ -1,3 +1,5 @@
+import { getAnalysisSelection } from "./server/analysisSelection.js";
+import { resolveAnalysisBroker, scopeBroker, validateAnalysisRequest, intersectAnalysisSymbols, type AnalysisRequest } from "./orchestrator/analysisRequest.js";
 import { config } from "./config.js";
 import type { BrokerAdapter } from "./brokers/adapter.js";
 import { BybitPaperBroker } from "./brokers/bybitPaper.js";
@@ -12,7 +14,7 @@ import { startKlineStream } from "./server/klineStream.js";
 import { getSignals, jevReviewSymbols, startSignalEngine, subscribeSignals } from "./server/signalEngine.js";
 import { recordAnalysis } from "./memory/tradeMemory.js";
 import { listPendingOrders } from "./server/orderGate.js";
-import { type PrescreenResult, prescreenPairs, prescreenEnabled, rememberPrescreen } from "./orchestrator/prescreen.js";
+import { type PrescreenResult, prescreenPairs, prescreenEnabled, rememberPrescreen, reviewPrescreenScope } from "./orchestrator/prescreen.js";
 import { analysisModeInfo, autoLoopEnabled, scheduleTimes, signalTriggerEnabled, startFixedTimes } from "./server/analysisMode.js";
 import { setTeamLast } from "./server/teamLast.js";
 import { restoreExecutionMode } from "./server/executionModeStore.js";
@@ -30,6 +32,12 @@ import type { StrategyEngine } from "./strategies/types.js";
 //    npm run account         → visa konto-status
 //    npm run kill -- on|off  → kill-switch
 // ═══════════════════════════════════════════════════════════════════════════
+
+/** Schema, CLI och tidiga signalstarter använder samma sparade urval som dashboarden. */
+function currentAnalysisRequest(): AnalysisRequest {
+  const broker = resolveAnalysisBroker({}, getActiveBrokerName());
+  return { ...getAnalysisSelection(broker === "bybit" ? "LIVE" : "TEST"), broker };
+}
 
 // ── Setup: brokers ──
 
@@ -74,47 +82,36 @@ async function runTurnOnce(fn: () => Promise<void>): Promise<void> {
 async function runOnce(
   brokers: Record<string, BrokerAdapter>,
   engines: StrategyEngine[],
-  instruction?: string,
+  request: AnalysisRequest,
   useTeam = true,
   scheduled = false,
 ): Promise<void> {
+  // Konto och adapter låses innan JEV eller någon annan asynkron kontroll.
+  const activeName = resolveAnalysisBroker(request, getActiveBrokerName());
+  const primaryBroker = brokers[activeName];
+  if (!primaryBroker) throw new Error(`Analyskontot ${activeName} är inte tillgängligt`);
+  const saved = getAnalysisSelection(activeName === "bybit" ? "LIVE" : "TEST");
+  const allowedSymbols = [...new Set([...config.crypto.symbols, ...saved.selectedSymbols])];
+  request = validateAnalysisRequest({ ...request, broker: activeName }, allowedSymbols);
+  const instruction = request.instruction;
   // Försållning: signalmotorn + JEV väljer par innan AI-teamet startas.
   // En schemalagd tur utan någon signal hoppas över helt (inga AI-anrop).
-  const screen: PrescreenResult = prescreenPairs({
-    cryptoSymbols: config.crypto.symbols,
+  let screen: PrescreenResult = prescreenPairs({
+    cryptoSymbols: allowedSymbols,
     otherSymbols: [],
     instruction,
+    request,
     scheduled,
   });
   const turnStartedAt = Date.now();
-  let jevStopped: { symbol: string; why: string }[] = [];
-  // JEV granskar bara paren den här analysen valt (signalerna i sig är gratis matte).
-  if (screen.enabled && screen.flagged.length && !screen.skip) {
-    const maxPairs = Math.max(1, Number(process.env.PRESCREEN_MAX_PAIRS ?? 3) || 3);
-    const candidates = screen.flagged.slice(0, maxPairs * 2).map((f) => f.symbol);
-    const picked = new Set(screen.symbols);
-    if (candidates.some((c) => picked.has(c))) {
-      const { kept, stopped } = await jevReviewSymbols(candidates, maxPairs);
-      jevStopped = stopped;
-      if (stopped.length) {
-        const top = kept.slice(0, maxPairs);
-        const stopNote = `JEV stoppade ${stopped.map((x) => x.symbol).join(", ")}`;
-        if (top.length) {
-          screen.symbols = top;
-          screen.note = `${stopNote}; AI-teamet tar ${top.join(", ")}`;
-        } else if (scheduled && !instruction) {
-          screen.symbols = []; screen.skip = true;
-          screen.note = `${stopNote}; inget par kvar, AI-teamet vilar`;
-        } else {
-          screen.symbols = [...config.crypto.symbols];
-          screen.note = `${stopNote}; du bad om analys: alla par`;
-        }
-      }
-    }
-  }
+  const reviewed = await reviewPrescreenScope(screen, request, scheduled, jevReviewSymbols);
+  screen = reviewed.screen;
+  const jevStopped = reviewed.stopped;
+  if (reviewed.error) log.warn(`[JEV] urvalsgranskning otillgänglig: ${reviewed.error}`);
   rememberPrescreen(screen);
   log.info(`[JEV] försållning: ${screen.note}`);
-  if (useTeam && screen.skip) return;
+  screen.symbols = intersectAnalysisSymbols(request.selectedSymbols, screen.symbols);
+  if (screen.skip || !screen.symbols.length) return;
 
   const state = await loadState();
 
@@ -123,18 +120,9 @@ async function runOnce(
     return;
   }
 
-  // Respektera broker-val från dashboard (runtime), fallback till default-prioritet
-  const activeName = getActiveBrokerName();
-  const primaryBroker = activeName
-    ? brokers[activeName]
-    : brokers["bybit-paper"];
-  if (!primaryBroker) {
-    log.error("Ingen broker tillgänglig.");
-    return;
-  }
   log.info(`Aktiv broker: ${activeName ?? Object.keys(brokers).find((k) => brokers[k] === primaryBroker) ?? "?"} (${primaryBroker.mode})`);
 
-  const risk = new RiskManager(config);
+  const risk = new RiskManager({ ...config, crypto: { ...config.crypto, symbols: request.selectedSymbols } });
 
   log.info(
     `Agent-turn startar — mode=${useTeam ? "TEAM" : "SINGLE"} ` +
@@ -149,14 +137,14 @@ async function runOnce(
   if (useTeam) {
     // ── Orchestrator-mode: specialist-team ──
     const result = await runOrchestratedTurn({
-      config,
+      config: { ...config, crypto: { ...config.crypto, symbols: request.selectedSymbols } },
       state,
       broker: primaryBroker,
       brokers,
       risk,
       engines,
       userInstruction: instruction,
-      symbols: screen.symbols,
+      request: { ...request, selectedSymbols: screen.symbols },
     });
     finalText = result.headTrader.decision.briefingSummary;
     toolCalls = result.headTrader.toolCalls;
@@ -206,9 +194,9 @@ async function runOnce(
   } else {
     // ── Single-agent fallback ──
     const turn = await runAgentTurn({
-      config,
-      broker: primaryBroker,
-      brokers,
+      config: { ...config, crypto: { ...config.crypto, symbols: screen.symbols } },
+      broker: scopeBroker(primaryBroker, screen.symbols),
+      brokers: Object.fromEntries(Object.entries(brokers).map(([name, broker]) => [name, scopeBroker(broker, screen.symbols)])),
       risk,
       state,
       engines,
@@ -354,7 +342,7 @@ async function main(): Promise<void> {
 
   // Registrera API-nyckel + run-callback för manuella agent-frågor och dashboard-triggar
   setApiKey(config.anthropicApiKey);
-  setRunAgentCallback((instruction?: string) => runOnce(brokers, engines, instruction));
+  setRunAgentCallback((request: AnalysisRequest) => runTurnOnce(() => runOnce(brokers, engines, request)));
 
   // Serve-läge: bara dashboard och strömmar. Ingen agent-körning, inga
   // LLM-anrop vid start.
@@ -370,7 +358,7 @@ async function main(): Promise<void> {
     if (args.propose) {
       (config as { executionMode: "auto" | "approve" }).executionMode = "approve";
     }
-    await runOnce(brokers, engines, args.instruction);
+    await runOnce(brokers, engines, { ...currentAnalysisRequest(), instruction: args.instruction });
     log.info(`Dashboard fortfarande aktiv på http://localhost:${DASHBOARD_PORT} — Ctrl+C för att stänga.`);
     // Håll processen igång så dashboarden inte dör
     await new Promise(() => {});
@@ -386,13 +374,13 @@ async function main(): Promise<void> {
   if (autoLoopEnabled()) {
     scheduler.addTask({
       ...schedule.agentLoop,
-      execute: () => runTurnOnce(() => runOnce(brokers, engines, undefined, true, true)),
+      execute: () => runTurnOnce(() => runOnce(brokers, engines, currentAnalysisRequest(), true, true)),
     });
   }
   if (scheduleTimes().length) {
     startFixedTimes((time) => {
       log.info(`[analys] fast tid ${time}: AI-teamet startar`);
-      void runTurnOnce(() => runOnce(brokers, engines, undefined, true, true)).catch((err) =>
+      void runTurnOnce(() => runOnce(brokers, engines, currentAnalysisRequest(), true, true)).catch((err) =>
         log.warn(`[analys] tur kl ${time} misslyckades: ${err instanceof Error ? err.message : String(err)}`));
     });
   }
@@ -408,6 +396,7 @@ async function main(): Promise<void> {
     const lastWake = new Map<string, number>();
     let lastTrigger = 0;
     subscribeSignals((sig) => {
+      if (!currentAnalysisRequest().selectedSymbols.includes(sig.symbol)) return;
       const prev = lastDir.get(sig.symbol);
       lastDir.set(sig.symbol, sig.direction);
       if (sig.direction === "NEUTRAL" || prev === sig.direction) return;
@@ -417,7 +406,7 @@ async function main(): Promise<void> {
       lastTrigger = now;
       lastWake.set(sig.symbol, now);
       log.info(`[JEV] ny signal ${sig.symbol} ${sig.direction} (${sig.score}): AI-teamet startar tidigt`);
-      void runTurnOnce(() => runOnce(brokers, engines, undefined, true, true)).catch((err) =>
+      void runTurnOnce(() => runOnce(brokers, engines, currentAnalysisRequest(), true, true)).catch((err) =>
         log.warn(`[JEV] tidig tur misslyckades: ${err instanceof Error ? err.message : String(err)}`));
     });
   }

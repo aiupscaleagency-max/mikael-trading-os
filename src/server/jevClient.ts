@@ -55,6 +55,8 @@ export interface JevVerdict {
   latencyMs: number | null;
   model: string | null;
   note: string;
+  httpStatus?: number;
+  requestId?: string | null;
 }
 
 /**
@@ -63,39 +65,8 @@ export interface JevVerdict {
  */
 function buildQuestions(): Record<string, unknown> {
   return {
-    regime: {
-      type: "choice",
-      instructions: "What market regime does this state describe?",
-      criteria: { trending: null, mean_reverting: null, high_vol: null, crisis: null },
-    },
-    direction: {
-      type: "choice",
-      instructions: "What is the price bias over the next 10 ticks?",
-      criteria: { up: null, down: null, neutral: null },
-    },
-    toxic_flow: {
-      type: "noul",
-      instructions: "Is the aggressive flow in this state likely informed rather than noise?",
-    },
-    liquidity_stressed: {
-      type: "noul",
-      instructions: "Is the order book thinner than its recent norm?",
-    },
-    quote_environment: {
-      type: "score",
-      instructions: "How favourable is this state for providing liquidity?",
-      criteria: ["Do not quote", "Marginal", "Standard", "Excellent"],
-    },
-    inventory_pressure: {
-      type: "score",
-      instructions: "Given the current inventory, how urgent is it to cut the position?",
-      criteria: ["None", "Mild", "Skew hard", "Reduce now"],
-    },
-    execution_health: {
-      type: "score",
-      instructions: "Is execution quality optimal or degrading in this state?",
-      criteria: ["Degrading", "Acceptable", "Good", "Optimal"],
-    },
+    execution_depth: {type: "choice", instructions: "Recommend analysis depth for a fixed two-agent crypto analysis workflow.", criteria: {fast: null, standard: null, deep: null}},
+    needs_independent_review: {type: "noul", instructions: "Does this task category benefit from independent review?"},
   };
 }
 
@@ -199,9 +170,24 @@ class AuthRejected extends Error {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Typade svar måste täcka alla frågor innan JEV räknas som tillgänglig. */
+export function validateJevAnswers(questions: Record<string, unknown>, answers: unknown): answers is Record<string, JevAnswer> {
+  if (!answers || typeof answers !== "object") return false;
+  return Object.entries(questions).every(([id, raw]) => {
+    const question = raw as {type?: string; criteria?: unknown};
+    const answer = (answers as Record<string, JevAnswer>)[id];
+    if (!answer || answer.type !== question.type) return false;
+    if (answer.type === "noul") return typeof answer.noul === "number" && Number.isFinite(answer.noul) && answer.noul >= 0 && answer.noul <= 1;
+    if (answer.type === "score") return typeof answer.score === "number" && Number.isFinite(answer.score) && answer.score >= 0;
+    if (answer.type === "choice") return typeof answer.choice === "string" && Boolean(question.criteria && typeof question.criteria === "object" && !Array.isArray(question.criteria) && Object.hasOwn(question.criteria, answer.choice));
+    return false;
+  });
+}
+let lastVerdict: {route:JevMode;available:boolean;at:number;httpStatus:number|null;requestId:string|null;note:string} | null = null;
+
 async function postWithRetry(
   url: string, key: string, body: unknown, timeoutMs: number,
-): Promise<{ answers: Record<string, JevAnswer>; model?: string }> {
+): Promise<{ answers: Record<string, JevAnswer>; model?: string; httpStatus: number; requestId: string | null }> {
   let lastErr = "";
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const ctrl = new AbortController();
@@ -215,7 +201,11 @@ async function postWithRetry(
       });
       clearTimeout(timer);
 
-      if (res.ok) return await res.json() as { answers: Record<string, JevAnswer>; model?: string };
+      if (res.ok) {
+        const data = await res.json() as {answers?: unknown;model?: string};
+        if (!validateJevAnswers((body as {questions:Record<string,unknown>}).questions,data.answers)) throw new Error("JEV: ogiltigt eller ofullständigt svarsschema");
+        return {answers:data.answers,model:data.model,httpStatus:res.status,requestId:res.headers.get("x-request-id") ?? res.headers.get("request-id")};
+      }
 
       // 401 betyder att nyckeln avvisades av *den här* rutten — inte att
       // tjänsten är nere och inte nödvändigtvis att nyckeln är ogiltig.
@@ -252,6 +242,7 @@ const CIRCUIT_THRESHOLD = 3;
 const CIRCUIT_COOLDOWN_MS = 60_000;
 
 function offlineVerdict(note: string): JevVerdict {
+  lastVerdict = {route:"rules_only",available:false,at:Date.now(),httpStatus:null,requestId:null,note};
   return { mode: "rules_only", available: false, answers: {}, latencyMs: null, model: null, note };
 }
 
@@ -290,14 +281,16 @@ export async function askJev(
     try {
       const data = await postWithRetry(
         route.url, route.key,
-        { state, model: route.model, questions },
+        { state: {task_category: "crypto_analysis", summary: "Recommend depth and review for an existing fixed technical-agent and head-trader workflow. Market analysis and risk calculations happen outside JEV.", constraints: ["advisory only", "exactly two agent roles", "no market data or credentials"]}, model: route.model, questions },
         timeoutMs,
       );
       failureCount = 0;
+      lastVerdict = {route:route.mode,available:true,at:Date.now(),httpStatus:data.httpStatus,requestId:data.requestId,note:"Validerat svarsschema"};
       return {
         mode: route.mode,
         available: true,
-        answers: data.answers ?? {},
+        httpStatus: data.httpStatus, requestId: data.requestId,
+        answers: Object.fromEntries(Object.keys(questions).map((id) => [id, data.answers[id]!])),
         latencyMs: Date.now() - t0,
         model: data.model ?? route.model,
         note: rejected.length > 0 ? `avvisad på ${rejected.join(", ")} först` : "",
@@ -336,9 +329,11 @@ export async function askJev(
   return offlineVerdict(lastMsg);
 }
 
-export function getJevStatus(): { route: JevMode; circuitOpen: boolean } {
+export function getJevStatus() {
   return {
-    route: resolveRoutes()[0]?.mode ?? "rules_only",
+    route: lastVerdict?.route ?? "rules_only",
+    configuredRoute: resolveRoutes()[0]?.mode ?? "rules_only",
     circuitOpen: Date.now() < circuitOpenUntil,
+    lastVerdict,
   };
 }
