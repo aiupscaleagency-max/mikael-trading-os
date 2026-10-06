@@ -67,7 +67,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     const initial=status(mode);if(!initial.credentialsComplete) return initial;
     try {
       const c=credentials(mode), {response,data}=await call(mode,"session",c);
-      const cst=response.headers.get("CST"),xst=response.headers.get("X-SECURITY-TOKEN"),accountId=text(data.accountId);
+      const cst=response.headers.get("CST"),xst=response.headers.get("X-SECURITY-TOKEN"),accountId=text(data.currentAccountId);
       if(!cst || !xst || !accountId) return fail(mode,"IG returnerade ingen verifierbar kontosession");
       const session={cst,xst,apiKey:c.apiKey!,accountId,createdAt:now(),fingerprint:fingerprint(c)};
       const accounts=await call(mode,"accounts",c,session);
