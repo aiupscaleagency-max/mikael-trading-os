@@ -106,3 +106,33 @@ formCtx.document.querySelector=selector=>selector.startsWith('#ot-tf')?(selector
 for(const seconds of [1234,300,1234]){formCtx.current.pendingOrders[0].horizonSec=seconds;vm.runInContext('fillSignal("signal1")',formCtx);if(seconds===300)assert.equal(formNodes['ot-tf-custom'].value,'');else{assert.equal(formNodes['ot-tf-custom'].value,1234);assert.equal(formNodes['ot-tf-unit'].value,'1');}}
 formCtx.current.pendingOrders[0].horizonSec=null;vm.runInContext('fillSignal("signal1")',formCtx);assert.equal(formNodes['ot-tf-custom'].value,'');assert.match(formNodes['ot-note'].textContent,/innehavstid är ej verifierad/);
 console.log('PASS: signal custom horizon 1234 → preset 300 → custom 1234, missing horizon clearly unverified');
+
+// IG-anrop har egen miljö, endast IG-rutter och ett generationsskydd för Demo → Live → Demo.
+const igWorkspaceScript=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(m=>m[1]).find(s=>s.includes('function createIGWorkspaceClient('));
+const igClientCode=igWorkspaceScript.slice(igWorkspaceScript.indexOf('  function createIGWorkspaceClient('),igWorkspaceScript.indexOf('  window.createIGWorkspaceClient='));
+const igClientContext={window:{},URL,location:{origin:'http://localhost'}};vm.createContext(igClientContext);vm.runInContext(igClientCode+'\nwindow.factory=createIGWorkspaceClient;',igClientContext);
+let igEnvironment='demo',igEpoch=0;const igRequests=[];const igClient=igClientContext.window.factory(async(url,options)=>{igRequests.push({url,options});return {ok:true,json:async()=>({environment:igEnvironment,status:'ready'})};},()=>igEnvironment,()=>igEpoch);
+await igClient.call('/api/ig/markets',{query:{searchTerm:'EUR/USD',environment:'live'}});assert.equal(new URL(igRequests[0].url,'http://localhost').searchParams.get('environment'),'demo');
+await igClient.call('/api/ig/analysis',{method:'POST',data:{environment:'live',epics:['CS.D.EURUSD.CFD.IP'],timeframe:'5m',horizonMinutes:15,percent:1}});const igPayload=JSON.parse(igRequests[1].options.body);assert.equal(igPayload.environment,'demo');assert.deepEqual(igPayload.epics,['CS.D.EURUSD.CFD.IP']);assert.equal(igPayload.timeframe,'5m');assert(!('selectedSymbols' in igPayload));
+await assert.rejects(()=>igClient.call('/api/run-agent'),/endast använda IG/);
+let resolveIg;const staleClient=igClientContext.window.factory(()=>new Promise(resolve=>resolveIg=resolve),()=>igEnvironment,()=>igEpoch);const staleIg=staleClient.call('/api/ig/workspace');igEnvironment='live';igEpoch++;igEnvironment='demo';igEpoch++;resolveIg({ok:true,json:async()=>({environment:'demo'})});await assert.rejects(staleIg,/äldre svar ignorerades/);
+assert(igWorkspaceScript.includes('event.stopImmediatePropagation();runAnalysis()'));assert(igWorkspaceScript.includes('REST-pollning var 60 s'));assert(!igWorkspaceScript.includes('TradingUI.read'));assert(!igWorkspaceScript.includes('USDC'));assert(igWorkspaceScript.includes('snapshot?.execution?.reason'));
+console.log('PASS: IG namespace, Demo/Live payload and EPIC isolation, locked environment, ABA stale-response rejection and independent REST chart/analysis flow');
+
+// Kör verkliga IG-knappfunktioner: ett kontobyte under selection-save får aldrig skicka analys/session.
+const igActionCode=igWorkspaceScript.slice(igWorkspaceScript.indexOf('  async function runAnalysis()'),igWorkspaceScript.indexOf('  function setVenue('));
+let finishSelection;const actionCalls=[];
+const igActions={snapshot:{connection:{status:'connected'}},epics:['CS.D.EURUSD.CFD.IP'],analysisBusy:false,environmentEpoch:0,environment:'demo',selectedContext:()=>({epics:['CS.D.EURUSD.CFD.IP'],timeframe:'15m',percent:1,horizonMinutes:5}),renderSnapshot(){},message(){},renderTrades(){},loadWorkspace:async()=>{},client:{call:async(path,opts)=>actionCalls.push({path,opts})},saveSelection:()=>new Promise(resolve=>finishSelection=resolve),$:id=>({value:id==='ig-session-duration'?'30':'5'}),tab:'open'};
+vm.createContext(igActions);vm.runInContext(igActionCode,igActions);
+let action=vm.runInContext('runAnalysis()',igActions);igActions.environment='live';igActions.environmentEpoch++;finishSelection();await action;assert.equal(actionCalls.length,0);
+igActions.environment='demo';action=vm.runInContext('startSession()',igActions);igActions.environment='live';igActions.environmentEpoch++;finishSelection();await action;assert.equal(actionCalls.length,0);
+igActions.saveSelection=async()=>{};igActions.analysisBusy=false;igActions.environment='demo';await vm.runInContext('runAnalysis()',igActions);await vm.runInContext('startSession()',igActions);assert.deepEqual(actionCalls.map(c=>c.path),['/api/ig/analysis','/api/ig/session']);assert.equal(actionCalls[0].opts.data.timeframe,'15m');assert.equal(actionCalls[1].opts.data.durationMinutes,30);
+await igClient.call('/api/ig/session',{method:'DELETE'});const stopRequest=igRequests.at(-1);assert.equal(stopRequest.options.headers['Content-Type'],'application/json');assert.equal(JSON.parse(stopRequest.options.body).environment,'demo');
+assert(igWorkspaceScript.includes('timeframe:analysisTimeframe'));assert(igWorkspaceScript.includes("if(chosen!==epic||epoch!==environmentEpoch)return"));assert(!igWorkspaceScript.match(/ig-chart-timeframe[^\n]+saveSelection/));
+console.log('PASS: actual IG analysis/session actions freeze selection, abort account-switch races, separate chart/analysis intervals and JSON session stop');
+
+// Ett långsamt instrumentsvar får inte ersätta reglerna för det nyvalda instrumentet.
+const marketFn=igWorkspaceScript.slice(igWorkspaceScript.indexOf('  async function loadMarket()'),igWorkspaceScript.indexOf('  async function runAnalysis()'));
+const marketNodes={'ig-order-market-detail':{textContent:'B regler'},'ig-order-quote':{textContent:'B kvot'}};let finishMarket;
+const marketCtx={epic:'A',environmentEpoch:0,client:{call:()=>new Promise(resolve=>finishMarket=resolve)},$:id=>marketNodes[id],num:n=>String(n??'Ej verifierat'),date:()=> 'datum'};vm.createContext(marketCtx);vm.runInContext(marketFn,marketCtx);const marketPending=vm.runInContext('loadMarket()',marketCtx);marketCtx.epic='B';finishMarket({instrument:{unit:'A unit'},quote:{bid:1}});await marketPending;assert.equal(marketNodes['ig-order-market-detail'].textContent,'B regler');assert.equal(marketNodes['ig-order-quote'].textContent,'B kvot');
+console.log('PASS: late IG EPIC response cannot overwrite current instrument quote or CFD dealing rules');
