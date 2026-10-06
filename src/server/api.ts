@@ -20,6 +20,7 @@ import { initLiveLayer, handleLiveRoutes } from "./liveRoutes.js";
 import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 import { watchBybitKlines, getBybitClosedCandles, getBybitFormingCandle, BYBIT_INTERVAL } from "./bybitStream.js";
 import { getJevStatus } from "./jevClient.js";
+import { getTiingoStatus } from "../data/tiingoHistory.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
 import { getAnalysisSession, startAnalysisSession, stopAnalysisSession, tickAnalysisSession } from "./analysisSession.js";
@@ -751,6 +752,8 @@ export function startServer(
       }
 
       if (url.pathname === "/api/llm-status" && method === "GET") { json(res, {...getLlmDiagnostics(),jev:getJevStatus(),pipeline:["JEV", "Teknisk agent", "Hanna"],port}); return; }
+      // Historikstatus läser bara befintliga resultat och startar inga datahämtningar eller ordrar.
+      if (url.pathname === "/api/history-status" && method === "GET") { json(res, getTiingoStatus()); return; }
       if (["/api/trading-state", "/api/selected-symbols"].includes(url.pathname)) {
         const body = method === "POST" ? JSON.parse(await readBody(req)) as Record<string, unknown> : {};
         const name = String(body.broker ?? url.searchParams.get("broker") ?? (url.searchParams.get("mode") === "LIVE" ? "bybit" : activeBrokerName || "bybit-paper"));

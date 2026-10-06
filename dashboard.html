@@ -9030,5 +9030,27 @@ document.addEventListener("DOMContentLoaded", boot);
 })();
 </script>
 
+<script>
+(function(){
+  const target=document.getElementById('analysis-selection');if(!target)return;
+  const panel=document.createElement('section');panel.id='historical-reference-status';panel.className='shared-trading';target.after(panel);
+  const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const date=value=>value?esc(String(value).slice(0,10)):'ej verifierat';let loading=false;
+  function renderHistory(data){
+    const header='<h3>Historikreferens · Tiingo</h3><p>Flerårig dagshistorik i USD från aggregerade marknader. Diagram, aktuella handelspriser och order använder Bybit EU spot i USDC.</p>';
+    if(!data.configured)return header+'<p class="shared-status">Tiingo-nyckel saknas i Trading-OS; historik ej verifierad. Bybits ordinarie analys kan fortsätta.</p>';
+    const rows=data.symbols||[];
+    const labels={ready:'Fullständig historik',partial:'Ofullständig historik',unavailable:'Ej verifierad'};
+    const summary='<p>'+esc(data.years)+' års referens · dagscandles · '+rows.length+' hämtade symboler. '+(rows.length?'':'Historik visas efter att den tekniska agenten har hämtat den.')+'</p>';
+    return header+summary+(data.error?'<p class="negative">'+esc(data.error)+'</p>':'')+'<details><summary>Visa mer · källa, tidsintervall och täckning</summary>'+rows.map(row=>'<article class="shared-row"><b>'+esc(row.symbol)+' · '+esc(labels[row.status]||'Ej verifierad')+'</b><div>Källa '+esc(row.source||'Tiingo')+' · ticker '+esc(row.ticker)+' · '+date(row.from)+' → '+date(row.to)+' · '+esc(row.count??0)+' dagscandles</div><div>Begärt '+date(row.requestedFrom)+' → '+date(row.requestedTo)+' · saknade dagar '+esc(row.missingDays??'okänt')+' · avvisade candles '+esc(row.rejectedBars??'okänt')+'</div><div>Cache '+(row.cached?'användes':'ej använd')+' · hämtad '+(row.fetchedAt?esc(new Date(row.fetchedAt).toLocaleString('sv-SE')):'ej verifierat')+'</div>'+(row.error?'<p class="negative">'+esc(row.error)+'</p>':'')+'</article>').join('')+'</details><p class="shared-status">Historikreferensen är ingen tränad modell, verifierad backtest eller garanti för framtida vinst.</p>';
+  }
+  // Ren renderingsfunktion gör datakällans status reproducerbart testbar utan nätverk.
+  window.renderHistoricalReferenceStatus=renderHistory;
+  async function load(){if(loading||document.hidden)return;loading=true;try{const response=await fetch('/api/history-status');const data=await response.json();if(!response.ok)throw Error(data.error||'Historikstatus kunde inte hämtas');panel.innerHTML=renderHistory(data);}catch(error){panel.innerHTML='<h3>Historikreferens · Tiingo</h3><p>Historikstatus ej verifierad: '+esc(error.message)+'. Bybits ordinarie analys kan fortsätta.</p>';}finally{loading=false;}}
+  panel.innerHTML='<h3>Historikreferens · Tiingo</h3><p>Hämtar status för historikreferensen…</p>';
+  load();setInterval(load,60000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)load();});
+})();
+</script>
+
 </body>
 </html>

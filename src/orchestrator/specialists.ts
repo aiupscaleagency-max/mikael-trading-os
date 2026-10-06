@@ -1,3 +1,4 @@
+import { getHistoricalContext } from "../data/tiingoHistory.js";
 import Anthropic from "@anthropic-ai/sdk";
 import { createLlmClient, extractJson, modelFor } from "../llm/gateway.js";
 import { getMacroSnapshot } from "../data/macro.js";
@@ -157,7 +158,11 @@ export async function runTechnicalAnalyst(
     }
   }
 
-  const dataContext = JSON.stringify({ timeframe, selectedSymbols: symbols, analyses, motorSignals });
+  // Tiingo är en separat historisk USD-referens; orderpriser kommer fortsatt från Bybit.
+  const historicalReference = [];
+  const historyDeadline = Date.now() + 12_000;
+  for (const { symbol } of analyses) historicalReference.push(await getHistoricalContext(symbol, { allowFetch: Date.now() < historyDeadline }));
+  const dataContext = JSON.stringify({ timeframe, selectedSymbols: symbols, analyses, motorSignals, historicalReference });
 
   const client = createLlmClient(apiKey);
   const response = await client.messages.create({
@@ -166,7 +171,9 @@ export async function runTechnicalAnalyst(
     system: `Du är en senior kvantitativ trader i samma stil som Citadel: kombinerar teknisk analys med statistiska modeller för att tajma in/ut.
 Din uppgift: leverera en fullständig teknisk analys för varje symbol — inte bara siffror, utan tolkning + actionable plan.
 
-REGEL: Analysera endast valda par och det verifierade analysintervallet ${timeframe}. Uppgifter för andra tidsramar saknas; hitta aldrig på dem.
+REGEL: historicalReference är beskrivande historik från Tiingos aggregerade USD-par, aldrig Bybits USDC-orderpris, backtest, modellträning eller en ny köpgräns. Ange när historik saknas eller serien är ofullständig. Historisk avkastning och drawdown är inte strategins resultat.
+
+REGEL: Analysera endast valda par och det verifierade analysintervallet ${timeframe}. Order- och signalintervallet är fortsatt detta intervall. Tiingos separata dagskontext är historisk USD-referens; andra intradagstidsramar saknar verifierat underlag och får aldrig hittas på.
 
 REGEL: Om entry inte är optimal NU, säg så. Föreslå att vänta 1-5 min för bättre price action istället för att tvinga en trade.
 
@@ -227,7 +234,7 @@ Svara BARA med JSON.`,
     if (parsed.topPick && !symbols.includes(parsed.topPick)) parsed.topPick = null;
     if (!parsed.analyses.length) throw new Error("Den tekniska agenten gav ingen analys för valda par");
     log.agent(`[Teknisk] Top pick: ${parsed.topPick ?? "ingen"}, ${parsed.analyses.length} symboler`);
-    return { role: "technical_analyst", ...parsed, rawText: text };
+    return { role: "technical_analyst", ...parsed, historicalReference, rawText: text };
   } catch {
     log.warn(`[Teknisk] Parsningsfel (stop_reason=${response.stop_reason}, ${text.length} tecken).`);
     throw new Error("Teknisk analys kunde inte verifieras; Hanna startas inte");
