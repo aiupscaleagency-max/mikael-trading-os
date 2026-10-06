@@ -8636,7 +8636,17 @@ document.addEventListener("DOMContentLoaded", boot);
 (function(){
   const box = document.getElementById("mcGrid"); if(!box || typeof LightweightCharts === "undefined") return;
   const PAIRS = [];
-  window.addEventListener("trading-market-catalog",()=>{PAIRS.splice(0,PAIRS.length,...(window.tradingMarketSymbols||[]).map(s=>s.replace(/USDC$/,"")));box.querySelectorAll(".mc-s").forEach(el=>{const chosen=el.value;el.innerHTML=[...new Set([...PAIRS,...(chosen?[chosen]:[])])].map(b=>`<option value="${b}">${b}/USDC${PAIRS.includes(b)?"":" · tidigare valt"}</option>`).join("");el.value=chosen;});});
+  let catalogGeneration=0,buildQueued=false;
+  function queueBuild(){
+    catalogGeneration++;
+    if(buildQueued)return;buildQueued=true;
+    Promise.resolve().then(()=>{buildQueued=false;build();});
+  }
+  function applyCatalog(){
+    const symbols=(window.tradingMarketSymbols||[]).filter(s=>typeof s==='string'&&/^[A-Z0-9]+USDC$/.test(s));
+    PAIRS.splice(0,PAIRS.length,...new Set(symbols.map(s=>s.slice(0,-4))));queueBuild();
+  }
+  window.addEventListener('trading-market-catalog',applyCatalog);
   const IVS = {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","4h":"240","1d":"D","1w":"W","1M":"M"};
   const URLS = ["wss://stream.bybit.eu/v5/public/spot"];
   const KEY = "trade-multichart-eu";
@@ -8651,6 +8661,8 @@ document.addEventListener("DOMContentLoaded", boot);
   const volColor = c => c.close >= c.open ? "rgba(16,185,129,.45)" : "rgba(239,68,68,.45)";
 
   function build(){
+    if(!PAIRS.length){if(ws){const old=ws;ws=null;try{old.close();}catch(_){}}clearInterval(ping);panes.forEach(p=>{p.generation++;try{p.chart.remove();}catch(_){}});panes=[];box.innerHTML="<p>Hämtar tillgängliga Bybit EU-par…</p>";return;}
+    const buildGeneration=catalogGeneration;
     panes.forEach(p => { try{ p.chart.remove(); }catch(_){} });
     panes = []; box.innerHTML = "";
     const n = COUNT[cfg.layout] || 2;
@@ -8658,8 +8670,8 @@ document.addEventListener("DOMContentLoaded", boot);
     document.querySelectorAll("#multiChart [data-mc]").forEach(b => b.classList.toggle("on", b.dataset.mc === cfg.layout));
     const h = n === 1 ? 520 : (cfg.layout === "2v" || n === 4) ? 320 : 400;
     for(let i = 0; i < n; i++){
-      const pc = cfg.panes[i] || (cfg.panes[i] = { b: PAIRS[i], iv: "1h" });
-      if(!PAIRS.includes(pc.b)) pc.b = PAIRS[i];
+      const pc = cfg.panes[i] || (cfg.panes[i] = { b: PAIRS[i % PAIRS.length], iv: "1h" });
+      if(!PAIRS.includes(pc.b)) pc.b = PAIRS[i % PAIRS.length];
       if(!IVS[pc.iv]) pc.iv = "1h";
       const el = document.createElement("div"); el.className = "mc-pane";
       el.innerHTML = `<div class="mc-head"><select class="mc-s">${PAIRS.map(x=>`<option value="${x}"${x===pc.b?" selected":""}>${x}/USDC</option>`).join("")}</select>`
@@ -8677,7 +8689,7 @@ document.addEventListener("DOMContentLoaded", boot);
       const vol = chart.addHistogramSeries({priceFormat:{type:"volume"},priceScaleId:"vol"});
       chart.priceScale("vol").applyOptions({scaleMargins:{top:0.8,bottom:0}});
       try{ new ResizeObserver(()=>{ if(cbox.clientWidth) chart.applyOptions({width:cbox.clientWidth, height:cbox.clientHeight}); }).observe(cbox); }catch(_){}
-      const pane = { el, chart, candles, vol, data:[], pc };
+      const pane = { el, chart, candles, vol, data:[], pc, buildGeneration };
       // Synkat hårkors: samma tid i alla diagram
       chart.subscribeCrosshairMove(param => {
         if(!cfg.xh || xhLock) return;
@@ -8699,7 +8711,7 @@ document.addEventListener("DOMContentLoaded", boot);
       el.addEventListener("click", e => { if(!e.target.closest("select")) activate(pane); });
       panes.push(pane); load(pane);
     }
-    resub();
+    save();resub();
   }
 
   // Aktivt diagram styr huvuddiagrammet, orderboken och Köp/Sälj
@@ -8718,7 +8730,7 @@ document.addEventListener("DOMContentLoaded", boot);
     const s = sym(pane.pc), iv = pane.pc.iv, want = s+"|"+iv; pane.key = want; pane.data = []; pane.candles.setData([]); pane.vol.setData([]); pane.el.querySelector(".mc-px").textContent = "Laddar…";
     try{
       const r = await fetch(`/api/bybit/klines?symbol=${s}&interval=${iv}&limit=300`); const d = await r.json();
-      if(pane.key !== want || pane.generation !== generation || !panes.includes(pane)) return;
+      if(pane.key !== want || pane.generation !== generation || pane.buildGeneration!==catalogGeneration || !panes.includes(pane)) return;
       if(!r.ok || !d.klines || !d.klines.length){ pane.el.querySelector(".mc-px").textContent = "EU-data saknas"; return; }
       pane.data = d.klines.map(c => ({...c}));
       pane.candles.setData(pane.data.map(c => ({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
@@ -8739,10 +8751,12 @@ document.addEventListener("DOMContentLoaded", boot);
     if(ws){ const old = ws; ws = null; try{ old.close(); }catch(_){} }
     clearInterval(ping);
     const args = [...new Set(panes.flatMap(p => [`kline.${IVS[p.pc.iv]}.${sym(p.pc)}`, `publicTrade.${sym(p.pc)}`]))];
+    if(!args.length)return;
     let me;
     try{ me = new WebSocket(URLS[wsIdx % URLS.length]); }catch(_){ return; }
     ws = me;
     me.onopen = () => {
+      if(ws!==me)return;
       for(let i = 0; i < args.length; i += 10) me.send(JSON.stringify({op:"subscribe", args: args.slice(i, i+10)}));
       ping = setInterval(() => { try{ me.send('{"op":"ping"}'); }catch(_){} }, 20000);
     };
@@ -8777,12 +8791,12 @@ document.addEventListener("DOMContentLoaded", boot);
     };
   }
 
-  document.querySelectorAll("#multiChart [data-mc]").forEach(b => b.addEventListener("click", () => { cfg.layout = b.dataset.mc; save(); build(); }));
+  document.querySelectorAll("#multiChart [data-mc]").forEach(b => b.addEventListener("click", () => { cfg.layout = b.dataset.mc; save(); queueBuild(); }));
   const syncEl = document.getElementById("mcSyncIv");
   if(syncEl){ syncEl.checked = !!cfg.sync; syncEl.addEventListener("change", () => { cfg.sync = syncEl.checked; save(); }); }
   const xhEl = document.getElementById("mcSyncXh");
   if(xhEl){ xhEl.checked = cfg.xh !== false; xhEl.addEventListener("change", () => { cfg.xh = xhEl.checked; save(); }); }
-  build();
+  applyCatalog();
 })();
 </script>
 <script>
@@ -8942,6 +8956,21 @@ document.addEventListener("DOMContentLoaded", boot);
 <style>
 .shared-trading{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0}.shared-trading h3{margin:0 0 8px}.shared-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.shared-toolbar select,.shared-toolbar input{width:auto;max-width:145px;padding:6px}.shared-grid{display:grid;gap:8px}.shared-row{border:1px solid var(--border);border-radius:7px;padding:10px;font-size:12px;line-height:1.6}.shared-row summary{cursor:pointer;color:var(--cyan)}.shared-row button{margin-top:6px}.shared-status{font-size:11px;color:var(--dim);overflow-wrap:anywhere}.shared-trading .positive{color:var(--green)}.shared-trading .negative{color:var(--red)}#shared-side-window{position:fixed;right:12px;bottom:12px;width:min(420px,calc(100vw - 24px));max-height:75vh;overflow:auto;z-index:700;background:var(--card);box-shadow:0 8px 30px #0008}#shared-side-window>summary{padding:10px;cursor:pointer;border:1px solid var(--cyan);border-radius:8px;color:var(--cyan)}#shared-trade-column{grid-column:1/-1}
 @media(min-width:1100px){#shared-trade-column{grid-column:auto;max-height:850px;overflow:auto}}@media(max-width:700px){.shared-toolbar select,.shared-toolbar input{max-width:125px}}
+/* Alla handelsblock har fasta platser; ingen implicit extrarad eller smal reservkolumn. */
+#page-trade #shared-trade-column{grid-area:positions;margin:0}
+#page-trade #analysis-selection{grid-area:selection;margin:0}
+#page-trade #session-card{grid-area:session;margin:0;min-width:0}
+#page-trade #historical-reference-status{grid-area:history;margin:0}
+#page-trade main{grid-template-areas:"info info info info info info" "chart chart chart chart side side" "positions positions positions positions positions positions" "pend pend pend ana ana ana" "selection selection selection session session session" "multi multi multi multi multi multi" "sig sig sig sig sig sig" "team team team team team team" "history history history history history history"}
+.shared-trading{font-size:14px;line-height:1.5}
+.shared-trading h3{font-size:16px}
+.shared-table-scroll{overflow-x:auto;max-width:100%}.shared-table{width:100%;border-collapse:collapse;font-size:14px}.shared-table th,.shared-table td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top;white-space:nowrap}.shared-table th{color:var(--label);font-size:12px}.shared-table td details{white-space:normal;min-width:150px}.shared-totals{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}.shared-totals span{background:var(--card2);padding:8px 12px;border-radius:5px}.shared-totals b{display:block;font-size:16px}
+.shared-trading .shared-row{font-size:14px}
+.shared-trading .shared-status{font-size:12px}
+.shared-trading .shared-toolbar select{max-width:220px;font-size:14px}
+#shared-trade-column .shared-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr))}
+@media(min-width:1700px){#page-trade main{grid-template-areas:"info info info" "chart book order" "positions positions positions" "pend pend ana" "selection selection session" "multi multi multi" "sig sig sig" "team team team" "history history history"}}
+@media(max-width:1279px){#page-trade main{grid-template-areas:"info" "chart" "side" "positions" "pend" "ana" "selection" "session" "multi" "sig" "team" "history"}}
 </style>
 <script>
 /* Samma lots, förslag och historik visas på Trade, Trades och i sidofönstret. */
@@ -8965,16 +8994,17 @@ document.addEventListener("DOMContentLoaded", boot);
     selectionPanel.innerHTML=`<h3>Par som nästa analys och session ska använda</h3><p>Endast markerade par körs. Diagramvalet ändrar inte analysurvalet.</p><div class="shared-toolbar">${symbols.map(symbol=>`<label><input type="checkbox" data-analysis-symbol="${esc(symbol)}"${selected.includes(symbol)?' checked':''}>${esc(symbol)}</label>`).join('')}</div><label>Analysens candleintervall <select id="analysis-selected-timeframe">${['1m','5m','15m','30m','1h','4h','1d'].map(tf=>`<option${tf===window.getAnalysisTimeframe()?' selected':''}>${tf}</option>`).join('')}</select></label><p id="analysis-selection-status">${selected.length} par valda.</p>`;
   }
   function host(id,parent){if(!parent)return;const el=document.createElement('section');el.id=id;el.className='shared-trading';parent.appendChild(el);hosts.push(el);return el;}
-  host('shared-trade-column',document.querySelector('#page-trade .right'));
+  host('shared-trade-column',document.querySelector('#page-trade main'));
   const sessionCard=document.getElementById('session-card');if(sessionCard)selectionPanel.after(sessionCard);
   const trades=document.querySelector('#page-trades .paper-card')||document.getElementById('page-trades');const tradeHost=host('shared-trades-page',trades?.parentElement);if(trades&&tradeHost)trades.parentElement.insertBefore(tradeHost,trades);
   const floating=document.createElement('details');floating.id='shared-side-window';floating.innerHTML='<summary>Trades och köpförslag · Visa mer</summary>';document.body.appendChild(floating);host('shared-floating-body',floating);
   function source(){return `<p class="shared-status">${esc(current.mode)} · ${esc(current.broker)} · revision ${esc(current.revision)} · server ${esc(time(current.serverNow))}${lastError?' · INAKTUELLT: '+esc(lastError):''}${current.completeness?.prices===false?' · Prisdata ofullständiga':''}${current.completeness?.positions===false?' · Innehav kunde inte verifieras fullständigt':''}</p>`;}
   function select(id,label,options,value){return `<label>${label}<select data-shared-filter="${id}">${options.map(([v,l])=>`<option value="${esc(v)}"${v===value?' selected':''}>${esc(l)}</option>`).join('')}</select></label>`;}
   function filter(row){const symbol=row.symbol||((row.coin||'')+'USDC');if(filters.symbol!=='all'&&symbol!==filters.symbol)return false;if(filters.status!=='all'&&row.status!==filters.status&&row.side!==filters.status)return false;const at=epoch(row.at||row.closedAt||row.openedAt||row.createdAt);if(filters.period==='custom'){const from=filters.from?Date.parse(filters.from+'T00:00:00'):0;const to=filters.to?Date.parse(filters.to+'T23:59:59'):Infinity;if(!Number.isFinite(at)||at<from||at>to)return false;}const duration={today:86400000,week:604800000,month:2592000000}[filters.period];if(duration&&(!Number.isFinite(at)||at<epoch(current.serverNow)-duration))return false;return true;}
-  function position(p){const net=p.unrealizedNet;return `<article class="shared-row"><b><button data-shared-chart="${esc(p.symbol)}">${esc(p.symbol)}</button> · ${esc(current.mode)}${p.status==='aggregate'?' · aggregerat innehav (lots saknas)':''}</b><div>Investerat ${money(p.costBasisRemaining)} · ingång ${money(p.entryPrice)} · aktuellt ${money(p.currentPrice)}</div><strong class="${net==null?'shared-status':net>=0?'positive':'negative'}">Orealiserat netto ${money(net)} · ${pct(p.unrealizedPct)}</strong><div>Stängning: <span data-shared-countdown="${p.exitAt==null?'':esc(epoch(p.exitAt))}">${p.exitAt==null?'sluttid saknas':'–'}</span> · ${esc(p.exitStatus||p.status||'öppen')}</div><details><summary>Visa mer</summary><div>Trade-ID ${esc(p.tradeId)} · öppnad ${esc(time(p.openedAt))} · återstår ${esc(p.remainingQty)} st</div><div>Mål ${money(p.tp)} · potentiellt netto ${money(p.potentialNet)} · ${pct(p.potentialPct)}</div><div>Stoppris ${money(p.sl)} · uppskattat netto ${money(p.stopNet)} · ${pct(p.stopPct)}</div>${p.lastError?'<p class="negative">'+esc(p.lastError)+'</p>':''}<p>${current.mode==='LIVE'?'LIVE-avgift och potential är uppskattade. ':''}Potential är ett scenario, ingen garanti.</p></details><button data-shared-sell="${esc(p.symbol)}" data-shared-trade="${esc(p.tradeId)}">Avsluta via godkännande</button></article>`;}
+  function position(p){const net=p.unrealizedNet;return `<tr><td><button data-shared-chart="${esc(p.symbol)}">${esc(p.symbol)}</button><div class="shared-status">${esc(current.mode)}${p.status==='aggregate'?' · aggregerat innehav':''}</div></td><td>${money(p.costBasisRemaining)}</td><td>${money(p.entryPrice)}</td><td>${money(p.currentPrice)}</td><td class="${net==null?'shared-status':net>=0?'positive':'negative'}">${money(net)}<div>${pct(p.unrealizedPct)}</div></td><td>${money(p.potentialNet)}<div>${pct(p.potentialPct)}</div></td><td><span data-shared-countdown="${p.exitAt==null?'':esc(epoch(p.exitAt))}">${p.exitAt==null?'Sluttid saknas':'–'}</span><div class="shared-status">${esc(p.exitStatus||p.status||'öppen')}</div></td><td><button data-shared-sell="${esc(p.symbol)}" data-shared-trade="${esc(p.tradeId)}">Stäng position</button><details><summary>Visa mer</summary><div>Öppnad ${esc(time(p.openedAt))} · antal ${esc(p.remainingQty)}</div><div>TP ${money(p.tp)} · SL ${money(p.sl)} · stoputfall ${money(p.stopNet)} / ${pct(p.stopPct)}</div>${p.lastError?'<p class="negative">'+esc(p.lastError)+'</p>':''}<p>Stängning kräver ditt godkännande. Potential är ett scenario, ingen garanti.</p></details></td></tr>`;}
   function order(o){return `<article class="shared-row"><b>${esc(o.symbol)} · ${esc(o.side)} · ${money(o.quoteUsd)}</b><div>${esc(o.status)} · giltig till ${esc(time(o.expiresAt))}</div><details><summary>Visa mer</summary><div>${esc(o.reason||o.reasoning||'Motivering saknas')}</div><div>Order-ID ${esc(o.id)} · källa ${esc(o.source)} · skapad ${esc(time(o.createdAt))}</div><div>TP ${money(o.takeProfit)} · SL ${money(o.stopLoss)}</div></details><p>${o.status==='pending'&&epoch(o.expiresAt)>epoch(current.serverNow)?'Förslaget är inte en genomförd trade. Granska och Godkänn i Väntande ordrar.':'Orderstatus: '+esc(o.status)+'. Denna arkivrad uppmanar inte till köp.'}</p></article>`;}
-  function history(x){return `<article class="shared-row"><b>${esc(x.symbol||x.coin)} · ${esc(x.side)} · ${esc(time(x.at))}</b><div>${x.side==='SELL'?'Realiserat netto '+money(x.pnl)+' · '+pct(x.pnlPct):'Verifierat köp · '+money(x.usd)}</div><details><summary>Visa mer</summary><div>ID ${esc(x.id||x.orderId||'saknas')} · pris ${money(x.price)} · avgift ${money(x.fee)}</div>${x.side==='SELL'&&x.pnl==null?'<div>Anskaffningspris saknas; netto kan inte beräknas.</div>':''}</details></article>`;}
+  function history(x){const sell=x.side==='SELL';return `<tr><td>${esc(time(x.at))}</td><td>${esc(x.symbol||x.coin)}</td><td class="${sell?'negative':'positive'}">${sell?'SÅLT':'KÖPT'}</td><td>${esc(x.qty)}</td><td>${money(x.price)}</td><td>${money(x.usd)}</td><td>${money(x.fee)}</td><td class="${x.pnl==null?'shared-status':x.pnl>=0?'positive':'negative'}">${sell?money(x.pnl)+' · '+pct(x.pnlPct):'–'}</td></tr>`;}
+  function table(headings,rows,empty){return '<div class="shared-table-scroll"><table class="shared-table"><thead><tr>'+headings.map(h=>'<th>'+h+'</th>').join('')+'</tr></thead><tbody>'+(rows||'<tr><td colspan="'+headings.length+'">'+empty+'</td></tr>')+'</tbody></table></div>';}
   function render(){
     if(!current){hosts.forEach(el=>el.innerHTML='<h3>Trades och köpförslag</h3><p>'+esc(lastError||'Hämtar gemensam handelsstatus…')+'</p>');return;}
     const available=current.account.status==='ready';const symbols=[...new Set([...(current.marketSymbols||[]),...(current.selectedSymbols||[]),...(current.positions||[]).map(p=>p.symbol)])];
@@ -8990,7 +9020,7 @@ document.addEventListener("DOMContentLoaded", boot);
     const olderProposal=Number.isFinite(analysisAt)&&activeProposals.some(o=>Number.isFinite(epoch(o.createdAt))&&epoch(o.createdAt)<analysisAt);
     const nextStepHtml='<section class="shared-row"><h4>Nästa steg · '+esc(current.mode)+'</h4><p>'+esc(nextStep)+'</p>'+(olderProposal?'<p class="shared-status">Befintligt förslag skapades före senaste analysen. Granska dess tid, motivering och giltighet separat.</p>':'')+'</section>';
     const custom=filters.period==='custom'?`<label>Från <input data-shared-filter="from" type="date" value="${esc(filters.from)}"></label><label>Till <input data-shared-filter="to" type="date" value="${esc(filters.to)}"></label>`:'';
-    const html=`<h3>Trades och köpförslag</h3>${source()}${nextStepHtml}${available?`<div>Kontovärde <b>${money(current.account.equity)}</b> · tillgängligt ${money(current.account.available)} · ${esc(current.sizing.percent)} % = ${money(current.sizing.amount)}</div>`:`<p class="negative">Saldo ej verifierat: ${esc(current.account.error||'kontot är inte kopplat')}. Detta är inte ett bekräftat nollsaldo.</p>`}<div class="shared-toolbar">${controls}${custom}</div><h4>Öppna trades (${positions.length})</h4><div class="shared-grid">${positions.slice(0,filters.count).map(position).join('')||'<p>Inga verifierade öppna trades i urvalet.</p>'}</div><h4>Köpförslag (${proposals.length})</h4>${proposals.slice(0,filters.count).map(order).join('')||'<p>Inga giltiga köpförslag i detta filter.</p>'}<details><summary>Visa mer · övriga ordrar och orderarkiv (${otherOrders.length})</summary>${otherOrders.slice(0,filters.count).map(order).join('')||'<p>Inga övriga ordrar i urvalet.</p>'}</details><h4>Historik (${hist.length})</h4>${available?hist.slice(0,filters.count).map(history).join('')||'<p>Inga verifierade fills i perioden.</p>':'<p>Historik kan inte verifieras just nu.</p>'}<button data-shared-more>Visa mer (${filters.count} → ${filters.count+10})</button><p class="shared-status">Historikperiod filtrerar datum. Innehavstid och analysintervall väljs separat. Nedräkning använder serverklockan.</p>`;
+    const html=`<h3>Trades och köpförslag</h3>${source()}${current.results?.totals?`<div class="shared-totals"><span>Hela kontot · alla perioder</span><span>Realiserat netto <b>${money(current.results.totals.realized)}</b></span><span>Orealiserat netto <b>${money(current.results.totals.unrealized)}</b></span><span>Idag <b>${money(current.results.totals.today)}</b></span><span>Vinster / förluster <b>${esc(current.results.totals.wins)} / ${esc(current.results.totals.losses)}</b></span></div>`:''}${nextStepHtml}${available?`<div>Kontovärde <b>${money(current.account.equity)}</b> · tillgängligt ${money(current.account.available)} · ${esc(current.sizing.percent)} % = ${money(current.sizing.amount)}</div>`:`<p class="negative">Saldo ej verifierat: ${esc(current.account.error||'kontot är inte kopplat')}. Detta är inte ett bekräftat nollsaldo.</p>`}<div class="shared-toolbar">${controls}${custom}</div><h4>Öppna trades (${positions.length})</h4>${table(['Par','Investerat','Ingång','Aktuellt pris','Netto nu','Potentiellt netto','Tid kvar','Hantera'],positions.slice(0,filters.count).map(position).join(''),'Inga verifierade öppna positioner i urvalet.')}<h4>Köpförslag (${proposals.length})</h4>${proposals.slice(0,filters.count).map(order).join('')||'<p>Inga giltiga köpförslag i detta filter.</p>'}<details><summary>Visa mer · övriga ordrar och orderarkiv (${otherOrders.length})</summary>${otherOrders.slice(0,filters.count).map(order).join('')||'<p>Inga övriga ordrar i urvalet.</p>'}</details><h4>Historik (${hist.length})</h4>${available?table(['Tid','Par','Affär','Antal','Pris','Belopp','Avgift','Realiserat netto'],hist.slice(0,filters.count).map(history).join(''),'Inga verifierade affärer i perioden.'):'<p>Historik kan inte verifieras just nu.</p>'}<button data-shared-more>Visa mer (${filters.count} → ${filters.count+10})</button><p class="shared-status">Okänt netto betyder att anskaffningspris eller prisunderlag saknas. ${current.mode==='LIVE'?'LIVE-avgifter och potentiellt netto är uppskattningar. ':''}Historikperiod filtrerar datum. Innehavstid och analysintervall väljs separat. Nedräkning använder serverklockan.</p>`;
     hosts.forEach(el=>el.innerHTML=html);renderSelection();countdown();renderLegacyTargets();
   }
   function renderLegacyTargets(){
