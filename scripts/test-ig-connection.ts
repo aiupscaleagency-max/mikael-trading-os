@@ -23,7 +23,7 @@ const mock=(async(url:string,options:RequestInit)=>{
     assert.equal(options.method,"POST");assert.equal(headers.Version,"2");
     const body=JSON.parse(options.body as string);assert.equal(body.identifier,credentials[environment].identifier);assert.equal(body.password,credentials[environment].password);
     await Promise.resolve();
-    return new Response(JSON.stringify({accountId:`full-${environment}-account`}),{status:200,headers:{CST:`secret-${environment}-cst`,"X-SECURITY-TOKEN":`secret-${environment}-xst`}});
+    return new Response(JSON.stringify({currentAccountId:`full-${environment}-account`}),{status:200,headers:{CST:`secret-${environment}-cst`,"X-SECURITY-TOKEN":`secret-${environment}-xst`}});
   }
   assert.equal(options.method,"GET");assert.equal(headers.CST,`secret-${environment}-cst`);assert.equal(headers["X-SECURITY-TOKEN"],`secret-${environment}-xst`);
   if(url.endsWith("/accounts"))return new Response(JSON.stringify({accounts:[{accountId:`full-${environment}-account`,accountType:"CFD",currency:"SEK",balance:{balance:environment==="demo"?100000:250,available:null,profitLoss:0}}]}));
