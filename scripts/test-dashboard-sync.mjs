@@ -26,3 +26,38 @@ console.log('PASS: missing-key, no-cache, partial history coverage and escaped e
 assert.match(historyContext.window.render({configured:true,years:3,symbols:[{symbol:'BTCUSDC',status:'ready',count:1000,cached:false}]}),/Fullständig historik/);
 assert(!historyContext.window.render({configured:true,years:3,symbols:[{symbol:'BTCUSDC',status:'ready',count:1000,cached:false}]}).includes('Verifierad cache'));
 console.log('PASS: complete history label does not claim cached data');
+
+// Kör själva flerdiagram-IIFE:n: ingen katalog får ge undefinedUSDC-anrop.
+const multiScript=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(m=>m[1]).find(s=>s.includes('const box = document.getElementById("mcGrid")'));
+class MockElement{
+  constructor(){this.style={};this.classList={toggle(){}};this.nodes={};this.children=[];this.clientWidth=400;}
+  set innerHTML(value){this.html=value;if(!value.includes('mc-head'))this.children=[];}
+  get innerHTML(){return this.html||'';}
+  querySelector(key){if(!this.nodes[key]){const node=new MockElement();node.value=key==='.mc-s'?(this.html?.match(/option value="([^"]+)" selected/)?.[1]||this.html?.match(/option value="([^"]+)"/)?.[1]):'1h';this.nodes[key]=node;}return this.nodes[key];}
+  appendChild(el){this.children.push(el);}addEventListener(){}
+}
+const mockBox=new MockElement(),requests=[],sockets=[],events={},writes=[];
+const series=()=>({setData(){},update(){}});
+class MockSocket{constructor(url){this.url=url;sockets.push(this);}send(value){this.sent=value;}close(){this.onclose?.();}}
+const multiContext={window:{tradingMarketSymbols:[],addEventListener:(name,fn)=>events[name]=fn},document:{getElementById:id=>id==='mcGrid'?mockBox:null,querySelectorAll:()=>[],createElement:()=>new MockElement()},localStorage:{getItem:()=>JSON.stringify({layout:'2',panes:[{b:'SOL',iv:'5m'},{b:'BTC',iv:'1h'}]}),setItem:(key,value)=>writes.push(JSON.parse(value))},LightweightCharts:{createChart:()=>({remove(){},addCandlestickSeries:series,addHistogramSeries:series,priceScale:()=>({applyOptions(){}}),subscribeCrosshairMove(){}})},WebSocket:MockSocket,setInterval:()=>1,clearInterval(){},setTimeout(){},fetch:async url=>{requests.push(url);return {ok:true,json:async()=>({klines:[]})};},console};
+vm.createContext(multiContext);vm.runInContext(multiScript,multiContext);
+await new Promise(resolve=>setImmediate(resolve));assert.equal(requests.length,0);assert.equal(sockets.length,0);assert.equal(writes.length,0);
+multiContext.window.tradingMarketSymbols=['BTCUSDC','SOLUSDC'];events['trading-market-catalog']();events['trading-market-catalog']();await new Promise(resolve=>setImmediate(resolve));
+assert.equal(requests.length,2);assert(requests[0].includes('SOLUSDC&interval=5m'));assert(requests[1].includes('BTCUSDC'));assert.equal(sockets.length,1);sockets[0].onopen();assert.match(sockets[0].sent,/SOLUSDC/);assert.equal(mockBox.children[0].querySelector('.mc-s').value,'SOL');
+multiContext.window.tradingMarketSymbols=['ETHUSDC'];events['trading-market-catalog']();await new Promise(resolve=>setImmediate(resolve));assert(requests.slice(-2).every(url=>url.includes('ETHUSDC')));assert.equal(mockBox.children[0].querySelector('.mc-s').value,'ETH');assert.equal(writes.at(-1).panes[0].iv,'5m');assert(!requests.some(url=>url.includes('undefined')));assert(writes.every(cfg=>cfg.panes.every(p=>p.b)));
+console.log('PASS: multichart waits for catalogue, coalesces events, preserves valid saved selections and intervals, rebuilds requests/dropdowns/subscriptions');
+
+// Kör verkliga tabellrenderare: kostnader och netto får inte ersättas med noll.
+const sharedScript=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(m=>m[1]).find(s=>s.includes('function position(p)'));
+const sharedCtx={current:{mode:'TEST'}};vm.createContext(sharedCtx);
+const helperPart=sharedScript.slice(sharedScript.indexOf('  const esc='),sharedScript.indexOf('  const filters='));
+const rowsPart=sharedScript.slice(sharedScript.indexOf('  function position(p)'),sharedScript.indexOf('  function render(){'));
+vm.runInContext(helperPart+'\n'+rowsPart,sharedCtx);
+const row=vm.runInContext('position({symbol:"BTCUSDC",tradeId:"lot1",costBasisRemaining:10000,entryPrice:100,currentPrice:101,unrealizedNet:80,unrealizedPct:.8,potentialNet:150,potentialPct:1.5,exitAt:1700000000000,remainingQty:100})',sharedCtx);
+assert(row.startsWith('<tr>'));assert(row.includes('data-shared-chart="BTCUSDC"'));assert(row.includes('data-shared-trade="lot1"'));assert(row.includes('data-shared-countdown="1700000000000"'));assert(row.includes('0.80 %'));assert(row.includes('1.50 %'));
+const unknown=vm.runInContext('position({symbol:"<img>",costBasisRemaining:null,entryPrice:null,unrealizedNet:null,potentialNet:null})',sharedCtx);assert(unknown.includes('okänt'));assert(!unknown.includes('<img>'));
+assert(vm.runInContext('history({coin:"BTC",side:"BUY",at:0,qty:2,price:100,usd:200,fee:.5})',sharedCtx).includes('KÖPT'));
+assert(vm.runInContext('history({coin:"BTC",side:"SELL",at:0,pnl:null,pnlPct:null})',sharedCtx).includes('SÅLT'));
+assert(html.includes('table([\'Par\',\'Investerat\''));assert(html.includes("host('shared-trade-column',document.querySelector('#page-trade main'))"));
+for(const area of ['positions','selection','session','history'])assert(html.includes('grid-area:'+area));
+console.log('PASS: real position/history rows, chart/lot-close/countdown actions, net/potential percentages, unknown cost and escaping; explicit grid areas');
