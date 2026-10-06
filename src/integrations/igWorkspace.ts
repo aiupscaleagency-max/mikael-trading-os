@@ -185,7 +185,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
           head.analyses=head.analyses.filter((a:any)=>selected.epics.includes(a.epic)&&["BUY","SELL","HOLD"].includes(a.action));if(head.analyses.length!==selected.epics.length || new Set(head.analyses.map((a:any)=>a.epic)).size!==selected.epics.length)throw Error("Analys saknas för något valt IG-instrument");
           head.analyses=head.analyses.map((a:any)=>{
             const observed=technical.observations.find((o:any)=>o.epic===a.epic),quote=observed?.market.quote;
-            if(!quote || quote.marketStatus!=="TRADEABLE" || quote.delayTime!==0 || now()-quote.receivedAt>60000)return {...a,action:"HOLD",reason:"IG-marknaden eller en färsk ofördröjd kvot kunde inte verifieras",entryLevel:null,stopLevel:null,targetLevel:null};
+            if(!quote || quote.marketStatus!=="TRADEABLE" || quote.delayTime!==0 || num(quote.receivedAt)===null || quote.receivedAt<0 || now()-quote.receivedAt<0 || now()-quote.receivedAt>60000)return {...a,action:"HOLD",reason:"IG-marknaden eller en färsk ofördröjd kvot kunde inte verifieras",entryLevel:null,stopLevel:null,targetLevel:null};
             return a;
           });return head;
         }

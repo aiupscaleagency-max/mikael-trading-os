@@ -92,3 +92,37 @@ const shared=await sharedConnection.testWithSharedLogin("demo","live");assert.eq
 assert.equal(sharedConnection.getStatus().environments.live.status,"configured");
 assert.ok(!JSON.stringify(shared).includes("fixture-general-password"));
 console.log("PASS: explicit shared IG login uses target API key and hostname, memory-only identifier/password, no automatic cross-environment fallback");
+
+const jevOffline=createIgWorkspace({...deps,directory:path.join(directory,"jev-offline"),jev:async()=>{throw Error("provider unavailable");}});
+await jevOffline.setSelection("live",selected);assert.equal((await jevOffline.analyze("live")).jev.available,false);
+console.log("PASS: JEV exception preserves existing two-agent routing and selected IG scope");
+
+// Marknadsstatus och mottagningstid verifieras även när modellen föreslår BUY.
+for (const scenario of ["closed","delayed","aged","fresh","nan","future"] as const) {
+  const fixtureClock=now;
+  const quoteCheck=createIgWorkspace({...deps,directory:path.join(directory,`quote-${scenario}`),
+    call:async(...args:any[])=>{
+      const value=await call(...args as [string,string,string,string,any,any]);
+      if(args[1].startsWith("markets/")) {value.snapshot.marketStatus=scenario==="closed"?"CLOSED":"TRADEABLE";value.snapshot.delayTime=scenario==="delayed"?1:0;}
+      return value;
+    },
+    llm:async(role,context)=>{
+      const output=await llm(role,context);
+      if(role==="head") {
+        if(scenario==="aged")now+=60001;
+        if(scenario==="nan")context.technical.observations[0].market.quote.receivedAt=NaN;
+        if(scenario==="future")context.technical.observations[0].market.quote.receivedAt=now+1000;
+      }
+      return output;
+    }
+  });
+  try {
+    await quoteCheck.setSelection("live",selected);
+    const decision=await quoteCheck.analyze("live");
+    const view=await quoteCheck.workspace("live");
+    assert.equal(decision.head.analyses[0].action,scenario==="fresh"?"BUY":"HOLD",`Fel kvotbeslut i ${scenario}`);
+    assert.equal(view.pendingOrders.length,scenario==="fresh"?1:0,`Osäker kvot får inte skapa orderförslag i ${scenario}`);
+    if(scenario!=="fresh") {assert.equal(decision.head.analyses[0].entryLevel,null);assert.equal(decision.head.analyses[0].stopLevel,null);assert.equal(decision.head.analyses[0].targetLevel,null);}
+  } finally {now=fixtureClock;}
+}
+console.log("PASS: CLOSED/delayed/60001ms-old/NaN/future quotes force HOLD with no proposals; fresh TRADEABLE quote retains BUY proposal");
