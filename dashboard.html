@@ -133,12 +133,10 @@ aside.sidebar .live-dot{width:6px;height:6px;border-radius:50%;background:var(--
 main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-width:0}
 /* Trade-sidan: signaler överst i full bredd, sedan båda diagrammen i samma
    kolumn och lika breda, snabb-trade till höger. Luft mot kanterna. */
-/* Trade-sidan i numrerade sektioner över hela bredden, 6 lika kolumner:
-   1 Marknaden (4) + 2 Handla (2) · 3 Analys (3) + 4 Ordrar (3) · 5 Signaler (6)
-   · 6 AI-teamet (6). Ett par i taget; flera par finns på Alla par. */
+/* Den sammanhängande arbetsytans responsiva grid definieras tillsammans med dess flikar längst ned. */
 /* Trade-sidan: max 2100px bred och centrerad, så sektionerna inte blir för stora på breda skärmar */
 #page-trade{max-width:2100px;margin-left:auto !important;margin-right:auto !important}
-#page-trade main{grid-template-columns:repeat(6,minmax(0,1fr));grid-template-areas:"info info info info info info" "chart chart chart chart side side" "ana ana ana pend pend pend" "multi multi multi multi multi multi" "sig sig sig sig sig sig" "team team team team team team";gap:16px;padding:16px 24px 24px;align-items:start}
+
 #page-trade #tradeInfo{grid-area:info;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
 #page-trade .ti-box{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.55;color:#c9d1d9}
 #page-trade .ti-h{font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:4px}
@@ -151,12 +149,12 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-widt
   #page-trade #chart{height:auto;flex:1 1 0;min-height:440px;overflow:hidden}
   #page-trade #chart > div{position:absolute !important;inset:0}
 }
-@media (min-width:1700px){#page-trade .right{align-self:stretch}#page-trade .right > .card{height:100%;box-sizing:border-box}}
+@media (min-width:1700px){#page-trade .right > .card{height:100%;box-sizing:border-box}}
 #page-trade #ai-team-card{grid-area:team;min-width:0;margin:0}
-#page-trade .right{grid-area:side;min-width:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+
 #page-trade .right > .card{margin:0}
-#page-trade #bybitTradeCard{grid-column:1;grid-row:2}
-#page-trade #orderCard{grid-column:2;grid-row:2}
+
+
 /* Snabb-trade är ihopslagen med Lägg order (en enda köp/sälj-ruta) */
 #page-trade .right > .bet-panel{display:none !important}
 #page-trade #signalPanel{grid-area:sig;min-width:0}
@@ -210,11 +208,11 @@ body.sec-max-open{overflow:hidden}
 /* Breda skärmar: som Bybits handelssida. Diagram (stort) | orderbok | köp/sälj
    på samma rad, väntande ordrar direkt under diagrammet. */
 @media (min-width:1700px){
-  #page-trade main{grid-template-columns:minmax(0,62fr) minmax(0,19fr) minmax(0,19fr);grid-template-areas:"info info info" "chart book order" "pend pend ana" "multi multi multi" "sig sig sig" "team team team"}
-  #page-trade .right{display:contents}
+
+
   #page-trade .right > .sec-ctl{display:none !important}
-  #page-trade #bybitTradeCard{grid-area:book;align-self:stretch;height:auto !important;margin:0;min-width:0}
-  #page-trade #orderCard{grid-area:order;align-self:stretch;height:auto !important;margin:0;min-width:0}
+
+
   #page-trade #tradeInfo{grid-template-columns:repeat(4,minmax(0,1fr))}
   #page-trade #analysisBox,#page-trade #pendingBox{align-self:stretch}
 }
@@ -608,17 +606,13 @@ section.page.active{display:block;animation:pageFadeIn .15s ease}
 .status-line.err{color:var(--red)}
 .status-line.warn{color:var(--yellow)}
 
-@media (min-width:1280px) and (max-width:1699px){
-  #page-trade main{grid-template-areas:"info info info info info info" "chart chart chart chart side side" "ana ana ana pend pend pend" "multi multi multi multi multi multi" "sig sig sig sig sig sig" "team team team team team team"}
-  #page-trade .right{grid-template-columns:minmax(0,1fr)}
-  #page-trade #bybitTradeCard,#page-trade #orderCard{grid-column:1;grid-row:auto}
-}
+
 /* ═══ RESPONSIVE — desktop / tablet / mobile ═══ */
 @media (max-width:1279px){
   main{grid-template-columns:1fr}
   #chart{height:360px}
   .right{order:-1}
-  #page-trade main{grid-template-columns:minmax(0,1fr);grid-template-areas:"info" "chart" "side" "ana" "pend" "multi" "sig" "team"}
+
   #page-trade #tradeInfo{grid-template-columns:repeat(2,minmax(0,1fr))}
   #chartBox{height:360px}
 }
@@ -905,7 +899,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 
   /* Layout — allt stackat */
   main{grid-template-columns:1fr;gap:8px;padding:8px}
-  #page-trade main{gap:10px;padding:10px 12px}
+
   #page-trade .page-header{margin:10px 12px 0}
   #chart{height:240px}
   #chartBox{height:240px}
@@ -1778,9 +1772,9 @@ body.app-state-onboard .fc-panel{display:none !important}
     document.addEventListener("keydown", function (e) { if (e.key === "Escape" && modal.classList.contains("open")) closeModal(); });
     function money(n) { return "$" + Number(n).toFixed(2); }
     function outcome(o) {
-      var entry = Number(o.limitPrice || o.refPrice),fee=Number(window.tradeSizing?.feeRate), stake = Number(o.quoteUsd) || (Number(o.quantity) * entry*(1+fee));
+      var entry = Number(o.limitPrice || o.refPrice),fee=window.tradeSizing?.feeRate!=null?Number(window.tradeSizing.feeRate):NaN, stake = Number(o.quoteUsd) || (Number(o.quantity) * entry*(1+fee));
       if (!(entry > 0) || !(stake > 0) || o.side !== "BUY") return "";
-      if(!Number.isFinite(fee))return "<p>Netto kan inte uppskattas: avgift saknas.</p>";
+      if(!Number.isFinite(fee)||fee<0)return "<p>Netto kan inte uppskattas: avgift saknas.</p>";
       var f = function (px) { return window.TradingUI.scenarioPct(entry,Number(px),fee); };
       var parts = [];
       [['Målscenario',o.takeProfit],['Stoppscenario',o.stopLoss]].forEach(function(item){if(!(Number(item[1])>0))return;var p=f(item[1]);parts.push('<span style="color:'+(p>=0?'#3fb950':'#f85149')+'">'+item[0]+': '+(p>=0?'+':'')+p.toFixed(2)+' % · '+money(stake*p/100)+' netto · uppskattat slutvärde '+money(stake*(1+p/100))+'</span>');});
@@ -2463,7 +2457,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         <button type="button" data-tf="1800">30 minuter</button>
       </div>
       <input type="hidden" id="ot-tf-custom" value="" />
-      <select id="ot-tf-unit" hidden><option value="60">min</option></select>
+      <select id="ot-tf-unit" hidden><option value="60">min</option><option value="1">sek</option></select>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
         <button type="button" id="ot-buy" class="bet-call" style="margin:0">▲ Köp spot</button>
         <button type="button" id="ot-sell" class="bet-put" style="margin:0">▼ Sälj innehav</button>
@@ -8224,7 +8218,7 @@ document.addEventListener("DOMContentLoaded", boot);
   }
   // %-reglaget: andel av tillgängligt saldo (högst gränsen per order) → Belopp.
   // Under knapparna: vad ordern skulle ge vid TP / förlora vid SL, med avgift.
-  const configuredFee = () => Number(window.tradeSizing?.feeRate);
+  const configuredFee = () => {const value=window.tradeSizing?.feeRate;return value!=null&&Number.isFinite(Number(value))&&Number(value)>=0?Number(value):NaN;};
   let otAvail = null, otCap = null;
   async function loadAvail(){
     try{
@@ -8262,16 +8256,17 @@ document.addEventListener("DOMContentLoaded", boot);
     if(!(amt > 0) || !(px > 0)){ el.innerHTML = "Skriv ett belopp för att se möjlig vinst och förlust."; return; }
     const FEE = configuredFee();
     if(!Number.isFinite(FEE)){el.textContent="Avgiftsdata saknas. Nettovinst kan inte beräknas ännu.";return;}
-    const qty = amt / px, buyFee = amt * FEE, fee = buyFee + qty * px * FEE;
+    const qty = amt / (1+FEE) / px, buyFee = qty * px * FEE, fee = buyFee + qty * px * FEE;
     const feeLabel = window.tradeSizing?.mode === "LIVE" ? "uppskattad avgift" : "beräknad avgift";
     const base = baseOf(STATE.symbol);
-    // Som på Forex: "Satsa $1 → +86 % → du får $1,86" (avgift för köp + sälj räknad)
-    const row = (lbl, p, col) => { const pnl = qty * p * (1-FEE) - amt - buyFee; const pct = pnl / (amt + buyFee) * 100; return `<div>${lbl} ${fmt(p, px >= 100 ? 2 : 4)}: <b style="color:${pnl >= 0 ? "#3fb950" : "#f85149"}">${pct >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")} % → du får $${(amt + pnl).toFixed(2)}</b> (${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)})</div>`; };
-    let html = `<div>≈ ${fmt(qty, qty < 1 ? 6 : 3)} ${base} för $${amt.toFixed(2)} · ${feeLabel} ≈ $${fee.toFixed(2)} (köp + sälj)</div>`;
-    const tp = parseFloat($("ot-tp").value), sl = parseFloat($("ot-sl").value);
-    if($("ot-tpsl").checked && tp > 0) html += row("Vinst vid TP", tp);
-    if($("ot-tpsl").checked && sl > 0) html += row("Förlust vid SL", sl);
-    html += `<div style="color:var(--dim)">Prisrörelse ±1 % före avgift: ±$${(amt * 0.01).toFixed(2)} · nettot påverkas av köp- och säljavgift</div>`;
+    // Beloppet omfattar köpavgiften, precis som TEST-kontots verifierade köpbudget.
+    const row = (label,price) => {const percent=window.TradingUI.scenarioPct(px,price,FEE),net=amt*percent/100;return `<div class="order-outcome"><span>${label}</span><strong style="color:${net>=0?'#3fb950':'#f85149'}">${net>=0?'+':''}$${net.toFixed(2)} netto · ${percent>=0?'+':''}${percent.toFixed(2)} %</strong><small>Uppskattat slutvärde $${(amt+net).toFixed(2)} vid pris ${fmt(price,px>=100?2:4)}</small></div>`;};
+    let html=`<b>Köpscenario · köp och senare försäljning</b><div>Investerat $${amt.toFixed(2)} inklusive köpavgift · ≈ ${fmt(qty,qty<1?6:3)} ${base}</div><div>${feeLabel} vid oförändrat pris ≈ $${fee.toFixed(2)} för köp + sälj</div>`;
+    const tp=parseFloat($("ot-tp").value),sl=parseFloat($("ot-sl").value),hasTargets=$("ot-tpsl").checked;
+    if(hasTargets&&tp>0)html+=row('Möjligt netto vid målpris (TP)',tp);
+    if(hasTargets&&sl>0)html+=row('Möjligt netto vid stoppris (SL)',sl);
+    if(!hasTargets||!(tp>0)||!(sl>0))html+='<details><summary>Visa exempel · prisrörelse ±1 %</summary>'+row('Scenario: priset stiger 1 %',px*1.01)+row('Scenario: priset faller 1 %',px*.99)+'</details>';
+    html+='<div class="shared-status">Vid SÄLJ kräver realiserat netto den befintliga lotens anskaffningspris. Se positionens verifierade netto i Öppna. Scenarierna ovan avser ett nytt KÖP. Scenarier efter avgifter. Ingen fast utbetalning eller garanterad vinst. Slippage kan påverka utfallet.</div>';
     el.innerHTML = html;
   }
   ["ot-amt","ot-price","ot-tp","ot-sl"].forEach(id=>$(id).addEventListener("input", renderEst));
@@ -8954,14 +8949,14 @@ document.addEventListener("DOMContentLoaded", boot);
 </script>
 
 <style>
-.shared-trading{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0}.shared-trading h3{margin:0 0 8px}.shared-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.shared-toolbar select,.shared-toolbar input{width:auto;max-width:145px;padding:6px}.shared-grid{display:grid;gap:8px}.shared-row{border:1px solid var(--border);border-radius:7px;padding:10px;font-size:12px;line-height:1.6}.shared-row summary{cursor:pointer;color:var(--cyan)}.shared-row button{margin-top:6px}.shared-status{font-size:11px;color:var(--dim);overflow-wrap:anywhere}.shared-trading .positive{color:var(--green)}.shared-trading .negative{color:var(--red)}#shared-side-window{position:fixed;right:12px;bottom:12px;width:min(420px,calc(100vw - 24px));max-height:75vh;overflow:auto;z-index:700;background:var(--card);box-shadow:0 8px 30px #0008}#shared-side-window>summary{padding:10px;cursor:pointer;border:1px solid var(--cyan);border-radius:8px;color:var(--cyan)}#shared-trade-column{grid-column:1/-1}
-@media(min-width:1100px){#shared-trade-column{grid-column:auto;max-height:850px;overflow:auto}}@media(max-width:700px){.shared-toolbar select,.shared-toolbar input{max-width:125px}}
+.shared-trading{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0}.shared-trading h3{margin:0 0 8px}.shared-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.shared-toolbar select,.shared-toolbar input{width:auto;max-width:145px;padding:6px}.shared-grid{display:grid;gap:8px}.shared-row{border:1px solid var(--border);border-radius:7px;padding:10px;font-size:12px;line-height:1.6}.shared-row summary{cursor:pointer;color:var(--cyan)}.shared-row button{margin-top:6px}.shared-status{font-size:11px;color:var(--dim);overflow-wrap:anywhere}.shared-trading .positive{color:var(--green)}.shared-trading .negative{color:var(--red)}#shared-side-window{position:fixed;right:12px;bottom:12px;width:min(420px,calc(100vw - 24px));max-height:75vh;overflow:auto;z-index:700;background:var(--card);box-shadow:0 8px 30px #0008}#shared-side-window>summary{padding:10px;cursor:pointer;border:1px solid var(--cyan);border-radius:8px;color:var(--cyan)}
+@media(max-width:700px){.shared-toolbar select,.shared-toolbar input{max-width:125px}}
 /* Alla handelsblock har fasta platser; ingen implicit extrarad eller smal reservkolumn. */
 #page-trade #shared-trade-column{grid-area:positions;margin:0}
-#page-trade #analysis-selection{grid-area:selection;margin:0}
-#page-trade #session-card{grid-area:session;margin:0;min-width:0}
+#page-trade #analysis-selection{margin:0}
+#page-trade #session-card{margin:0;min-width:0}
 #page-trade #historical-reference-status{grid-area:history;margin:0}
-#page-trade main{grid-template-areas:"info info info info info info" "chart chart chart chart side side" "positions positions positions positions positions positions" "pend pend pend ana ana ana" "selection selection selection session session session" "multi multi multi multi multi multi" "sig sig sig sig sig sig" "team team team team team team" "history history history history history history"}
+
 .shared-trading{font-size:14px;line-height:1.5}
 .shared-trading h3{font-size:16px}
 .shared-table-scroll{overflow-x:auto;max-width:100%}.shared-table{width:100%;border-collapse:collapse;font-size:14px}.shared-table th,.shared-table td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top;white-space:nowrap}.shared-table th{color:var(--label);font-size:12px}.shared-table td details{white-space:normal;min-width:150px}.shared-totals{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}.shared-totals span{background:var(--card2);padding:8px 12px;border-radius:5px}.shared-totals b{display:block;font-size:16px}
@@ -8969,8 +8964,8 @@ document.addEventListener("DOMContentLoaded", boot);
 .shared-trading .shared-status{font-size:12px}
 .shared-trading .shared-toolbar select{max-width:220px;font-size:14px}
 #shared-trade-column .shared-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr))}
-@media(min-width:1700px){#page-trade main{grid-template-areas:"info info info" "chart book order" "positions positions positions" "pend pend ana" "selection selection session" "multi multi multi" "sig sig sig" "team team team" "history history history"}}
-@media(max-width:1279px){#page-trade main{grid-template-areas:"info" "chart" "side" "positions" "pend" "ana" "selection" "session" "multi" "sig" "team" "history"}}
+
+
 </style>
 <script>
 /* Samma lots, förslag och historik visas på Trade, Trades och i sidofönstret. */
@@ -8980,8 +8975,8 @@ document.addEventListener("DOMContentLoaded", boot);
   const pct=v=>v==null?'okänt':Number(v).toFixed(2)+' %';
   const time=v=>v==null?'okänd':new Date(v).toLocaleString('sv-SE');
   const epoch=v=>typeof v==='number'?v:Date.parse(v);
-  const filters={period:'all',symbol:'all',status:'all',count:5,from:'',to:''};let current=null,offset=0,busy=false,lastError='',seen=new Set(),notificationAccounts=new Set();
-  const hosts=[];
+  let activeTradeTab='open';const filters={period:'all',symbol:'all',status:'all',count:5,from:'',to:''};let current=null,offset=0,busy=false,lastError='',seen=new Set(),notificationAccounts=new Set();
+  const hosts=[];const approvalNode=document.getElementById("pendingBox"),analysisNode=document.getElementById("analysisBox");
   const selectionPanel=document.createElement('section');selectionPanel.className='shared-trading';selectionPanel.id='analysis-selection';const chart=document.getElementById('mainChartCard');if(chart)chart.parentElement.insertBefore(selectionPanel,chart);
   let catalogKey='';
   function syncMarketCatalog(symbols){
@@ -8989,9 +8984,12 @@ document.addEventListener("DOMContentLoaded", boot);
     ['sym-select','bet-sym'].forEach(id=>{const el=document.getElementById(id);if(!el)return;const selected=el.value;el.innerHTML=[...new Set([...symbols,...(selected?[selected]:[])])].map(symbol=>`<option value="${esc(symbol)}">${esc(symbol)}${symbols.includes(symbol)?"":" · tidigare valt"}</option>`).join('');el.value=selected;});
     window.dispatchEvent(new Event('trading-market-catalog'));
   }
+  function applyAnalysisSearch(){const query=(window.analysisSymbolSearch||'').toUpperCase();selectionPanel.querySelectorAll('[data-analysis-symbol]').forEach(el=>{el.closest('label').hidden=!el.dataset.analysisSymbol.includes(query);});}
+  document.addEventListener('input',event=>{if(event.target.id==='analysis-symbol-search'){window.analysisSymbolSearch=event.target.value;document.getElementById('analysis-symbol-options').open=true;applyAnalysisSearch();}});
   function renderSelection(){
-    if(!current)return;const symbols=[...new Set([...(current.selectedSymbols||[]),...(current.marketSymbols||[])])];let selected=[];try{selected=window.getAnalysisSymbols();}catch(_){}
-    selectionPanel.innerHTML=`<h3>Par som nästa analys och session ska använda</h3><p>Endast markerade par körs. Diagramvalet ändrar inte analysurvalet.</p><div class="shared-toolbar">${symbols.map(symbol=>`<label><input type="checkbox" data-analysis-symbol="${esc(symbol)}"${selected.includes(symbol)?' checked':''}>${esc(symbol)}</label>`).join('')}</div><label>Analysens candleintervall <select id="analysis-selected-timeframe">${['1m','5m','15m','30m','1h','4h','1d'].map(tf=>`<option${tf===window.getAnalysisTimeframe()?' selected':''}>${tf}</option>`).join('')}</select></label><p id="analysis-selection-status">${selected.length} par valda.</p>`;
+    if(!current||selectionPanel.contains(document.activeElement))return;const symbols=[...new Set([...(current.selectedSymbols||[]),...(current.marketSymbols||[])])];let selected=[];try{selected=window.getAnalysisSymbols();}catch(_){}
+    const optionsOpen=document.getElementById("analysis-symbol-options")?.open;
+    selectionPanel.innerHTML=`<h3>Analysurval <span class="shared-status">${selected.length} par</span></h3><label>Sök analyspar <input type="search" id="analysis-symbol-search" placeholder="BTC, SOL, ETH…" value="${esc(window.analysisSymbolSearch||'')}"></label><p>Endast markerade par analyseras. Diagramvalet är separat.</p><details id="analysis-symbol-options"><summary>Välj analyspar · Visa mer</summary><div class="shared-toolbar">${symbols.map(symbol=>`<label><input type="checkbox" data-analysis-symbol="${esc(symbol)}"${selected.includes(symbol)?' checked':''}>${esc(symbol)}</label>`).join('')}</div><label>Analysens candleintervall <select id="analysis-selected-timeframe">${['1m','5m','15m','30m','1h','4h','1d'].map(tf=>`<option${tf===window.getAnalysisTimeframe()?' selected':''}>${tf}</option>`).join('')}</select></label><p id="analysis-selection-status">${selected.length} par valda.</p></details>`;if(optionsOpen)document.getElementById("analysis-symbol-options").open=true;applyAnalysisSearch();
   }
   function host(id,parent){if(!parent)return;const el=document.createElement('section');el.id=id;el.className='shared-trading';parent.appendChild(el);hosts.push(el);return el;}
   host('shared-trade-column',document.querySelector('#page-trade main'));
@@ -9002,10 +9000,12 @@ document.addEventListener("DOMContentLoaded", boot);
   function select(id,label,options,value){return `<label>${label}<select data-shared-filter="${id}">${options.map(([v,l])=>`<option value="${esc(v)}"${v===value?' selected':''}>${esc(l)}</option>`).join('')}</select></label>`;}
   function filter(row){const symbol=row.symbol||((row.coin||'')+'USDC');if(filters.symbol!=='all'&&symbol!==filters.symbol)return false;if(filters.status!=='all'&&row.status!==filters.status&&row.side!==filters.status)return false;const at=epoch(row.at||row.closedAt||row.openedAt||row.createdAt);if(filters.period==='custom'){const from=filters.from?Date.parse(filters.from+'T00:00:00'):0;const to=filters.to?Date.parse(filters.to+'T23:59:59'):Infinity;if(!Number.isFinite(at)||at<from||at>to)return false;}const duration={today:86400000,week:604800000,month:2592000000}[filters.period];if(duration&&(!Number.isFinite(at)||at<epoch(current.serverNow)-duration))return false;return true;}
   function position(p){const net=p.unrealizedNet;return `<tr><td><button data-shared-chart="${esc(p.symbol)}">${esc(p.symbol)}</button><div class="shared-status">${esc(current.mode)}${p.status==='aggregate'?' · aggregerat innehav':''}</div></td><td>${money(p.costBasisRemaining)}</td><td>${money(p.entryPrice)}</td><td>${money(p.currentPrice)}</td><td class="${net==null?'shared-status':net>=0?'positive':'negative'}">${money(net)}<div>${pct(p.unrealizedPct)}</div></td><td>${money(p.potentialNet)}<div>${pct(p.potentialPct)}</div></td><td><span data-shared-countdown="${p.exitAt==null?'':esc(epoch(p.exitAt))}">${p.exitAt==null?'Sluttid saknas':'–'}</span><div class="shared-status">${esc(p.exitStatus||p.status||'öppen')}</div></td><td><button data-shared-sell="${esc(p.symbol)}" data-shared-trade="${esc(p.tradeId)}">Stäng position</button><details><summary>Visa mer</summary><div>Öppnad ${esc(time(p.openedAt))} · antal ${esc(p.remainingQty)}</div><div>TP ${money(p.tp)} · SL ${money(p.sl)} · stoputfall ${money(p.stopNet)} / ${pct(p.stopPct)}</div>${p.lastError?'<p class="negative">'+esc(p.lastError)+'</p>':''}<p>Stängning kräver ditt godkännande. Potential är ett scenario, ingen garanti.</p></details></td></tr>`;}
-  function order(o){return `<article class="shared-row"><b>${esc(o.symbol)} · ${esc(o.side)} · ${money(o.quoteUsd)}</b><div>${esc(o.status)} · giltig till ${esc(time(o.expiresAt))}</div><details><summary>Visa mer</summary><div>${esc(o.reason||o.reasoning||'Motivering saknas')}</div><div>Order-ID ${esc(o.id)} · källa ${esc(o.source)} · skapad ${esc(time(o.createdAt))}</div><div>TP ${money(o.takeProfit)} · SL ${money(o.stopLoss)}</div></details><p>${o.status==='pending'&&epoch(o.expiresAt)>epoch(current.serverNow)?'Förslaget är inte en genomförd trade. Granska och Godkänn i Väntande ordrar.':'Orderstatus: '+esc(o.status)+'. Denna arkivrad uppmanar inte till köp.'}</p></article>`;}
+  function positionCard(p){return `<article class="shared-row compact-position"><div class="position-card-head"><button data-shared-chart="${esc(p.symbol)}">${esc(p.symbol)}</button><span>${esc(current.mode)}</span></div><div class="position-card-metrics"><span>Investerat<b>${money(p.costBasisRemaining)}</b></span><span>Netto nu<b class="${p.unrealizedNet==null?'shared-status':p.unrealizedNet>=0?'positive':'negative'}">${money(p.unrealizedNet)} · ${pct(p.unrealizedPct)}</b></span><span>Tid kvar<b data-shared-countdown="${p.exitAt==null?'':esc(epoch(p.exitAt))}">${p.exitAt==null?'Sluttid saknas':'–'}</b></span></div><div>Potentiellt netto ${money(p.potentialNet)} · ${pct(p.potentialPct)}</div><button data-shared-sell="${esc(p.symbol)}" data-shared-trade="${esc(p.tradeId)}">Stäng position</button><details><summary>Visa mer · priser och risk</summary><p>Ingång ${money(p.entryPrice)} · aktuellt ${money(p.currentPrice)} · ${esc(p.remainingQty)} st</p><p>TP ${money(p.tp)} · SL ${money(p.sl)} · stopscenario ${money(p.stopNet)} / ${pct(p.stopPct)}</p><p>${esc(p.exitStatus||p.status||'öppen')} · ${esc(p.lastError||'')}</p><p>Potential är ett scenario. Stängning kräver godkännande.${p.status==='aggregate'?' LIVE-innehavet är aggregerat; avslut gäller hela innehavet.':''}</p></details></article>`;}
+  function order(o){return `<article class="shared-row"><b>${esc(o.symbol)} · ${esc(o.side)} · ${money(o.quoteUsd)}</b><div>${esc(o.status)} · giltig till ${esc(time(o.expiresAt))}</div><button data-fill-signal="${esc(o.id)}"${o.side!=='BUY'||o.status!=='pending'||epoch(o.expiresAt)<=epoch(current.serverNow)?' disabled':''}>Använd signal i orderpanelen</button><details><summary>Visa mer</summary><div>${esc(o.reason||o.reasoning||'Motivering saknas')}</div><div>Order-ID ${esc(o.id)} · källa ${esc(o.source)} · skapad ${esc(time(o.createdAt))}</div><div>TP ${money(o.takeProfit)} · SL ${money(o.stopLoss)}</div></details><p>${o.status==='pending'&&epoch(o.expiresAt)>epoch(current.serverNow)?'Förslaget är inte en genomförd trade. Granska och Godkänn i Väntande ordrar.':'Orderstatus: '+esc(o.status)+'. Denna arkivrad uppmanar inte till köp.'}</p></article>`;}
   function history(x){const sell=x.side==='SELL';return `<tr><td>${esc(time(x.at))}</td><td>${esc(x.symbol||x.coin)}</td><td class="${sell?'negative':'positive'}">${sell?'SÅLT':'KÖPT'}</td><td>${esc(x.qty)}</td><td>${money(x.price)}</td><td>${money(x.usd)}</td><td>${money(x.fee)}</td><td class="${x.pnl==null?'shared-status':x.pnl>=0?'positive':'negative'}">${sell?money(x.pnl)+' · '+pct(x.pnlPct):'–'}</td></tr>`;}
   function table(headings,rows,empty){return '<div class="shared-table-scroll"><table class="shared-table"><thead><tr>'+headings.map(h=>'<th>'+h+'</th>').join('')+'</tr></thead><tbody>'+(rows||'<tr><td colspan="'+headings.length+'">'+empty+'</td></tr>')+'</tbody></table></div>';}
   function render(){
+    for(const node of [approvalNode,analysisNode]){if(node){node.hidden=true;document.getElementById("page-trade").appendChild(node);}}
     if(!current){hosts.forEach(el=>el.innerHTML='<h3>Trades och köpförslag</h3><p>'+esc(lastError||'Hämtar gemensam handelsstatus…')+'</p>');return;}
     const available=current.account.status==='ready';const symbols=[...new Set([...(current.marketSymbols||[]),...(current.selectedSymbols||[]),...(current.positions||[]).map(p=>p.symbol)])];
     const controls=select('period','Historikperiod',[['all','Alla tider'],['today','Senaste 24 timmar'],['week','Senaste 7 dagar'],['month','Senaste 30 dagar'],['custom','Eget datumintervall']],filters.period)+select('symbol','Par',[['all','Alla par'],...symbols.map(s=>[s,s])],filters.symbol)+select('status','Status',[['all','Alla'],['BUY','Köp'],['SELL','Sälj'],['open','Öppen'],['pending','Väntande'],['filled','Fylld'],['partially_filled','Delvis fylld'],['submitted','Skickad'],['failed','Misslyckad'],['rejected','Avvisad'],['expired','Utgången']],filters.status);
@@ -9020,8 +9020,11 @@ document.addEventListener("DOMContentLoaded", boot);
     const olderProposal=Number.isFinite(analysisAt)&&activeProposals.some(o=>Number.isFinite(epoch(o.createdAt))&&epoch(o.createdAt)<analysisAt);
     const nextStepHtml='<section class="shared-row"><h4>Nästa steg · '+esc(current.mode)+'</h4><p>'+esc(nextStep)+'</p>'+(olderProposal?'<p class="shared-status">Befintligt förslag skapades före senaste analysen. Granska dess tid, motivering och giltighet separat.</p>':'')+'</section>';
     const custom=filters.period==='custom'?`<label>Från <input data-shared-filter="from" type="date" value="${esc(filters.from)}"></label><label>Till <input data-shared-filter="to" type="date" value="${esc(filters.to)}"></label>`:'';
-    const html=`<h3>Trades och köpförslag</h3>${source()}${current.results?.totals?`<div class="shared-totals"><span>Hela kontot · alla perioder</span><span>Realiserat netto <b>${money(current.results.totals.realized)}</b></span><span>Orealiserat netto <b>${money(current.results.totals.unrealized)}</b></span><span>Idag <b>${money(current.results.totals.today)}</b></span><span>Vinster / förluster <b>${esc(current.results.totals.wins)} / ${esc(current.results.totals.losses)}</b></span></div>`:''}${nextStepHtml}${available?`<div>Kontovärde <b>${money(current.account.equity)}</b> · tillgängligt ${money(current.account.available)} · ${esc(current.sizing.percent)} % = ${money(current.sizing.amount)}</div>`:`<p class="negative">Saldo ej verifierat: ${esc(current.account.error||'kontot är inte kopplat')}. Detta är inte ett bekräftat nollsaldo.</p>`}<div class="shared-toolbar">${controls}${custom}</div><h4>Öppna trades (${positions.length})</h4>${table(['Par','Investerat','Ingång','Aktuellt pris','Netto nu','Potentiellt netto','Tid kvar','Hantera'],positions.slice(0,filters.count).map(position).join(''),'Inga verifierade öppna positioner i urvalet.')}<h4>Köpförslag (${proposals.length})</h4>${proposals.slice(0,filters.count).map(order).join('')||'<p>Inga giltiga köpförslag i detta filter.</p>'}<details><summary>Visa mer · övriga ordrar och orderarkiv (${otherOrders.length})</summary>${otherOrders.slice(0,filters.count).map(order).join('')||'<p>Inga övriga ordrar i urvalet.</p>'}</details><h4>Historik (${hist.length})</h4>${available?table(['Tid','Par','Affär','Antal','Pris','Belopp','Avgift','Realiserat netto'],hist.slice(0,filters.count).map(history).join(''),'Inga verifierade affärer i perioden.'):'<p>Historik kan inte verifieras just nu.</p>'}<button data-shared-more>Visa mer (${filters.count} → ${filters.count+10})</button><p class="shared-status">Okänt netto betyder att anskaffningspris eller prisunderlag saknas. ${current.mode==='LIVE'?'LIVE-avgifter och potentiellt netto är uppskattningar. ':''}Historikperiod filtrerar datum. Innehavstid och analysintervall väljs separat. Nedräkning använder serverklockan.</p>`;
-    hosts.forEach(el=>el.innerHTML=html);renderSelection();countdown();renderLegacyTargets();
+    const tabs=[['open','Öppna',positions.length],['closed','Stängda',hist.filter(x=>x.side==='SELL').length],['pending','Väntande',orders.filter(o=>o.status==='pending').length],['signals','Agentsignaler',proposals.length]];
+    const tabBar='<div class="trade-tabs" role="tablist" aria-label="Trades och agentsignaler">'+tabs.map(([key,label,count])=>`<button role="tab" aria-selected="${activeTradeTab===key}" data-trade-tab="${key}">${label} <span>${count}</span></button>`).join('')+'</div>';
+    const panels=`<section data-trade-panel="open"${activeTradeTab==='open'?'':' hidden'}><h4>Öppna affärer</h4>${table(['Par','Investerat','Ingång','Aktuellt pris','Netto nu','Potentiellt netto','Tid kvar','Hantera'],positions.slice(0,filters.count).map(position).join(''),'Inga verifierade öppna positioner i urvalet.')}</section><section data-trade-panel="closed"${activeTradeTab==='closed'?'':' hidden'}><h4>Stängda affärer · verifierade säljfills</h4>${available?table(['Tid','Par','Affär','Antal','Pris','Belopp','Avgift','Realiserat netto'],hist.filter(x=>x.side==='SELL').slice(0,filters.count).map(history).join(''),'Inga verifierade stängda affärer i perioden.'):'<p>Historik kan inte verifieras just nu.</p>'}</section><section data-trade-panel="pending"${activeTradeTab==='pending'?'':' hidden'}><h4>Väntande orderförslag</h4><p>Granska belopp, konto och giltighet innan Godkänn. Ett förslag är ingen fill.</p><div data-pending-mount></div><details><summary>Visa mer · orderarkiv (${otherOrders.length})</summary>${otherOrders.filter(o=>o.status!=='pending').slice(0,filters.count).map(order).join('')||'<p>Inga arkiverade ordrar i urvalet.</p>'}</details></section><section data-trade-panel="signals"${activeTradeTab==='signals'?'':' hidden'}>${nextStepHtml}<h4>Giltiga köpförslag</h4><button data-trade-tab="pending">Granska väntande förslag</button>${proposals.slice(0,filters.count).map(order).join('')||'<p>Inga giltiga köpförslag.</p>'}<div data-analysis-mount></div></section>`;
+    const html=`<h3>Affärer och agentsignaler · ${esc(current.mode)}</h3>${available?`<div class="trade-account-line">Kontovärde <b>${money(current.account.equity)}</b> · ledigt ${money(current.account.available)} · ${esc(current.sizing.percent)} % = ${money(current.sizing.amount)}</div>`:`<p class="negative">Saldo ej verifierat: ${esc(current.account.error||'kontot är inte kopplat')}. Detta är inte ett bekräftat nollsaldo.</p>`}${tabBar}${panels}<details class="trade-advanced"><summary>Visa mer · filter, kontots resultat och datakälla</summary>${source()}${current.results?.totals?`<div class="shared-totals"><span>Realiserat netto <b>${money(current.results.totals.realized)}</b></span><span>Orealiserat netto <b>${money(current.results.totals.unrealized)}</b></span><span>Idag <b>${money(current.results.totals.today)}</b></span></div>`:''}<div class="shared-toolbar">${controls}${custom}</div><details><summary>Alla verifierade köp- och säljfills (${hist.length})</summary>${available?table(['Tid','Par','Affär','Antal','Pris','Belopp','Avgift','Realiserat netto'],hist.slice(0,filters.count).map(history).join(''),'Inga verifierade fills i urvalet.'):'Historik ej verifierad'}</details><p>Okänt netto betyder att underlag saknas. Potential är ett scenario; LIVE-avgifter är uppskattade. Periodfiltret är separat från candleintervall och innehavstid.</p></details><button data-shared-more>Visa fler (${filters.count} → ${filters.count+10})</button>`;
+    hosts.forEach(el=>el.innerHTML=html);const primary=document.getElementById('shared-trade-column');const openPanel=primary.querySelector('[data-trade-panel="open"]');if(openPanel)openPanel.innerHTML='<h4>Öppna affärer</h4>'+positions.slice(0,filters.count).map(positionCard).join('')+(positions.length?'':'<p>Inga verifierade öppna affärer.</p>');primary.querySelector('[data-pending-mount]')?.appendChild(approvalNode);primary.querySelector('[data-analysis-mount]')?.appendChild(analysisNode);if(approvalNode)approvalNode.hidden=false;if(analysisNode)analysisNode.hidden=false;hosts.filter(el=>el!==primary).forEach(el=>{el.querySelector('[data-pending-mount]').innerHTML='<button data-open-trade-tab="pending">Öppna godkännande på Trade</button>';el.querySelector('[data-analysis-mount]').innerHTML='<button data-open-trade-tab="signals">Se hela analysen på Trade</button>';});renderSelection();countdown();renderLegacyTargets();
   }
   function renderLegacyTargets(){
     const total=current.totals||{},ready=current.account.status==='ready';
@@ -9033,6 +9036,23 @@ document.addEventListener("DOMContentLoaded", boot);
   }
   async function refresh(force=false){if(busy)return;busy=true;const broker=window.TradingUI.broker();try{const d=await window.TradingUI.state(broker,force);if(broker!==window.TradingUI.broker())return;current=d;syncMarketCatalog(d.marketSymbols||[]);STATE.agentRuntime=d.agents;STATE.analysisSession=d.session;STATE.sharedSelectedSymbols=d.selectedSymbols;renderAgents();offset=epoch(d.serverNow)-Date.now();lastError='';render();const notifyNew=notificationAccounts.has(broker);notificationAccounts.add(broker);(d.pendingOrders||[]).filter(o=>o.side==='BUY'&&o.status==='pending'&&epoch(o.expiresAt)>epoch(d.serverNow)).forEach(o=>{if(!seen.has(o.id)){seen.add(o.id);if(notifyNew&&typeof pushInAppAlert==='function')pushInAppAlert(`Nytt köpförslag: ${o.symbol} · ${d.mode}. Granska förslaget; ingen trade är lagd ännu.`,6000);}});}catch(e){lastError=e.message;render();}finally{busy=false;}}
   function countdown(){document.querySelectorAll('[data-shared-countdown]').forEach(el=>{const end=Number(el.dataset.sharedCountdown);if(!end)return;const sec=Math.max(0,Math.ceil((end-Date.now()-offset)/1000));el.textContent=sec?Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'):'Tid ute · inväntar verifierad säljfill';});}
+  function fillSignal(id){
+    const signal=current?.pendingOrders?.find(o=>o.id===id&&o.side==='BUY'&&o.status==='pending'&&epoch(o.expiresAt)>epoch(current.serverNow));if(!signal)return;
+    const selector=document.getElementById('sym-select');if(!Array.from(selector.options).some(option=>option.value===signal.symbol)){const option=document.createElement('option');option.value=option.textContent=signal.symbol;selector.appendChild(option);}selector.value=signal.symbol;selector.dispatchEvent(new Event('change'));
+    const amount=document.getElementById('ot-amt');if(signal.quoteUsd!=null){amount.value=signal.quoteUsd;amount.dataset.customAmount='true';amount.dispatchEvent(new Event('input'));}
+    document.querySelector('.ot-type[data-ot="'+(signal.orderType==='LIMIT'?'LIMIT':'MARKET')+'"]')?.click();
+    const price=document.getElementById('ot-price');price.value=signal.limitPrice??signal.refPrice??'';
+    const tp=document.getElementById('ot-tp'),sl=document.getElementById('ot-sl');tp.value=signal.takeProfit??'';sl.value=signal.stopLoss??'';
+    const targets=document.getElementById('ot-tpsl');targets.checked=signal.takeProfit!=null||signal.stopLoss!=null;targets.dispatchEvent(new Event('change'));price.dispatchEvent(new Event('input'));
+    const customTime=document.getElementById('ot-tf-custom'),timeUnit=document.getElementById('ot-tf-unit');
+    customTime.value='';customTime.dispatchEvent(new Event('input'));
+    if(Number.isFinite(Number(signal.horizonSec))&&Number(signal.horizonSec)>0){
+      const preset=document.querySelector('#ot-tf [data-tf="'+signal.horizonSec+'"]');
+      if(preset)preset.click();else{timeUnit.value='1';customTime.value=signal.horizonSec;customTime.dispatchEvent(new Event('input'));}
+    }
+    document.getElementById('ot-note').textContent='Signalens underlag är ifyllt. Ingen order har lagts eller godkänts. Granska konto, belopp och priser.'+(signal.horizonSec>0?'':' Signalens innehavstid är ej verifierad; orderpanelens tid är ditt eget val.');
+    switchPage('trade');document.getElementById('orderCard').scrollIntoView({behavior:'smooth'});
+  }
   async function sell(symbol,tradeId){if(!current||current.account.status!=='ready')return;if(!confirm(current.mode==='LIVE'?`Skapa försäljning av hela ${symbol}-innehavet i LIVE? Enskilda lots saknas. Ordern väntar på Godkänn.`:`Skapa avslut av trade ${tradeId} i TEST? Ordern väntar på Godkänn.`))return;try{const r=await fetch('/api/pending-orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol,side:'SELL',...(current.mode==='LIVE'?{sellAll:true}:{tradeId,quantity:current.positions.find(p=>p.tradeId===tradeId)?.remainingQty}),broker:current.broker,orderType:'MARKET',source:'trade-kolumn',reason:'Manuellt avslut av vald trade'})});const d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'Orderförslaget kunde inte skapas');window.TradingUI.invalidate();await refresh(true);}catch(e){alert(e.message);}}
   document.addEventListener('change',e=>{
     if(e.target.hasAttribute('data-analysis-symbol')||e.target.id==='analysis-selected-timeframe'){
@@ -9040,7 +9060,7 @@ document.addEventListener("DOMContentLoaded", boot);
       window.TradingUI.select(selected,tf).then(()=>refresh(true)).catch(err=>{document.getElementById('analysis-selection-status').textContent=err.message;});return;
     }
     const field=e.target.dataset?.sharedFilter;if(field){filters[field]=e.target.value;filters.count=5;render();}});
-  document.addEventListener('click',e=>{const target=e.target.closest('[data-shared-more],[data-shared-chart],[data-shared-sell]');if(!target)return;if(target.hasAttribute('data-shared-more')){filters.count+=10;render();}else if(target.dataset.sharedSell)sell(target.dataset.sharedSell,target.dataset.sharedTrade);else{const symbol=target.dataset.sharedChart;const selector=document.getElementById('sym-select');if(!Array.from(selector.options).some(o=>o.value===symbol)){const option=document.createElement('option');option.value=option.textContent=symbol;selector.appendChild(option);}selector.value=symbol;selector.dispatchEvent(new Event('change'));if(typeof switchPage==='function')switchPage('trade');}});
+  document.addEventListener('click',e=>{const signal=e.target.closest('[data-fill-signal]');if(signal){fillSignal(signal.dataset.fillSignal);return;}const navigation=e.target.closest('[data-open-trade-tab]');if(navigation){activeTradeTab=navigation.dataset.openTradeTab;switchPage('trade');render();document.getElementById('shared-trade-column').scrollIntoView({behavior:'smooth'});return;}const tab=e.target.closest('[data-trade-tab]');if(tab){activeTradeTab=tab.dataset.tradeTab;render();return;}const target=e.target.closest('[data-shared-more],[data-shared-chart],[data-shared-sell]');if(!target)return;if(target.hasAttribute('data-shared-more')){filters.count+=10;render();}else if(target.dataset.sharedSell)sell(target.dataset.sharedSell,target.dataset.sharedTrade);else{const symbol=target.dataset.sharedChart;const selector=document.getElementById('sym-select');if(!Array.from(selector.options).some(o=>o.value===symbol)){const option=document.createElement('option');option.value=option.textContent=symbol;selector.appendChild(option);}selector.value=symbol;selector.dispatchEvent(new Event('change'));if(typeof switchPage==='function')switchPage('trade');}});
   document.getElementById('broker-select')?.addEventListener('change',()=>{current=null;lastError='';render();const live=window.TradingUI.broker()==='bybit';const mode=live?'LIVE · riktiga pengar':'TEST · låtsaspengar';document.getElementById('ti-mode').textContent=mode+' · Bybit EU · kräver Godkänn';document.getElementById('ot-venue').textContent='Bybit EU · '+(live?'LIVE':'TEST');document.getElementById('ot-note').textContent='Orderförslag för '+mode+'. Kräver Godkänn.';window.TradingUI.resetSelection();window.TradingUI.invalidate();refresh(true);});
   renderTradesPage=()=>{renderSession();if(current)renderLegacyTargets();};renderLifetimeStats=()=>{};renderAuditTrail=()=>{};evalPositions=()=>{};
   const obsoleteResults=document.getElementById("resultsBox");if(obsoleteResults)obsoleteResults.hidden=true;
@@ -9079,6 +9099,58 @@ document.addEventListener("DOMContentLoaded", boot);
   async function load(){if(loading||document.hidden)return;loading=true;try{const response=await fetch('/api/history-status');const data=await response.json();if(!response.ok)throw Error(data.error||'Historikstatus kunde inte hämtas');panel.innerHTML=renderHistory(data);}catch(error){panel.innerHTML='<h3>Historikreferens · Tiingo</h3><p>Historikstatus ej verifierad: '+esc(error.message)+'. Bybits ordinarie analys kan fortsätta.</p>';}finally{loading=false;}}
   panel.innerHTML='<h3>Historikreferens · Tiingo</h3><p>Hämtar status för historikreferensen…</p>';
   load();setInterval(load,60000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)load();});
+})();
+</script>
+
+<style>
+/* Sammanhängande handelsyta: instrument, diagram, order och trades utan dubblerade gridregler. */
+#page-trade main{display:grid;grid-template-columns:minmax(0,1fr) 260px 380px;grid-template-areas:"controls controls controls" "chart side positions" "advanced advanced advanced";gap:12px;padding:12px 20px;align-items:start}
+#page-trade .right{grid-area:side;display:block;min-width:0;order:initial}
+#page-trade #orderCard{margin:0;padding:12px;min-width:0;height:auto!important}
+#page-trade #shared-trade-column{max-height:760px;overflow:auto;padding:12px;align-self:stretch}
+#page-trade #mainChartCard{min-width:0;min-height:600px}
+#page-trade #chart{min-height:480px}
+#trade-workspace-controls{grid-area:controls;display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
+#trade-workspace-controls #analysis-selection{flex:1;min-width:220px;padding:10px}
+#trade-workspace-controls #analysis-selection h3{margin:0 0 6px}
+#trade-session-disclosure{min-width:250px;max-width:680px;flex:1;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px}
+#trade-session-disclosure>summary{cursor:pointer;font-weight:800;color:var(--cyan);padding:6px}
+#trade-session-disclosure #session-card{border:0;background:transparent;padding:10px 0;margin:0}
+#trade-session-disclosure .sess-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+#trade-session-disclosure input,#trade-session-disclosure select{width:100%;box-sizing:border-box}
+#trade-session-top{padding:10px 14px;background:var(--blue);color:#fff;border-radius:6px;font-weight:800;white-space:nowrap}
+#trade-workspace-advanced{grid-area:advanced;border:1px solid var(--border);border-radius:8px;padding:12px;min-width:0}
+#trade-workspace-advanced>summary{cursor:pointer;font-weight:700;color:var(--cyan)}
+#trade-workspace-advanced[open]>.workspace-extra{margin-top:12px}
+#trade-workspace-advanced #bybitTradeCard{max-width:440px;margin:12px 0;grid-area:auto}
+.trade-tabs{display:flex;gap:4px;margin:12px 0;overflow-x:auto;border-bottom:1px solid var(--border);padding-bottom:6px}
+.trade-tabs button{font-size:12px;padding:8px 7px;white-space:nowrap;background:var(--card2);color:var(--label);border:1px solid var(--border);border-radius:5px}
+.trade-tabs button[aria-selected=true]{color:var(--cyan);border-color:var(--cyan)}
+.trade-tabs span{font-size:10px;color:var(--dim)}
+[data-trade-panel][hidden]{display:none!important}
+.trade-advanced{margin-top:12px;font-size:12px}
+#shared-trade-column .shared-table{font-size:12px}
+#shared-trade-column .shared-table td,#shared-trade-column .shared-table th{padding:7px}
+#shared-trade-column #pendingBox,#shared-trade-column #analysisBox{padding:8px!important;border:0!important;background:transparent!important;grid-area:auto}
+#shared-trade-column [data-sec]::before{display:none}
+#shared-trade-column .sec-ctl{display:none}
+#shared-trade-column .shared-row{font-size:12px}.compact-position{margin:8px 0}.position-card-head{display:flex;justify-content:space-between;align-items:center}.position-card-metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}.position-card-metrics span:last-child{grid-column:1/-1}.position-card-metrics b{display:block;overflow-wrap:anywhere}.position-card-metrics span{color:var(--dim)}.position-card-metrics b{color:var(--text)}#orderCard input,#orderCard select{font-size:15px}#orderCard label{font-size:12px!important}
+#trade-instrument-search{max-width:150px}.order-outcome{padding:8px 0;border-top:1px solid var(--border)}.order-outcome span,.order-outcome strong,.order-outcome small{display:block}.order-outcome strong{font-size:15px}.order-outcome small{color:var(--dim)}
+@media(min-width:1700px){#page-trade main{grid-template-columns:minmax(0,1fr) 280px 460px}#page-trade #mainChartCard{min-height:680px}#page-trade #chart{min-height:560px}}
+@media(max-width:1279px) and (min-width:900px){#page-trade main{grid-template-columns:minmax(0,1fr) 260px;grid-template-areas:"controls controls" "chart side" "positions positions" "advanced advanced"}#page-trade #shared-trade-column{max-height:none}}
+@media(max-width:899px){#page-trade main{grid-template-columns:minmax(0,1fr);grid-template-areas:"controls" "chart" "side" "positions" "advanced";padding:10px;gap:10px}#page-trade #mainChartCard{min-height:360px}#page-trade #chart{min-height:300px}#page-trade #shared-trade-column{max-height:none}#trade-workspace-controls{display:block}#trade-session-disclosure{max-width:none;min-width:0;margin-top:10px}#trade-session-disclosure .sess-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#trade-workspace-controls #analysis-selection{min-width:0}.trade-tabs{flex-wrap:wrap}#trade-session-top{font-size:11px;padding:8px}#page-trade{max-width:100%;overflow-x:clip}}
+</style>
+<script>
+(function(){
+  const page=document.getElementById('page-trade'),main=page?.querySelector('main');if(!main)return;
+  const controls=document.createElement('section');controls.id='trade-workspace-controls';main.prepend(controls);
+  const selection=document.getElementById('analysis-selection');if(selection)controls.appendChild(selection);
+  const session=document.createElement('details');session.id='trade-session-disclosure';session.innerHTML='<summary>▶ Starta agentsession · inställningar</summary>';const sessionCard=document.getElementById('session-card');if(sessionCard)session.appendChild(sessionCard);controls.appendChild(session);
+  const start=document.createElement('button');start.id='trade-session-top';start.type='button';start.textContent='▶ Starta agentsession';start.onclick=()=>{if(typeof switchPage==='function')switchPage('trade');session.open=true;session.scrollIntoView({behavior:'smooth',block:'start'});document.getElementById('as-duration')?.focus();};document.getElementById('run-btn')?.before(start);
+  const advanced=document.createElement('details');advanced.id='trade-workspace-advanced';advanced.innerHTML='<summary>Visa mer · orderbok, flerdiagram, bevakning, team och historikreferens</summary>';main.appendChild(advanced);
+  ['tradeInfo','bybitTradeCard','multiChart','signalPanel','ai-team-card','historical-reference-status','moversBox'].forEach(id=>{const el=document.getElementById(id);if(el){el.classList.add('workspace-extra');advanced.appendChild(el);}});
+  advanced.addEventListener('toggle',()=>{if(advanced.open)window.dispatchEvent(new Event('resize'));});
+  const selector=document.getElementById('sym-select');if(selector){const search=document.createElement('input');search.id='trade-instrument-search';search.type='search';search.placeholder='Sök instrument';search.setAttribute('aria-label','Sök diagraminstrument');selector.before(search);const apply=()=>{const selected=selector.value,query=search.value.toUpperCase();selector.querySelectorAll('option').forEach(option=>{option.hidden=option.value!==selected&&!option.value.includes(query);});};search.oninput=apply;window.addEventListener('trading-market-catalog',apply);}
 })();
 </script>
 
