@@ -161,9 +161,11 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
         jev:async()=>{
           await analysisGuard();
           const sanitized={task:"Read-only IG CFD/forex market analysis: two existing agent roles, no order execution",constraints:["no market/account data sent","existing models only","no CFD size guessing"]};
-          if(deps.jev)return deps.jev(sanitized);
+          try {
+          if(deps.jev)return await deps.jev(sanitized);
           const verdict=await askJev(sanitized,8000,{execution_depth:{type:"choice",instructions:"Choose analysis depth",criteria:{standard:"normal market analysis",deep:"financial risk correctness"}}});
           return {available:verdict.available,note:verdict.available?"JEV-förkontroll genomförd":"JEV otillgänglig; befintliga två agentroller behålls"};
+          } catch {return {available:false,note:"JEV otillgänglig; befintliga två agentroller behålls"};}
         },
         technical:async(jev)=>{
           if(connectionIdentity(mode)!==accountBinding)throw Error("IG-kontoanslutningen ändrades under analysen");
@@ -180,7 +182,12 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
           if(connectionIdentity(mode)!==accountBinding)throw Error("IG-kontoanslutningen ändrades under analysen");
           const head=await llm("head",{environment:mode,selection:selected,technical,jev,lastVerifiedAccount:status().environments[mode].account,execution:"manual review; no CFD execution before units and margin verification"});
           if(!Array.isArray(head.analyses))throw Error("Analys saknas i Hannas IG-rapport");
-          head.analyses=head.analyses.filter((a:any)=>selected.epics.includes(a.epic)&&["BUY","SELL","HOLD"].includes(a.action));if(head.analyses.length!==selected.epics.length || new Set(head.analyses.map((a:any)=>a.epic)).size!==selected.epics.length)throw Error("Analys saknas för något valt IG-instrument");return head;
+          head.analyses=head.analyses.filter((a:any)=>selected.epics.includes(a.epic)&&["BUY","SELL","HOLD"].includes(a.action));if(head.analyses.length!==selected.epics.length || new Set(head.analyses.map((a:any)=>a.epic)).size!==selected.epics.length)throw Error("Analys saknas för något valt IG-instrument");
+          head.analyses=head.analyses.map((a:any)=>{
+            const observed=technical.observations.find((o:any)=>o.epic===a.epic),quote=observed?.market.quote;
+            if(!quote || quote.marketStatus!=="TRADEABLE" || quote.delayTime!==0 || now()-quote.receivedAt>60000)return {...a,action:"HOLD",reason:"IG-marknaden eller en färsk ofördröjd kvot kunde inte verifieras",entryLevel:null,stopLevel:null,targetLevel:null};
+            return a;
+          });return head;
         }
       });
       if(connectionIdentity(mode)!==accountBinding)throw Error("IG-kontoanslutningen ändrades under analysen");
