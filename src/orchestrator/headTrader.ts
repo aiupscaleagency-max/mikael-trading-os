@@ -273,6 +273,7 @@ function formatAllReports(reports: AllReports): string {
   if (!technical) out += "Teknisk analys är otillgänglig. Behandla inga saknade värden som noll eller som HOLD.\n";
   else {
     out += `Teknisk analys: ${JSON.stringify({ analyses: technical.analyses, topPick: technical.topPick })}\n`;
+    out += `Separat verifierad dagskontext från Tiingo (aggregerade USD-par, historisk referens; inte Bybits USDC-orderpris, backtest eller modellträning): ${JSON.stringify(technical.historicalReference ?? [])}\n`;
   }
   out += "Makro, Sentiment, Kvant, Portfölj, Exekvering, Options, Research och Advisor har inte körts.\n";
   out += "Risk kontrolleras i kod före orderförslag: belopp, exponering, befintligt spotinnehav och godkännandegrind. Ingen Risk-LLM har körts.\n";

@@ -12,3 +12,17 @@ assert(!html.includes('async function bestBuy'));assert(!html.includes('data-am=
 assert(html.includes('current.marketSymbols||[]'));assert(html.includes('trading-market-catalog'));
 assert(html.includes('tidigare valt'));assert(html.includes('executionMode!=="approve"'));
 console.log('PASS: inline syntax, HOLD without synthetic buy, shared catalogue and manual session guard');
+
+// Historikstatusens UI får inte likställa en konfigurerad nyckel med hämtad data.
+const historyScript=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(m=>m[1]).find(s=>s.includes('function renderHistory(data)'));
+const renderSource=historyScript.slice(historyScript.indexOf('  const esc='),historyScript.indexOf('  // Ren renderingsfunktion'));
+const historyContext={window:{}};vm.createContext(historyContext);vm.runInContext(renderSource+'\nwindow.render=renderHistory;',historyContext);
+assert.match(historyContext.window.render({configured:false}),/Tiingo-nyckel saknas i Trading-OS/);
+assert.match(historyContext.window.render({configured:true,years:3,symbols:[]}),/efter att den tekniska agenten har hämtat/);
+const historyHtml=historyContext.window.render({configured:true,years:3,symbols:[{symbol:'BTCUSDC',ticker:'btcusd',source:'Tiingo',status:'partial',from:'2023-10-06',to:'2026-10-06',count:900,missingDays:100,rejectedBars:2,cached:true,error:'<script>alert(1)</script>'}]});
+assert.match(historyHtml,/Ofullständig historik/);assert.match(historyHtml,/900 dagscandles/);assert.match(historyHtml,/saknade dagar 100/);assert(!historyHtml.includes('<script>'));assert.match(historyHtml,/order använder Bybit EU spot i USDC/);
+console.log('PASS: missing-key, no-cache, partial history coverage and escaped error status');
+
+assert.match(historyContext.window.render({configured:true,years:3,symbols:[{symbol:'BTCUSDC',status:'ready',count:1000,cached:false}]}),/Fullständig historik/);
+assert(!historyContext.window.render({configured:true,years:3,symbols:[{symbol:'BTCUSDC',status:'ready',count:1000,cached:false}]}).includes('Verifierad cache'));
+console.log('PASS: complete history label does not claim cached data');

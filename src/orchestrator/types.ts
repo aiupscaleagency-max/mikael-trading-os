@@ -1,3 +1,4 @@
+import type { HistoricalContext } from "../data/tiingoHistory.js";
 // ═══════════════════════════════════════════════════════════════════════════
 //  Orchestrator Types — teamets gemensamma språk
 //
@@ -33,6 +34,7 @@ export interface MacroReport {
 }
 
 export interface TechnicalReport {
+  historicalReference?: HistoricalContext[];
   role: "technical_analyst";
   analyses: Array<{
     symbol: string;
