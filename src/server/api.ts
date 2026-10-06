@@ -21,6 +21,7 @@ import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 import { watchBybitKlines, getBybitClosedCandles, getBybitFormingCandle, BYBIT_INTERVAL } from "./bybitStream.js";
 import { getJevStatus } from "./jevClient.js";
 import { getTiingoStatus } from "../data/tiingoHistory.js";
+import { getIgStatus, testIgConnection } from "../integrations/igConnection.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
 import { getAnalysisSession, startAnalysisSession, stopAnalysisSession, tickAnalysisSession } from "./analysisSession.js";
@@ -456,6 +457,39 @@ export function startServer(
       }
 
       // ── Live-lagret: /api/live/*, /api/bybit/*, /api/strategies* ──
+      // IG verifieras separat. Inga nycklar eller handel skickas från dessa rutter.
+      if (url.pathname === "/api/ig/status" && method === "GET") {
+        res.setHeader("Cache-Control", "no-store");
+        json(res, await getIgStatus());
+        return;
+      }
+      if (url.pathname === "/api/ig/connect" && method === "POST") {
+        res.setHeader("Cache-Control", "no-store");
+        const origin = req.headers.origin;
+        let sameOrigin = !origin && isLocalNoLogin(req);
+        try {
+          if (origin) {
+            const parsed = new URL(origin);
+            const loopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+            sameOrigin = parsed.host === req.headers.host && (parsed.protocol === "https:" || (loopback && parsed.protocol === "http:"));
+          }
+        } catch { sameOrigin = false; }
+        if (req.headers["sec-fetch-site"] === "cross-site") sameOrigin = false;
+        if (!sameOrigin || !(req.headers["content-type"] ?? "").startsWith("application/json")) {
+          jsonStatus(res, 403, { error: "Anslutningen kräver samma webbplats och JSON." });
+          return;
+        }
+        let body: Record<string, unknown>;
+        try { body = JSON.parse(await readBody(req)) as Record<string, unknown>; }
+        catch { jsonStatus(res, 400, { error: "Ogiltig anslutningsbegäran." }); return; }
+        if (!body || (body.environment !== "demo" && body.environment !== "live") || Object.keys(body).some(key => key !== "environment")) {
+          jsonStatus(res, 400, { error: "Välj Demo eller Live. Inloggningsuppgifter anges endast lokalt." });
+          return;
+        }
+        await testIgConnection(body.environment);
+        json(res, await getIgStatus());
+        return;
+      }
       if (await handleLiveRoutes(url, method, req, res)) return;
 
       // ── Login: sätter sessionen som httpOnly-cookie ──
