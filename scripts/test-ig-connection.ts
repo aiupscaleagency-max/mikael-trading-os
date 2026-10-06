@@ -51,7 +51,11 @@ assert.ok(!JSON.stringify(await network.testConnection("demo")).includes("fixtur
 const incomplete=createIgConnection({loadCredentials:()=>({demo:{apiKey:"only-key"}}),fetch:(async()=>{throw Error("must not fetch");}) as typeof fetch});
 assert.equal((await incomplete.testConnection("demo")).status,"missing");
 await assert.rejects(connection.testConnection("other" as never),/Ogiltig/);
-const source=readFileSync(new URL("../src/integrations/igConnection.ts",import.meta.url),"utf8");assert.ok(!source.includes("positions/otc"));assert.ok(!source.includes("workingorders"));
+const source=readFileSync(new URL("../src/integrations/igConnection.ts",import.meta.url),"utf8");assert.ok(source.includes('process.env.IG_ORDER_EXECUTION_ENABLED !== "true"'));assert.ok(!source.includes("workingorders"));
+const savedOrderFlag=process.env.IG_ORDER_EXECUTION_ENABLED;delete process.env.IG_ORDER_EXECUTION_ENABLED;
+await assert.rejects(connection.callAuthenticated("demo","positions/otc","POST","2",{epic:"TEST",size:1}),/avstängd/);
+await assert.rejects(connection.callAuthenticated("demo","https://fake/orders","GET","1"),/tillåtna/);
+if(savedOrderFlag!==undefined)process.env.IG_ORDER_EXECUTION_ENABLED=savedOrderFlag;
 console.log("PASS: IG demo/live isolation, session singleflight, Token memory-only, read-only accounts/positions, null missing metrics, permissions/symlink, expiry, missing credentials and sanitized errors; no real IG requests/orders");
 
 const configurePath=fileURLToPath(new URL("./configure-ig.py",import.meta.url));

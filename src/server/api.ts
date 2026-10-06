@@ -22,6 +22,7 @@ import { watchBybitKlines, getBybitClosedCandles, getBybitFormingCandle, BYBIT_I
 import { getJevStatus } from "./jevClient.js";
 import { getTiingoStatus } from "../data/tiingoHistory.js";
 import { getIgStatus, testIgConnection } from "../integrations/igConnection.js";
+import { searchIgMarkets, getIgMarket, getIgCandles, getIgWorkspace, setIgSelection, runIgAnalysis, startIgSession, stopIgSession, tickIgSessions, type IgTimeframe } from "../integrations/igWorkspace.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
 import { getAnalysisSession, startAnalysisSession, stopAnalysisSession, tickAnalysisSession } from "./analysisSession.js";
@@ -407,6 +408,8 @@ export function startServer(
       if (getAnalysis()?.status === "running") { analysisEnd({ status: "stopped", reason: "Analysen avbröts av befintliga spärrar" }); throw new Error("Analysen kördes inte; kontrollera kill switch och AI-budget"); }
     }).catch((err) => log.error(`Sessionsbevakning: ${String(err)}`));
   }, 1000);
+  const igSessionTimer = setInterval(() => { void tickIgSessions().catch(() => log.warn("IG-sessionsbevakningen kunde inte slutföras")); }, 1000);
+  igSessionTimer.unref();
   const sizingTimer = setInterval(() => { void refreshSizing(); }, 15_000);
 
 
@@ -488,6 +491,46 @@ export function startServer(
         }
         await testIgConnection(body.environment);
         json(res, await getIgStatus());
+        return;
+      }
+      // IG använder egna instrument, konton och sessioner; Bybits tillstånd ändras inte.
+      if (url.pathname.startsWith("/api/ig/")) {
+        res.setHeader("Cache-Control", "no-store");
+        let body: Record<string, unknown> = {};
+        if (method === "POST" || method === "DELETE") {
+          let sameOrigin = !req.headers.origin && isLocalNoLogin(req);
+          try {
+            if (req.headers.origin) {
+              const origin = new URL(req.headers.origin);
+              sameOrigin = origin.host === req.headers.host && (origin.protocol === "https:" || (origin.protocol === "http:" && ["localhost", "127.0.0.1"].includes(origin.hostname)));
+            }
+          } catch { sameOrigin = false; }
+          if (!sameOrigin || req.headers["sec-fetch-site"] === "cross-site" || !(req.headers["content-type"] ?? "").startsWith("application/json")) {
+            jsonStatus(res, 403, {error:"IG-ändringar kräver samma webbplats och JSON."}); return;
+          }
+          try { body = JSON.parse(await readBody(req)); }
+          catch { jsonStatus(res, 400, {error:"Ogiltig IG-begäran."}); return; }
+          if (!body || Array.isArray(body) || typeof body !== "object") { jsonStatus(res, 400, {error:"Ogiltig IG-begäran."}); return; }
+        }
+        const environment = method === "GET" ? url.searchParams.get("environment") : body.environment;
+        if (environment !== "demo" && environment !== "live") { jsonStatus(res, 400, {error:"Välj IG Demo eller Live."}); return; }
+        const allowed = url.pathname === "/api/ig/session" && method === "POST" ? ["environment","epics","timeframe","percent","horizonMinutes","durationMinutes","intervalMinutes"] : ["environment","epics","timeframe","percent","horizonMinutes"];
+        if (Object.keys(body).some(key => !allowed.includes(key))) { jsonStatus(res, 400, {error:"Okända fält i IG-begäran."}); return; }
+        try {
+          const selection = {epics:body.epics as string[],timeframe:body.timeframe as IgTimeframe,percent:body.percent as number|undefined,horizonMinutes:body.horizonMinutes as number|undefined};
+          if (url.pathname === "/api/ig/workspace" && method === "GET") json(res, await getIgWorkspace(environment));
+          else if (url.pathname === "/api/ig/markets" && method === "GET") json(res, await searchIgMarkets(environment,url.searchParams.get("searchTerm") ?? ""));
+          else if (url.pathname === "/api/ig/market" && method === "GET") json(res, await getIgMarket(environment,url.searchParams.get("epic") ?? ""));
+          else if (url.pathname === "/api/ig/candles" && method === "GET") json(res, await getIgCandles(environment,url.searchParams.get("epic") ?? "",url.searchParams.get("timeframe") as IgTimeframe,Number(url.searchParams.get("limit") ?? 100)));
+          else if (url.pathname === "/api/ig/selection" && method === "POST") json(res, await setIgSelection(environment,selection));
+          else if (url.pathname === "/api/ig/analysis" && method === "POST") json(res, await runIgAnalysis(environment,selection));
+          else if (url.pathname === "/api/ig/session" && method === "POST") json(res, await startIgSession(environment,{...selection,durationMinutes:body.durationMinutes as number,intervalMinutes:body.intervalMinutes as number}));
+          else if (url.pathname === "/api/ig/session" && method === "DELETE") json(res, {session:stopIgSession(environment)});
+          else jsonStatus(res,404,{error:"IG-rutten finns inte."});
+        } catch (error) {
+          const message = error instanceof Error && /^(IG|Ogiltig|Välj|Session|Analys)/.test(error.message) ? error.message : "IG-underlaget kunde inte verifieras.";
+          jsonStatus(res,400,{error:message});
+        }
         return;
       }
       if (await handleLiveRoutes(url, method, req, res)) return;
@@ -1389,7 +1432,7 @@ export function startServer(
     log.error(`Dashboard-servern: ${err.message}`);
   });
 
-  server.on("close", () => { clearInterval(sizingTimer); clearInterval(sessionTimer); });
+  server.on("close", () => { clearInterval(sizingTimer); clearInterval(sessionTimer); clearInterval(igSessionTimer); });
   server.listen(port, () => {
     log.ok(`Dashboard: http://localhost:${port}`);
     if (process.env.DASHBOARD_NO_LOGIN === "true") {
