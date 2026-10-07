@@ -48,7 +48,7 @@ export function createMultiCharts({state,request,onSubscriptions,openPrimary,sim
   const primary=`${st.current}:${st.chartFrame}`,key=st.catalog.map(m=>`${m.epic}:${m.name}`).join('|');
   for(const s of active()){let changed=false;if(!s.epic){s.epic=st.catalog.filter(m=>['crypto','forex'].includes(m.category)||m.type==='CURRENCIES')[s.id]?.epic??st.current;changed=true;}if(symbolLink.checked&&s.epic!==st.current){s.epic=st.current;changed=true;}if(frameLink.checked&&s.frame!==st.chartFrame){s.frame=st.chartFrame;changed=true;}
    if(key!==catalogKey||!Array.from(s.symbol.options).some(o=>o.value===s.epic)){const rows=st.catalog.filter(m=>m.type==='CURRENCIES'||['crypto','forex'].includes(m.category));s.symbol.innerHTML='<option value="">Välj instrument</option>'+rows.map(m=>`<option value="${esc(m.epic)}">${esc(m.name??m.epic)}</option>`).join('')+(s.epic&&!rows.some(m=>m.epic===s.epic)?`<option value="${esc(s.epic)}">${esc(s.epic)}</option>`:'');}s.symbol.value=s.epic??'';ensureChart(s);
-   if(changed){s.revision++;s.loading=false;s.error=null;}if((changed||(!s.bars.length&&!s.error&&!s.lastLoad))&&!s.loading&&s.epic&&(st.simulation||st.connection?.status==='connected'))void load(s);paint(s);
+   if(changed){s.revision++;s.loading=false;s.error=null;}if((changed||(!s.market&&!s.error&&!s.lastLoad))&&!s.loading&&s.epic&&(st.simulation||st.connection?.status==='connected'))void load(s);paint(s);
   }
   catalogKey=key;if(primary!==primaryKey){primaryKey=primary;save();}onSubscriptions();
  }
