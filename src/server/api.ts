@@ -1541,6 +1541,7 @@ export function startServer(
         "/workspace/style.css":["style.css","text/css"],
         "/workspace/app.mjs":["app.mjs","text/javascript"],
         "/workspace/model.mjs":["model.mjs","text/javascript"],
+        "/workspace/marketViews.mjs":["marketViews.mjs","text/javascript"],
       };
       const asset=workspaceFiles[url.pathname];
       if(asset&&method==="GET") {

@@ -149,7 +149,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
   }
   async function authenticated(mode:IgEnvironment,route:string,method:"GET"|"POST"="GET",version="1",body?:Record<string,unknown>,extra?:Record<string,string>):Promise<Record<string,any>> {
     validMode(mode);
-    const readOnly = route === "accounts" || route === "positions" || route === "workingorders" || route === "markets" || route === "history/activity" || route === "history/transactions" || /^(markets|prices)\/[A-Za-z0-9._-]{1,100}$/.test(route) || /^confirms\/[A-Za-z0-9_-]{1,100}$/.test(route);
+    const readOnly = route === "accounts" || route === "positions" || route === "workingorders" || route === "markets" || route === "categories" || /^categories\/[A-Za-z0-9_-]{1,100}\/instruments$/.test(route) || /^client-sentiment\/[A-Za-z0-9._-]{1,100}$/.test(route) || route === "history/activity" || route === "history/transactions" || /^(markets|prices)\/[A-Za-z0-9._-]{1,100}$/.test(route) || /^confirms\/[A-Za-z0-9_-]{1,100}$/.test(route);
     const write = (route === "positions/otc" || route === "workingorders/otc") && method === "POST";
     if((method === "GET" && !readOnly) || (method === "POST" && !write) || !( ["1","2","3"].includes(version) || (version==="4"&&method==="GET"&&/^markets\/[A-Za-z0-9._-]{1,100}$/.test(route)) )) throw Error("IG-anropet ingår inte i tillåtna endpoints");
     if(write && process.env.IG_ORDER_EXECUTION_ENABLED !== "true") throw Error("IG-orderexekvering är avstängd på servern");
@@ -163,7 +163,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
       if(allowedQuery && method!=="GET") throw Error("IG-order får inte innehålla frågeparametrar");
     }
     const query=new URLSearchParams(extra?.query || "");
-    const allowedParams=new Set(route === "markets"?["searchTerm"]:route.startsWith("prices/")?["resolution","max","from","to","pageSize","pageNumber"]:route.startsWith("history/")?["from","to","detailed","pageSize","pageNumber","type"]:[]);
+    const allowedParams=new Set(route === "markets"?["searchTerm"]:/^categories\/[A-Za-z0-9_-]{1,100}\/instruments$/.test(route)?["pageNumber","pageSize"]:route.startsWith("prices/")?["resolution","max","from","to","pageSize","pageNumber"]:route.startsWith("history/")?["from","to","detailed","pageSize","pageNumber","type"]:[]);
     for(const [name,value] of query) if(!allowedParams.has(name) || value.length>200) throw Error("Ogiltiga IG-frågeparametrar");
     if(method==="GET")consumeRead(mode);
     try {
@@ -171,6 +171,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
       if(!response.ok) {
         let code:unknown;try{code=(await response.json() as Record<string,unknown>).errorCode;}catch{/* Okänt felsvar behandlas utan privata detaljer. */}
         if(response.status===429||typeof code==='string'&&/^error\.public-api\.exceeded-[a-z-]+-allowance$/.test(code)){readBlockedUntil.set(mode,now()+60000);throw Error(IG_READ_RATE_ERROR);}
+        if(code==='endpoint.unavailable.for.api-key'&&(route==='categories'||route.startsWith('categories/')||route.startsWith('client-sentiment/')))throw Error(`IG svarade HTTP ${response.status}`);
         if(response.status===401 || response.status===403)fail(mode,"IG-sessionen eller behörigheten kunde inte verifieras; anslut igen");throw Error(`IG svarade HTTP ${response.status}`);
       }
       const data=await response.json();
