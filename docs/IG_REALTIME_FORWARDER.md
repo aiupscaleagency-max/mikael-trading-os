@@ -32,3 +32,15 @@ Handelsytan har valbara layouter med 1, 2, 3 eller 4 diagram och IG-marknadslist
 Alla diagram använder samma autentiserade WebSocket. Klienten skickar `charts: [{epic, scale}]`; äldre `chart` accepteras fortfarande. Unika chart-prenumerationer dedupliceras och högst fyra delas mellan alla öppna klienter. En femte avvisas före mutation. Diagrammen använder befintliga IG-mittpriser och 1MINUTE/5MINUTE/HOUR med verifierad aggregering. Dagliga ljus och reservläge hämtas via REST tidigast efter 60 sekunder. Färskhet/källa visas per diagram; öppet nätverk betyder inte nytt pris varje sekund.
 
 Jämförelsediagrammens laddningar sker seriellt och skyddas med miljö, kontoanslutning, instrument, intervall och lokal revision. Sena svar kan inte skriva in underlag i ett annat diagram eller konto. Vid transportavbrott eller inaktuella streamljus används begränsad REST-avstämning, med synlig reservkälla. Diagramlayouter startar inga agenter eller order och ändrar inte strategiernas underlag.
+
+## Samlad meny- och kataloguppdatering
+
+Valutapar, Strategier, Signaler och Agentsessioner ligger direkt i huvudmenyn. De återanvänder samma tillstånd och komponenter som handelsytan. Inställningarnas strategisektion flyttas tillbaka när inställningsdialogen stängs på strategisidan.
+
+Nystart laddar både Krypto och Forex. Om den valda kategorin saknar ett tillgängligt instrument väljs ett faktiskt TRADEABLE-instrument i den andra kategorin, förutsatt oförändrad konto-/instrumentrevision. Ofullständiga kataloger behåller reservkällans fortsättningsinformation; båda kategorier kan återupptas efter minutgränsen. Ett fullständigt men tomt svar är fortfarande tomt.
+
+Kryptologotyper serveras lokalt från ett CC0-paket, med explicit filallowlist. Forex visar flaggpar och okända instrument får neutral ikon. Källa och licens ligger i src/server/ui/workspace/icons.
+
+Double Up skapar ett extra orderutkast. Roll-over ändrar en befintlig automatisk stängningsplan, inte en PocketOption-utgångstid. Ordergrindar och konto-/generationskontroller gäller fortsatt. Inga order skickas av menybyten eller kopiering.
+
+Uppdateraren utgår fortfarande från dator 1:s installerade commit 76d91a8 och tar med den tidigare metadata-rättningen b418b00. En enda fast-forward och omstart av samma tjänst räcker. Om arbetskopian ändrats av ett annat konto avbryts uppdateraren.

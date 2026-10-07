@@ -9,7 +9,7 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
  const cache=new Map<string,{at:number;value:any}>(),pending=new Map<string,Promise<any>>();
  function identity(mode:IgEnvironment){if(mode!=='demo'&&mode!=='live')throw Error('Ogiltig IG-miljö');const c=status().environments[mode];if(c.status!=='connected'||!c.connectionGeneration)throw Error('IG är inte anslutet');return c.connectionGeneration;}
  async function catalogue(mode:IgEnvironment,category:unknown){if(category!=='forex'&&category!=='crypto')throw Error('Välj Forex eller Kryptovalutor');const binding=identity(mode),key=`${mode}:${binding}:${category}`,old=cache.get(key);if(old&&now()-old.at<60000)return structuredClone(old.value);if(pending.has(key))return structuredClone(await pending.get(key));
- const job=(async()=>{const markets=new Map<string,any>();let unclassified=0;let complete=false,note='IG:s kategorikatalog kunde inte verifieras',source='IG kategorier',failed=false;
+ const job=(async()=>{const markets=new Map<string,any>();let unclassified=0;let complete=false,note='IG:s kategorikatalog kunde inte verifieras',source='IG kategorier',failed=false,remainingSearches:number|null=null;
  async function read(endpoint:string){if(budget(mode).remaining<1||budget(mode).used>=10)throw Error('budget');const [resource,query]=endpoint.split('?');const result=await call(mode,resource!,'GET','1',undefined,query?{query}:undefined);if(identity(mode)!==binding)throw Error('account');return result;}
  try{const root=await read('categories');if(!Array.isArray(root.categories))throw Error('shape');
  const categories=root.categories.filter((node:any)=>/forex|currenc|valut|crypto|krypto|bitcoin|ether/i.test(String(node.code??node.name??node.categoryName??'')));
@@ -24,10 +24,10 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
  }
  complete=!unresolved&&unclassified===0;note=complete?'Alla klassificerade instrument i IG-kontots Forex-/Kryptokategorier hämtade.':'Delvis katalog: kategoristruktur eller pagination behöver kompletteras';
  }catch{failed=true;complete=false;}
- if(failed||!markets.size){complete=false;const result=await fallback(mode,category);if(identity(mode)!==binding)throw Error('IG-kontoanslutningen ändrades');for(const m of result.markets)markets.set(m.epic,enrichIgDirectoryMarket(m));source='IG kontosökning (reservkälla)';note=result.note;}
+ if(failed||!markets.size){complete=false;const result=await fallback(mode,category);if(identity(mode)!==binding)throw Error('IG-kontoanslutningen ändrades');for(const m of result.markets)markets.set(m.epic,enrichIgDirectoryMarket(m));source=result.source??'IG kontosökning (reservkälla)';note=result.note;remainingSearches=Number.isInteger(result.remainingSearches)&&result.remainingSearches>=0?result.remainingSearches:null;complete=result.complete===true;}
  const rows=[...markets.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name),'sv'));const hasChanges=rows.some(m=>m.changePercent!==null),hasSpread=rows.some(m=>m.spread!==null);
  const rankings=structuredClone(igDirectoryRankings);rankings.gainers.available=hasChanges;rankings.losers.available=hasChanges;rankings.movers.available=hasChanges;rankings.spread.available=hasSpread;
- const value={environment:mode,category,markets:rows,complete,status:complete?'ready':'partial',source,note,error:null,updatedAt:now(),remainingSearches:null,unclassifiedInstruments:unclassified,rankings};cache.set(key,{at:now(),value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}}
+ const value={environment:mode,category,markets:rows,complete,status:complete?'ready':'partial',source,note,error:null,updatedAt:now(),remainingSearches,unclassifiedInstruments:unclassified,rankings};cache.set(key,{at:now(),value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}}
  async function enrich(mode:IgEnvironment,epic:string){
  if(typeof epic!=='string'||!/^[A-Za-z0-9._-]{1,100}$/.test(epic))throw Error('Ogiltigt IG-instrument');
  const binding=identity(mode),key=`enrich:${mode}:${binding}:${epic}`,cached=cache.get(key);if(cached&&now()-cached.at<60000)return structuredClone(cached.value);if(pending.has(key))return structuredClone(await pending.get(key));

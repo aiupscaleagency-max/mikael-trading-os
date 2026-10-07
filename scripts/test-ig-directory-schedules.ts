@@ -19,6 +19,11 @@ generation='two';await service.tick();assert.equal(service.list('demo')[0]?.enab
 service.enable('demo',schedule.id,true);assert.equal(createIgSchedules(deps).list('demo')[0]?.enabled,false,'Omstart kräver aktivering');
 assert.equal(stockholmSlot(Date.parse('2026-10-25T00:30:00Z')).time,'02:30');assert.equal(stockholmSlot(Date.parse('2026-10-25T01:30:00Z')).time,'02:30');
 assert.equal(enrichIgDirectoryMarket({bid:3,offer:2,percentageChange:-2}).spread,null);assert.equal(enrichIgDirectoryMarket({percentageChange:-2}).movementPercent,2);
+// Reservkällans progression och verifierade fullständighet får inte försvinna.
+const partialDirectory=createIgMarketDirectory({status,now:()=>now,budget:()=>({remaining:0,used:10}) as any,fallback:async()=>({markets:[],complete:false,remainingSearches:7,source:'IG kontosökning',note:'Återuppta'}) as any});
+assert.equal((await partialDirectory.catalogue('demo','crypto')).remainingSearches,7);
+const completeDirectory=createIgMarketDirectory({status,now:()=>now,budget:()=>({remaining:0,used:10}) as any,fallback:async()=>({markets:[],complete:true,remainingSearches:0,source:'IG aktiverade kontokategorier',note:'Tom men komplett'}) as any});
+assert.equal((await completeDirectory.catalogue('demo','crypto')).complete,true);
 let calls=0;
 const catalog=createIgMarketDirectory({status,now:()=>now,budget:()=>({remaining:10,used:0}) as any,call:async()=>{calls++;throw Error('unsupported');},fallback:async()=>({markets:[{epic:'A',name:'EUR/USD',type:'CURRENCIES'}],note:'Delvis'}) as any});
 const result=await catalog.catalogue('demo','forex');assert.equal(result.complete,false);assert.equal(result.markets.length,1);assert.equal(result.rankings.mostBought.available,false);await catalog.catalogue('demo','forex');assert.equal(calls,1);generation='three';await catalog.catalogue('demo','forex');assert.equal(calls,2,'Cache isoleras per kontoanslutning');

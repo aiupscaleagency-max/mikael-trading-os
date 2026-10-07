@@ -15,7 +15,9 @@ try{
  assert.ok([401,403].includes((await fetch(base+'/api/kill-switch',{method:'POST',headers:{origin:'https://foreign.example','content-type':'application/json'},body:'{"active":true}'})).status));
  assert.equal((await fetch(base+'/api/kill-switch',{method:'POST',headers:{origin:base,'content-type':'application/json'},body:'{"active":true}'})).status,200);
  assert.equal((await (await fetch(base+'/api/state')).json() as any).killSwitchActive,true);
- for(const url of ['/workspace/app.mjs','/workspace/marketViews.mjs','/workspace/streamCandles.mjs','/vendor/lightweight-charts.js','/'])assert.equal((await fetch(base+url)).status,200,url);
+ for(const url of ['/workspace/app.mjs','/workspace/instrumentIcons.mjs','/workspace/icons/btc.svg','/workspace/marketViews.mjs','/workspace/streamCandles.mjs','/vendor/lightweight-charts.js','/'])assert.equal((await fetch(base+url)).status,200,url);
+ assert.match((await fetch(base+'/workspace/icons/btc.svg')).headers.get('content-type')??'',/image\/svg/);
+ assert.equal((await fetch(base+'/workspace/icons/missing.svg')).status,404);
  assert.equal((await fetch(base+'/api/live/account')).status,404);
  const socket=new WebSocket(base.replace('http:','ws:')+'/api/ig/realtime?environment=demo',{origin:base});
  const message=await Promise.race([once(socket,'message'),new Promise<never>((_,reject)=>setTimeout(()=>reject(Error('WebSocket saknas')),3000).unref())]);

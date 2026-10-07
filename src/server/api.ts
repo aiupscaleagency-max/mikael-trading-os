@@ -163,10 +163,12 @@ export function startServer(port:number):http.Server{
         "/workspace/app.mjs":["app.mjs","text/javascript"],
         "/workspace/model.mjs":["model.mjs","text/javascript"],
         "/workspace/marketViews.mjs":["marketViews.mjs","text/javascript"],
+        "/workspace/instrumentIcons.mjs":["instrumentIcons.mjs","text/javascript"],
         "/workspace/multiCharts.mjs":["multiCharts.mjs","text/javascript"],
         "/workspace/streamCandles.mjs":["streamCandles.mjs","text/javascript"],
       };
-      const asset=workspaceFiles[url.pathname];
+      const iconName=url.pathname.match(/^\/workspace\/icons\/(btc|eth|sol|ltc|xrp|ada|doge|dot|link|uni|avax|bch|xlm|atom|trx|eos|etc|neo|xtz|aave|algo|generic)\.svg$/)?.[1];
+      const asset=workspaceFiles[url.pathname]??(iconName?[`icons/${iconName}.svg`,"image/svg+xml"]:undefined);
       if(asset&&method==="GET") {
         const file=await fs.readFile(path.join(uiDir,"workspace",asset[0]),"utf8");
         res.writeHead(200,{"Content-Type":asset[1],"Cache-Control":"no-store"});res.end(file);return;
