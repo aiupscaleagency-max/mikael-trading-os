@@ -163,6 +163,7 @@ export function startServer(port:number):http.Server{
         "/workspace/app.mjs":["app.mjs","text/javascript"],
         "/workspace/model.mjs":["model.mjs","text/javascript"],
         "/workspace/marketViews.mjs":["marketViews.mjs","text/javascript"],
+        "/workspace/multiCharts.mjs":["multiCharts.mjs","text/javascript"],
         "/workspace/streamCandles.mjs":["streamCandles.mjs","text/javascript"],
       };
       const asset=workspaceFiles[url.pathname];

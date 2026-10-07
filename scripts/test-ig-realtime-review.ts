@@ -29,6 +29,12 @@ try{
  a.ws.send(JSON.stringify({type:'subscribe',epics:['EUR']}));await until(()=>subscriptions.some(x=>x[0]==='demo'&&x[1].includes('EUR')));
  fakeStream.events.emit('quote','demo',{epic:'EUR',bid:1});await until(()=>a.received.some(x=>x.type==='quote'));
  assert.equal(b.received.some(x=>x.type==='quote'),false,'Demo-kvoter får inte sändas till live-klient');
+ a.ws.send(JSON.stringify({type:'subscribe',epics:['EUR','GBP','BTC','ETH'],charts:[{epic:'EUR',scale:'1MINUTE'},{epic:'GBP',scale:'5MINUTE'},{epic:'BTC',scale:'HOUR'},{epic:'ETH',scale:'1MINUTE'}]}));
+ await until(()=>subscriptions.some(x=>x[0]==='demo'&&x[2].length===4));
+ const chartPool=await connect();chartPool.ws.send(JSON.stringify({type:'subscribe',epics:['EUR'],charts:[{epic:'EUR',scale:'HOUR'}]}));await until(()=>chartPool.received.some(x=>x.type==='subscription-error'));
+ assert.equal(subscriptions.some(x=>x[0]==='demo'&&x[2].length>4),false,'Femte diagrammet får inte mutera poolen');
+ chartPool.ws.close();await once(chartPool.ws,'close');
+ a.ws.send(JSON.stringify({type:'subscribe',epics:['EUR'],chart:{epic:'EUR',scale:'1MINUTE'}}));await until(()=>subscriptions.some(x=>x[0]==='demo'&&x[2].length===1&&x[2][0].epic==='EUR'));
  const pool=await connect();a.ws.send(JSON.stringify({type:'subscribe',epics:Array.from({length:30},(_,i)=>`EPIC${i}`)}));
  await until(()=>subscriptions.some(x=>x[0]==='demo'&&x[1].length===30));
  pool.ws.send(JSON.stringify({type:'subscribe',epics:['OVERFLOW']}));await until(()=>pool.received.some(x=>x.type==='subscription-error'));

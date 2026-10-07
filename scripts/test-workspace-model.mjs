@@ -36,3 +36,11 @@ const proofQuote={...q.quote,generation:'session',delayVerification:{generation:
 assert.equal(quoteIsFresh({quote:proofQuote},now),true);
 assert.equal(quoteIsFresh({quote:proofQuote},now+1000),false,'REST-verifiering löper ut även med färskt streampris');
 assert.equal(quoteIsFresh({quote:{...proofQuote,generation:'other'}},now),false,'REST-verifiering får inte byta konto');
+
+const {chartSubscriptions,shouldRefreshChart}=await import('../src/server/ui/workspace/multiCharts.mjs');
+assert.deepEqual(chartSubscriptions({epic:'EUR',frame:'15m'},[{epic:'EUR',frame:'1m'},{epic:'GBP',frame:'1h'},{epic:'BTC',frame:'1d'}]),[{epic:'EUR',scale:'1MINUTE'},{epic:'GBP',scale:'HOUR'}]);
+const extra={loading:false,lastLoad:now-60000,frame:'1m',bars:[{receivedAt:now}],error:null};
+assert.equal(shouldRefreshChart(extra,now,true),false,'Frisk WS med nytt ljus ska inte REST-pollas');
+assert.equal(shouldRefreshChart(extra,now,false),true,'Laddat extradiagram måste ha REST-reserv efter WS-avbrott');
+assert.equal(shouldRefreshChart({...extra,lastLoad:now},now,false),false,'Reservläge respekterar 60s-budget');
+assert.equal(shouldRefreshChart({...extra,bars:[{receivedAt:now-60000}]},now,true),true,'Öppen transport utan färska candles kräver avstämning');

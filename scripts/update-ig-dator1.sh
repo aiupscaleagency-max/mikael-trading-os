@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 target="${1:?Ange granskad målcommit}"
-expected='eb14d34f436c297d42cd34fd61cbc313b1c09d62'
+expected='feee1d20709f3929cd2f31db7615d3270e66bfa6'
 label='com.aiupscale.trading-os'
 plist="$HOME/Library/LaunchAgents/$label.plist"
 [ -f "$plist" ] || { echo 'Avbrutet: befintlig tjänst saknas.' >&2; exit 1; }
@@ -11,7 +11,7 @@ configured=$(/usr/libexec/PlistBuddy -c 'Print :WorkingDirectory' "$plist")
 [ -z "$(git status --porcelain)" ] || { echo 'Avbrutet: lokala ändringar måste samordnas först.' >&2; exit 1; }
 target=$(git rev-parse --verify "${target}^{commit}")
 git merge-base --is-ancestor HEAD "$target"
-git branch "backup/ig-fore-flaggrattning-$(date +%Y%m%d-%H%M%S)" HEAD
+git branch "backup/ig-fore-marknadsstudio-$(date +%Y%m%d-%H%M%S)" HEAD
 git merge --ff-only "$target"
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 npx tsc --noEmit
