@@ -4,7 +4,7 @@ Standardstart (`npm run agent`, `npm run serve`, `npm run ui`) använder IG-hand
 
 ## Arbetsflöde
 
-- Anslut Demo eller Live separat. Instrument och kontraktsregler hämtas från IG; diagrammet visar IG REST-data och kvotens färskhet. Dokumenterad streaming är inte inkopplad i denna version.
+- Anslut Demo eller Live separat. Instrument och kontraktsregler hämtas från IG; diagrammet startar med IG REST-historik och uppdateras via IG Lightstreamer/WebSocket. Se aktuell synkarkitektur nedan; tidigare driftkontroller är historik.
 - Starta en session med ett fast instrumenturval. JEV kör först, sedan exakt Teknisk analytiker → Hanna/Head Trader med befintlig modellrouting. Tiingo är historisk kryptoreferens, inte exekveringspris. Saknad forex-mappning visas som otillgängligt referensunderlag.
 - En signal kopieras till ett utkast. Varje verklig order kräver manuell granskning, aktuell kontosession och serverberäknad risk. Ingen automatisk öppning från agentsessioner är aktiverad.
 - Double up skapar ett nytt utkast med samma storlek/riktning. Roll over förlänger endast en aktiv planerad stängningsbegäran; CFD har ingen fast utbetalning eller utgångstid.
@@ -60,3 +60,26 @@ Central rullande GET-budget är 24/minut per miljö och 48 totalt. Katalogen lä
 Standardgränsen är en position. Analysintervall och innehavstid är separata; 1, 5 och 15 minuter finns som innehavstid. Länken IG:s signaler öppnar användarens rätta Demo-/Live-plattform. Autochartist/PIA First-data är inte importerad till agentanalysen; någon dokumenterad IG-signalsfeed har inte verifierats.
 
 Kursens sparade arbete hittades i ../projects/ptqa-trading: dag 1–3 och Luengos-12/21/50 (BTCUSD dagliga ljus), med godkänt Tiingo-dataunderlag. Ursprunglig ETH/USDT-idé och prediction är bevarade separat. Inget sparat dag 4-backtest hittades. Den dagliga BTC-strategin är inte verifierad för 1–15 minuters trades. Nuvarande IG-analys kan behandla flera instrument, men fler namngivna kursstrategier och jämförda kortsiktiga backtestresultat återstår. JEV är förkontroll, inte en marknadsmodell som tränas av Tiingo.
+
+
+## Aktuell synkarkitektur – fortsättning 2026-10-07
+
+En gemensam backend äger IG-session, analysurval, agentsessioner, scheman och favoriter. `igEvents` publicerar sparade tillståndsändringar till `igRealtime`; handelsytan konsumerar samma `readIgView` som HTTP-snapshot. Demo och Live har separat kontogeneration, lagring och streaming. Ingen IG-token skickas till browsern.
+
+`igStreaming` använder officiella Lightstreamer-klienten med tvingad `WS-STREAMING` (ingen HTTP-transportfallback). Priser: `PRICE:{accountId}:{epic}`; konto: ACCOUNT; orderförändringar: TRADE. CHART används för verkliga OHLC-uppdateringar. Browsern visar eget WebSocket-status och IG-upstreamstatus separat, med faktisk broker-tidsstämpel. En ansluten socket garanterar inte ett färskt pris. Orderrisk fortsätter kräva färskt serververifierat REST-underlag.
+
+`/api/ig/realtime?environment=demo|live` kräver samma origin och befintlig aktiv inloggning eller godkänd lokal/Tailnet-åtkomst. Behörighet återkontrolleras, logout stänger sockets, återanslutning hämtar snapshot och diagramhistorik. Gemensam pool: högst 30 priser, 4 diagram, konto och orderström per miljö (36 prenumerationer). Överfull pool ger uttryckligt fel. Högst 10 instrument per analys/session. Alla instrument kan listas utan att samtliga streamas samtidigt.
+
+Frisk browser-WebSocket stoppar 5-sekunders workspace-polling. Backend avstämmer brokerstatus var 15:e sekund med befintliga cache-/läskvoter, utöver push vid ändringar. Katalog, historik, metadata och orderkommandon använder REST enligt IG:s API. Dagdiagram använder uttrycklig REST-reserv tills IG:s dygnsbrytpunkt är verifierad; 3/15/30 minuter och 4 timmar aggregerar CHART-underlag. Inga ljus tillverkas från enstaka prisuppdateringar.
+
+Katalogen läser IG `/categories` och paginerade `/categories/{code}/instruments`, med kontobunden cache och läsreserv. Sökbaserad fallback märks alltid ofullständig. Rankningar visar verifierad förändring, absolut rörelse och spread; spread kan bara jämföras inom samma prisenhet. Vald enrichment kan hämta IG:s andel långa positioner (kundsentiment, inte köpt volym) samt SMA20/SMA50 på 50 stängda timljus. Saknade värden fabriceras inte. Realiserad strategivinst finns inte som allmän IG-marknadsranking.
+
+Scheman är engångs- eller veckoscheman i Europe/Stockholm. Förekomst sparas före start, höstens dubbla timme dedupliceras och missade tider inklusive vårens hopp spelas inte igen. Kontobyte och serveromstart kräver återaktivering. Paus/radering under metadatahämtning avbryter start. Scheman kör analys och manuella orderförslag; befintlig orderflagga ändras inte.
+
+### Driftsättning och verifieringsgräns
+
+Denna fortsättning bygger på `092b0e5` i en isolerad branch. Originalcheckout och produktionscredentials har inte ändrats. TypeScript, workspace-, browser-, streaming-, WebSocket-, schema- och start-race-tester körs mot lokala fixtures. De bevisar kodvägen, inte verkliga IG-ticks eller order.
+
+Dator2:s gamla localhost-vidarekoppling saknar WebSocket-upgrade. Uppdatera den med repo `scripts/forward-dashboard.mjs` tillsammans med backend på dator1; båda vyerna ska peka på samma backend. Agentic OS:s `/trading` iframe behöver fortfarande fungerande Tailscale-adress. Senaste åtkomstkontroll gav localhost 3939 HTTP 502 och timeout till dator1:9443. Driftsättning och end-to-end liveverifiering återstår tills dator1 är nåbar. Kör aldrig två agentbackends mot samma konto för att synka datorerna.
+
+Officiella referenser: https://labs.ig.com/streaming-api-guide.html · https://labs.ig.com/streaming-api-reference.html · https://labs.ig.com/rest-trading-api-reference.html

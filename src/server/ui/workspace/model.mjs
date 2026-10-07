@@ -36,3 +36,24 @@ export function normalizeSignal(row,analysis,now=Date.now()) {
   const levels=[row.entryLevel,row.stopLevel,row.targetLevel].every(v=>Number.isFinite(v)&&v>0);
   return {...row,action,completedAt:completed,validUntil,timeframe:analysis?.selection?.timeframe??'5m',horizonMinutes:analysis?.selection?.horizonMinutes??15,copyable:action!=='HOLD'&&levels&&now<validUntil};
 }
+
+// Rankningar använder endast explicit leverantörsdata, aldrig prisnivå som proxy.
+export function marketMetric(m, ranking) {
+  const q=m.quote??m, metrics=m.metrics??{};
+  const finite=v=>Number.isFinite(v)?v:null;
+  if(['up','down','movement'].includes(ranking))return finite(m.changePercent??metrics.changePercent??m.percentageChange??q.percentageChange);
+  if(['trendUp','trendDown'].includes(ranking))return finite(m.trendScore??metrics.trendScore);
+  if(ranking==='sentiment')return finite(m.sentimentLongPercent??m.sentiment?.longPositionPercentage??metrics.longPositionPercentage);
+  if(ranking==='spread'){const bid=q.bid??m.bid,ask=q.offer??m.offer;return Number.isFinite(bid)&&Number.isFinite(ask)&&bid>0&&ask>=bid?(ask-bid)/((ask+bid)/2)*100:null;}
+  return null;
+}
+export function rankMarkets(rows, ranking='name') {
+  return [...rows].sort((a,b)=>{
+    const av=marketMetric(a,ranking),bv=marketMetric(b,ranking);
+    if(ranking!=='name'){
+      if(av===null&&bv!==null)return 1;if(bv===null&&av!==null)return -1;
+      if(av!==null&&bv!==null){const diff=ranking==='movement'?Math.abs(bv)-Math.abs(av):['down','spread','trendDown'].includes(ranking)?av-bv:bv-av;if(diff)return diff;}
+    }
+    return String(a.name??a.epic).localeCompare(String(b.name??b.epic),'sv');
+  });
+}

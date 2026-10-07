@@ -1,3 +1,8 @@
+import {readIgView} from './igRealtime.js';
+import {getIgMarketDirectory,getIgDirectoryEnrichment} from '../integrations/igMarketDirectory.js';
+import {listIgSchedules,saveIgSchedule,deleteIgSchedule,setIgScheduleEnabled} from '../integrations/igSchedules.js';
+import {igPreferences} from '../integrations/igPreferences.js';
+import {igChanged} from '../integrations/igEvents.js';
 import {localIgCredentialRequest,saveIgCredentials} from '../integrations/igCredentialStore.js';
 import {previewIgOrder,confirmIgOrder,closeIgPosition,rolloverIgPosition,getIgOrderState,getIgBrokerPending} from "../integrations/igOrders.js";
 import type http from "node:http";
@@ -43,6 +48,7 @@ export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMess
           return true;
         }
         await testIgConnection(body.environment);
+        igChanged(body.environment);
         json(res, await getIgStatus());
         return true;
       }
@@ -73,11 +79,19 @@ export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMess
           "/api/ig/close":["environment","dealId","connectionGeneration"],
           "/api/ig/rollover":["environment","dealId","minutes","connectionGeneration"],
         };
+        tradingFields['/api/ig/preferences']=['environment','favorites','revision'];
+        tradingFields['/api/ig/schedules']=['environment','id','name','epics','timeframe','percent','horizonMinutes','durationMinutes','intervalMinutes','maxPositions','localTime','recurrence','date','weekdays','enabled','timezone'];
         const allowed = tradingFields[url.pathname]??(url.pathname === "/api/ig/session" && method === "POST" ? ["environment","epics","timeframe","percent","horizonMinutes","durationMinutes","intervalMinutes","maxPositions"] : ["environment","epics","timeframe","percent","horizonMinutes"]);
         if (Object.keys(body).some(key => !allowed.includes(key))) { jsonStatus(res, 400, {error:"Okända fält i IG-begäran."}); return true; }
         try {
           const selection = {epics:body.epics as string[],timeframe:body.timeframe as IgTimeframe,percent:body.percent as number|undefined,horizonMinutes:body.horizonMinutes as number|undefined};
-          if (url.pathname === "/api/ig/workspace" && method === "GET") {const w=await getIgWorkspace(environment),o=getIgOrderState(environment,w.positions),b=await getIgBrokerPending(environment,w.connection.connectionGeneration??undefined);if(getIgStatus().environments[environment].connectionGeneration!==w.connection.connectionGeneration)throw Error('IG-kontot ändrades under hämtningen; hämta om handelsytan');json(res,{...w,...o,pendingOrders:[...o.pendingOrders.filter(d=>!b.orders.some((p:any)=>p.dealId===d.dealId)),...b.orders],pendingOrderStatus:b.status,signalProposals:w.pendingOrders,positions:w.positions?.map((p:any)=>{const plan=o.exitPlans.find(x=>x.dealId===p.dealId);return {...p,closeAt:plan?.closeAt,closing:plan?.status==="submitted"||plan?.status==="unknown",closeError:plan?.error,closeStatus:plan?.status};})});}
+          if (url.pathname === "/api/ig/workspace" && method === "GET") json(res,await readIgView(environment));
+          else if(url.pathname==='/api/ig/directory'&&method==='GET') json(res,await getIgMarketDirectory(environment,url.searchParams.get('category')));
+          else if(url.pathname==='/api/ig/directory/enrichment'&&method==='GET') json(res,await getIgDirectoryEnrichment(environment,url.searchParams.get('epic')??''));
+          else if(url.pathname==='/api/ig/preferences'&&method==='POST'){json(res,igPreferences.set(environment,body));igChanged(environment);}
+          else if(url.pathname==='/api/ig/schedules'&&method==='GET') json(res,{schedules:listIgSchedules(environment)});
+          else if(url.pathname==='/api/ig/schedules'&&method==='DELETE'){deleteIgSchedule(environment,String(body.id??''));json(res,{schedules:listIgSchedules(environment)});igChanged(environment);}
+          else if(url.pathname==='/api/ig/schedules'&&method==='POST'){const result=body.id&&Object.keys(body).every(k=>['environment','id','enabled'].includes(k))?setIgScheduleEnabled(environment,String(body.id),body.enabled as boolean):saveIgSchedule(environment,body);json(res,{schedule:result,schedules:listIgSchedules(environment)});igChanged(environment);}
           else if (url.pathname === "/api/ig/catalog" && method === "GET") json(res, await getIgCatalogue(environment,url.searchParams.get("category")));
           else if (url.pathname === "/api/ig/markets" && method === "GET") json(res, await searchIgMarkets(environment,url.searchParams.get("searchTerm") ?? ""));
           else if (url.pathname === "/api/ig/market" && method === "GET") json(res, await getIgMarket(environment,url.searchParams.get("epic") ?? ""));

@@ -1,0 +1,45 @@
+import {callIgAuthenticated,getIgReadBudget,getIgStatus,type IgEnvironment} from './igConnection.js';
+import {getIgCatalogue,getIgCandles,igMarketCategory} from './igWorkspace.js';
+const numeric=(x:unknown)=>typeof x==='number'&&Number.isFinite(x)?x:null;
+export function enrichIgDirectoryMarket(m:Record<string,any>){const bid=numeric(m.bid),offer=numeric(m.offer),changePercent=numeric(m.percentageChange??m.changePercent);return {...m,changePercent,movementPercent:changePercent===null?null:Math.abs(changePercent),spread:bid!==null&&offer!==null&&offer>=bid?offer-bid:null,trendScore:null,sentimentLongPercent:null};}
+export const igDirectoryRankings={gainers:{available:true,field:'changePercent',direction:'desc',period:'IG:s sessionsförändring; inte en egen rullande 24h-beräkning'},losers:{available:true,field:'changePercent',direction:'asc'},movers:{available:true,field:'movementPercent',direction:'desc'},spread:{available:true,field:'spread',direction:'asc',note:'Endast jämförbart inom samma prisenhet'},trend:{available:false,reason:'Kräver verifierade stängda ljus med gemensam period'},mostBought:{available:false,reason:'Verifierad kundsentimentdata saknas; är inte handelsvolym'},profits:{available:false,reason:'Marknadsuppgång är inte realiserad strategivinst'}};
+export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;status?:typeof getIgStatus;budget?:typeof getIgReadBudget;fallback?:typeof getIgCatalogue;now?:()=>number;candles?:typeof getIgCandles}={}){
+ const call=deps.call??callIgAuthenticated,status=deps.status??getIgStatus,budget=deps.budget??getIgReadBudget,fallback=deps.fallback??getIgCatalogue,now=deps.now??Date.now;
+ const candles=deps.candles??getIgCandles;
+ const cache=new Map<string,{at:number;value:any}>(),pending=new Map<string,Promise<any>>();
+ function identity(mode:IgEnvironment){if(mode!=='demo'&&mode!=='live')throw Error('Ogiltig IG-miljö');const c=status().environments[mode];if(c.status!=='connected'||!c.connectionGeneration)throw Error('IG är inte anslutet');return c.connectionGeneration;}
+ async function catalogue(mode:IgEnvironment,category:unknown){if(category!=='forex'&&category!=='crypto')throw Error('Välj Forex eller Kryptovalutor');const binding=identity(mode),key=`${mode}:${binding}:${category}`,old=cache.get(key);if(old&&now()-old.at<60000)return structuredClone(old.value);if(pending.has(key))return structuredClone(await pending.get(key));
+ const job=(async()=>{const markets=new Map<string,any>();let unclassified=0;let complete=false,note='IG:s kategorikatalog kunde inte verifieras',source='IG kategorier',failed=false;
+ async function read(endpoint:string){if(budget(mode).remaining<1||budget(mode).used>=10)throw Error('budget');const [resource,query]=endpoint.split('?');const result=await call(mode,resource!,'GET','1',undefined,query?{query}:undefined);if(identity(mode)!==binding)throw Error('account');return result;}
+ try{const root=await read('categories');if(!Array.isArray(root.categories))throw Error('shape');
+ const categories=root.categories.filter((node:any)=>/forex|currenc|valut|crypto|krypto|bitcoin|ether/i.test(String(node.code??node.name??node.categoryName??'')));
+ if(!categories.length)throw Error('categories');let unresolved=false;
+ for(const node of categories){const id=node.code??node.id??node.categoryId;if(typeof id!=='string'||!/^[A-Za-z0-9._-]{1,100}$/.test(id)){unresolved=true;continue;}
+ for(let page=0;page<50;page++){
+ const result=await read(`categories/${encodeURIComponent(id)}/instruments?pageNumber=${page}&pageSize=1000`);const entries=result.instruments;if(!Array.isArray(entries)){unresolved=true;break;}
+ for(const entry of entries){const m={...entry,name:entry.instrumentName??entry.name,type:entry.instrumentType??entry.type};const explicit=/crypto|krypto/i.test(id)?'crypto':/forex/i.test(id)?'forex':null;const classified=explicit??igMarketCategory(m);if(!classified)unclassified++;if(typeof m.epic==='string'&&classified===category)markets.set(m.epic,enrichIgDirectoryMarket({...m,category}));}
+ const metadata=result.metadata;if(!metadata||metadata.pageNumber!==page||!Number.isInteger(metadata.pageSize)||metadata.pageSize<1){unresolved=true;break;}
+ if(entries.length<metadata.pageSize)break;if(page===49)unresolved=true;
+ }
+ }
+ complete=!unresolved&&unclassified===0;note=complete?'Alla klassificerade instrument i IG-kontots Forex-/Kryptokategorier hämtade.':'Delvis katalog: kategoristruktur eller pagination behöver kompletteras';
+ }catch{failed=true;complete=false;}
+ if(failed||!markets.size){complete=false;const result=await fallback(mode,category);if(identity(mode)!==binding)throw Error('IG-kontoanslutningen ändrades');for(const m of result.markets)markets.set(m.epic,enrichIgDirectoryMarket(m));source='IG kontosökning (reservkälla)';note=result.note;}
+ const rows=[...markets.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name),'sv'));const hasChanges=rows.some(m=>m.changePercent!==null),hasSpread=rows.some(m=>m.spread!==null);
+ const rankings=structuredClone(igDirectoryRankings);rankings.gainers.available=hasChanges;rankings.losers.available=hasChanges;rankings.movers.available=hasChanges;rankings.spread.available=hasSpread;
+ const value={environment:mode,category,markets:rows,complete,status:complete?'ready':'partial',source,note,error:null,updatedAt:now(),remainingSearches:null,unclassifiedInstruments:unclassified,rankings};cache.set(key,{at:now(),value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}}
+ async function enrich(mode:IgEnvironment,epic:string){
+ if(typeof epic!=='string'||!/^[A-Za-z0-9._-]{1,100}$/.test(epic))throw Error('Ogiltigt IG-instrument');
+ const binding=identity(mode),key=`enrich:${mode}:${binding}:${epic}`,cached=cache.get(key);if(cached&&now()-cached.at<60000)return structuredClone(cached.value);if(pending.has(key))return structuredClone(await pending.get(key));
+ const job=(async()=>{let trendScore:number|null=null,sentimentLongPercent:number|null=null;const reasons:string[]=[];
+ try{if(budget(mode).remaining<3||budget(mode).used>=8)throw Error('budget');const detail=await call(mode,`markets/${epic}`,'GET','3');if(identity(mode)!==binding||detail.instrument?.epic!==epic)throw Error('identity');const marketId=detail.instrument?.marketId;
+ if(typeof marketId!=='string'||!/^[A-Za-z0-9._-]{1,100}$/.test(marketId))throw Error('marketId');const sentiment=await call(mode,`client-sentiment/${encodeURIComponent(marketId)}`,'GET','1');const long=numeric(sentiment.longPositionPercentage),short=numeric(sentiment.shortPositionPercentage);if(sentiment.marketId!==marketId||long===null||short===null||long<0||short<0||long>100||short>100||Math.abs(long+short-100)>0.1)throw Error('sentiment');sentimentLongPercent=long;
+ }catch{reasons.push('Verifierat IG-kundsentiment saknas för instrumentet');}
+ try{if(budget(mode).remaining<1||budget(mode).used>=10)throw Error('budget');const result=await candles(mode,epic,'1h',60);const bars=result.candles.slice(-50);if(bars.length!==50||bars.some((b,i)=>!Number.isFinite(b.close)||b.close<=0||b.closeTime>now()||(i>0&&b.openTime-bars[i-1]!.openTime!==3600000))||now()-bars[49]!.closeTime>3600000)throw Error('candles');const sma=(n:number)=>bars.slice(-n).reduce((total,b)=>total+b.close,0)/n;trendScore=(sma(20)/sma(50)-1)*100;
+ }catch{reasons.push('Trend kräver 50 sammanhängande aktuella stängda 1h-ljus');}
+ if(identity(mode)!==binding)throw Error('IG-kontoanslutningen ändrades');const value={environment:mode,epic,trendScore,sentimentLongPercent,trendBasis:'SMA20/SMA50 på 50 stängda 1h-ljus · procentuell skillnad',sentimentBasis:'IG andel långa positioner · inte köpvolym',updatedAt:now(),reasons};cache.set(key,{at:now(),value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}
+ }
+
+ return {catalogue,enrich};
+}
+const directory=createIgMarketDirectory();export const getIgMarketDirectory=directory.catalogue,getIgDirectoryEnrichment=directory.enrich;

@@ -1,3 +1,5 @@
+import {attachIgRealtime} from './igRealtime.js';
+import {tickIgSchedules} from '../integrations/igSchedules.js';
 import {tickIgOrders} from "../integrations/igOrders.js";
 import {handleIgRoutes} from "./igRoutes.js";
 import {tickIgSessions} from "../integrations/igWorkspace.js";
@@ -808,7 +810,7 @@ export function startServer(
   const uiDir = path.resolve(import.meta.dirname, "../../src/server/ui");
   // Bybit-websocket, live-lampor och strategibiblioteket (src/server/liveRoutes.ts)
   if(legacyRuntime)initLiveLayer(brokers, broadcastEvent);
-  const igTimer=setInterval(()=>{void tickIgSessions().catch(()=>log.warn("IG-sessionsbevakningen misslyckades"));},1000);
+  const igTimer=setInterval(()=>{void tickIgSchedules().catch(()=>log.warn("IG-schemabevakningen misslyckades"));void tickIgSessions().catch(()=>log.warn("IG-sessionsbevakningen misslyckades"));},1000);
   igTimer.unref();
   const igOrderTimer=setInterval(()=>{void tickIgOrders().catch(()=>log.warn("IG-orderbevakningen misslyckades"));},15000);
   igOrderTimer.unref();
@@ -917,6 +919,7 @@ export function startServer(
       }
 
       if (url.pathname === "/api/auth/logout" && method === "POST") {
+        igRealtime.revoke(req.headers.cookie);
         res.writeHead(200, {
           "Content-Type": "application/json",
           "Set-Cookie": `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`,
@@ -2268,6 +2271,12 @@ Regler:
       res.end("Internal error");
     }
   });
+
+  const igRealtime=attachIgRealtime(server,{authorize:async req=>{
+    try{const origin=new URL(req.headers.origin??'');if(origin.host!==req.headers.host||!(origin.protocol==='https:'||(origin.protocol==='http:'&&['localhost','127.0.0.1'].includes(origin.hostname)))||req.headers['sec-fetch-site']==='cross-site')return false;}catch{return false;}
+    if(isLocalNoLogin(req)||isTailnetNoLogin(req))return true;
+    const session=await verifyAccessToken(parseCookies(req.headers.cookie)[SESSION_COOKIE]);return session?.status==='active';
+  }});
 
   // Upptagen port = en bot kör redan. Avsluta i stället för att köra en andra
   // agent-loop i bakgrunden (dubbla analyser, dubbel AI-kostnad).

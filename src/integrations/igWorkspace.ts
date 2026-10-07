@@ -1,3 +1,4 @@
+import {igChanged} from './igEvents.js';
 import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igUsdSekFx,type IgAccountFx} from "./igRules.js";
 import {getHistoricalContext} from "../data/tiingoHistory.js";
 import fs from "node:fs";
@@ -78,7 +79,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     } catch {s={selection:{epics:[],timeframe:"5m",percent:1,horizonMinutes:15},session:null,analysis:null,pendingOrders:[]};}
     states.set(mode,s!);return s!;
   }
-  function persist(mode:IgEnvironment,next:WorkspaceState) {fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,`${mode}.json`),temp=`${file}.${process.pid}.tmp`;fs.writeFileSync(temp,JSON.stringify(next));fs.renameSync(temp,file);states.set(mode,next);}
+  function persist(mode:IgEnvironment,next:WorkspaceState) {fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,`${mode}.json`),temp=`${file}.${process.pid}.tmp`;fs.writeFileSync(temp,JSON.stringify(next));fs.renameSync(temp,file);states.set(mode,next);igChanged(mode);}
   const clone=<T>(v:T):T=>JSON.parse(JSON.stringify(v));
   const connectionIdentity=(mode:IgEnvironment)=>{const c=status().environments[mode];return c.status==="connected" ? c.connectionGeneration ?? `${c.checkedAt}:${c.account?.accountId}` : null;};
   function consumeRead(mode:IgEnvironment){if(!deps.call)return;if(readBudget(mode).remaining===0)throw Error("IG-läsbudgeten är slut för denna minut");fixtureReads.push({environment:mode,at:now()});}
@@ -103,7 +104,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     return cached(`search:${mode}:${term}`,60000,async()=>{
       const data=await read(mode,"markets","GET","1",undefined,{query:new URLSearchParams({searchTerm:term.trim()}).toString()});
       if(!Array.isArray(data.markets))throw Error("IG-marknadskatalogen kunde inte verifieras");
-      return {environment:mode,status:"ready",error:null,markets:data.markets.filter((m:any)=>typeof m.epic==="string").map((m:any)=>({epic:m.epic,name:str(m.instrumentName),type:str(m.instrumentType),category:igMarketCategory(m),expiry:str(m.expiry),bid:num(m.bid),offer:num(m.offer),marketStatus:str(m.marketStatus),streamingPricesAvailable:m.streamingPricesAvailable===true,delayTime:num(m.delayTime)})),updatedAt:now()};
+      return {environment:mode,status:"ready",error:null,markets:data.markets.filter((m:any)=>typeof m.epic==="string").map((m:any)=>({epic:m.epic,name:str(m.instrumentName),type:str(m.instrumentType),category:igMarketCategory(m),expiry:str(m.expiry),bid:num(m.bid),offer:num(m.offer),percentageChange:num(m.percentageChange),netChange:num(m.netChange),marketStatus:str(m.marketStatus),streamingPricesAvailable:m.streamingPricesAvailable===true,delayTime:num(m.delayTime)})),updatedAt:now()};
     });
   }
   // IG:s tidigare navigation finns inte längre. Katalogen byggs från verkliga kontosökningar och märks som sökbaserad.
@@ -289,20 +290,24 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     } catch(e){const current=state(mode);persist(mode,{...current,analysis:{requestId,environment:mode,selection:selected,startedAt,completedAt:now(),status:(cancellations.get(mode)??0)!==cancellation?"stopped":"failed",steps:clone(steps),error:errorText(e)}});throw Error(errorText(e));}
     finally{busy.delete(mode);}
   }
-  async function startSession(mode:IgEnvironment,input:Partial<IgSelection>&{durationMinutes:number;intervalMinutes:number;maxPositions?:number}) {
+  async function startSession(mode:IgEnvironment,input:Partial<IgSelection>&{durationMinutes:number;intervalMinutes:number;maxPositions?:number},stillAllowed?:()=>boolean) {
     modeGuard(mode);if(busy.has(mode)||state(mode).session?.status==="running")throw Error("Session körs redan för IG-miljön");
     if(![15,30,60,120].includes(input.durationMinutes)||![1,5,15,30].includes(input.intervalMinutes))throw Error("Ogiltiga IG-sessionsintervall");
     const maxPositions=input.maxPositions??1;
     if(!Number.isInteger(maxPositions)||maxPositions<1||maxPositions>10)throw Error("Ogiltig gräns för samtidiga positioner");
-    connected(mode);const binding=connectionIdentity(mode);
+    connected(mode);const binding=connectionIdentity(mode),cancellation=cancellations.get(mode)??0;
     const selected=selectionGuard(input);for(const epic of selected.epics){const m=await market(mode,epic);if(!["CURRENCIES","INDICES","COMMODITIES","SHARES"].includes(m.type??""))throw Error("IG-instrumenttypen stöds inte i denna CFD-vy");}
     if(connectionIdentity(mode)!==binding)throw Error("IG-kontoanslutningen ändrades under sessionsstarten");
+    if((cancellations.get(mode)??0)!==cancellation)throw Error("Sessionens start avbröts");
     if(busy.has(mode)||state(mode).session?.status==="running")throw Error("Session körs redan för IG-miljön");
+    if(stillAllowed&&!stillAllowed())throw Error('Schemalagd start avbruten');
     const session:IgSession={...selected,id:randomUUID(),environment:mode,startedAt:now(),endsAt:now()+input.durationMinutes*60000,intervalMinutes:input.intervalMinutes,nextRunAt:now(),status:"running",analyses:0,lastError:null,maxPositions};
     persist(mode,{...state(mode),selection:selected,session});return clone(session);
   }
   function stopSession(mode:IgEnvironment){modeGuard(mode);cancellations.set(mode,(cancellations.get(mode)??0)+1);const current=state(mode);if(current.session?.status==="running")persist(mode,{...current,session:{...current.session,status:"stopped"}});return clone(state(mode).session);}
+  let tickingSessions=false;
   async function tickSessions() {
+    if(tickingSessions)return;tickingSessions=true;try{
     for(const mode of ["demo","live"] as const){
       if(status().environments[mode].status==="connected")connected(mode);
       else {const old=state(mode);if(old.session?.status==="running")persist(mode,{...old,session:{...old.session,status:"interrupted",lastError:"IG-anslutningen saknas; starta om sessionen efter anslutning"}});continue;}
@@ -312,6 +317,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
       let error:string|null=null;try{await analyze(mode,s);}catch(e){error=errorText(e);}
       const updated=state(mode);if(updated.session?.id===id)persist(mode,{...updated,session:{...updated.session,analyses:updated.session.analyses+(error?0:1),lastError:error,status:updated.session.status==="running"&&now()>=updated.session.endsAt?"completed":updated.session.status}});
     }
+    }finally{tickingSessions=false;}
   }
   async function workspace(mode:IgEnvironment) {
     modeGuard(mode);if(status().environments[mode].status==="connected")connected(mode);

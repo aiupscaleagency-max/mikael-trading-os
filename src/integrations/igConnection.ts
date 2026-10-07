@@ -15,7 +15,7 @@ export interface IgEnvironmentStatus {
   status: "missing" | "configured" | "connected" | "error"; error: string | null;
   account: IgAccountSummary | null; checkedAt: number | null; connectionGeneration?: string | null;
 }
-interface Session {cst:string;xst:string;apiKey:string;accountId:string;createdAt:number;fingerprint:string}
+interface Session {cst:string;xst:string;apiKey:string;accountId:string;createdAt:number;fingerprint:string;streamingEndpoint?:string}
 const endpoints = {demo:"https://demo-api.ig.com/gateway/deal",live:"https://api.ig.com/gateway/deal"};
 function validMode(mode: unknown): asserts mode is IgEnvironment {if(mode!=="demo"&&mode!=="live") throw Error("Ogiltig IG-miljö");}
 function number(value:unknown):number|null {return typeof value==="number"&&Number.isFinite(value)?value:null;}
@@ -93,7 +93,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
       const c=credentials(mode), {response,data}=await call(mode,"session",c);
       const cst=response.headers.get("CST"),xst=response.headers.get("X-SECURITY-TOKEN"),accountId=text(data.currentAccountId);
       if(!cst || !xst || !accountId) return fail(mode,"IG returnerade ingen verifierbar kontosession");
-      const session={cst,xst,apiKey:c.apiKey!,accountId,createdAt:now(),fingerprint:fingerprint(c)};
+      const session={cst,xst,apiKey:c.apiKey!,accountId,createdAt:now(),fingerprint:fingerprint(c),streamingEndpoint:typeof data.lightstreamerEndpoint==="string"?data.lightstreamerEndpoint:undefined};
       const accounts=await call(mode,"accounts",c,session);
       if(!Array.isArray(accounts.data.accounts)) return fail(mode,"IG returnerade inget verifierbart kontounderlag");
       const active=accounts.data.accounts.find((a:unknown)=>a&&typeof a==="object"&&(a as Record<string,unknown>).accountId===accountId);
@@ -149,7 +149,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
   }
   async function authenticated(mode:IgEnvironment,route:string,method:"GET"|"POST"="GET",version="1",body?:Record<string,unknown>,extra?:Record<string,string>):Promise<Record<string,any>> {
     validMode(mode);
-    const readOnly = route === "accounts" || route === "positions" || route === "workingorders" || route === "markets" || route === "history/activity" || route === "history/transactions" || /^(markets|prices)\/[A-Za-z0-9._-]{1,100}$/.test(route) || /^confirms\/[A-Za-z0-9_-]{1,100}$/.test(route);
+    const readOnly = route === "categories" || /^categories\/[A-Za-z0-9._-]{1,100}\/instruments$/.test(route) || /^client-sentiment\/[A-Za-z0-9._-]{1,100}$/.test(route) || route === "accounts" || route === "positions" || route === "workingorders" || route === "markets" || route === "history/activity" || route === "history/transactions" || /^(markets|prices)\/[A-Za-z0-9._-]{1,100}$/.test(route) || /^confirms\/[A-Za-z0-9_-]{1,100}$/.test(route);
     const write = (route === "positions/otc" || route === "workingorders/otc") && method === "POST";
     if((method === "GET" && !readOnly) || (method === "POST" && !write) || !( ["1","2","3"].includes(version) || (version==="4"&&method==="GET"&&/^markets\/[A-Za-z0-9._-]{1,100}$/.test(route)) )) throw Error("IG-anropet ingår inte i tillåtna endpoints");
     if(write && process.env.IG_ORDER_EXECUTION_ENABLED !== "true") throw Error("IG-orderexekvering är avstängd på servern");
@@ -163,8 +163,9 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
       if(allowedQuery && method!=="GET") throw Error("IG-order får inte innehålla frågeparametrar");
     }
     const query=new URLSearchParams(extra?.query || "");
-    const allowedParams=new Set(route === "markets"?["searchTerm"]:route.startsWith("prices/")?["resolution","max","from","to","pageSize","pageNumber"]:route.startsWith("history/")?["from","to","detailed","pageSize","pageNumber","type"]:[]);
+    const allowedParams=new Set(route === "markets"?["searchTerm"]:/^categories\/[A-Za-z0-9._-]{1,100}\/instruments$/.test(route)?["pageNumber","pageSize"]:route.startsWith("prices/")?["resolution","max","from","to","pageSize","pageNumber"]:route.startsWith("history/")?["from","to","detailed","pageSize","pageNumber","type"]:[]);
     for(const [name,value] of query) if(!allowedParams.has(name) || value.length>200) throw Error("Ogiltiga IG-frågeparametrar");
+    if(route==='categories'||route.startsWith('categories/')||route.startsWith('client-sentiment/')){if(version!=='1')throw Error('Ogiltig IG-kategoriversion');for(const [name,value] of query){if(!/^\d{1,6}$/.test(value)||name==='pageSize'&&(Number(value)<1||Number(value)>1000))throw Error('Ogiltig IG-katalogpaginering');}}
     if(method==="GET")consumeRead(mode);
     try {
       const response=await request(`${endpoints[mode]}/${route}${query.size?`?${query}`:""}`,{method,headers,signal:AbortSignal.timeout(8000),...(body?{body:JSON.stringify(body)}:{})});
@@ -179,7 +180,9 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
       return data;
     } catch(error) {throw Error(error instanceof Error && /^(?:IG svarade HTTP [1-5][0-9]{2}|IG begränsade antal läsanrop; försök igen om en minut)$/.test(error.message)?error.message:"IG-anropet kunde inte verifieras; utfallet kan vara okänt");}
   }
-  return {getReadBudget:readBudget,getStatus:()=>({environments:{demo:status("demo"),live:status("live")}}),testConnection,testWithSharedLogin,callAuthenticated:authenticated,getAccounts:readAccounts,getPositions:readPositions};
+  // Endast serverintern åtkomst. Returneras aldrig av status-/HTTP-rutterna.
+  function streamingSession(mode:IgEnvironment){const current=status(mode),s=sessions.get(mode);if(current.status!=="connected"||!s?.streamingEndpoint)return null;let endpoint:URL;try{endpoint=new URL(s.streamingEndpoint);}catch{return null;}if(endpoint.protocol!=="https:"||!/(^|\.)(ig\.com|marketdatasystems\.com)$/.test(endpoint.hostname))return null;return {endpoint:endpoint.href,accountId:s.accountId,password:`CST-${s.cst}|XST-${s.xst}`,generation:current.connectionGeneration!};}
+  return {getStreamingSession:streamingSession,getReadBudget:readBudget,getStatus:()=>({environments:{demo:status("demo"),live:status("live")}}),testConnection,testWithSharedLogin,callAuthenticated:authenticated,getAccounts:readAccounts,getPositions:readPositions};
 }
 const connection=createIgConnection();
 export const getIgStatus=connection.getStatus;
@@ -192,3 +195,5 @@ export const callIgAuthenticated=connection.callAuthenticated;
 export const testIgConnectionWithSharedLogin=connection.testWithSharedLogin;
 
 export const getIgReadBudget=connection.getReadBudget;
+
+export const getIgStreamingSession=connection.getStreamingSession;
