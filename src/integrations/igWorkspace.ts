@@ -1,4 +1,6 @@
-import {evaluateIgStrategy} from './igStrategies.js';
+import {igAnalysisMemory,createIgAnalysisMemory} from './igAnalysisMemory.js';
+import {evaluateIgStrategy,evaluateIgStrategies,getIgStrategyRequirements} from './igStrategies.js';
+import {assessIgJevMarket} from './igJevMarket.js';
 import {igChanged} from './igEvents.js';
 import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igUsdSekFx,type IgAccountFx} from "./igRules.js";
 import {getHistoricalContext} from "../data/tiingoHistory.js";
@@ -61,9 +63,10 @@ export function normalizeIgCandles(prices:unknown,timeframe:IgTimeframe,now:numb
   candles.sort((a,b)=>a.openTime-b.openTime);
   return {candles,rejected,forming};
 }
-export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?:typeof getIgStatus;positions?:typeof getIgPositions;accounts?:typeof getIgAccounts;now?:()=>number;directory?:string;guard?:()=>Promise<{allowed:boolean;killSwitchActive:boolean}>;jev?:(context:Record<string,unknown>)=>Promise<unknown>;llm?:(role:"technical"|"head",context:Record<string,any>)=>Promise<Record<string,any>>}={}) {
+export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?:typeof getIgStatus;positions?:typeof getIgPositions;accounts?:typeof getIgAccounts;now?:()=>number;directory?:string;guard?:()=>Promise<{allowed:boolean;killSwitchActive:boolean}>;jev?:(context:Record<string,unknown>)=>Promise<unknown>;jevMarket?:typeof assessIgJevMarket;llm?:(role:"technical"|"head",context:Record<string,any>)=>Promise<Record<string,any>>}={}) {
   const call=deps.call??callIgAuthenticated,status=deps.status??getIgStatus,positions=deps.positions??getIgPositions,accounts=deps.accounts??getIgAccounts,now=deps.now??Date.now;
   const directory=deps.directory??path.resolve("data/ig-workspace");
+  const analysisMemory=deps.status?createIgAnalysisMemory({directory:path.join(directory,"analysis-memory"),status:status as any,now}):igAnalysisMemory;
   const states=new Map<IgEnvironment,WorkspaceState>(),cache=new Map<string,{at:number,value:any}>(),pending=new Map<string,Promise<any>>(),busy=new Set<IgEnvironment>(),cancellations=new Map<IgEnvironment,number>();
   const fixtureReads:{environment:IgEnvironment;at:number}[]=[];
   // Produktionsanrop räknas centralt i anslutningen; injicerade testanrop får samma miljöbudget.
@@ -183,11 +186,12 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     const prior=cache.get(`${cacheKey}:account:${connectionIdentity(mode)}`)?.value;
     const last=prior?.candles?.at(-1);
     const incremental=last && now()-last.closeTime < frames[timeframe].ms*2;
-    const count=incremental?3:limit;
+    const count=incremental?3:limit+1;
     const result = await cached(cacheKey,Math.min(3600000,Math.max(60000,frames[timeframe].ms)),async()=>{
       if(prior?.allowance && num(prior.allowance.remainingAllowance)!==null && prior.allowance.remainingAllowance<count)throw Error("IG-historikkvoten räcker inte för nya ljus");
       const data=await read(mode,`prices/${epic}`,"GET","3",undefined,{query:new URLSearchParams({resolution:frames[timeframe].resolution,max:String(count),pageSize:String(count)}).toString()});
       const normalized=normalizeIgCandles(data.prices,timeframe,now());
+      normalized.candles=normalized.candles.slice(-limit);
       if(incremental && normalized.candles.length){
         const merged=new Map<number,IgCandle>(prior.candles.map((b:IgCandle)=>[b.openTime,b]));
         for(const b of normalized.candles)merged.set(b.openTime,b);
@@ -238,21 +242,16 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     const stage=(index:number,status:string)=>{checkCurrent();steps[index]!.status=status;const current=state(mode);persist(mode,{...current,analysis:{requestId,accountBinding,environment:mode,selection:selected,startedAt,status:"running",steps:clone(steps)}});};
     try {
       stage(0,"Arbetar");
+      let analysisObservations:Record<string,any>[]=[];
       const result=await runTwoAgentPipeline({
         jev:async()=>{
           await analysisGuard();
-          const sanitized={task:"Read-only IG CFD/forex market analysis: two existing agent roles, no order execution",constraints:["no market/account data sent","existing models only","no CFD size guessing"]};
-          try {
-          if(deps.jev)return await deps.jev(sanitized);
-          const verdict=await askJev(sanitized,8000,{execution_depth:{type:"choice",instructions:"Choose analysis depth",criteria:{standard:"normal market analysis",deep:"financial risk correctness"}}});
-          return {available:verdict.available,advice:verdict.answers,note:verdict.available?"JEV-förkontroll genomförd":"JEV otillgänglig; befintliga två agentroller behålls"};
-          } catch {return {available:false,note:"JEV otillgänglig; befintliga två agentroller behålls"};}
-        },
-        technical:async(jev)=>{
-          stage(0,"Klar");stage(1,"Arbetar");
-          if(connectionIdentity(mode)!==accountBinding)throw Error("IG-kontoanslutningen ändrades under analysen");
-          const observations=[];
-          for(const epic of selected.epics){const [m,c]=await Promise.all([market(mode,epic),candles(mode,epic,selected.timeframe)]);if(!["CURRENCIES","INDICES","COMMODITIES","SHARES"].includes(m.type??""))throw Error("IG-instrumenttypen stöds inte i denna CFD-vy");if(c.candles.length<20)throw Error("Analys kräver minst 20 verifierade stängda IG-ljus");
+          const sanitized={task:"Read-only IG CFD/forex analysis",constraints:["no account or credentials sent","existing models only","no orders"]};
+          let preflight:any={};
+          if(deps.jev){try{preflight=await deps.jev(sanitized);}catch{preflight={available:false,note:"JEV-förkontroll otillgänglig"};}}
+          await analysisGuard();checkCurrent();
+          const observations=[] as Record<string,any>[];
+          for(const epic of selected.epics){const [m,c]=await Promise.all([market(mode,epic),candles(mode,epic,selected.timeframe,Math.max(50,getIgStrategyRequirements(selected.timeframe).requiredCandles))]);if(!["CURRENCIES","INDICES","COMMODITIES","SHARES"].includes(m.type??""))throw Error("IG-instrumenttypen stöds inte i denna CFD-vy");if(c.candles.length<20)throw Error("Analys kräver minst 20 verifierade stängda IG-ljus");
             checkCurrent();
             const last=c.candles.at(-1)!;if(now()-last.closeTime<0||now()-last.closeTime>frames[selected.timeframe].ms)throw Error("IG-ljusserien är inaktuell");
             if(c.candles.some((bar,index)=>index>0&&bar.openTime-c.candles[index-1]!.openTime!==frames[selected.timeframe].ms))throw Error("IG-ljusserien innehåller luckor");
@@ -261,9 +260,19 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
             const refs:[[RegExp,string],...[RegExp,string][]]=[[/bitcoin|\bBTC\b/i,"BTCUSDC"],[/ethereum|\bETH\b/i,"ETHUSDC"],[/solana|\bSOL\b/i,"SOLUSDC"],[/litecoin|\bLTC\b/i,"LTCUSDC"]];
             const reference=refs.find(([pattern])=>pattern.test(m.name??""))?.[1];
             const historicalReference=reference&&!deps.llm?await getHistoricalContext(reference):{source:"Tiingo",purpose:"historical_reference_only",status:"unavailable",error:"Ingen verifierad Tiingo-referens för detta instrument"};
-            observations.push({epic,market:m,candles:c.candles,historicalReference,strategyContext:evaluateIgStrategy({candles:c.candles,epic,name:m.name,timeframe:selected.timeframe,now:now()}),indicators:{sma20:sma(closes,20),sma50:sma(closes,50),ema20:ema(closes,20),rsi14:rsi(closes,14),volumeSignal:null},dataQuality:{rejected:c.rejected,forming:c.forming,allowance:c.allowance}});}
+            observations.push({epic,timeframe:selected.timeframe,market:m,candles:c.candles,historicalReference,strategyContext:evaluateIgStrategy({candles:c.candles,epic,name:m.name,timeframe:selected.timeframe,now:now()}),strategyComparisons:evaluateIgStrategies({candles:c.candles,epic,name:m.name,timeframe:selected.timeframe,now:now(),category:m.category,instrumentType:m.type}),indicators:{sma20:sma(closes,20),sma50:sma(closes,50),ema20:ema(closes,20),rsi14:rsi(closes,14),volumeSignal:null},dataQuality:{rejected:c.rejected,forming:c.forming,allowance:c.allowance}});}
           if(connectionIdentity(mode)!==accountBinding)throw Error("IG-kontoanslutningen ändrades under analysen");
-          const technical=await llm("technical",{environment:mode,selection:selected,observations,jev});
+          await analysisGuard();checkCurrent();
+          const marketAssessment=deps.jevMarket?await deps.jevMarket(observations):deps.jev||deps.llm?{available:false,mode:"rules_only",assessments:[],note:"Injicerat testflöde utan externa JEV-anrop"}:await assessIgJevMarket(observations);
+          checkCurrent();
+          analysisObservations=observations;
+          return {...preflight,available:marketAssessment.available,mode:(marketAssessment as any).mode,market:marketAssessment,note:marketAssessment.note};
+        },
+        technical:async(jev)=>{
+          stage(0,"Klar");stage(1,"Arbetar");
+          if(connectionIdentity(mode)!==accountBinding)throw Error("IG-kontoanslutningen ändrades under analysen");
+          const observations=analysisObservations;
+          const technical=await llm("technical",{environment:mode,selection:selected,observations,jev,analysisMemory:analysisMemory.summary(mode,selected.epics)});
           if(!Array.isArray(technical.analyses))throw Error("Analys saknas i teknisk IG-rapport");
           technical.analyses=technical.analyses.filter((a:any)=>selected.epics.includes(a.epic));if(technical.analyses.length!==selected.epics.length || new Set(technical.analyses.map((a:any)=>a.epic)).size!==selected.epics.length)throw Error("Analys saknas för något valt IG-instrument");
           return {...technical,observations};
@@ -271,12 +280,14 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
         head:async(technical,jev)=>{
           stage(1,"Klar");stage(2,"Arbetar");
           if(connectionIdentity(mode)!==accountBinding)throw Error("IG-kontoanslutningen ändrades under analysen");
-          const head=await llm("head",{environment:mode,selection:selected,technical,jev,lastVerifiedAccount:status().environments[mode].account,execution:"manual review; no CFD execution before units and margin verification"});
+          const head=await llm("head",{environment:mode,selection:selected,technical,jev,analysisMemory:analysisMemory.summary(mode,selected.epics),lastVerifiedAccount:status().environments[mode].account,execution:"manual review; no CFD execution before units and margin verification"});
           if(!Array.isArray(head.analyses))throw Error("Analys saknas i Hannas IG-rapport");
           head.analyses=head.analyses.filter((a:any)=>selected.epics.includes(a.epic)&&["BUY","SELL","HOLD"].includes(a.action));if(head.analyses.length!==selected.epics.length || new Set(head.analyses.map((a:any)=>a.epic)).size!==selected.epics.length)throw Error("Analys saknas för något valt IG-instrument");
           head.analyses=head.analyses.map((a:any)=>{
             const observed=technical.observations.find((o:any)=>o.epic===a.epic),quote=observed?.market.quote;
             if(!quote || quote.marketStatus!=="TRADEABLE" || quote.delayTime!==0 || num(quote.receivedAt)===null || quote.receivedAt<0 || now()-quote.receivedAt<0 || now()-quote.receivedAt>60000 || num(quote.observedAt)===null || now()-quote.observedAt<0 || now()-quote.observedAt>60000)return {...a,action:"HOLD",reason:"IG-marknaden eller en färsk ofördröjd kvot kunde inte verifieras",entryLevel:null,stopLevel:null,targetLevel:null};
+            const assessment=(jev as any)?.market?.assessments?.find((x:any)=>x.epic===a.epic);
+            if(assessment&&(assessment.missingData>=0.5||assessment.strategyFit==='contradicted'||a.action==='BUY'&&assessment.direction==='down'||a.action==='SELL'&&assessment.direction==='up'))return {...a,action:'HOLD',reason:'JEV avråder från förslaget utifrån riktning, strategipassning eller saknat underlag',entryLevel:null,stopLevel:null,targetLevel:null};
             return a;
           });return head;
         }
@@ -287,7 +298,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
       stage(2,"Klar");
       const analysis={steps:clone(steps),requestId,accountBinding,environment:mode,selection:selected,startedAt,completedAt:now(),status:"completed",jev:result.jev,technical:result.technical,head:result.head,execution:"manual_review_only"};
       const proposals=result.head.analyses.filter((a:any)=>a.action!=="HOLD").map((a:any)=>({id:randomUUID(),accountBinding,environment:mode,epic:a.epic,direction:a.action,quantity:null,status:"manual_review_blocked",reason:a.reason,entryLevel:num(a.entryLevel),stopLevel:num(a.stopLevel),targetLevel:num(a.targetLevel),percent:selected.percent,horizonMinutes:selected.horizonMinutes,createdAt:now(),requestId,blocker:"CFD-kontraktsstorlek, valuta, marginal och servergrind kräver verifiering innan order"}));
-      const current=state(mode);persist(mode,{...current,analysis,pendingOrders:[...current.pendingOrders,...proposals].slice(-100)});return clone(analysis);
+      const published={...analysis,memory:analysisMemory.record(mode,analysis)};const current=state(mode);persist(mode,{...current,analysis:published,pendingOrders:[...current.pendingOrders,...proposals].slice(-100)});return clone(published);
     } catch(e){const current=state(mode);persist(mode,{...current,analysis:{requestId,environment:mode,selection:selected,startedAt,completedAt:now(),status:(cancellations.get(mode)??0)!==cancellation?"stopped":"failed",steps:clone(steps),error:errorText(e)}});throw Error(errorText(e));}
     finally{busy.delete(mode);}
   }

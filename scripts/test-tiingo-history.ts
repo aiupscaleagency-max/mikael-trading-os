@@ -53,4 +53,4 @@ console.log("PASS: Tiingo course-key fallback, unavailable, Token header, daily 
 const workspaceSource=readFileSync(new URL("../src/integrations/igWorkspace.ts",import.meta.url),"utf8");
 assert.ok(workspaceSource.includes("getHistoricalContext(reference)"),"IG-kedjan använder verifierad referenshistorik");
 assert.ok(workspaceSource.includes("return {...technical,observations}"),"Serverns verifierade observationer överstyr modellens fält");
-assert.ok(workspaceSource.includes("technical,jev,lastVerifiedAccount"),"Hanna får teknisk rapport inklusive referensunderlag");
+assert.match(workspaceSource,/technical,jev,.*lastVerifiedAccount/,"Hanna får teknisk rapport inklusive referensunderlag");

@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {createIgAnalysisMemory} from '../src/integrations/igAnalysisMemory.js';
+const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ig-memory-'));let accountId='ACCOUNT-ALPHA',generation='one',connected=true,now=1000;
+const status=()=>({environments:{demo:{status:connected?'connected':'disconnected',accountId,connectionGeneration:generation},live:{status:'connected',accountId,connectionGeneration:'live'}}});
+const memory=createIgAnalysisMemory({directory,status,now:()=>now});
+const analysis=(requestId:string)=>({status:'completed',accountBinding:generation,requestId,completedAt:now,selection:{timeframe:'5m',epics:['EURUSD']},technical:{observations:[{rawAccount:'secret',candles:[{private:'do not persist'}],strategyComparisons:[{strategyId:'ig-ema-cross-5m',strategyVersion:1}]}]},head:{analyses:[{epic:'EURUSD',action:'HOLD',reason:'Avstår: otillräckligt underlag',privateField:'secret'}]},jev:{available:false,mode:'rules_only'},apiKey:'must-not-persist',account:{balance:123456,accountId},outcomes:{pnl:999}});
+assert.equal(memory.list('demo').records.length,0);assert.equal(memory.record('demo',analysis('first')).saved,true);assert.equal(memory.record('demo',analysis('first')).saved,false);const files=fs.readdirSync(directory);assert.equal(files.length,1);assert.ok(!files[0]!.includes(accountId));const file=path.join(directory,files[0]!);assert.equal(fs.statSync(file).mode&0o777,0o600);const persisted=fs.readFileSync(file,'utf8');for(const secret of ['must-not-persist','secret','123456',accountId,'candles','rawAccount','privateField'])assert.ok(!persisted.includes(secret));
+assert.equal(memory.list('live').records.length,0);assert.equal(memory.list('demo',['OTHER']).records.length,0);assert.equal(memory.summary('demo',['EURUSD']).recordCount,1);assert.equal(memory.list('demo').records[0]?.outcomes,null);
+generation='two';assert.equal(memory.list('demo').records.length,1,'Same account reconnect keeps prior decisions');assert.equal(memory.record('demo',{...analysis('stale'),accountBinding:'one'}).saved,false);
+accountId='ACCOUNT-BETA';assert.equal(memory.list('demo').records.length,0,'Different account isolated');accountId='••••LPHA';assert.equal(memory.record('demo',analysis('masked')).saved,false);assert.equal(memory.list('demo').status,'unavailable');accountId='ACCOUNT-ALPHA';connected=false;assert.equal(memory.list('demo').records.length,0);connected=true;
+for(let i=0;i<105;i++){now++;assert.equal(memory.record('demo',analysis(`record-${i}`)).saved,true);}assert.equal(memory.list('demo').records.length,100);assert.equal(memory.list('demo').records[0]?.requestId,'record-104');
+fs.writeFileSync(file,'corrupted',{mode:0o600});assert.equal(memory.list('demo').status,'unavailable');assert.equal(memory.record('demo',analysis('corrupt')).saved,false);assert.equal(fs.readFileSync(file,'utf8'),'corrupted','Corrupt evidence not overwritten');
+fs.rmSync(directory,{recursive:true,force:true});console.log('IG analysis memory: stable private account buckets, demo/live isolation, projection,0600,bound100,dedupe,stale/corrupt safe PASS');

@@ -1,3 +1,4 @@
+import {igAnalysisMemory} from '../integrations/igAnalysisMemory.js';
 import {listIgImportedSignals,saveIgImportedSignal,deleteIgImportedSignal} from '../integrations/igImportedSignals.js';
 import {listIgStrategies} from '../integrations/igStrategies.js';
 import {readIgView} from './igRealtime.js';
@@ -92,6 +93,7 @@ export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMess
           else if(url.pathname==='/api/ig/imported-signals'&&method==='GET') json(res,{signals:listIgImportedSignals(environment)});
           else if(url.pathname==='/api/ig/imported-signals'&&method==='POST'){const signal=saveIgImportedSignal(environment,body as any);json(res,{signal,signals:listIgImportedSignals(environment)});igChanged(environment);}
           else if(url.pathname==='/api/ig/imported-signals'&&method==='DELETE'){deleteIgImportedSignal(environment,String(body.id??''));json(res,{signals:listIgImportedSignals(environment)});igChanged(environment);}
+          else if(url.pathname==='/api/ig/memory'&&method==='GET') json(res,igAnalysisMemory.list(environment));
           else if(url.pathname==='/api/ig/strategies'&&method==='GET') json(res,{strategies:listIgStrategies()});
           else if(url.pathname==='/api/ig/directory'&&method==='GET') json(res,await getIgMarketDirectory(environment,url.searchParams.get('category')));
           else if(url.pathname==='/api/ig/directory/enrichment'&&method==='GET') json(res,await getIgDirectoryEnrichment(environment,url.searchParams.get('epic')??''));

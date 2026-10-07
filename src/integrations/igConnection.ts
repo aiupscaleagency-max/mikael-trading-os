@@ -182,7 +182,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
   }
   // Endast serverintern åtkomst. Returneras aldrig av status-/HTTP-rutterna.
   function streamingSession(mode:IgEnvironment){const current=status(mode),s=sessions.get(mode);if(current.status!=="connected"||!s?.streamingEndpoint)return null;let endpoint:URL;try{endpoint=new URL(s.streamingEndpoint);}catch{return null;}if(endpoint.protocol!=="https:"||!/(^|\.)(ig\.com|marketdatasystems\.com)$/.test(endpoint.hostname))return null;return {endpoint:endpoint.href,accountId:s.accountId,password:`CST-${s.cst}|XST-${s.xst}`,generation:current.connectionGeneration!};}
-  return {getStreamingSession:streamingSession,getReadBudget:readBudget,getStatus:()=>({environments:{demo:status("demo"),live:status("live")}}),testConnection,testWithSharedLogin,callAuthenticated:authenticated,getAccounts:readAccounts,getPositions:readPositions};
+  return {getAccountIdentity:(mode:IgEnvironment)=>{const current=status(mode),session=sessions.get(mode);return current.status==="connected"&&session&&current.connectionGeneration?{accountId:session.accountId,generation:current.connectionGeneration}:null;},getStreamingSession:streamingSession,getReadBudget:readBudget,getStatus:()=>({environments:{demo:status("demo"),live:status("live")}}),testConnection,testWithSharedLogin,callAuthenticated:authenticated,getAccounts:readAccounts,getPositions:readPositions};
 }
 const connection=createIgConnection();
 export const getIgStatus=connection.getStatus;
@@ -197,3 +197,6 @@ export const testIgConnectionWithSharedLogin=connection.testWithSharedLogin;
 export const getIgReadBudget=connection.getReadBudget;
 
 export const getIgStreamingSession=connection.getStreamingSession;
+
+/** Endast serverintern identitet för isolerad analysjournal. Exponeras aldrig av status-API. */
+export const getIgAccountIdentity=connection.getAccountIdentity;
