@@ -43,6 +43,45 @@ price.update({...valid,TIMESTAMP:String(clock)});assert.equal(events.length,1,'C
 generation=null;stream.ensure('demo',[]);assert.equal(stream.quotes('demo').length,0);
 stream.close();
 
+// REST intygar endast fördröjning/rättighet; bid/ask och prisets klocka kommer från PRICE.
+const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
+let proofClock=clock,proofGeneration='proof-first',proofCalls=0;
+let evidence:any={epic:'EUR',streamingPricesAvailable:true,quote:{delayTime:0,marketStatus:'TRADEABLE',receivedAt:proofClock,observedAt:proofClock}};
+let resolveEvidence:((v:any)=>void)|null=null;
+let deferred=false;
+const verified=createIgStreaming({now:()=>proofClock,sdk:{LightstreamerClient:Client,Subscription},identity:()=>({endpoint:'https://fixture.ig.com',accountId:'fixture',password:'fixture',generation:proofGeneration}),verifyPrice:async()=>{proofCalls++;return deferred?new Promise(resolve=>{resolveEvidence=resolve;}):evidence;}});
+const chart=[{epic:'EUR',scale:'1MINUTE'}];
+verified.ensure('demo',['EUR'],chart);const pc=Client.all.at(-1)!;
+pc.listener.onStatusChange('CONNECTED:WS-STREAMING');await flush();
+const pp=pc.subscriptions.find(x=>x.items[0]==='PRICE:fixture:EUR')!;
+const tick=()=>({...valid,TIMESTAMP:String(proofClock),DELAY:''});
+pp.update(tick());let v:any=verified.quotes('demo')[0];
+assert.equal(v.delayTime,0);assert.equal(v.delayFlag,'');assert.equal(v.bid,1.1,'REST får aldrig ersätta streampris');
+assert.equal(v.delayVerification.validUntil,proofClock+60000);
+verified.ensure('demo',['EUR'],chart);await flush();assert.equal(proofCalls,1,'Inga REST-anrop per tick eller heartbeat');
+pp.update({...tick(),DELAY:'1'});assert.equal(verified.quotes('demo')[0].delayTime,1,'Explicit streamfördröjning vinner över REST');
+pp.update(tick());proofClock+=60000;assert.equal(verified.quotes('demo')[0].delayTime,null,'Proof får inte förlängas av nya tickar');
+pp.update(tick());assert.equal(verified.summary('demo').freshPrices,0);
+for(const patch of [{epic:'GBP'},{streamingPricesAvailable:false},{quote:{...evidence.quote,delayTime:1}},{quote:{...evidence.quote,observedAt:proofClock-60001}},{quote:{...evidence.quote,observedAt:proofClock+1}}]){
+ evidence={epic:'EUR',streamingPricesAvailable:true,quote:{delayTime:0,marketStatus:'TRADEABLE',receivedAt:proofClock,observedAt:proofClock},...patch};
+ verified.ensure('demo',['EUR'],chart);await flush();pp.update(tick());assert.equal(verified.quotes('demo')[0].delayTime,null,'Ofullständig/felaktig REST-kontroll förkastas');proofClock+=30000;
+}
+evidence={epic:'EUR',streamingPricesAvailable:true,quote:{delayTime:0,marketStatus:'TRADEABLE',receivedAt:proofClock,observedAt:proofClock}};
+verified.ensure('demo',['EUR'],chart);await flush();pp.update(tick());assert.equal(verified.quotes('demo')[0].delayTime,0);
+proofClock+=30000;deferred=true;verified.ensure('demo',['EUR'],chart);await flush();
+const oldResolver=resolveEvidence!;
+pc.listener.onStatusChange('STALLED');pc.listener.onStatusChange('CONNECTED:WS-STREAMING');await flush();
+const newResolver=resolveEvidence!;
+oldResolver({...evidence,quote:{...evidence.quote,receivedAt:proofClock,observedAt:proofClock}});await flush();pp.update(tick());
+assert.equal(verified.quotes('demo')[0].delayTime,null,'Sen REST-respons från före avbrott får inte verifiera återansluten ström');
+newResolver({...evidence,quote:{...evidence.quote,receivedAt:proofClock,observedAt:proofClock}});await flush();pp.update(tick());
+assert.equal(verified.quotes('demo')[0].delayTime,0,'Ny anslutning kan få egen kontroll');
+proofClock+=30000;verified.ensure('demo',['EUR'],chart);await flush();const accountResolver=resolveEvidence!;
+proofGeneration='proof-second';accountResolver({...evidence,quote:{...evidence.quote,receivedAt:proofClock,observedAt:proofClock}});await flush();
+proofGeneration='proof-second';assert.equal(verified.quotes('demo').length,0);
+verified.close();
+console.log('PASS: separat REST-kontroll, explicit fördröjning, TTL, rättigheter och anslutningsbindning');
+
 async function endpointSession(endpoint:string){
  const credentials={demo:{apiKey:'fixture',identifier:'fixture',password:'fixture'}};
  const connection=createIgConnection({loadCredentials:()=>credentials,fetch:(async(url:string)=>url.endsWith('/session')?new Response(JSON.stringify({currentAccountId:'fixture',lightstreamerEndpoint:endpoint}),{headers:{CST:'fixture-cst','X-SECURITY-TOKEN':'fixture-xst'}}):new Response(JSON.stringify({accounts:[{accountId:'fixture',accountType:'CFD',currency:'SEK',balance:{balance:100}}]}))) as typeof fetch});

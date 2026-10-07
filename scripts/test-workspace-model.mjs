@@ -31,3 +31,8 @@ assert.equal(marketMetric({bid:1,offer:1.01},'sentiment'),null);
 assert.equal(marketMetric({bid:2,offer:1},'spread'),null);
 assert.equal(marketMetric({percentageChange:0},'up'),0);
 console.log('PASS: verifierade rankningar och saknade värden utan fabricerad popularitet');
+
+const proofQuote={...q.quote,generation:'session',delayVerification:{generation:'session',verifiedAt:now,validUntil:now+1000}};
+assert.equal(quoteIsFresh({quote:proofQuote},now),true);
+assert.equal(quoteIsFresh({quote:proofQuote},now+1000),false,'REST-verifiering löper ut även med färskt streampris');
+assert.equal(quoteIsFresh({quote:{...proofQuote,generation:'other'}},now),false,'REST-verifiering får inte byta konto');

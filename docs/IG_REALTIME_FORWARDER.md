@@ -18,3 +18,9 @@ Verifiering: `npm run test:forwarder` startar två tillfälliga localhost-servra
 ## Scheman och sommartid
 
 Scheman använder Europe/Stockholm. Under höstens dubbla klocktimme körs varje schema högst en gång per lokalt datum och tid. En tid som inte finns vid vårens tidsomställning hoppas över. Missade tider återspelas inte; engångsscheman markeras pausade när tiden har passerat. Serveromstart eller ändrad IG-kontoanslutning kräver uttrycklig återaktivering. Paus/radering före själva sessionsskapandet avbryter även en väntande schemastart.
+
+### Saknad DELAY i PRICE-strömmen
+
+När IG levererar PRICE med saknad DELAY får öppna diagram en separat, läsande REST-kontroll via den gemensamma IG-budgeten och metadatacachen. Kontrollen kräver exakt instrument, `streamingPricesAvailable === true`, TRADEABLE, `delayTime === 0` och färska UTC-/mottagningstider. Den gäller högst 60 sekunder från underlagets klockor; förnyelse försöks tidigast efter 30 sekunder. Endast högst fyra öppna diagram omfattas, inte hela katalogen.
+
+Beviset binds till kontoanslutning och aktuell upstreamanslutning. Avbrott, kontobyte, utgången giltighet eller misslyckad kontroll spärrar kompletteringen. Explicit DELAY från strömmen vinner alltid. Bid/ask och diagramljus fortsätter komma från WebSocket; REST-priser kopieras aldrig in i streamkvoten. UI visar separat REST-verifierad fördröjning och kontrollerar giltighet även mellan tickar. Detta är ingen latensgaranti eller orderaktivering.

@@ -4,7 +4,9 @@ export function quoteIsFresh(market, now=Date.now()) {
   const q=market?.quote;
   const fx=market?.calculationRules?.fx;
   const fxFresh=!fx||[fx.receivedAt,fx.observedAt].every(t=>Number.isFinite(t)&&now-t>=0&&now-t<=60000);
-  return fxFresh && !!q && q.marketStatus==='TRADEABLE' && q.delayTime===0 && Number.isFinite(q.receivedAt) && now-q.receivedAt>=0 && now-q.receivedAt<=60000 && (q.observedAt===undefined || (Number.isFinite(q.observedAt)&&now-q.observedAt>=0&&now-q.observedAt<=60000)) && Number.isFinite(q.bid) && Number.isFinite(q.offer) && q.bid>0 && q.offer>=q.bid;
+  const proof=q?.delayVerification;
+  const delayFresh=!proof||(proof.generation===q.generation&&Number.isFinite(proof.verifiedAt)&&Number.isFinite(proof.validUntil)&&now>=proof.verifiedAt&&now<proof.validUntil);
+  return delayFresh && fxFresh && !!q && q.marketStatus==='TRADEABLE' && q.delayTime===0 && Number.isFinite(q.receivedAt) && now-q.receivedAt>=0 && now-q.receivedAt<=60000 && (q.observedAt===undefined || (Number.isFinite(q.observedAt)&&now-q.observedAt>=0&&now-q.observedAt<=60000)) && Number.isFinite(q.bid) && Number.isFinite(q.offer) && q.bid>0 && q.offer>=q.bid;
 }
 export function scenario({direction,entry,stop,target,size,pointValue,marginRate,available,currency,pointCurrency,knownFees=null,profitPointValue=pointValue}) {
   const finite=v=>Number.isFinite(v);
