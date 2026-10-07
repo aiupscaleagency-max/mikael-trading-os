@@ -44,3 +44,11 @@ Kryptologotyper serveras lokalt från ett CC0-paket, med explicit filallowlist. 
 Double Up skapar ett extra orderutkast. Roll-over ändrar en befintlig automatisk stängningsplan, inte en PocketOption-utgångstid. Ordergrindar och konto-/generationskontroller gäller fortsatt. Inga order skickas av menybyten eller kopiering.
 
 Uppdateraren utgår fortfarande från dator 1:s installerade commit 76d91a8 och tar med den tidigare metadata-rättningen b418b00. En enda fast-forward och omstart av samma tjänst räcker. Om arbetskopian ändrats av ett annat konto avbryts uppdateraren.
+
+### Katalogens kvotsvält rättad efter driftkontroll
+
+Driftkontrollen efter 8e339b5 visade noll katalograder på både Demo och Live, samtidigt som direkta EUR/USD-sökningar hittade verkliga Forexinstrument. Orsaken var en andra, stateless kategoritraversal i igMarketDirectory som kunde förbruka minutbudgeten före igWorkspace:s progressiva hämtning.
+
+Directory använder nu enbart igWorkspace.catalogue för kategorier, pagination och sökreserv. Directory berikar, rankar och cachar resultat med samma kontobindning. En regression med 12 stora sidor verifierar framsteg över flera minutbudgetar, en enda rootläsning, inga egna directory-traverseringar och båda kategorierna. Kontobyte under väntande hämtning avvisas.
+
+Navigeringen har större klickytor, lokala linjeikoner och grön aktiv markering. Handelspanelerna ligger kvar. Uppdateraren utgår från installerad 8e339b5. Prisfördröjning och ordergrindar är oförändrade: fungerande WebSocket betyder inte automatiskt verifierad prisfördröjning.

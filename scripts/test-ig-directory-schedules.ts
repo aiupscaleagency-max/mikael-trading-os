@@ -25,10 +25,25 @@ assert.equal((await partialDirectory.catalogue('demo','crypto')).remainingSearch
 const completeDirectory=createIgMarketDirectory({status,now:()=>now,budget:()=>({remaining:0,used:10}) as any,fallback:async()=>({markets:[],complete:true,remainingSearches:0,source:'IG aktiverade kontokategorier',note:'Tom men komplett'}) as any});
 assert.equal((await completeDirectory.catalogue('demo','crypto')).complete,true);
 let calls=0;
-const catalog=createIgMarketDirectory({status,now:()=>now,budget:()=>({remaining:10,used:0}) as any,call:async()=>{calls++;throw Error('unsupported');},fallback:async()=>({markets:[{epic:'A',name:'EUR/USD',type:'CURRENCIES'}],note:'Delvis'}) as any});
+const catalog=createIgMarketDirectory({status,now:()=>now,budget:()=>({remaining:10,used:0}) as any,call:async()=>{throw Error('Ingen andra traversal får starta');},fallback:(async()=>{calls++;return {markets:[{epic:'A',name:'EUR/USD',type:'CURRENCIES'}],note:'Delvis'};}) as any});
 const result=await catalog.catalogue('demo','forex');assert.equal(result.complete,false);assert.equal(result.markets.length,1);assert.equal(result.rankings.mostBought.available,false);await catalog.catalogue('demo','forex');assert.equal(calls,1);generation='three';await catalog.catalogue('demo','forex');assert.equal(calls,2,'Cache isoleras per kontoanslutning');
-const official=createIgMarketDirectory({status,now:()=>now,budget:()=>({remaining:10,used:0}) as any,call:async(_mode,endpoint,_method,_version,_body,options)=>endpoint==='categories'?{categories:[{code:'CURRENCIES'}]}:{instruments:[{epic:'EUR',instrumentName:'EUR/USD',instrumentType:'CURRENCIES',bid:1,offer:1.1,percentageChange:2}],metadata:{pageNumber:0,pageSize:1000}},fallback:async()=>{throw Error('Fallback ska inte användas');}});
+const officialWorkspace=createIgWorkspace({directory:path.join(directory,'official'),status,now:()=>now,call:async(_mode,endpoint)=>endpoint==='categories'?{categories:[{code:'CURRENCIES'}]}:{instruments:[{epic:'EUR',instrumentName:'EUR/USD',instrumentType:'CURRENCIES',bid:1,offer:1.1,percentageChange:2}],metadata:{pageNumber:0,pageSize:1000}}});
+const official=createIgMarketDirectory({status,now:()=>now,fallback:officialWorkspace.catalogue});
 const all=await official.catalogue('demo','forex');assert.equal(all.complete,true);assert.equal(all.markets[0].changePercent,2);assert.equal(all.rankings.gainers.available,true);
+// Stor kategori fortsätter efter budgetgränsen. Ingen andra traversal får svälta cursorn.
+let pageClock=now;const pageReads:{at:number;route:string;page:number}[]=[];
+const progressiveWorkspace=createIgWorkspace({directory:path.join(directory,'progressive'),status,now:()=>pageClock,call:async(_mode,route,_method,_version,_body,extra)=>{
+ const page=Number(new URLSearchParams(extra?.query).get('pageNumber'));pageReads.push({at:pageClock,route,page});
+ if(route==='categories')return {categories:[{code:'CURRENCIES'}]};
+ return {instruments:page<12?Array.from({length:1000},(_,i)=>({epic:`PAGE.${page}.${i}`,instrumentName:i%2?'Bitcoin / USD':'EUR/USD',instrumentType:'CURRENCIES'})):[],metadata:{pageNumber:page,pageSize:1000}};
+}});
+let duplicateTraversals=0;const progressive=createIgMarketDirectory({status,now:()=>pageClock,fallback:progressiveWorkspace.catalogue,call:async()=>{duplicateTraversals++;throw Error('Dubbel traversal');}});
+let pf=await progressive.catalogue('demo','forex'),pc=await progressive.catalogue('demo','crypto');assert.equal(pf.complete,false);assert.ok(pf.markets.length>0);assert.ok(pc.remainingSearches!>0);
+for(let i=0;i<3&&!pf.complete;i++){pageClock+=61000;pf=await progressive.catalogue('demo','forex');pc=await progressive.catalogue('demo','crypto');}
+assert.equal(duplicateTraversals,0,'Directory får inte starta en andra kategoritraversal');assert.equal(pf.complete,true);assert.equal(pc.complete,true);assert.equal(pf.markets.length,6000);assert.equal(pc.markets.length,6000);assert.equal(pageReads.filter(x=>x.route==='categories').length,1);
+for(const at of new Set(pageReads.map(x=>x.at)))assert.ok(pageReads.filter(x=>x.at===at).length<=10,'Katalogen håller minutbudgeten');
+let releaseDirectory!:()=>void;const blockedDirectory=new Promise<void>(r=>{releaseDirectory=r;});const directoryRace=createIgMarketDirectory({status,now:()=>now,fallback:(async()=>{await blockedDirectory;return {markets:[],complete:true,remainingSearches:0};}) as any});
+const staleDirectory=directoryRace.catalogue('demo','forex');generation='directory-new-account';releaseDirectory();await assert.rejects(staleDirectory,/kontoanslutningen ändrades/);
 now=Date.parse('2026-10-25T00:30:00Z');
 service.save('demo',{...input,localTime:'02:30',weekdays:[7]});await service.tick();const afterFirst=starts;now=Date.parse('2026-10-25T01:30:00Z');await service.tick();assert.equal(starts,afterFirst,'DST-hösttimmen körs endast en gång');
 const enriched=createIgMarketDirectory({status,now:()=>now,budget:()=>({remaining:10,used:0}) as any,call:async(_mode,endpoint)=>endpoint.startsWith('markets/')?{instrument:{epic:'EUR',marketId:'EURUSD'}}:{marketId:'EURUSD',longPositionPercentage:60,shortPositionPercentage:40},candles:async()=>({candles:Array.from({length:50},(_,i)=>({openTime:now-(50-i)*3600000,closeTime:now-(49-i)*3600000,close:100+i}))}) as any});

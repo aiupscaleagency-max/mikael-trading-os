@@ -9,22 +9,12 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
  const cache=new Map<string,{at:number;value:any}>(),pending=new Map<string,Promise<any>>();
  function identity(mode:IgEnvironment){if(mode!=='demo'&&mode!=='live')throw Error('Ogiltig IG-miljö');const c=status().environments[mode];if(c.status!=='connected'||!c.connectionGeneration)throw Error('IG är inte anslutet');return c.connectionGeneration;}
  async function catalogue(mode:IgEnvironment,category:unknown){if(category!=='forex'&&category!=='crypto')throw Error('Välj Forex eller Kryptovalutor');const binding=identity(mode),key=`${mode}:${binding}:${category}`,old=cache.get(key);if(old&&now()-old.at<60000)return structuredClone(old.value);if(pending.has(key))return structuredClone(await pending.get(key));
- const job=(async()=>{const markets=new Map<string,any>();let unclassified=0;let complete=false,note='IG:s kategorikatalog kunde inte verifieras',source='IG kategorier',failed=false,remainingSearches:number|null=null;
- async function read(endpoint:string){if(budget(mode).remaining<1||budget(mode).used>=10)throw Error('budget');const [resource,query]=endpoint.split('?');const result=await call(mode,resource!,'GET','1',undefined,query?{query}:undefined);if(identity(mode)!==binding)throw Error('account');return result;}
- try{const root=await read('categories');if(!Array.isArray(root.categories))throw Error('shape');
- const categories=root.categories.filter((node:any)=>/forex|currenc|valut|crypto|krypto|bitcoin|ether/i.test(String(node.code??node.name??node.categoryName??'')));
- if(!categories.length)throw Error('categories');let unresolved=false;
- for(const node of categories){const id=node.code??node.id??node.categoryId;if(typeof id!=='string'||!/^[A-Za-z0-9._-]{1,100}$/.test(id)){unresolved=true;continue;}
- for(let page=0;page<50;page++){
- const result=await read(`categories/${encodeURIComponent(id)}/instruments?pageNumber=${page}&pageSize=1000`);const entries=result.instruments;if(!Array.isArray(entries)){unresolved=true;break;}
- for(const entry of entries){const m={...entry,name:entry.instrumentName??entry.name,type:entry.instrumentType??entry.type};const explicit=/crypto|krypto/i.test(id)?'crypto':/forex/i.test(id)?'forex':null;const classified=explicit??igMarketCategory(m);if(!classified)unclassified++;if(typeof m.epic==='string'&&classified===category)markets.set(m.epic,enrichIgDirectoryMarket({...m,category}));}
- const metadata=result.metadata;if(!metadata||metadata.pageNumber!==page||!Number.isInteger(metadata.pageSize)||metadata.pageSize<1){unresolved=true;break;}
- if(entries.length<metadata.pageSize)break;if(page===49)unresolved=true;
- }
- }
- complete=!unresolved&&unclassified===0;note=complete?'Alla klassificerade instrument i IG-kontots Forex-/Kryptokategorier hämtade.':'Delvis katalog: kategoristruktur eller pagination behöver kompletteras';
- }catch{failed=true;complete=false;}
- if(failed||!markets.size){complete=false;const result=await fallback(mode,category);if(identity(mode)!==binding)throw Error('IG-kontoanslutningen ändrades');for(const m of result.markets)markets.set(m.epic,enrichIgDirectoryMarket(m));source=result.source??'IG kontosökning (reservkälla)';note=result.note;remainingSearches=Number.isInteger(result.remainingSearches)&&result.remainingSearches>=0?result.remainingSearches:null;complete=result.complete===true;}
+ // En enda hämtare äger pagination och läskvot. Parallella kategorier delar dess framsteg.
+ const job=(async()=>{const markets=new Map<string,any>();let unclassified=0;
+ const result=await fallback(mode,category);if(identity(mode)!==binding)throw Error('IG-kontoanslutningen ändrades');
+ for(const raw of result.markets){const m={...raw,name:raw.name??raw.instrumentName,type:raw.type??raw.instrumentType};const classified=igMarketCategory(m);if(!classified){unclassified++;continue;}if(typeof m.epic==='string'&&classified===category)markets.set(m.epic,enrichIgDirectoryMarket({...m,category}));}
+ const complete=result.complete===true&&unclassified===0,source=result.source??'IG kontosökning',note=result.note;
+ const remainingSearches=Number.isInteger(result.remainingSearches)&&result.remainingSearches>=0?result.remainingSearches:null;
  const rows=[...markets.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name),'sv'));const hasChanges=rows.some(m=>m.changePercent!==null),hasSpread=rows.some(m=>m.spread!==null);
  const rankings=structuredClone(igDirectoryRankings);rankings.gainers.available=hasChanges;rankings.losers.available=hasChanges;rankings.movers.available=hasChanges;rankings.spread.available=hasSpread;
  const value={environment:mode,category,markets:rows,complete,status:complete?'ready':'partial',source,note,error:null,updatedAt:now(),remainingSearches,unclassifiedInstruments:unclassified,rankings};cache.set(key,{at:now(),value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}}
