@@ -57,3 +57,19 @@ await assert.rejects(connection.callAuthenticated("demo","positions/otc","POST",
 await assert.rejects(connection.callAuthenticated("demo","https://fake/orders","GET","1"),/tillåtna/);
 if(savedOrderFlag!==undefined)process.env.IG_ORDER_EXECUTION_ENABLED=savedOrderFlag;
 console.log("PASS: IG demo/live isolation, session singleflight, Token memory-only, read-only accounts/positions, null missing metrics, permissions/symlink, expiry, missing credentials and sanitized errors; no real IG requests/orders");
+
+// IG:s kända läskvoter är övergående och får inte radera en verifierad kontosession.
+let limitedRoute='',limitedStatus=403,limitedCode:string|undefined='error.public-api.exceeded-account-allowance';let quotaLogins=0;
+const quota=createIgConnection({loadCredentials:()=>credentials,now:()=>1000,fetch:(async(url:string,options:RequestInit)=>{
+ if(url.endsWith('/session'))quotaLogins++;
+ if(limitedRoute&&url.endsWith('/'+limitedRoute))return new Response(limitedCode?JSON.stringify({errorCode:limitedCode}):'not-json',{status:limitedStatus});
+ return mock(url,options);
+}) as typeof fetch});
+await quota.testConnection('demo');const quotaGeneration=quota.getStatus().environments.demo.connectionGeneration;
+limitedRoute='accounts';const rateAccounts=await quota.getAccounts('demo');assert.equal(rateAccounts.status,'error');assert.equal(rateAccounts.accounts,null);assert.equal(rateAccounts.updatedAt,null);assert.match(rateAccounts.error!,/begränsade antal läsanrop/);assert.equal(quota.getStatus().environments.demo.status,'connected');assert.equal(quota.getStatus().environments.demo.connectionGeneration,quotaGeneration);
+limitedRoute='positions';limitedStatus=429;limitedCode=undefined;const ratePositions=await quota.getPositions('demo');assert.equal(ratePositions.status,'error');assert.equal(ratePositions.positions,null);assert.match(ratePositions.error!,/begränsade antal läsanrop/);assert.equal(quota.getStatus().environments.demo.status,'connected');
+limitedRoute='markets';limitedStatus=403;limitedCode='error.public-api.exceeded-api-key-allowance';await assert.rejects(quota.callAuthenticated('demo','markets','GET','1'),/begränsade antal läsanrop/);assert.equal(quota.getStatus().environments.demo.connectionGeneration,quotaGeneration);
+limitedStatus=429;limitedCode=undefined;await assert.rejects(quota.callAuthenticated('demo','markets','GET','1'),/begränsade antal läsanrop/);
+limitedRoute='';assert.equal((await quota.getAccounts('demo')).status,'ready');assert.equal(quotaLogins,1,'Kvoten återställs utan ny inloggning');
+limitedRoute='positions';limitedStatus=401;limitedCode='error.security.client-token-invalid';assert.equal((await quota.getPositions('demo')).status,'error');assert.equal(quota.getStatus().environments.demo.status,'error','Verkligt autentiseringsfel raderar fortfarande sessionen');
+console.log('PASS: 403 IG allowance och 429 bevarar session/generation, returnerar saknat färskt konto/positionsunderlag och återhämtar sig utan ny login; 401 spärrar fortsatt');

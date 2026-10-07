@@ -15,7 +15,7 @@ let n=0;const call=async(mode:string,route:string,method:string,_version:string,
  if(route.startsWith('confirms/'))return {dealStatus:'ACCEPTED',dealId:'opened-deal',affectedDeals:[{dealId:'opened-deal',status:'DELETED'}]};
  throw Error('Unexpected mock call');
 };
-const deps={status:status as never,accounts:async()=>({}) as never,positions:async()=>({status:'ready',positions:ps}) as never,market,call:call as never,guard:async()=>({killSwitchActive:killed}),now:()=>now,directory,enabled:()=>enabled,positionLimit:()=>3,limits:{maxPositionUsd:1000,maxTotalExposureUsd:3000,maxDailyLossUsd:100,maxOpenPositions:3}};
+const deps={status:status as never,accounts:async()=>({status:'ready'}) as never,positions:async()=>({status:'ready',positions:ps}) as never,market,call:call as never,guard:async()=>({killSwitchActive:killed}),now:()=>now,directory,enabled:()=>enabled,positionLimit:()=>3,limits:{maxPositionUsd:1000,maxTotalExposureUsd:3000,maxDailyLossUsd:100,maxOpenPositions:3}};
 const orders=createIgOrders(deps),ticket={epic:'CS.D.EURUSD.MINI.IP',direction:'BUY',size:1,entry:101,stopLevel:95,targetLevel:110,orderType:'MARKET',holdingMinutes:15,autoClose:true};
 const draft=await orders.preview('demo',ticket);assert.equal(draft.risk,6);assert.equal(calls.some(c=>c.method==='POST'),false,'Granskning skickar aldrig order');
 await assert.rejects(orders.confirm('demo',draft.id),/avstängd/);enabled=true;
@@ -48,7 +48,7 @@ console.log('PASS: reconnect avbryter gamla tidsplaner utan stängningsanrop');
 // Ett okänt orderutfall förblir spärrat även efter en ny anslutning.
 generation='account-D';assert.ok(orders.snapshot('demo').pendingOrders.some(d=>d.status==='unknown'&&d.previousConnection));await assert.rejects(orders.preview('demo',ticket),/avstämmas/);
 // Tidsgränsen kontrolleras efter en långsam riskvalidering.
-let slow=false;const expiry=createIgOrders({...deps,directory:path.join(directory,'expiry'),accounts:(async()=>{if(slow)now+=31000;return {};}) as never});
+let slow=false;const expiry=createIgOrders({...deps,directory:path.join(directory,'expiry'),accounts:(async()=>{if(slow)now+=31000;return {status:'ready'};}) as never});
 const exp=await expiry.preview('demo',ticket);slow=true;const beforeExpiry=calls.filter(c=>c.method==='POST').length;await assert.rejects(expiry.confirm('demo',exp.id),/hann gå ut/);assert.equal(calls.filter(c=>c.method==='POST').length,beforeExpiry);
 console.log('PASS: okänt orderutfall spärrar efter reconnect och utgånget underlag skickas inte');
 
@@ -84,3 +84,22 @@ const acceptedRepriced=await repriced.confirm('demo',rp.id);assert.equal(accepte
 assert.equal(repriced.snapshot('demo').pendingOrders[0]!.entry,102.01);assert.equal(JSON.parse(fs.readFileSync(path.join(directory,'repriced/demo.json'),'utf8')).drafts[0].entry,102.01);
 await assert.rejects(repriced.preview('demo',{...ticket,stopLevel:50,targetLevel:200}),/totalexponering/,'102.01 accepterat + 102.01 nytt överskrider 204.01; previewkurs 101 hade felaktigt tillåtit ordern');
 console.log('PASS: accepterad order och pending-reservation lagrar omvaliderad entry/risk/marginal vid 1 % tillåten kursrörelse');
+
+// En bevarad kontosession innebär inte att ett gammalt saldo får användas för en ny order.
+let accountRate=false;const quotaAccounts=createIgOrders({...deps,directory:path.join(directory,'quota-accounts'),accounts:(async()=>accountRate?{status:'error',error:'IG begränsade antal läsanrop; försök igen om en minut',accounts:null}:{status:'ready'}) as never,positions:async()=>({status:'ready',positions:[]}) as never});
+const quotaDraft=await quotaAccounts.preview('demo',ticket);accountRate=true;const beforeQuotaOrders=calls.filter(c=>c.method==='POST').length;
+await assert.rejects(quotaAccounts.preview('demo',ticket),/begränsade antal läsanrop/);await assert.rejects(quotaAccounts.confirm('demo',quotaDraft.id),/begränsade antal läsanrop/);assert.equal(calls.filter(c=>c.method==='POST').length,beforeQuotaOrders,'Stale konto används aldrig för order efter kontokvot');
+const unavailableAccounts=createIgOrders({...deps,directory:path.join(directory,'unavailable-accounts'),accounts:async()=>({status:'error',error:'Fixture unavailable'}) as never});await assert.rejects(unavailableAccounts.preview('demo',ticket),/färskt verifierat kontounderlag/);
+// Kvot före stängning ger en 60-sekunders retryplan, aldrig omsändning av en redan skickad order.
+let positionRate=false;const retryPositions=[{dealId:'opened-deal',epic:ticket.epic,direction:'BUY',size:1,level:101,currency:'USD'}];
+const closingRate=createIgOrders({...deps,directory:path.join(directory,'quota-close'),positions:(async()=>positionRate?{status:'error',error:'IG begränsade antal läsanrop; försök igen om en minut',positions:null}:{status:'ready',positions:retryPositions}) as never});
+const timed=await closingRate.preview('demo',ticket);await closingRate.confirm('demo',timed.id);positionRate=true;now+=16*60000;
+const beforeQuotaClose=calls.filter(c=>c.method==='POST').length;await closingRate.tick();assert.equal(calls.filter(c=>c.method==='POST').length,beforeQuotaClose);assert.equal(closingRate.snapshot('demo').exitPlans[0]!.status,'scheduled');assert.match(closingRate.snapshot('demo').exitPlans[0]!.error!,/läsgräns/);
+await closingRate.tick();assert.equal(calls.filter(c=>c.method==='POST').length,beforeQuotaClose,'Ingen tät kvotretry');positionRate=false;now+=60001;await closingRate.tick();assert.equal(closingRate.snapshot('demo').exitPlans[0]!.status,'confirmed');assert.equal(calls.filter(c=>c.method==='POST').length,beforeQuotaClose+1);
+console.log('PASS: fresh accounts krävs för preview/confirm; planerad stängning bevaras vid läskvot och återförsöks först efter 60 s med nytt verifierat underlag');
+
+// Även serverns lokala läsbudget under kvothämtning är ett återförsökbart läsfel.
+let quoteRate=false;const closeBudget=createIgOrders({...deps,directory:path.join(directory,'budget-close'),positions:async()=>({status:'ready',positions:retryPositions}) as never,market:async(mode:string,epic:string)=>{if(quoteRate)throw Error('IG-läsbudgeten är slut för denna minut');return market(mode,epic);}});
+const budgetTimed=await closeBudget.preview('demo',ticket);await closeBudget.confirm('demo',budgetTimed.id);now+=16*60000;quoteRate=true;const budgetPosts=calls.filter(c=>c.method==='POST').length;
+await closeBudget.tick();assert.equal(closeBudget.snapshot('demo').exitPlans[0]!.status,'scheduled');assert.equal(calls.filter(c=>c.method==='POST').length,budgetPosts);quoteRate=false;now+=60001;await closeBudget.tick();assert.equal(closeBudget.snapshot('demo').exitPlans[0]!.status,'confirmed');
+console.log('PASS: lokal kvotbudget bevarar tidsplan utan POST och tillåter senare verifierad stängning');

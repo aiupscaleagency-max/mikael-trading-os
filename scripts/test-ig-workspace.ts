@@ -3,7 +3,7 @@ import {mkdtempSync,mkdirSync,writeFileSync} from "node:fs";
 import path from "node:path";
 import os from "node:os";
 const directory=mkdtempSync(path.join(os.tmpdir(),"ig-workspace-"));process.chdir(directory);
-const {createIgWorkspace,normalizeIgCandles}=await import("../src/integrations/igWorkspace.js");
+const {createIgWorkspace,normalizeIgCandles,igMarketCategory}=await import("../src/integrations/igWorkspace.js");
 let now=Date.UTC(2026,9,7,12,0),demoConnected=false;
 const epic="CS.D.EURUSD.CFD.IP",other="CS.D.GBPUSD.CFD.IP";
 const half=(n:number)=>({bid:n-0.01,ask:n+0.01,lastTraded:null});
@@ -167,3 +167,23 @@ now+=16000;await sekWorkspace.market('live',sekEp);assert.equal(currencyCalls.fi
 fxStale=true;now+=16000;assert.equal((await sekWorkspace.market('live',sekEp)).calculationRules.verified,false,'Stale FX ger inga kontovalutebelopp');
 fxStale=false;fxFail=true;now+=16000;assert.equal((await sekWorkspace.accountFx('live')),null,'V4-fel återanvänder inte gammal V3-kvot som färsk');
 console.log('PASS: SEK-scenario/positions-P-L med native forex, konservativ FX-riktning, V3-metadatacache+färsk V4 och stale/missing FX blockerad');
+
+// Katalogen får inte begränsas till EUR/Bitcoin eller blanda aktier med kryptokontrakt.
+{
+ let clock=now,id='catalog-account-a';const reads:string[]=[];
+ const rows=[{epic:'FX.GBPUSD',instrumentName:'GBP/USD',instrumentType:'CURRENCIES'},{epic:'FX.AUDJPY',instrumentName:'AUD/JPY',instrumentType:'CURRENCIES'},{epic:'FX.USDNOK',instrumentName:'USD/NOK',instrumentType:'CURRENCIES'},{epic:'CR.ADA',instrumentName:'Cardano ($1)',instrumentType:'CURRENCIES'},{epic:'CR.TRON',instrumentName:'TRON ($1)',instrumentType:'CURRENCIES'},{epic:'SH.BTC',instrumentName:'Bitcoin ETF',instrumentType:'SHARES'}];
+ const current=()=>({environments:{live:{...status().environments.live,connectionGeneration:id},demo:{...status().environments.live,environment:'demo',connectionGeneration:'demo-catalog'}}});
+ const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-catalog-')),now:()=>clock,status:current as any,call:async(mode,route,method,version,body,extra)=>{assert.equal(route,'markets');assert.equal(method,'GET');reads.push(new URLSearchParams(extra?.query).get('searchTerm')!);return {markets:[...rows,...rows]};}});
+ const [a,b]=await Promise.all([w.catalogue('live','forex'),w.catalogue('live','forex')]);
+ assert.equal(a.status,'partial');assert.equal(a.complete,false,'Sökresultat bevisar inte en fullständig mäklarkatalog');assert.ok(a.remainingSearches>0);assert.deepEqual(a.markets.map(m=>m.epic).sort(),['FX.AUDJPY','FX.GBPUSD','FX.USDNOK']);assert.deepEqual(a,b);assert.equal(reads.length,24);await w.searchMarkets('live','ReservedMarketRead');assert.equal(reads.length,25,'Katalogen lämnar kapacitet för pris-/FX-läsningar');assert.equal(new Set(reads).size,reads.length,'Parallella kataloganrop delar sökning');
+ const c=await w.catalogue('live','crypto');assert.equal(c.status,'partial');assert.ok(c.remainingSearches>0,'Minutbudget ger återupptagbart delresultat');assert.equal(c.markets.length,0,'Budgetstopp hämtar inte nya kryptouppgifter');
+ clock+=61000;let d=await w.catalogue('live','crypto');while(d.remainingSearches){clock+=61000;d=await w.catalogue('live','crypto');}assert.equal(d.remainingSearches,0);assert.equal(d.status,'ready');assert.equal(d.markets.length,2);assert.ok(d.markets.every(m=>m.category==='crypto'));
+ clock+=61000;let finished=await w.catalogue('live','forex');while(finished.remainingSearches){clock+=61000;finished=await w.catalogue('live','forex');}const count=reads.length;await w.catalogue('live','forex');assert.equal(reads.length,count,'Samma konto återanvänder kategoriresultatet');
+ clock+=61000;id='catalog-account-b';await w.catalogue('live','forex');assert.ok(reads.length>count,'Nytt konto återanvänder inte tidigare katalog');
+ assert.equal(igMarketCategory(rows[4]!),'crypto');assert.equal(igMarketCategory(rows[5]!),null);
+ await assert.rejects(w.catalogue('live','stocks'),/Välj Forex/);
+ let switched=false;
+ const race=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-catalog-race-')),now:()=>clock,status:()=>({...current(),environments:{...current().environments,live:{...current().environments.live,connectionGeneration:switched?'new':'old'}}}) as any,call:async()=>{switched=true;return {markets:rows};}});
+ await assert.rejects(race.catalogue('live','forex'),/IG-kontosessionen ändrades/);
+ console.log('PASS: bred Forex/kryptokatalog, Cardano/TRON, aktiefilter, deduplicering, singleflight, faktisk minutbudget med återupptagning och kontoisolering; bara mockade läsanrop');
+}
