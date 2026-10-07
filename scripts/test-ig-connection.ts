@@ -100,3 +100,20 @@ assert.equal(budgetConnection.getStatus().environments.demo.connectionGeneration
 const initialLimited=createIgConnection({loadCredentials:()=>credentials,fetch:(async(url:string,options:RequestInit)=>url.endsWith('/accounts')?new Response(JSON.stringify({errorCode:'error.public-api.exceeded-account-allowance'}),{status:403}):mock(url,options)) as typeof fetch});
 assert.equal((await initialLimited.testConnection('demo')).status,'error');assert.equal(initialLimited.getStatus().environments.demo.account,null,'Ny login utan verifierat kontounderlag är aldrig connected');
 console.log('PASS: central rullande 24/min-kontobudget över alla GET-vägar, separata miljöer, session reuse, quota-resume och initial konto-verifiering');
+
+// Nya katalog-/sentimentvägar är endast GET och delar befintlig centralbudget.
+let optionalCalls=0;
+const optional=createIgConnection({loadCredentials:()=>credentials,fetch:(async(url:string,options:RequestInit)=>{
+ if(url.includes('/categories')||url.includes('/client-sentiment/')){optionalCalls++;assert.equal(options.method,'GET');return new Response(JSON.stringify({errorCode:'endpoint.unavailable.for.api-key'}),{status:403});}
+ return mock(url,options);
+}) as typeof fetch});
+await optional.testConnection('demo');const optionalGeneration=optional.getStatus().environments.demo.connectionGeneration;
+await assert.rejects(optional.callAuthenticated('demo','categories'),/HTTP 403/);
+await assert.rejects(optional.callAuthenticated('demo','categories/CURRENCIES/instruments','GET','1',undefined,{query:'pageNumber=0&pageSize=1000'}),/HTTP 403/);
+await assert.rejects(optional.callAuthenticated('demo','client-sentiment/EURUSD'),/HTTP 403/);
+assert.equal(optional.getStatus().environments.demo.status,'connected');assert.equal(optional.getStatus().environments.demo.connectionGeneration,optionalGeneration);assert.equal(optional.getReadBudget('demo').used,4);
+await assert.rejects(optional.callAuthenticated('demo','categories','POST'),/tillåtna/);
+await assert.rejects(optional.callAuthenticated('demo','categories/..%2F/instruments'),/tillåtna/);
+await assert.rejects(optional.callAuthenticated('demo','categories/CURRENCIES/instruments','GET','1',undefined,{query:'referenceEpic=unsafe'}),/frågeparametrar/);
+assert.equal(optionalCalls,3);
+console.log('PASS: kategorier/sentiment endast tillåtna GET med centralquota; saknad endpointbehörighet behåller annan verifierad kontofunktion');

@@ -6,18 +6,11 @@
   "type": "module",
   "scripts": {
     "agent": "tsx src/run.ts",
-    "agent:once": "tsx src/run.ts --once",
-    "propose": "tsx src/run.ts --propose",
-    "account": "tsx src/scripts/account.ts",
     "kill": "tsx src/scripts/kill.ts",
     "ui": "DASHBOARD_PORT=3939 tsx src/run.ts --serve",
-    "demo": "tsx src/scripts/demo.ts",
     "build": "tsc --outDir dist",
-    "verify": "npm run build && node scripts/verify-live.mjs",
-    "test:signal": "npm run build && node scripts/test-signal-engine.mjs",
-    "export:candles": "npm run build && node scripts/export-candles.mjs",
     "serve": "tsx src/run.ts --serve",
-    "test:workspace": "tsx scripts/test-ig-connection.ts && tsx scripts/test-ig-credentials.ts && tsx scripts/test-ig-workspace.ts && tsx scripts/test-ig-orders.ts && tsx scripts/test-ig-rules.ts && tsx scripts/test-tiingo-history.ts && tsx scripts/test-two-agent-pipeline.ts && node scripts/test-workspace-model.mjs && node scripts/test-workspace-browser.mjs && tsx scripts/test-ig-directory-schedules.ts && tsx scripts/test-ig-streaming-review.ts && tsx scripts/test-ig-realtime-review.ts && tsx scripts/test-ig-session-start-review.ts && tsx scripts/test-ig-strategies.ts && tsx scripts/test-ig-imported-signals.ts && tsx scripts/test-ig-jev-market.ts && tsx scripts/test-ig-jev-pipeline.ts && tsx scripts/test-ig-analysis-memory.ts",
+    "test:workspace": "tsx scripts/test-ig-connection.ts && tsx scripts/test-ig-credentials.ts && tsx scripts/test-ig-workspace.ts && tsx scripts/test-ig-orders.ts && tsx scripts/test-ig-rules.ts && tsx scripts/test-tiingo-history.ts && tsx scripts/test-two-agent-pipeline.ts && node scripts/test-workspace-model.mjs && node scripts/test-market-views.mjs && node scripts/test-workspace-browser.mjs && tsx scripts/test-ig-directory-schedules.ts && tsx scripts/test-ig-streaming-review.ts && tsx scripts/test-ig-realtime-review.ts && tsx scripts/test-ig-session-start-review.ts && tsx scripts/test-ig-strategies.ts && tsx scripts/test-ig-imported-signals.ts && tsx scripts/test-ig-jev-market.ts && tsx scripts/test-ig-jev-pipeline.ts && tsx scripts/test-ig-analysis-memory.ts && node scripts/test-stream-candles.mjs && tsx scripts/test-ig-server.ts",
     "test:forwarder": "node scripts/test-forward-dashboard.mjs"
   },
   "dependencies": {

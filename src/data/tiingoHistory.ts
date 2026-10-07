@@ -32,7 +32,7 @@ function key(): string | null {
 export function getTiingoStatus() {
   const configured = !!key();
   return { provider: "Tiingo", configured, purpose: "historical_reference_only", quote: "USD", interval: "1day", years: 3,
-    status: configured ? "configured" : "unavailable", error: configured ? null : "Tiingo-nyckel saknas; Bybit-analysen fortsätter utan historisk referens",
+    status: configured ? "configured" : "unavailable", error: configured ? null : "Tiingo-nyckel saknas; IG-analysen fortsätter utan historisk referens",
     symbols: [...contexts.values()].map((c) => ({ ...c })) };
 }
 function range(now: number) {
@@ -77,14 +77,14 @@ export function summarizeHistory(symbol: string, raw: unknown, now: number, fetc
 async function collect(symbol: string, now: number, allowFetch: boolean): Promise<HistoricalContext> {
   const result=empty(symbol,now), token=key();
   if(!result.ticker) {result.error="Historisk referens stöder enbart valda kryptopar med USDC";return result;}
-  if(!token) {result.error="Tiingo-nyckel saknas; Bybit-data används fortsatt";return result;}
+  if(!token) {result.error="Tiingo-nyckel saknas; IG-data används fortsatt";return result;}
   const file=path.resolve("data/tiingo-history",`${result.ticker}.json`);
   try {
     const saved=JSON.parse(fs.readFileSync(file,"utf8"));
     if(saved.ticker===result.ticker && saved.requestedTo===result.requestedTo && saved.requestedFrom===result.requestedFrom && typeof saved.fetchedAt==="number" && now-saved.fetchedAt>=0 && now-saved.fetchedAt<DAY) return summarizeHistory(symbol,saved.bars,now,saved.fetchedAt,true);
   } catch { /* En ogiltig cache ersätts bara av verifierad leverantörsdata. */ }
-  if(!allowFetch) {result.error="Historisk referens saknas i cache; turens hämtbudget är slut och Bybit-data används fortsatt";return result;}
-  if(now<cooldownUntil) {result.error="Tiingo pausas efter anropsbegränsning; Bybit-data används fortsatt";return result;}
+  if(!allowFetch) {result.error="Historisk referens saknas i cache; turens hämtbudget är slut och IG-data används fortsatt";return result;}
+  if(now<cooldownUntil) {result.error="Tiingo pausas efter anropsbegränsning; IG-data används fortsatt";return result;}
   try {
     const url=new URL("https://api.tiingo.com/tiingo/crypto/prices");
     url.search=new URLSearchParams({tickers:result.ticker,startDate:result.requestedFrom,endDate:result.requestedTo,resampleFreq:"1day"}).toString();

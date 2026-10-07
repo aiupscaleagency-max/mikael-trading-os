@@ -172,6 +172,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
       if(!response.ok) {
         let code:unknown;try{code=(await response.json() as Record<string,unknown>).errorCode;}catch{/* Okänt felsvar behandlas utan privata detaljer. */}
         if(response.status===429||typeof code==='string'&&/^error\.public-api\.exceeded-[a-z-]+-allowance$/.test(code)){readBlockedUntil.set(mode,now()+60000);throw Error(IG_READ_RATE_ERROR);}
+        if(code==='endpoint.unavailable.for.api-key'&&(route==='categories'||route.startsWith('categories/')||route.startsWith('client-sentiment/')))throw Error(`IG svarade HTTP ${response.status}`);
         if(response.status===401 || response.status===403)fail(mode,"IG-sessionen eller behörigheten kunde inte verifieras; anslut igen");throw Error(`IG svarade HTTP ${response.status}`);
       }
       const data=await response.json();

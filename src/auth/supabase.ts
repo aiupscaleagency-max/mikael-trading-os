@@ -30,37 +30,6 @@ export function getSupabase(): SupabaseClient | null {
   return _client;
 }
 
-export interface UserApiKeys {
-  anthropic?: string;
-  binance_key?: string;
-  binance_secret?: string;
-  perplexity?: string;
-  oanda_token?: string;
-  oanda_account?: string;
-}
-
-// Hämta nycklar för specifik user. Returnerar null om Supabase ej konfigurerad
-// (då faller backend tillbaka till .env-nycklar).
-export async function getUserKeys(userId: string): Promise<UserApiKeys | null> {
-  const sb = getSupabase();
-  if (!sb) return null;
-  try {
-    const { data, error } = await sb
-      .from("api_keys")
-      .select("anthropic, binance_key, binance_secret, perplexity, oanda_token, oanda_account")
-      .eq("user_id", userId)
-      .single();
-    if (error) {
-      log.warn(`[Supabase] Kunde inte hämta nycklar för user ${userId.slice(0, 8)}: ${error.message}`);
-      return null;
-    }
-    return data as UserApiKeys;
-  } catch (err) {
-    log.warn(`[Supabase] getUserKeys fel: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-}
-
 // Kolla om user är admin (för admin-only operationer)
 export async function isAdmin(userId: string): Promise<boolean> {
   const sb = getSupabase();

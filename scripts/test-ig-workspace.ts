@@ -173,9 +173,9 @@ console.log('PASS: SEK-scenario/positions-P-L med native forex, konservativ FX-r
  let clock=now,id='catalog-account-a';const reads:string[]=[];
  const rows=[{epic:'FX.GBPUSD',instrumentName:'GBP/USD',instrumentType:'CURRENCIES'},{epic:'FX.AUDJPY',instrumentName:'AUD/JPY',instrumentType:'CURRENCIES'},{epic:'FX.USDNOK',instrumentName:'USD/NOK',instrumentType:'CURRENCIES'},{epic:'CR.ADA',instrumentName:'Cardano ($1)',instrumentType:'CURRENCIES'},{epic:'CR.TRON',instrumentName:'TRON ($1)',instrumentType:'CURRENCIES'},{epic:'SH.BTC',instrumentName:'Bitcoin ETF',instrumentType:'SHARES'}];
  const current=()=>({environments:{live:{...status().environments.live,connectionGeneration:id},demo:{...status().environments.live,environment:'demo',connectionGeneration:'demo-catalog'}}});
- const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-catalog-')),now:()=>clock,status:current as any,call:async(mode,route,method,version,body,extra)=>{assert.equal(route,'markets');assert.equal(method,'GET');reads.push(new URLSearchParams(extra?.query).get('searchTerm')!);return {markets:[...rows,...rows]};}});
+ const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-catalog-')),now:()=>clock,status:current as any,call:async(mode,route,method,version,body,extra)=>{if(route==='categories')throw Error('IG svarade HTTP 404');assert.equal(route,'markets');assert.equal(method,'GET');reads.push(new URLSearchParams(extra?.query).get('searchTerm')!);return {markets:[...rows,...rows]};}});
  const [a,b]=await Promise.all([w.catalogue('live','forex'),w.catalogue('live','forex')]);
- assert.equal(a.status,'partial');assert.equal(a.complete,false,'Sökresultat bevisar inte en fullständig mäklarkatalog');assert.ok(a.remainingSearches>0);assert.deepEqual(a.markets.map(m=>m.epic).sort(),['FX.AUDJPY','FX.GBPUSD','FX.USDNOK']);assert.deepEqual(a,b);assert.equal(reads.length,10);await w.searchMarkets('live','ReservedMarketRead');assert.equal(reads.length,11,'Katalogen lämnar kapacitet för pris-/FX-läsningar');assert.equal(new Set(reads).size,reads.length,'Parallella kataloganrop delar sökning');
+ assert.equal(a.status,'partial');assert.equal(a.complete,false,'Sökresultat bevisar inte en fullständig mäklarkatalog');assert.ok(a.remainingSearches>0);assert.deepEqual(a.markets.map(m=>m.epic).sort(),['FX.AUDJPY','FX.GBPUSD','FX.USDNOK']);assert.deepEqual(a,b);assert.equal(reads.length,9);await w.searchMarkets('live','ReservedMarketRead');assert.equal(reads.length,10,'Katalogen lämnar kapacitet för pris-/FX-läsningar');assert.equal(new Set(reads).size,reads.length,'Parallella kataloganrop delar sökning');
  const c=await w.catalogue('live','crypto');assert.equal(c.status,'partial');assert.ok(c.remainingSearches>0,'Minutbudget ger återupptagbart delresultat');assert.equal(c.markets.length,0,'Budgetstopp hämtar inte nya kryptouppgifter');
  clock+=61000;let d=await w.catalogue('live','crypto');while(d.remainingSearches){clock+=61000;d=await w.catalogue('live','crypto');}assert.equal(d.remainingSearches,0);assert.equal(d.status,'ready');assert.equal(d.markets.length,2);assert.ok(d.markets.every(m=>m.category==='crypto'));
  clock+=61000;let finished=await w.catalogue('live','forex');while(finished.remainingSearches){clock+=61000;finished=await w.catalogue('live','forex');}const count=reads.length;await w.catalogue('live','forex');assert.equal(reads.length,count,'Samma konto återanvänder kategoriresultatet');
@@ -183,7 +183,7 @@ console.log('PASS: SEK-scenario/positions-P-L med native forex, konservativ FX-r
  assert.equal(igMarketCategory(rows[4]!),'crypto');assert.equal(igMarketCategory(rows[5]!),null);
  await assert.rejects(w.catalogue('live','stocks'),/Välj Forex/);
  let switched=false;
- const race=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-catalog-race-')),now:()=>clock,status:()=>({...current(),environments:{...current().environments,live:{...current().environments.live,connectionGeneration:switched?'new':'old'}}}) as any,call:async()=>{switched=true;return {markets:rows};}});
+ const race=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-catalog-race-')),now:()=>clock,status:()=>({...current(),environments:{...current().environments,live:{...current().environments.live,connectionGeneration:switched?'new':'old'}}}) as any,call:async(_mode,route)=>{if(route==='categories')throw Error('IG svarade HTTP 404');switched=true;return {markets:rows};}});
  await assert.rejects(race.catalogue('live','forex'),/IG-kontosessionen ändrades/);
  console.log('PASS: bred Forex/kryptokatalog, Cardano/TRON, aktiefilter, deduplicering, singleflight, faktisk minutbudget med återupptagning och kontoisolering; bara mockade läsanrop');
 }
@@ -221,4 +221,28 @@ console.log('PASS: SEK-scenario/positions-P-L med native forex, konservativ FX-r
  assert.equal(poll.positionLimit('demo'),1,'Utan aktiv session är standardgränsen en position');
  assert.equal((await poll.startSession('demo',{epics:[epic],timeframe:'5m',percent:1,horizonMinutes:15,durationMinutes:15,intervalMinutes:5})).maxPositions,1,'Ny session börjar med en position');
  console.log(`PASS: 60s 5s UI-pollning med diagram, kontohistorik, arbetsorder och SEK-FX använder ${networkReads}/24 GET; standard en position`);
+}
+
+// Officiella kategorier pagineras utan detaljanrop per instrument; API-procent bevaras utan inferens.
+{
+ let categoryNow=now,readCount=0;const categoryRows=[{epic:'FX.EURGBP',instrumentName:'EUR/GBP',instrumentType:'CURRENCIES',percentageChange:-0.75,netChange:-0.006,high:0.88,low:0.86,updateTimeUTC:'12:00:00'},{epic:'CR.BTC',instrumentName:'Bitcoin ($1)',instrumentType:'CURRENCIES',percentageChange:2.5,netChange:1234,high:65000,low:62000},{epic:'CR.ADA',instrumentName:'Cardano ($1)',instrumentType:'CURRENCIES',percentageChange:'5',netChange:NaN}];
+ const categoryWork=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-enabled-categories-')),now:()=>categoryNow,status:status as any,call:async(_mode,route,_method,_version,_body,extra)=>{
+   readCount++;
+   if(route==='categories')return {categories:[{code:'CURRENCIES'},{code:'SHARES'}]};
+   if(route==='categories/CURRENCIES/instruments'){
+     const page=Number(new URLSearchParams(extra?.query).get('pageNumber'));
+     return {instruments:page===0?Array.from({length:1000},(_,i)=>categoryRows[i%categoryRows.length]):categoryRows,metadata:{pageNumber:page,pageSize:1000}};
+   }
+   if(route==='markets')return {markets:categoryRows};
+   if(route.startsWith('markets/'))return {instrument:{epic:route.slice(8),marketId:'EURGBP',name:'EUR/GBP',type:'CURRENCIES',currencies:[]},snapshot:{},dealingRules:{}};
+   if(route==='client-sentiment/EURGBP')return {marketId:'EURGBP',longPositionPercentage:65,shortPositionPercentage:35};
+   throw Error('unexpected category route');
+ }});
+ const [forex,crypto]=await Promise.all([categoryWork.catalogue('live','forex'),categoryWork.catalogue('live','crypto')]);
+ assert.equal(readCount,3,'En kategorihämtning plus två instrumentsidor delas av båda kategorierna');assert.equal(forex.complete,true);assert.equal(crypto.complete,true);assert.equal(forex.markets.length,1);assert.equal(crypto.markets.length,2);
+ assert.equal(forex.markets[0].percentageChange,-0.75);assert.equal(forex.markets[0].netChange,-0.006);assert.equal(forex.markets[0].high,0.88);assert.equal(forex.markets[0].low,0.86);
+ assert.equal(crypto.markets.find(m=>m.epic==='CR.ADA')!.percentageChange,null,'Sträng/NaN fabriceras inte som verifierade API-värden');assert.equal(crypto.markets.find(m=>m.epic==='CR.BTC')!.observedAt,null,'Lokal tid blir inte UTC');
+ const overview=await categoryWork.marketOverview('live',['FX.EURGBP']);assert.equal(overview.selected[0].sentiment.longPositionPercentage,65);assert.equal(overview.selected[0].sentiment.shortPositionPercentage,35);assert.equal(readCount,6,'Sentiment hämtar endast uttryckligt valt instrument');await categoryWork.marketOverview('live',['FX.EURGBP']);assert.equal(readCount,6,'Valt sentiment och metadata cachelagras');
+ const searched=await categoryWork.searchMarkets('live','EUR');assert.equal(searched.markets[0].percentageChange,-0.75);assert.equal(searched.markets[2].netChange,null);
+ console.log('PASS: aktiverade IG-valutakategorier pagineras/delas utan bulkdetaljer; riktiga dagliga procent/high/low och valt kundsentiment utan vinstinferens');
 }

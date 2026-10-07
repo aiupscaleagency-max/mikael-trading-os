@@ -1,52 +1,8 @@
-# mikael-trading-os
+# IG Trading OS
 
-## Aktuell standardstart – IG Trading OS
+Endast IG för Forex/krypto och order; Tiingo ger separat historiskt referensunderlag. `npm run agent`, `npm run serve` och `npm run ui` startar samma IG-server. Äldre mäklare och legacy-startvägar är borttagna.
 
-Sedan 2026-10-07 kör `npm run agent`, `npm run serve` och `npm run ui` den nya IG-handelsytan. Läs `TRADING_WORKSPACE.md` för aktuell arkitektur och begränsningar. JEV → Teknisk analytiker → Hanna använder befintlig modellrouting; Tiingo är historisk referens. Kör `npx tsc --noEmit` och `npm run test:workspace` för denna handelsyta. Inga verkliga order får skickas under utveckling/test.
-
-Dokumentationen nedan beskriver äldre signalkod som endast körs med explicit legacy/once/propose. Den kodens verifieringskrav gäller fortfarande när just dessa moduler ändras.
-
-## Äldre signalkod
-
-Kryptosignalsystem. Läser marknadsdata live från Binance, räknar indikatorer och
-producerar LONG/SHORT/NEUTRAL med obligatorisk stop-loss. **Signaler, inte
-automatisk orderläggning.** Allt är PAPER/SIM om inget annat uttryckligen sägs.
-
-Ägare: Mikael Luengo Johansson (AI Upscale Agency). Arbetsspråk: svenska.
-
-## Kom igång
-
-```bash
-npm install
-npm run build      # tsc --outDir dist — ska ge 0 fel
-npm run verify     # 9 kontroller mot live Binance-data
-npm run test:signal
-```
-
-`npm run verify` är facit. Den jämför ett WebSocket-ljus mot Binance REST och
-underkänner sig själv om de skiljer sig.
-
-## Arkitektur — läs i den här ordningen
-
-| Fil | Ansvar |
-|---|---|
-| `src/server/klineStream.ts` | Binance combined WebSocket. REST-seed vid start och vid varje reconnect, dedupe på `openTime`, watchdog. |
-| `src/server/signalEngine.ts` | Poängsättning → signal. Stop-loss och brusfilter. |
-| `src/server/jevClient.ts` | Valfritt bedömningslager (se nedan). |
-| `src/server/candleSource.ts` | Broker-agnostisk ljuskälla: websocket eller polling. |
-| `src/server/api.ts` | HTTP-API. Auth-gate före all routing. |
-
-### Tre regler som inte får brytas
-
-1. **Stängda ljus.** Signaler får bara beräknas på `k.x === true`.
-   `subscribeClosedCandles()` är enda tillåtna källan. `getFormingCandle()` är
-   till diagram, aldrig till beslut. Bryts detta ritas signaler om i efterhand
-   och backtest blir värdelöst.
-2. **Ingen signal utan stop-loss.** Saknas ATR förkastas signalen. Se
-   `signalEngine.ts` — `if (!ind.atr14 || ind.atr14 <= 0) return null`.
-3. **MACD-linjen bär riktning, histogrammet bara acceleration.** Histogrammet
-   vänder uppåt mitt i ett fall när fallet bromsar in. Läses det som riktning
-   ger ett ras LONG. Det har hänt en gång och får inte hända igen.
+Bevara nya layouten. JEV → Teknisk analytiker → Hanna, exakt två agenter. Signaler använder verifierade stängda ljus; ofullständiga live-ljus får enbart visas i diagram. Befintlig modellrouting, budget, kill-switch och Demo/Live-separering gäller. Strategier utan backtest får aldrig beskrivas som verifierat lönsamma.
 
 ## JEV — valfritt, systemet ska fungera utan
 
@@ -79,13 +35,8 @@ och `OPENAI_BASE_URL` så att OpenAI-kompatibla verktyg går via gatewayen.
 
 Lägg aldrig in nyckeln för hand och skriv aldrig ut dess värde.
 
-## Regler för dig som arbetar här
+## Verifiering
 
-- **Inga riktiga ordrar.** Ändra inga konton, rör inga nycklar.
-- **Skriv aldrig ut nyckelvärden** i loggar, commits eller svar.
-- `npx tsc --noEmit` ska ge 0 fel före commit. `noUncheckedIndexedAccess` är på
-  — indexering ger `T | undefined` och det ska hanteras, inte kastas bort med
-  `!`.
-- Kommentarer och commit-meddelanden på svenska, som resten av koden.
-- Kör `npm run verify` efter ändringar i stream-, signal- eller indikatorkod.
-- Påstå aldrig att något fungerar utan att ha kört det. Klistra in utdata.
+Kör `npx tsc --noEmit`, `npm run test:workspace` och `npm run test:forwarder`. Testerna använder lokala fixtures. Driftsatt streaming kräver dessutom HTTP101, IG CONNECTED:WS-STREAMING och verkliga broker-tidsstämplade pris-/ljusuppdateringar.
+
+Inga riktiga order under utveckling/test. Ändra inga konton eller nycklar och skriv aldrig ut nyckelvärden. Kommentarer och commit-meddelanden på svenska. Påstå aldrig att något fungerar utan verifiering.

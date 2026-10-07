@@ -1,4 +1,6 @@
+import {mergeStreamCandle} from '/workspace/streamCandles.mjs';
 import {frames,quoteIsFresh,scenario,sizeForCapitalRisk,increaseDraft,extendDeadline,normalizeSignal,marketMetric,rankMarkets} from '/workspace/model.mjs';
+import {accountMarketActivity,accountMarketProfits,marketViewRows,marketTradeLabel,marketMetricLabel} from '/workspace/marketViews.mjs';
 // Ett gemensamt tillstånd driver diagram, order, instrument, signaler och session.
 const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const number=(v,d=2)=>Number.isFinite(v)?new Intl.NumberFormat('sv-SE',{minimumFractionDigits:d,maximumFractionDigits:d}).format(v):'—';
@@ -8,9 +10,9 @@ const signed=v=>Number.isFinite(v)?`${v>0?'+':''}${number(v)}`:'—';
 const optionalNumber=v=>v==null||v===''?null:Number(v);
 const time=t=>Number.isFinite(t)?new Date(t).toLocaleTimeString('sv-SE',{hour:'2-digit',minute:'2-digit'}):'—';
 const duration=t=>t==null?'Ingen tidsplan':t<=0?'Tid ute · stängning inväntas':`${Math.floor(t/60000)}:${String(Math.floor(t/1000)%60).padStart(2,'0')}`;
-const S={mode:'demo',simulation:false,category:'crypto',catalogView:'all',schedules:[],catalogState:{},searchStatus:'',catalogSearchStatus:'',catalog:[],selected:new Set(),current:null,market:null,candles:[],account:null,positions:[],pending:[],closed:[],signals:[],session:null,analysis:null,connection:null,chartFrame:'15m',analysisFrame:'5m',direction:'BUY',orderType:'MARKET',tradeTab:'open',favorites:new Set(),favoritesOnly:false,execution:{enabled:false,reason:'Serverns IG-ordergrind är inte verifierad'},generation:0,instrumentRevision:0,connecting:false,connectingGeneration:-1,connectError:null,selectionRevision:0,quoteState:'ready',lastCandleRefresh:0,historyPartial:false,cost:null,review:null,maxPositions:1,preferencesRevision:0,streaming:null,analysisMemory:null};
+const S={mode:'demo',simulation:false,category:'crypto',catalogView:'all',schedules:[],catalogState:{},searchStatus:'',catalogSearchStatus:'',catalog:[],selected:new Set(),current:null,market:null,candles:[],account:null,positions:[],pending:[],closed:[],signals:[],session:null,analysis:null,connection:null,chartFrame:'15m',analysisFrame:'5m',direction:'BUY',orderType:'MARKET',tradeTab:'open',favorites:new Set(),favoritesOnly:false,execution:{enabled:false,reason:'Serverns IG-ordergrind är inte verifierad'},generation:0,instrumentRevision:0,connecting:false,connectingGeneration:-1,connectError:null,selectionRevision:0,quoteState:'ready',lastCandleRefresh:0,historyPartial:false,history:null,positionsStatus:"unavailable",cost:null,review:null,maxPositions:1,preferencesRevision:0,streaming:null,analysisMemory:null};
 try{S.favorites=new Set(JSON.parse(localStorage.getItem('trading-workspace-favorites')??'[]'));}catch{/* Felaktiga favoriter ignoreras. */}
-let chart=null,candleSeries=null,lineSeries=null,smaSeries=null,priceLines=[],indicator=false,refreshing=false,searchTimer,toastTimer,selectionChain=Promise.resolve(),catalogChain=Promise.resolve();const catalogRequests=new Map();let catalogResumeAt=0,credentialsBusy=false;
+let chart=null,candleSeries=null,lineSeries=null,smaSeries=null,priceLines=[],indicator=false,refreshing=false,searchTimer,toastTimer,selectionChain=Promise.resolve(),catalogChain=Promise.resolve();const catalogRequests=new Map();let catalogResumeAt=0,credentialsBusy=false,environmentStates={};
 const localHost=['localhost','127.0.0.1','::1','[::1]'].includes(location.hostname);
 const money=v=>`${number(v)} ${S.account?.currency??'—'}`;
 const price=v=>number(v,S.market?.instrument?.decimalPlacesFactor??2);
@@ -27,6 +29,11 @@ async function api(path,{method='GET',body}={}){
 }
 const ig=(path,params={})=>`/api/ig/${path}?${new URLSearchParams({environment:S.mode,...params})}`;
 const selection=()=>({environment:S.mode,epics:[...S.selected],timeframe:S.analysisFrame,percent:Number($('session-percent').value),horizonMinutes:Number($('holding').value)});
+function renderEnvironmentStatus(){
+  const host=$('ig-environment-status');if(!host)return;
+  host.innerHTML=['demo','live'].map(mode=>{const c=environmentStates[mode]??(mode===S.mode?S.connection:null),label=c?.status==='connected'?'Anslutet':c?.error??(c?.credentialsComplete?'Sparat · ej verifierat':'Uppgifter saknas');return `<div class="environment-status"><b>IG ${mode.toUpperCase()}</b><span class="${c?.status==='connected'?'positive':'amber'}">${esc(label)}${c?.account?` · ${esc(c.account.accountId)} · ${number(c.account.balance)} ${esc(c.account.currency)}`:''}</span><button type="button" data-account-mode="${mode}">Visa konto</button></div>`;}).join('');
+}
+function clearCredentialFields(){for(const id of ['ig-identifier','ig-password','ig-api-key'])$(id).value='';}
 let socket=null,reconnectTimer=null,reconnectAttempt=0,realtimeEpoch=null,realtimeSequence=0,realtimeLastAt=0,realtimeSnapshot=false,subscriptionKey='',pingTimer=null,streamedAccount=null;
 const streamScale=()=>['1m','3m','15m','30m'].includes(S.chartFrame)?'1MINUTE':S.chartFrame==='5m'?'5MINUTE':['1h','4h'].includes(S.chartFrame)?'HOUR':null;
 const streamedBuckets=new Map();
@@ -41,8 +48,13 @@ function connectRealtime(){
     if(m.type==='snapshot'){realtimeSnapshot=true;await refresh(data);subscribeRealtime();}
     if(m.type==='quote'){if(data.generation&&S.connection?.connectionGeneration&&data.generation!==S.connection.connectionGeneration)return;const old=S.catalog.find(x=>x.epic===data.epic);if(old?.quote?.observedAt>data.observedAt)return;if(old)Object.assign(old,{bid:data.bid,offer:data.offer,changePercent:data.changePercent,quote:data});if(S.current===data.epic&&S.market&&!(S.market.quote?.observedAt>data.observedAt))S.market={...S.market,quote:data};renderInstruments();if($('catalog-dialog').open)renderCatalog();for(const p of S.positions)if(p.epic===data.epic){p.bid=data.bid;p.offer=data.offer;}renderTrades();renderChart();recalculate();}
     if(m.type==='candle'&&data.epic===S.current&&data.scale===streamScale()){
-      const seconds=frames[S.chartFrame],sourceSeconds=data.scale==='HOUR'?3600:data.scale==='5MINUTE'?300:60,bucket=Math.floor(data.openTime/(seconds*1000))*seconds*1000,key=`${S.current}:${S.chartFrame}:${bucket}`,prior=S.candles.find(x=>x.openTime===bucket),last=streamedBuckets.get(key);
-      if(!last||data.openTime>=last.openTime){if(prior?.closed&&!data.closed&&seconds===sourceSeconds)return;streamedBuckets.set(key,{openTime:data.openTime});const merged={...data,openTime:bucket,open:prior?.open??data.open,high:Math.max(prior?.high??data.high,data.high),low:Math.min(prior?.low??data.low,data.low),closed:data.closed&&data.openTime+sourceSeconds*1000>=bucket+seconds*1000};S.candles=[...S.candles.filter(x=>x.openTime!==bucket),merged].sort((a,b)=>a.openTime-b.openTime).slice(-500);S.lastCandleRefresh=Date.now();renderChart();}
+      if(data.generation&&S.connection?.connectionGeneration&&data.generation!==S.connection.connectionGeneration)return;
+      const seconds=frames[S.chartFrame],sourceSeconds=data.scale==='HOUR'?3600:data.scale==='5MINUTE'?300:60,bucket=Math.floor(data.openTime/(seconds*1000))*seconds*1000,key=`${S.current}:${S.chartFrame}`,prior=S.candles.find(x=>x.openTime===bucket);
+      if(!streamedBuckets.has(key))streamedBuckets.set(key,new Map());
+      const parts=streamedBuckets.get(key),merged=mergeStreamCandle(prior,data,seconds,sourceSeconds,parts);
+      for(const oldBucket of parts.keys())if(oldBucket<bucket-seconds*1000*2)parts.delete(oldBucket);
+      S.candles=[...S.candles.filter(x=>x.openTime!==bucket),merged].sort((a,b)=>a.openTime-b.openTime).slice(-500);S.lastCandleRefresh=Date.now();renderChart();
+      if(seconds!==sourceSeconds&&data.closed&&data.openTime+sourceSeconds*1000>=bucket+seconds*1000&&!merged.closed){await chooseInstrument(S.current,{reset:false});}
     }
     if(m.type==='account'){if(data.generation&&S.connection?.connectionGeneration&&data.generation!==S.connection.connectionGeneration)return;streamedAccount=data;S.account={...S.account,...Object.fromEntries(Object.entries(data).filter(([,value])=>value!==null))};renderHeader();recalculate();}
     if(m.type==='stream-status'){S.streaming=data;renderTransport();}
@@ -53,6 +65,7 @@ function connectRealtime(){
   own.onerror=()=>own.close();own.onclose=()=>{if(socket!==own)return;socket=null;realtimeSnapshot=false;S.lastCandleRefresh=0;subscriptionKey='';clearInterval(pingTimer);renderTransport();if(generation===S.generation&&!S.simulation)reconnectTimer=setTimeout(connectRealtime,Math.min(30000,1000*2**reconnectAttempt++)+Math.random()*500);};
 }
 function renderHeader(){
+  renderEnvironmentStatus();
   $('ig-platform-signals').href=S.mode==='demo'?'https://demo-deal.ig.com/web-platform/#/workspace/NmFjNjJhMmVkN2U0MDkwNmU2NjZmMDdh':'https://deal.ig.com/web-platform/#/workspace/NmFjNTg1OTRhYjM1MWEwNzE1ODEyZTc1';
   for(const id of ['ig-identifier','ig-password','ig-api-key','ig-credentials-environment','ig-credentials-submit'])$(id).disabled=!localHost||S.simulation||credentialsBusy;
   const a=S.account;$('currency').textContent=a?.currency??'—';$('balance').textContent=number(a?.balance);$('available').textContent=number(a?.available);$('pnl').textContent=signed(a?.profitLoss);$('pnl').className=valueClass(a?.profitLoss);
@@ -74,6 +87,7 @@ function renderInstruments(){
   $('favorites-toggle').classList.toggle('positive',S.favoritesOnly);renderSelection();
 }
 function renderSelection(){
+  renderMarketsPage();
   subscribeRealtime();
   $('selection-list').textContent=S.selected.size?[...S.selected].map(nameOf).join(' · '):'Inga instrument valda';
   $('analyze').disabled=!S.selected.size||S.analysis?.status==='running'||S.quoteState==='disconnected';
@@ -93,6 +107,26 @@ async function syncSelection(){
 }
 function mergeMarkets(markets){const entries=new Map(S.catalog.map(m=>[m.epic,m]));for(const m of markets){const old=entries.get(m.epic);const preserve=old?.quote?.observedAt>(m.quote?.observedAt??0);entries.set(m.epic,{...old,...m,...(preserve?{quote:old.quote,bid:old.quote.bid,offer:old.quote.offer,changePercent:old.changePercent}:{}),category:m.category??old?.category});}S.catalog=[...entries.values()];}
 const marketStatusLabel=m=>({TRADEABLE:'Öppen',CLOSED:'Stängd',OFFLINE:'Offline',EDITS_ONLY:'Endast ändringar',SUSPENDED:'Pausad',ON_AUCTION:'Auktion',ON_AUCTION_NO_EDITS:'Auktion'})[m.marketStatus??m.quote?.marketStatus]??'Status ej verifierad';
+function marketActivity(){return accountMarketActivity(S.catalog,{positions:S.positions,positionsStatus:S.positionsStatus,history:S.history});}
+function renderMarketsPage(){
+  if($('markets-page').hidden)return;
+  const activity=marketActivity(),profits=accountMarketProfits(S.catalog,{history:S.history,currency:S.account?.currency});
+  const rows=marketViewRows(S.catalog.map(m=>({...m,percentageChange:m.quote?.changePercent??m.percentageChange,sentiment:m.sentiment??(Number.isFinite(m.sentimentLongPercent)?{longPositionPercentage:m.sentimentLongPercent}:null),accountProfit:profits.get(m.epic)})),{query:$('markets-search').value,sort:$('markets-sort').value,favorites:S.favorites,kind,activity}).filter(m=>$('markets-scope').value==='selected'?S.selected.has(m.epic):$('markets-scope').value==='favorites'?S.favorites.has(m.epic):true);
+  $('markets-page-status').textContent=`${catalogMessage('all')} · ${activity.note}`;
+  $('markets-selected-count').textContent=`${S.selected.size} / 10 valda`;
+  $('markets-analyze').disabled=!S.selected.size||S.analysis?.status==='running'||(!S.simulation&&S.connection?.status!=='connected');
+  $('markets-session-open').disabled=!S.selected.size;
+  for(const category of ['forex','crypto']){
+    const group=rows.filter(m=>m.category===category);$('markets-'+category+'-count').textContent=`${group.length} instrument`;
+    $('markets-'+category+'-list').innerHTML=group.length?group.map(m=>`<article class="market-card ${S.selected.has(m.epic)?'selected':''}"><div class="market-card-title"><label><input type="checkbox" data-select="${esc(m.epic)}" aria-label="Analysera ${esc(m.name)}" ${S.selected.has(m.epic)?'checked':''}><b>${esc(m.name)}</b></label><small>${esc(marketStatusLabel(m))}</small></div><div class="market-card-metrics"><span>Dagens riktning<b>${esc(marketMetricLabel(m,'trend'))}</b></span><span>Kontots affärer<b>${esc(marketTradeLabel(m))}</b></span><span>Kontots resultat<b>${esc(marketMetricLabel(m,'profit'))}</b></span><span>IG-köpintresse<b>${esc(marketMetricLabel(m,'buying'))}</b></span></div><div class="market-card-actions"><button class="star ${S.favorites.has(m.epic)?'favorite':''}" data-star="${esc(m.epic)}" aria-label="Favorit ${esc(m.name)}">${S.favorites.has(m.epic)?'★':'☆'}</button><button data-chart="${esc(m.epic)}">Visa diagram</button></div></article>`).join(''):'<p class="market-empty">Inga instrument matchar urvalet.</p>';
+  }
+}
+function showTradingView(){ $('markets-page').hidden=true;document.querySelector('.workspace').hidden=false;document.querySelector('.mobile-tabs').hidden=false;$('trading-view').classList.add('active');$('markets-open').classList.remove('active');chart?.resize($('chart').clientWidth,$('chart').clientHeight); }
+$('trading-view').onclick=showTradingView;
+$('markets-open').onclick=safe(async()=>{document.querySelector('.workspace').hidden=true;document.querySelector('.mobile-tabs').hidden=true;$('markets-page').hidden=false;$('trading-view').classList.remove('active');$('markets-open').classList.add('active');renderMarketsPage();const generation=S.generation;await loadCatalog('forex');if(generation===S.generation)await loadCatalog('crypto');renderMarketsPage();});
+$('markets-search').oninput=renderMarketsPage;$('markets-scope').onchange=renderMarketsPage;$('markets-sort').onchange=renderMarketsPage;
+$('markets-reload').onclick=safe(async()=>{const generation=S.generation;await loadCatalog('forex',{force:true});if(generation===S.generation)await loadCatalog('crypto',{force:true});renderMarketsPage();});
+$('markets-analyze').onclick=safe(analyze);$('markets-session-open').onclick=()=>{renderSelection();$('session-dialog').showModal();};
 function catalogRows(){const q=$('catalog-search').value.trim().toLowerCase();return rankMarkets(S.catalog.filter(m=>['forex','crypto'].includes(kind(m))&&(S.catalogView==='all'||(S.catalogView==='favorites'?S.favorites.has(m.epic):kind(m)===S.catalogView))&&($('market-status').value==='all'||(m.marketStatus??m.quote?.marketStatus)===$('market-status').value)&&(!q||`${m.name} ${m.epic}`.toLowerCase().includes(q))),$('market-ranking').value);}
 function catalogMessage(view=S.catalogView){
   if(S.simulation)return 'DESIGNLÄGE · lokal instrumentlista';
@@ -139,7 +173,7 @@ async function discoverTerm(term,source){
   const job=catalogChain.catch(()=>{}).then(async()=>{
     if(generation!==S.generation||input.value!==term||category!==(source==='catalog'?S.catalogView:S.category))return;
     try{const result=await api(ig('markets',{searchTerm:term.trim()}));if(generation!==S.generation||input.value!==term||category!==(source==='catalog'?S.catalogView:S.category))return;
-      const matches=(result.markets??[]).filter(m=>kind(m)===category);mergeMarkets(matches);S[statusKey]=matches.length?`${matches.length} ytterligare instrument hämtade från IG`:'IG returnerade inga ytterligare instrument i kategorin.';
+      const matches=(result.markets??[]).filter(m=>['all','popular'].includes(category)?['forex','crypto'].includes(kind(m)):kind(m)===category);mergeMarkets(matches);S[statusKey]=matches.length?`${matches.length} ytterligare instrument hämtade från IG`:'IG returnerade inga ytterligare instrument i kategorin.';
     }catch(e){if(generation===S.generation&&input.value===term)S[statusKey]=`IG-sökning misslyckades: ${e.message}. Ändra sökningen för att försöka igen.`;}
     finally{if(generation===S.generation){renderInstruments();renderCatalog();}}
   });catalogChain=job;await job;
@@ -148,7 +182,7 @@ async function changeCategory(category){S.instrumentRevision++;S.category=catego
 
 function initializeChart(){
   if(!window.LightweightCharts)return;
-  chart=window.LightweightCharts.createChart($('chart'),{layout:{background:{color:'#0d131c'},textColor:'#8493a8',fontFamily:'Inter, sans-serif',fontSize:10},grid:{vertLines:{color:'#1b2432'},horzLines:{color:'#1b2432'}},rightPriceScale:{borderColor:'#253143'},timeScale:{borderColor:'#253143',timeVisible:true,secondsVisible:false},crosshair:{mode:0},handleScroll:true,handleScale:true});
+  chart=window.LightweightCharts.createChart($('chart'),{layout:{background:{color:'#000000'},textColor:'#8493a8',fontFamily:'Inter, sans-serif',fontSize:10},grid:{vertLines:{color:'#1b2432'},horzLines:{color:'#1b2432'}},rightPriceScale:{borderColor:'#253143'},timeScale:{borderColor:'#253143',timeVisible:true,secondsVisible:false},crosshair:{mode:0},handleScroll:true,handleScale:true});
   candleSeries=chart.addCandlestickSeries({upColor:tradingColor('green'),downColor:tradingColor('red'),borderVisible:false,wickUpColor:tradingColor('green'),wickDownColor:tradingColor('red')});
   lineSeries=chart.addLineSeries({color:tradingColor('green'),lineWidth:2,visible:false});smaSeries=chart.addLineSeries({color:'#dbb674',lineWidth:1,priceLineVisible:false,lastValueVisible:false,visible:false});
   new ResizeObserver(entries=>{for(const e of entries)if(e.contentRect.width>0&&e.contentRect.height>0)chart.resize(e.contentRect.width,e.contentRect.height);}).observe($('chart'));
@@ -158,8 +192,8 @@ function renderChart(fit=false){
   const m=S.market;$('instrument-name').textContent=m?.name??'Välj instrument';$('order-symbol').textContent=m?.name??'Välj instrument';$('market-kind').textContent=`${kind(m??{})==='forex'?'FOREX':'KRYPTO'} · ${S.simulation?'DEMODATA':'IG CFD'}`;$('epic-label').textContent=m?.epic??'Samma handelsyta för krypto och forex';
   $('bid').textContent=price(m?.quote?.bid);$('ask').textContent=price(m?.quote?.offer);$('unit').textContent=m?.instrument?.unit??'kontrakt';
   $('chart-empty').hidden=!!S.candles.length;
-  $('chart-source').textContent=S.simulation?'Demodata · simulerade mid-ljus':S.candles.length?'IG historiska mid-ljus · ingen garanterad exekveringskurs':'Inga IG-ljus';
-  $('chart-freshness').textContent=!m?'—':quoteIsFresh(m)?`Kvot mottagen ${time(m.quote.receivedAt)}`:'Inaktuell / ej verifierad kvot';$('chart-freshness').className=m&&!quoteIsFresh(m)?'amber':'';
+  $('chart-source').textContent=S.simulation?'Demodata · simulerade mid-ljus':S.candles.length?`${realtimeHealthy()&&S.streaming?.status==='CONNECTED:WS-STREAMING'&&Date.now()-(S.candles.at(-1)?.receivedAt??0)<60000?'IG WebSocket · live mid-ljus':'IG historiska mid-ljus'}${S.candles.at(-1)?.partial?' · pågående ljus: delvis underlag':''}`:'Inga IG-ljus';
+  $('chart-freshness').textContent=!m?'—':quoteIsFresh(m)?`${m.quote.source?.includes('WebSocket')?'IG WebSocket':'IG-kvot'} · prisålder ${Math.max(0,Math.floor((Date.now()-m.quote.observedAt)/1000))} s · mottagen ${time(m.quote.receivedAt)}`:'Inaktuell / ej verifierad kvot';$('chart-freshness').className=m&&!quoteIsFresh(m)?'amber':'';
   if(chart){
     const candles=S.candles.map(c=>({time:Math.floor(c.openTime/1000),open:c.open,high:c.high,low:c.low,close:c.close})).sort((a,b)=>a.time-b.time).filter((c,i,a)=>!i||c.time!==a[i-1].time);
     const autoScale=original=>{const info=original();if(!info)return info;const levels=S.positions.filter(p=>p.epic===S.current).flatMap(p=>[p.level,p.stopLevel,p.limitLevel]).filter(v=>Number.isFinite(v)&&v>0);if(levels.length){info.priceRange.minValue=Math.min(info.priceRange.minValue,...levels);info.priceRange.maxValue=Math.max(info.priceRange.maxValue,...levels);}return info;};
@@ -225,7 +259,7 @@ function renderSession(){
   $('agent-steps').innerHTML=[['JEV','Förkontroll'],['Teknisk analytiker','Stängda ljus'],['Hanna / Head Trader','Beslut']].map(([name,caption],i)=>`${i?'<i>→</i>':''}<span>0${i+1} <b>${name}</b><small>${esc(steps[i]?.status??(a?.status==='completed'?'Klar':a?.status==='running'&&i===0?'Arbetar':'Inväntar analys'))} · ${caption}</small></span>`).join('');
 }
 function renderAll(){if($('import-signal-dialog').open)renderImportedSignals();if($('catalog-dialog').open)renderCatalog();renderHeader();renderInstruments();renderTrades();renderSignals();renderSession();renderChart();}
-function clearAccountState(){S.analysisMemory=null;importedSignals=[];if($('import-signal-dialog').open)$('import-signal-dialog').close();stopRealtime();S.schedules=[];S.preferencesRevision=0;S.streaming=null;S.favorites=new Set();S.catalog=[];S.catalogState={};S.searchStatus='';S.catalogSearchStatus='';S.catalogView=S.category;$('catalog-search').value='';S.selected=new Set();S.current=null;S.market=null;S.candles=[];S.positions=[];S.pending=[];S.closed=[];S.signals=[];S.analysis=null;S.session=null;S.account=null;S.connection=null;S.connecting=false;S.connectingGeneration=-1;S.connectError=null;S.execution={enabled:false,reason:'IG-ordergrind ej verifierad'};$('stop').value='';$('target').value='';S.generation++;S.selectionRevision++;}
+function clearAccountState(){S.analysisMemory=null;importedSignals=[];if($('import-signal-dialog').open)$('import-signal-dialog').close();stopRealtime();S.schedules=[];S.preferencesRevision=0;S.streaming=null;S.favorites=new Set();S.catalog=[];S.catalogState={};S.searchStatus='';S.catalogSearchStatus='';S.catalogView=S.category;$('catalog-search').value='';S.selected=new Set();S.current=null;S.market=null;S.candles=[];S.positions=[];S.pending=[];S.closed=[];S.history=null;S.positionsStatus="unavailable";S.signals=[];S.analysis=null;S.session=null;S.account=null;S.connection=null;S.connecting=false;S.connectingGeneration=-1;S.connectError=null;S.execution={enabled:false,reason:'IG-ordergrind ej verifierad'};$('stop').value='';$('target').value='';S.generation++;S.selectionRevision++;}
 async function switchMode(mode){
   const sameMode=mode===S.mode;
   if(sameMode&&(S.simulation||S.connection?.status==='connected'||S.connecting&&S.connectingGeneration===S.generation))return;
@@ -233,7 +267,7 @@ async function switchMode(mode){
   if(S.simulation){loadSimulation();return;}
   const generation=S.generation;connectRealtime();renderAll();notice(`IG ${mode==='demo'?'Demo':'Live'} valt. Kontot och priserna verifieras separat.`);
   const status=await api('/api/ig/status');if(generation!==S.generation)return;
-  S.connection=status.environments?.[mode];renderHeader();
+  environmentStates=status.environments??{};S.connection=environmentStates[mode];renderHeader();
   if(S.connection?.status==='connected'){await refresh();if(generation===S.generation)await restoreChart();}
   else if(S.connection?.configured&&S.connection?.credentialsComplete)await connect();
   else{await refresh();if(generation===S.generation)notice(S.connection?.error??'IG-uppgifterna behöver kompletteras i Inställningar.');}
@@ -242,7 +276,7 @@ async function switchMode(mode){
 async function restoreChart(){
   const generation=S.generation;let revision=S.instrumentRevision;
   let saved;try{saved=JSON.parse(localStorage.getItem(`trading-chart-${S.mode}`)??'null');}catch{/* Ett ogiltigt sparat diagram ignoreras. */}
-  if(saved?.epic&&/^[A-Za-z0-9._-]{1,100}$/.test(saved.epic)){await chooseInstrument(saved.epic);if(generation!==S.generation||S.market)return;revision=S.instrumentRevision;}
+  if(saved?.epic&&/^[A-Za-z0-9._-]{1,100}$/.test(saved.epic)){await chooseInstrument(saved.epic);if(generation!==S.generation)return;revision=S.instrumentRevision;}
   await loadCatalog(S.category);
   if(generation!==S.generation||revision!==S.instrumentRevision||S.current&&S.market)return;
   const first=S.catalog.find(m=>m.epic===saved?.epic)??S.catalog.find(m=>kind(m)===S.category&&(m.marketStatus??m.quote?.marketStatus)==='TRADEABLE');
@@ -250,7 +284,7 @@ async function restoreChart(){
 }
 async function startWorkspace(){
   connectRealtime();
-  try{const status=await api('/api/ig/status');S.connection=status.environments?.[S.mode];
+  try{const status=await api('/api/ig/status');environmentStates=status.environments??{};S.connection=environmentStates[S.mode];
     if(S.connection?.status==='connected'){await refresh();await restoreChart();}
     else if(S.connection?.status==='configured'&&S.connection?.credentialsComplete)await connect();
     else await refresh();
@@ -268,7 +302,7 @@ async function refresh(snapshot=null){
   if(S.simulation||refreshing)return;refreshing=true;const generation=S.generation;
   try{const w=snapshot??await api(ig('workspace'));if(generation!==S.generation)return;
     if(Object.prototype.hasOwnProperty.call(w,'analysisMemory'))S.analysisMemory=w.analysisMemory;if(w.importedSignals)importedSignals=w.importedSignals;if(w.preferences){S.favorites=new Set(w.preferences.favorites??[]);S.preferencesRevision=w.preferences.revision??0;}if(w.schedules){S.schedules=w.schedules;if($('schedules-dialog').open)renderSchedules();}if(w.streaming)S.streaming=w.streaming;
-    S.connection=w.connection;S.account=w.connection?.account;const accountAt=w.checkedAt??w.connection?.checkedAt??0;if(streamedAccount&&streamedAccount.generation===w.connection?.connectionGeneration&&streamedAccount.receivedAt>accountAt&&Date.now()-streamedAccount.receivedAt<60000)S.account={...S.account,...Object.fromEntries(Object.entries(streamedAccount).filter(([,value])=>value!==null))};S.positions=w.positions??[];S.pending=w.pendingOrders??[];if(w.pendingOrderStatus==='unavailable'&&w.connection?.status==='connected')S.pending.push({status:'unknown',error:'IG:s väntande order kunde inte hämtas. Listan kan vara ofullständig.'});S.closed=(w.history?.transactions??[]).filter(t=>t.cashTransaction===false&&t.type==='DEAL').map(t=>({...t,closedAt:Date.parse(t.date?.replace(/\//g,'-')??''),epic:(w.history?.activities??[]).find(a=>a.dealId===t.reference)?.epic}));
+    S.connection=w.connection;environmentStates[S.mode]=w.connection;S.history=w.history;S.positionsStatus=w.positionsStatus??"unavailable";S.account=w.connection?.account;const accountAt=w.checkedAt??w.connection?.checkedAt??0;if(streamedAccount&&streamedAccount.generation===w.connection?.connectionGeneration&&streamedAccount.receivedAt>accountAt&&Date.now()-streamedAccount.receivedAt<60000)S.account={...S.account,...Object.fromEntries(Object.entries(streamedAccount).filter(([,value])=>value!==null))};S.positions=w.positions??[];S.pending=w.pendingOrders??[];if(w.pendingOrderStatus==='unavailable'&&w.connection?.status==='connected')S.pending.push({status:'unknown',error:'IG:s väntande order kunde inte hämtas. Listan kan vara ofullständig.'});S.closed=(w.history?.transactions??[]).filter(t=>t.cashTransaction===false&&t.type==='DEAL').map(t=>({...t,closedAt:Date.parse(t.date?.replace(/\//g,'-')??''),epic:(w.history?.activities??[]).find(a=>a.dealId===t.reference)?.epic}));
     S.historyPartial=w.history?.complete===false;S.analysis=w.analysis;S.signals=w.analysis?.status==='completed'?(w.analysis?.head?.analyses??[]).map(s=>normalizeSignal(s,w.analysis)):[];S.session=w.session;S.execution=w.execution??S.execution;
     // Ett osparat lokalt urval skrivs aldrig över av en äldre polling-request.
     if(!S.selectionRevision||(snapshot&&Date.now()-(S.selectionSavedAt??0)>2000)){S.selected=new Set(w.selection?.epics??[]);S.analysisFrame=w.selection?.timeframe??S.analysisFrame;$('analysis-frame').value=S.analysisFrame;}
@@ -292,7 +326,7 @@ async function connect(){
   try{
     const result=await api('/api/ig/connect',{method:'POST',body:{environment:mode}});
     if(generation!==S.generation)return;
-    const status=result.environments?.[mode];if(status?.status!=='connected')throw Error(status?.error??'IG-anslutningen saknar verifierat konto');
+    environmentStates=result.environments??environmentStates;const status=result.environments?.[mode];if(status?.status!=='connected')throw Error(status?.error??'IG-anslutningen saknar verifierat konto');
     await refresh();if(generation!==S.generation)return;
     await loadCatalog(category);if(generation!==S.generation)return;
     // Anslutningen får inte ersätta ett instrument som användaren väljer under väntan.
@@ -390,7 +424,9 @@ $('analysis-frame').onchange=safe(async()=>{S.analysisFrame=$('analysis-frame').
 for(const id of ['size','stop','target','limit','holding','auto-close'])$(id).addEventListener('input',recalculate);
 $('chart-type').onchange=()=>renderChart();$('indicator-toggle').onclick=()=>{indicator=!indicator;$('indicator-toggle').classList.toggle('positive',indicator);renderChart();};$('chart-fit').onclick=()=>chart?.timeScale().fitContent();
 $('review-order').onclick=safe(reviewOrder);$('confirm-order').onclick=safe(async()=>{const callback=S.review;if(!callback)return;$('confirm-order').disabled=true;try{await callback();$('review-dialog').close();}finally{$('confirm-order').disabled=false;}});
-$('settings-open').onclick=()=>{$('ig-credentials-environment').value=S.mode;const disabled=!localHost||S.simulation||credentialsBusy;for(const id of ['ig-identifier','ig-password','ig-api-key','ig-credentials-environment','ig-credentials-submit'])$(id).disabled=disabled;if(!localHost)$('ig-credentials-feedback').textContent='Uppgifter kan bara sparas från localhost på denna dator.';else if(S.simulation)$('ig-credentials-feedback').textContent='Lämna designläget för att testa IG-inloggningen.';$('settings-dialog').showModal();void loadStrategies();};$('catalog-open').onclick=safe(async()=>{S.catalogView='all';renderCatalog();$('catalog-dialog').showModal();await loadCatalogView();});$('session-open').onclick=()=>{renderSelection();$('session-dialog').showModal();};
+$('settings-open').onclick=()=>{clearCredentialFields();void api('/api/ig/status').then(status=>{environmentStates=status.environments??{};renderEnvironmentStatus();}).catch(()=>{});$('ig-credentials-environment').value=S.mode;const disabled=!localHost||S.simulation||credentialsBusy;for(const id of ['ig-identifier','ig-password','ig-api-key','ig-credentials-environment','ig-credentials-submit'])$(id).disabled=disabled;if(!localHost)$('ig-credentials-feedback').textContent='Uppgifter kan bara sparas från localhost på denna dator.';else if(S.simulation)$('ig-credentials-feedback').textContent='Lämna designläget för att testa IG-inloggningen.';$('settings-dialog').showModal();void loadStrategies();};$('catalog-open').onclick=safe(async()=>{S.catalogView='all';renderCatalog();$('catalog-dialog').showModal();await loadCatalogView();});$('session-open').onclick=()=>{renderSelection();$('session-dialog').showModal();};
+$('tools-open').onclick=()=>$('tools-dialog').showModal();
+$('ig-credentials-environment').onchange=()=>{clearCredentialFields();$('ig-credentials-feedback').textContent=`IG ${$('ig-credentials-environment').value.toUpperCase()} valt. Tomma fält behåller endast denna miljös sparade uppgifter.`;};
 $('ig-credentials-form').onsubmit=safe(async e=>{
   e.preventDefault();if(credentialsBusy||!localHost||S.simulation)return;
   const environment=$('ig-credentials-environment').value,payload={environment};
@@ -399,9 +435,10 @@ $('ig-credentials-form').onsubmit=safe(async e=>{
   for(const id of ['ig-identifier','ig-password','ig-api-key','ig-credentials-environment','ig-credentials-submit'])$(id).disabled=true;
   try{const result=await api('/api/ig/credentials',{method:'POST',body:payload});
     $('ig-password').value='';$('ig-api-key').value='';
+    environmentStates=result.environments??result.status?.environments??environmentStates;renderEnvironmentStatus();
     const connection=result.environments?.[environment]??result.status?.environments?.[environment];
     $('ig-credentials-feedback').textContent=result.test?.ok===true&&connection?.status==='connected'?`IG ${environment.toUpperCase()} verifierat. Uppgifterna är sparade lokalt. Inga order skickades.`:`Uppgifterna sparades lokalt. IG-inloggningen kunde inte verifieras: ${connection?.error??result.test?.error??'kontrollera dina uppgifter och försök igen'}`;
-    if(generation===S.generation&&environment===S.mode){await refresh();if(S.connection?.status==='connected')await loadCatalog(S.category);}
+    if(generation===S.generation&&environment===S.mode){await refresh();if(S.connection?.status==='connected')await restoreChart();}
   }catch(e){$('ig-credentials-feedback').textContent=`IG-anslutningen kunde inte verifieras: ${e.message}`;}
   finally{credentialsBusy=false;$('ig-password').value='';$('ig-api-key').value='';for(const id of ['ig-identifier','ig-password','ig-api-key','ig-credentials-environment','ig-credentials-submit'])$(id).disabled=!localHost||S.simulation;}
 });
@@ -413,9 +450,9 @@ $('session-stop').onclick=safe(async()=>{if(S.simulation){S.session.status='stop
 $('kill').onclick=safe(async()=>{if(S.simulation){if(S.session)S.session.status='stopped';S.analysis={status:'failed',error:'Simulerat nödstopp'};S.signals=[];renderAll();toast('Simulerat nödstopp aktivt');}else{await api('/api/kill-switch',{method:'POST',body:{active:true}});await api('/api/ig/session',{method:'DELETE',body:{environment:S.mode}});await refresh();toast('Kill switch aktiverad. Inga positioner har stängts.');}});
 $('trade-filter').onchange=renderTrades;$('period-filter').onchange=renderTrades;
 document.addEventListener('click',safe(async e=>{const b=e.target.closest('button');if(!b||b.disabled)return;const d=b.dataset;
-  if(d.close){$(d.close).close();return;}if(d.mode){await switchMode(d.mode);return;}if(d.category){await changeCategory(d.category);return;}if(d.catalogCategory){if(['favorites','all'].includes(d.catalogCategory)){S.catalogView=d.catalogCategory;$('catalog-search').value='';renderCatalog();await loadCatalogView();}else await changeCategory(d.catalogCategory);return;}
+  if(d.tool){$('tools-dialog').close();if(d.tool==='markets')$('markets-open').click();else if(d.tool==='session')$('session-open').click();else if(d.tool==='settings')$('settings-open').click();else{showTradingView();document.querySelector('.workspace').dataset.panel='activity';if(['open','closed'].includes(d.tool))S.tradeTab=d.tool;renderTrades();$('signals').scrollIntoView({block:'nearest'});}return;}if(d.close){$(d.close).close();return;}if(d.mode||d.accountMode){if($('settings-dialog').open){clearCredentialFields();$('settings-dialog').close();}await switchMode(d.mode??d.accountMode);return;}if(d.category){await changeCategory(d.category);return;}if(d.catalogCategory){if(['all','favorites'].includes(d.catalogCategory)){S.catalogView=d.catalogCategory;$('catalog-search').value='';renderCatalog();await loadCatalogView();}else await changeCategory(d.catalogCategory);return;}
   if(d.panel){document.querySelector('.workspace').dataset.panel=d.panel;document.querySelectorAll('[data-panel]').forEach(x=>{if(x.tagName==='BUTTON')x.classList.toggle('active',x.dataset.panel===d.panel);});return;}
-  if(d.chart){await chooseInstrument(d.chart);if($('catalog-dialog').open)$('catalog-dialog').close();return;}if(d.star){S.favorites.has(d.star)?S.favorites.delete(d.star):S.favorites.add(d.star);if(S.simulation)localStorage.setItem('trading-workspace-favorites',JSON.stringify([...S.favorites]));else{try{const result=await api('/api/ig/preferences',{method:'POST',body:{environment:S.mode,favorites:[...S.favorites],revision:S.preferencesRevision}});const prefs=result.preferences??result;S.favorites=new Set(prefs.favorites??[]);S.preferencesRevision=prefs.revision??S.preferencesRevision;}catch(e){await refresh();throw e;}}renderInstruments();renderCatalog();subscribeRealtime();return;}
+  if(d.chart){showTradingView();await chooseInstrument(d.chart);if($('catalog-dialog').open)$('catalog-dialog').close();return;}if(d.star){S.favorites.has(d.star)?S.favorites.delete(d.star):S.favorites.add(d.star);if(S.simulation)localStorage.setItem('trading-workspace-favorites',JSON.stringify([...S.favorites]));else{try{const result=await api('/api/ig/preferences',{method:'POST',body:{environment:S.mode,favorites:[...S.favorites],revision:S.preferencesRevision}});const prefs=result.preferences??result;S.favorites=new Set(prefs.favorites??[]);S.preferencesRevision=prefs.revision??S.preferencesRevision;}catch(e){await refresh();throw e;}}renderInstruments();renderCatalog();subscribeRealtime();return;}
   if(d.frame){S.chartFrame=d.frame;document.querySelectorAll('[data-frame]').forEach(x=>x.classList.toggle('active',x.dataset.frame===d.frame));if(S.current)await chooseInstrument(S.current,{reset:false});return;}
   if(d.direction){S.direction=d.direction;recalculate();return;}if(d.orderType){S.orderType=d.orderType;recalculate();return;}if(d.percent){const t=ticket(),size=sizeForCapitalRisk({...t,percent:Number(d.percent)});if(size==null)throw Error('Riskandel kräver verifierat punktvärde, konto och stop-loss.');$('size').value=size;recalculate();return;}
   if(d.trades){S.tradeTab=d.trades;renderTrades();return;}if(d.copy){await copySignal(d.copy);return;}if(d.double){await doubleUp(d.double);return;}if(d.roll){rollOver(d.roll);return;}if(d.closePosition){closePosition(d.closePosition);return;}
@@ -425,7 +462,7 @@ document.addEventListener('click',safe(async e=>{const b=e.target.closest('butto
 }));
 document.addEventListener('change',safe(async e=>{const epic=e.target.dataset.select;if(!epic)return;if(e.target.checked&&!S.selected.has(epic)&&S.selected.size>=10){e.target.checked=false;throw Error('Max 10 instrument per analys. Avmarkera ett instrument först.');}e.target.checked?S.selected.add(epic):S.selected.delete(epic);renderInstruments();renderCatalog();await syncSelection();}));
 setInterval(safe(async()=>{
-  if(!S.simulation){if(document.hidden)return;if(!realtimeHealthy())await refresh();else{renderHeader();recalculate();renderSignals();renderSession();}if(Date.now()-catalogResumeAt>=60000){const categories=$('catalog-dialog').open&&['favorites','all'].includes(S.catalogView)?['forex','crypto']:[$('catalog-dialog').open?S.catalogView:S.category];const next=categories.find(c=>S.catalogState[c]?.status==='partial'&&S.catalogState[c]?.remainingSearches>0);if(next)await loadCatalog(next);}return;}
+  if(!S.simulation){if(document.hidden)return;renderChart();if(!realtimeHealthy())await refresh();else{renderHeader();recalculate();renderSignals();renderSession();}if(Date.now()-catalogResumeAt>=60000){const categories=$('catalog-dialog').open&&['favorites','all'].includes(S.catalogView)?['forex','crypto']:[$('catalog-dialog').open?S.catalogView:S.category];const next=categories.find(c=>S.catalogState[c]?.status==='partial'&&S.catalogState[c]?.remainingSearches>0);if(next)await loadCatalog(next);}return;}
   if(S.market&&S.quoteState!=='stale'&&S.quoteState!=='disconnected')S.market.quote.receivedAt=Date.now();
   if(S.session?.status==='running'){if(Date.now()>=S.session.endsAt){S.session.status='completed';}else if(Date.now()>=S.session.nextRunAt&&S.quoteState==='ready'){S.session.nextRunAt=Date.now()+S.session.intervalMinutes*60000;simulateAnalysis();}}
   // Avslut simuleras först efter kvotkontroll; ett fel lämnar positionen öppen.

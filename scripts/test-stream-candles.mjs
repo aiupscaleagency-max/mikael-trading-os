@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import {mergeStreamCandle} from '../src/server/ui/workspace/streamCandles.mjs';
+const state=new Map();const bar=(n,over={})=>({openTime:n*60000,open:100+n,high:110+n,low:90+n,close:105+n,closed:true,...over});
+let result=mergeStreamCandle(null,bar(2),180,60,state);
+assert.equal(result.closed,false);assert.equal(result.partial,true,'Joining at last minute cannot fabricate a complete 3m bar');
+result=mergeStreamCandle(result,bar(0),180,60,state);assert.equal(result.closed,false);
+result=mergeStreamCandle(result,bar(1),180,60,state);assert.equal(result.closed,true);assert.equal(result.open,100);assert.equal(result.close,107);assert.equal(result.high,112);assert.equal(result.low,90);
+assert.deepEqual(mergeStreamCandle(result,bar(1,{close:999}),180,60,state),result,'Verified closed bars are immutable');
+const one=mergeStreamCandle(null,bar(4,{closed:false}),60,60);assert.equal(one.closed,false);assert.equal(one.openTime,240000);
+console.log('PASS: mid-bucket reconnect, out-of-order partials, full aggregation, immutable close and live bar');

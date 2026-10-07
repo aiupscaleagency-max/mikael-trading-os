@@ -55,7 +55,7 @@ export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMess
         json(res, await getIgStatus());
         return true;
       }
-      // IG använder egna instrument, konton och sessioner; Bybits tillstånd ändras inte.
+      // IG använder egna instrument, konton och sessioner.
       if (url.pathname.startsWith("/api/ig/")) {
         res.setHeader("Cache-Control", "no-store");
         let body: Record<string, unknown> = {};

@@ -92,3 +92,10 @@ Sparad Luengos-12/21/50-specifikation är nu ett versionsbundet registry och en 
 IG-signaler kan klistras in som privata kontobundna utkast. Användaren anger instrument, riktning, entry, stopp, mål och giltighet (högst24h) och originaltexten lagras som data, aldrig agentinstruktioner. Servern validerar prisriktning och kontogeneration. Dessa utkast är inte en verifierad IG-feed. Kopiering till orderformuläret kräver aktuell generation, giltighet och färsk kvot; order skickas först via den vanliga servergrinden och manuellt godkännande. Originaltexten skickas inte till JEV/agenterna.
 
 Verifierad inbäddning: en verklig läsande browserkontroll av `https://agentic-os.tail64d627.ts.net/trading` laddade iframe `https://aiupscale-dator1.tail64d627.ts.net:9443/` utan JavaScript-fel. Dator2-forwardern är installerad med backup. Backend på dator1 är fortfarande föregående version: nya realtime-rutten svarar404 tills uppdatering görs. SSH nekas även för macOS-användaren i befintlig LaunchAgent-konfiguration; driftsättning behöver köras på dator1 eller åtkomst ordnas.
+
+
+## Sammanförd IG-only-version
+
+Dator 1:s b72bed0 sammanförd med fortsättningsbranchen. Äldre brokeradaptrar, legacy-CLI, marknadsströmmar och orderrutter är borttagna. Endast IG och Tiingo används för marknadsdata. JEV/Gateway och Supabase-inloggningen finns kvar. Marknadsöversikt, separata Demo/Live-formulär, strategijämförelser, analysminne och scheman använder samma handelsyta.
+
+Aggregatljus blir kompletta först med alla verifierade delperioder. Vid anslutning mitt i perioden visas delvis underlag och REST-avstämning görs när perioden stänger. Historikcache förnyas vid periodgränsen.
