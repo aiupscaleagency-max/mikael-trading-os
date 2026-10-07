@@ -2,15 +2,17 @@
 export const frames = { '1m':60, '3m':180, '5m':300, '15m':900, '30m':1800, '1h':3600, '4h':14400, '1d':86400 };
 export function quoteIsFresh(market, now=Date.now()) {
   const q=market?.quote;
-  return !!q && q.marketStatus==='TRADEABLE' && q.delayTime===0 && Number.isFinite(q.receivedAt) && now-q.receivedAt>=0 && now-q.receivedAt<=60000 && (q.observedAt===undefined || (Number.isFinite(q.observedAt)&&now-q.observedAt>=0&&now-q.observedAt<=60000)) && Number.isFinite(q.bid) && Number.isFinite(q.offer) && q.bid>0 && q.offer>=q.bid;
+  const fx=market?.calculationRules?.fx;
+  const fxFresh=!fx||[fx.receivedAt,fx.observedAt].every(t=>Number.isFinite(t)&&now-t>=0&&now-t<=60000);
+  return fxFresh && !!q && q.marketStatus==='TRADEABLE' && q.delayTime===0 && Number.isFinite(q.receivedAt) && now-q.receivedAt>=0 && now-q.receivedAt<=60000 && (q.observedAt===undefined || (Number.isFinite(q.observedAt)&&now-q.observedAt>=0&&now-q.observedAt<=60000)) && Number.isFinite(q.bid) && Number.isFinite(q.offer) && q.bid>0 && q.offer>=q.bid;
 }
-export function scenario({direction,entry,stop,target,size,pointValue,marginRate,available,currency,pointCurrency,knownFees=null}) {
+export function scenario({direction,entry,stop,target,size,pointValue,marginRate,available,currency,pointCurrency,knownFees=null,profitPointValue=pointValue}) {
   const finite=v=>Number.isFinite(v);
   const ready=[entry,stop,target,size,pointValue].every(finite) && entry>0 && stop>0 && target>0 && size>0 && pointValue>0 && currency===pointCurrency;
   const sign=direction==='BUY'?1:-1;
   const levels=ready && sign*(entry-stop)>0 && sign*(target-entry)>0;
   if(!levels)return {valid:false,error:'Verifiera storlek, punktvärde, valuta och nivåerna för SL/TP.',risk:null,reward:null,exposure:null,margin:null,percent:null};
-  const exposure=entry*size*pointValue, risk=sign*(entry-stop)*size*pointValue, reward=sign*(target-entry)*size*pointValue;
+  const exposure=entry*size*pointValue, risk=sign*(entry-stop)*size*pointValue, reward=sign*(target-entry)*size*(finite(profitPointValue)&&profitPointValue>0?profitPointValue:pointValue);
   const margin=finite(marginRate)&&marginRate>0&&marginRate<=1?exposure*marginRate:null;
   return {valid:true,risk,reward,exposure,margin,percent:reward/exposure*100,capitalPercent:finite(available)&&available>0?risk/available*100:null,ratio:reward/risk,knownFees};
 }

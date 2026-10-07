@@ -38,5 +38,51 @@ try{
  await page.setViewportSize({width:390,height:844});await page.locator('button[data-panel="chart"]').click();await page.screenshot({path:'/tmp/trading-workspace-mobile.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
  const selected=await page.locator('#instrument-name').textContent();await page.locator('button[data-panel="order"]').click();assert.equal(await page.locator('#order-symbol').textContent(),selected);await page.locator('button[data-panel="activity"]').click();assert.equal(await page.locator('.signals-section').isVisible(),true);assert.equal(await page.locator('.trades-section').isVisible(),true);
  await page.locator('[data-mode="live"]').click();assert.match(await page.locator('#notice').textContent(),/DESIGNLÄGE/);assert.deepEqual(writes,[],'Designläge skickar inga API-mutationer');assert.deepEqual(errors,[]);
- console.log('PASS: fyra laptopkolumner, mobil utan overflow, Krypto/Forex, kopiering utan order, oberoende tider, risksizing, simulering, väntande→accepterad→öppen, stängning, double up, roll over, session start/stopp, stale/offline/inga signaler, inga externa orderanrop eller JS-fel');
+ // Verkligt UI-flöde med helt lokala API-fixtures; ingen anslutning till IG görs.
+ const real=await browser.newPage({viewport:{width:1440,height:900}});real.on('pageerror',e=>errors.push(e.message));
+ const markets=[
+  {epic:'FIX.STOCK',name:'Bitcoin Mining Aktie',type:'SHARES',marketStatus:'TRADEABLE'},
+  {epic:'FIX.ETF',name:'Bitcoin ETF',type:'ETF',marketStatus:'TRADEABLE'},
+  {epic:'FIX.UNKNOWN',name:'Bitcoin okänd typ',marketStatus:'TRADEABLE'},
+  {epic:'FIX.CLOSED',name:'Bitcoin stängd',type:'CURRENCIES',marketStatus:'CLOSED'},
+  {epic:'FIX.BTC',name:'Bitcoin / USD',type:'CURRENCIES',marketStatus:'TRADEABLE'},
+  {epic:'FIX.EUR',name:'EUR / USD',type:'CURRENCIES',marketStatus:'TRADEABLE'}
+ ];
+ let connected=false,failConnect=false,connectGate=null,connectRequests=0,marketRequests=0,marketGate=null,workspaceMarkets=[];
+ const fixtureWrites=[];
+ await real.route('**/api/**',async route=>{
+  const req=route.request(),path=new URL(req.url()).pathname;if(req.method()!=='GET')fixtureWrites.push(path);
+  let data;
+  if(path==='/api/ig/connect'){
+   connectRequests++;if(connectGate)await connectGate.promise;
+   if(failConnect){await route.fulfill({status:401,json:{error:'Fixture: Demo-inloggning nekad'}});return;}
+   connected=true;data={environments:{demo:{status:'connected'}}};
+  }else if(path==='/api/ig/workspace')data={connection:{status:connected?'connected':'missing',account:connected?{currency:'USD',balance:1000,available:900,profitLoss:0}:null},selection:{epics:[],timeframe:'5m'},positions:[],markets:workspaceMarkets,execution:{enabled:false,reason:'Fixture · order avstängda'}};
+  else if(path==='/api/ig/markets'){marketRequests++;if(marketGate)await marketGate.promise;data={markets};}
+  else if(path==='/api/ig/market'){const epic=new URL(req.url()).searchParams.get('epic');data={...markets.find(m=>m.epic===epic),quote:{bid:100,offer:101,receivedAt:Date.now(),observedAt:Date.now(),marketStatus:'TRADEABLE',delayTime:0},instrument:{decimalPlacesFactor:2}};}
+  else if(path==='/api/ig/candles')data={candles:[]};
+  else throw Error(`Otillåtet fixture-anrop: ${path}`);
+  await route.fulfill({json:data});
+ });
+ const gate=()=>{let release;const promise=new Promise(resolve=>release=resolve);return {promise,release};};
+ await real.goto(`http://127.0.0.1:${server.address().port}/`);
+ connectGate=gate();await real.click('#connect');await real.waitForFunction(()=>document.querySelector('#connect').textContent.includes('Ansluter'));
+ await real.click('#signals-refresh');await real.waitForTimeout(100);assert.equal(await real.locator('#connect').isDisabled(),true,'Polling återaktiverar inte anslutningsknappen');
+ connectGate.release();await real.waitForFunction(()=>document.querySelector('#instrument-name').textContent.includes('Bitcoin / USD'));
+ await real.waitForFunction(()=>!document.querySelector('#connect').disabled);
+ assert.equal(await real.locator('[data-chart="FIX.STOCK"]').count(),0);assert.equal(await real.locator('[data-chart="FIX.ETF"]').count(),0);assert.equal(await real.locator('[data-chart="FIX.UNKNOWN"]').count(),0);
+ assert.match(await real.locator('#notice').textContent(),/ansluten.*Diagrammet/);
+ await real.locator('[data-category="forex"]').click();assert.match(await real.locator('#instruments').textContent(),/EUR/);assert.doesNotMatch(await real.locator('#instruments').textContent(),/Bitcoin/);
+ failConnect=true;connectGate=null;await real.click('#connect');await real.waitForFunction(()=>document.querySelector('#notice').textContent.includes('inloggning nekad'));
+ await real.click('#signals-refresh');await real.waitForTimeout(100);assert.match(await real.locator('#notice').textContent(),/kunde inte anslutas.*inloggning nekad/,'Anslutningsfel kvarstår efter polling');
+ failConnect=false;workspaceMarkets=markets;await real.reload();marketGate=gate();const beforeMarkets=marketRequests;await real.click('#connect');
+ while(marketRequests===beforeMarkets)await real.waitForTimeout(25);
+ await real.click('#catalog-open');await real.locator('#catalog-content [data-chart="FIX.EUR"]').click();marketGate.release();await real.waitForFunction(()=>!document.querySelector('#connect').disabled);
+ assert.match(await real.locator('#instrument-name').textContent(),/EUR/,'Anslutningen ersätter inte instrumentet som väljs under sökning');
+ workspaceMarkets=[];marketGate=null;await real.reload();marketGate=gate();const beforeRace=marketRequests;await real.click('#connect');
+ while(marketRequests===beforeRace)await real.waitForTimeout(25);
+ await real.click('#settings-open');await real.click('#simulation-toggle');await real.click('[data-close="settings-dialog"]');marketGate.release();await real.waitForTimeout(200);
+ assert.equal(await real.locator('#connect').isDisabled(),true,'Slutförd gammal anslutning återaktiverar inte knappen i designläge');assert.match(await real.locator('#notice').textContent(),/DESIGNLÄGE/);
+ assert.equal(connectRequests,4);assert.deepEqual(fixtureWrites,Array(4).fill('/api/ig/connect'));await real.close();
+ console.log('PASS: fyra laptopkolumner, mobil utan overflow, Krypto/Forex, kopiering utan order, oberoende tider, risksizing, simulering, väntande→accepterad→öppen, stängning, double up, roll over, session start/stopp, stale/offline/inga signaler, IG-fixture anslutning/fel/filter/polling/instrumentrace, inga externa orderanrop eller JS-fel');
 }finally{await browser.close();server.close();}

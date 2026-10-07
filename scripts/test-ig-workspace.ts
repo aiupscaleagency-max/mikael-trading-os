@@ -134,3 +134,36 @@ let stopHeads=0;
 const stopped=createIgWorkspace({...deps,directory:path.join(directory,'stopped-analysis'),llm:async(role,context)=>{if(role==='technical'){enteredStop();return new Promise(r=>releaseStop=r);}stopHeads++;return llm(role,context);}});
 const stopRun=stopped.analyze('live',selected);await stopStarted;stopped.stopSession('live');releaseStop({analyses:[{epic,bias:'bullish'}]});await assert.rejects(stopRun,/avbruten/);assert.equal(stopHeads,0);assert.equal((await stopped.workspace('live')).analysis.status,'stopped');
 console.log('PASS: stopp under pågående analys stoppar Hanna och publicering');
+
+// V3:s tidszonlösa updateTime får inte användas som UTC. V4 avstäms mot samma EPIC/scaling.
+const epochWorkspace=createIgWorkspace({...deps,directory:path.join(directory,'v4'),call:(async(...args:any[])=>{
+ if(args[1].startsWith('markets/')){const data=await call(...args as [string,string,string,string,any,any]);
+  if(args[3]==='4')return {instrument:{epic:args[1].slice(8)},snapshot:{scalingFactor:10000,updateTimestampUTC:now,delayTime:0,marketStatus:'TRADEABLE',priceLadder:[{bid:'100',ask:'100.1'}],currencyLadders:[{currency:'USD',bidSizes:[2],askSizes:[3]}]}};
+  delete (data.snapshot as any).updateTimeUTC;return data;}return call(...args as [string,string,string,string,any,any]);
+ }) as never});
+const epochMarket=await epochWorkspace.market('live',epic);assert.equal(epochMarket.quote.observedAt,now);assert.equal(epochMarket.quote.bid,100);assert.equal(epochMarket.quote.maxQuoteSize,2);
+const missingEpoch=createIgWorkspace({...deps,directory:path.join(directory,'v4-missing'),call:(async(...args:any[])=>{if(args[3]==='4')throw Error('mock v4 unavailable');const data=await call(...args as [string,string,string,string,any,any]);if(data.snapshot)delete (data.snapshot as any).updateTimeUTC;return data;}) as never});
+assert.equal((await missingEpoch.market('live',epic)).quote.observedAt,null);
+console.log('PASS: riktig V3/V4-schemaseparation, UTC-epoch/prisstege och saknad V4-tid förblir blockerad');
+
+// SEK-konto använder explicit USD/SEK-kvot, native forexpriser och verifierad positionsvaluta.
+const sekEp='CS.D.EURUSD.CEEM.IP',fxEp='CS.D.USDSEK.CFD.IP';const currencyCalls:any[]=[];
+let fxStale=false,fxFail=false;
+const rawCurrencyCall=async(_mode:string,route:string,_method:string,version:string)=>{
+ currencyCalls.push({route,version});
+ if(route==='markets')return {markets:[{epic:fxEp,instrumentName:'USD/SEK ',instrumentType:'CURRENCIES',marketStatus:'TRADEABLE'}]};
+ if(route.startsWith('history/'))return route==='history/transactions'?{transactions:[],metadata:{pageData:{totalPages:1}}}:{activities:[]};
+ const pair=route===`markets/${fxEp}`;if(pair&&fxFail&&version==='4')throw Error('Fixture FX unavailable');
+ const q={scalingFactor:10000,decimalPlacesFactor:5,updateTimestampUTC:fxStale&&pair?now-60001:now,marketStatus:'TRADEABLE',delayTime:0,priceLadder:[{bid:pair?'10.03389':'1.11848',ask:pair?'10.03639':'1.11857'}],currencyLadders:[{currency:pair?'SEK':'USD',bidSizes:[2],askSizes:[3]}]};
+ const instrument={epic:route.slice(8),name:pair?'USD/SEK ':'EUR/USD Mini',type:'CURRENCIES',unit:'CONTRACTS',contractSize:pair?'100000':'10000',onePipMeans:pair?'0.0001 SEK/USD':'0.0001 USD/EUR',valueOfOnePip:pair?'10':'1',currencies:[{code:pair?'SEK':'USD',isDefault:false}],marginFactor:3.33,marginFactorUnit:'PERCENTAGE',marginDepositBands:[{margin:3.33},{margin:15}]};
+ return {instrument,snapshot:version==='4'?q:{scalingFactor:10000,bid:pair?10.03389:1.11848,offer:pair?10.03639:1.11857,updateTime:'12:00:00',marketStatus:'TRADEABLE',delayTime:0},dealingRules:{minDealSize:{value:.04},minNormalStopOrLimitDistance:{unit:'POINTS',value:2}}};
+};
+const sekConnection=()=>({environments:{live:{...status().environments.live,account:{accountType:'CFD',accountId:'fixture-sek',currency:'SEK'}},demo:status().environments.demo}});
+const sekWorkspace=createIgWorkspace({...deps,status:sekConnection as never,call:rawCurrencyCall as never,directory:path.join(directory,'currency'),positions:async()=>({status:'ready',positions:[{dealId:'fixture-position',epic:sekEp,currency:'USD',direction:'BUY',size:.1,level:1.1}]}) as never});
+const sekDetail=await sekWorkspace.market('live',sekEp);assert.equal(sekDetail.calculationRules.executionCurrency,'USD');assert.equal(sekDetail.calculationRules.pointCurrency,'SEK');assert.equal(sekDetail.calculationRules.nativePointValue,10000);assert.equal(sekDetail.quote.bid,1.11848);
+const sekView=await sekWorkspace.workspace('live'),profit=sekView.positions[0];assert.equal(profit.pnlCurrency,'SEK');assert.ok(Math.abs(profit.profitLoss-(1.11848-1.1)*.1*10000*10.03389)<1e-8,'Positiv P/L använder FX bid');
+const metadataCount=currencyCalls.filter(c=>c.version==='3'&&c.route.startsWith('markets/')).length;
+now+=16000;await sekWorkspace.market('live',sekEp);assert.equal(currencyCalls.filter(c=>c.version==='3'&&c.route.startsWith('markets/')).length,metadataCount,'V3 metadata återanvänds medan V4 quote hämtas');
+fxStale=true;now+=16000;assert.equal((await sekWorkspace.market('live',sekEp)).calculationRules.verified,false,'Stale FX ger inga kontovalutebelopp');
+fxStale=false;fxFail=true;now+=16000;assert.equal((await sekWorkspace.accountFx('live')),null,'V4-fel återanvänder inte gammal V3-kvot som färsk');
+console.log('PASS: SEK-scenario/positions-P-L med native forex, konservativ FX-riktning, V3-metadatacache+färsk V4 och stale/missing FX blockerad');

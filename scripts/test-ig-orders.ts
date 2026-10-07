@@ -6,7 +6,7 @@ const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ig-orders-test-'));
 const ps:any[]=[];const calls:any[]=[];
 const environment=(mode:string)=>({environment:mode,status:'connected',connectionGeneration:`${generation}-${mode}`,account:{accountType:'CFD',available:1000,profitLoss:0,currency:'USD'}});
 const status=()=>({environments:{demo:environment('demo'),live:environment('live')}});
-const market=async(_mode:string,epic:string)=>({epic,expiry:'-',quote:{bid:100,offer:101,receivedAt:now,observedAt:marketStale?now-60001:now,delayTime:0,marketStatus:'TRADEABLE'},calculationRules:{verified:true,pointValue:1,pointCurrency:'USD',marginRate:.1},dealingRules:{minDealSize:{value:.1},minNormalStopOrLimitDistance:{unit:'POINTS',value:1}}});
+const market=async(_mode:string,epic:string)=>({epic,expiry:'-',instrument:{currencies:[{code:'USD'}],scalingFactor:1},quote:{bid:100,offer:101,receivedAt:now,observedAt:marketStale?now-60001:now,delayTime:0,marketStatus:'TRADEABLE'},calculationRules:{verified:true,pointValue:1,pointCurrency:'USD',executionCurrency:'USD',priceScalingFactor:1,marginRate:.1},dealingRules:{minDealSize:{value:.1},minNormalStopOrLimitDistance:{unit:'POINTS',value:1}}});
 let n=0;const call=async(mode:string,route:string,method:string,_version:string,body:any,extra:any)=>{
  calls.push({mode,route,method,body,extra});
  if(route==='workingorders')return {workingOrders:[]};
@@ -22,7 +22,7 @@ await assert.rejects(orders.confirm('demo',draft.id),/avstängd/);enabled=true;
 const order=await orders.confirm('demo',draft.id);assert.equal(order.status,'accepted');assert.equal(calls.filter(c=>c.method==='POST').length,1);
 await assert.rejects(orders.confirm('demo',draft.id),/redan behandlat/);assert.equal(calls.filter(c=>c.method==='POST').length,1,'Dubbelklick omsänder aldrig order');
 assert.equal(orders.snapshot('live').pendingOrders.length,0,'IG Demo blandas aldrig med Live');
-ps.push({dealId:'opened-deal',epic:ticket.epic,direction:'BUY',size:1,level:101});
+ps.push({dealId:'opened-deal',epic:ticket.epic,direction:'BUY',size:1,level:101,currency:'USD'});
 assert.equal(orders.snapshot('demo',ps).pendingOrders.length,0,'Accepterad order blir position endast via mäklarens positionslista');
 const previous=orders.snapshot('demo').exitPlans[0]!.closeAt;
 const roll=await orders.rollover('demo','opened-deal',15);assert.equal(roll.closeAt,previous+15*60000);
@@ -55,3 +55,32 @@ console.log('PASS: okänt orderutfall spärrar efter reconnect och utgånget und
 await assert.rejects(clean.preview('demo',{...ticket,orderType:'LIMIT',entry:99}),/manuell stängning/);
 
 assert.equal((await clean.brokerPending('demo','older-binding')).status,'unavailable','Workingorders får inte blandas mellan anslutningsgenerationer');
+
+// SEK-konto med faktisk native EUR/USD Mini-prisnivå; inga verkliga mäklaranrop.
+let fxAge=0;const fxRate={baseCurrency:'USD' as const,accountCurrency:'SEK',bid:10.03389,offer:10.03639,source:'Fixture · verifierad USD/SEK'};
+const sekStatus=()=>({environments:{demo:{...environment('demo'),account:{accountType:'CFD',available:20000,profitLoss:0,currency:'SEK'}},live:environment('live')}});
+const fx=async()=>({...fxRate,receivedAt:now,observedAt:now-fxAge});
+const {igCalculationRules}=await import('../src/integrations/igRules.js');
+const eurInstrument={type:'CURRENCIES',unit:'CONTRACTS',contractSize:10000,valueOfOnePip:1,onePipMeans:'0.0001 USD/EUR',currencies:[{code:'USD',isDefault:false}],marginFactor:3.33,marginFactorUnit:'PERCENTAGE',marginDepositBands:[{margin:3.33},{margin:15}]};
+const sekMarket=async(_mode:string,epic:string)=>({epic,expiry:'-',instrument:{...eurInstrument,scalingFactor:10000},quote:{bid:1.11848,offer:1.11857,receivedAt:now,observedAt:now,delayTime:0,marketStatus:'TRADEABLE',source:'IG REST v4 · Fixture',maxQuoteSize:1,quoteSizeCurrency:'USD'},calculationRules:igCalculationRules(eurInstrument,{scalingFactor:10000},'SEK',await fx(),now),dealingRules:{minDealSize:{value:.04},minNormalStopOrLimitDistance:{unit:'POINTS',value:2}}});
+const sekDeps={...deps,status:sekStatus as never,positions:async()=>({status:'ready',positions:[]}) as never,market:sekMarket,fx,directory:path.join(directory,'sek')};
+const sekOrders=createIgOrders(sekDeps),sekTicket={...ticket,size:.04,stopLevel:1.115,targetLevel:1.125};
+const sekDraft=await sekOrders.preview('demo',sekTicket);assert.equal(sekDraft.currency,'SEK');assert.equal(sekDraft.executionCurrency,'USD');assert.equal(sekDraft.body.currencyCode,'USD');
+assert.ok(Math.abs(sekDraft.exposure-1.11857*.04*10000*fxRate.offer)<1e-8);assert.ok(Math.abs(sekDraft.risk-(1.11857-1.115)*.04*10000*fxRate.offer)<1e-8);assert.ok(Math.abs(sekDraft.margin-sekDraft.exposure*.15)<1e-8);
+assert.ok(Math.abs((sekDraft as any).reward-(1.125-1.11857)*.04*10000*fxRate.bid)<1e-8,'Positiv vinst använder bid');
+await assert.rejects(sekOrders.preview('demo',{...sekTicket,stopLevel:1.11847}),/stop-\/målavstånd/,'POINTS 2 betyder .0002 i native kurs');
+await assert.rejects(sekOrders.preview('demo',{...sekTicket,size:1000*.9999/(1.11857*10000)}),/positionsgräns/,'Ask-exponering och bid-konverterad USD-gräns ger konservativ spärr');
+fxAge=60001;await assert.rejects(sekOrders.preview('demo',sekTicket),/färsk verifierad USD\/SEK/);fxAge=0;
+const noFx=createIgOrders({...sekDeps,fx:async()=>null,directory:path.join(directory,'no-fx')});await assert.rejects(noFx.preview('demo',sekTicket),/färsk verifierad USD\/SEK/);
+const badCurrency=createIgOrders({...sekDeps,market:async(...args:Parameters<typeof sekMarket>)=>({...await sekMarket(...args),calculationRules:{...(await sekMarket(...args)).calculationRules,executionCurrency:'SEK'}}),directory:path.join(directory,'bad-currency')});await assert.rejects(badCurrency.preview('demo',sekTicket),/erbjuden instrumentvaluta|prisnivå i prisstegen/,'Prisstegens storlek måste matcha exekveringsvalutan');
+const sekAccepted=await sekOrders.confirm('demo',sekDraft.id);assert.equal(sekAccepted.status,'accepted');assert.equal(calls.filter(c=>c.method==='POST').at(-1).body.currencyCode,'USD');
+console.log('PASS: SEK-nativekonto, native EURUSD Mini/stoppip-avstånd, ask-risk/bid-vinst, konservativa USD-gränser, erbjuden USD i brokerbody, prisstegevaluta och saknad/stale FX; endast mocks');
+
+// Accepterad order reserverar faktisk entry efter tillåten kursrörelse, inte previewkursen.
+let moved=false;const repricedMarket=async(mode:string,epic:string)=>{const m=await market(mode,epic);return {...m,quote:{...m.quote,bid:moved?101:100,offer:moved?102.01:101}};};
+const repriced=createIgOrders({...deps,status:(()=>({environments:{demo:{...environment('demo'),account:{accountType:'CFD',available:2000,profitLoss:0,currency:'USD'}},live:environment('live')}})) as never,positions:async()=>({status:'ready',positions:[]}) as never,market:repricedMarket,directory:path.join(directory,'repriced'),limits:{...deps.limits,maxTotalExposureUsd:204.01}});
+const rp=await repriced.preview('demo',{...ticket,stopLevel:50,targetLevel:200});assert.equal(rp.entry,101);moved=true;
+const acceptedRepriced=await repriced.confirm('demo',rp.id);assert.equal(acceptedRepriced.status,'accepted');assert.equal(acceptedRepriced.entry,102.01);assert.equal(acceptedRepriced.exposure,102.01);assert.ok(Math.abs(acceptedRepriced.margin-10.201)<1e-9);assert.ok(Math.abs(acceptedRepriced.risk-52.01)<1e-9);
+assert.equal(repriced.snapshot('demo').pendingOrders[0]!.entry,102.01);assert.equal(JSON.parse(fs.readFileSync(path.join(directory,'repriced/demo.json'),'utf8')).drafts[0].entry,102.01);
+await assert.rejects(repriced.preview('demo',{...ticket,stopLevel:50,targetLevel:200}),/totalexponering/,'102.01 accepterat + 102.01 nytt överskrider 204.01; previewkurs 101 hade felaktigt tillåtit ordern');
+console.log('PASS: accepterad order och pending-reservation lagrar omvaliderad entry/risk/marginal vid 1 % tillåten kursrörelse');

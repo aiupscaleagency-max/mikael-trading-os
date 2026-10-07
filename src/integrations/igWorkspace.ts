@@ -1,4 +1,4 @@
-import {igCalculationRules,igQuoteTimestamp} from "./igRules.js";
+import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igUsdSekFx,type IgAccountFx} from "./igRules.js";
 import {getHistoricalContext} from "../data/tiingoHistory.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -66,12 +66,13 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
   function persist(mode:IgEnvironment,next:WorkspaceState) {fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,`${mode}.json`),temp=`${file}.${process.pid}.tmp`;fs.writeFileSync(temp,JSON.stringify(next));fs.renameSync(temp,file);states.set(mode,next);}
   const clone=<T>(v:T):T=>JSON.parse(JSON.stringify(v));
   const connectionIdentity=(mode:IgEnvironment)=>{const c=status().environments[mode];return c.status==="connected" ? c.connectionGeneration ?? `${c.checkedAt}:${c.account?.accountId}` : null;};
+  function consumeRead(){if(now()-rateWindow>=60000){rateWindow=now();rateCount=0;}if(rateCount>=40)throw Error("IG-läsbudgeten är slut för denna minut");rateCount++;}
+  async function read(...args:Parameters<typeof call>){consumeRead();return call(...args);}
   async function cached<T>(key:string,ttl:number,job:()=>Promise<T>):Promise<T> {
     const environment=key.split(":")[1] as IgEnvironment,identity=connectionIdentity(environment);
     key=`${key}:account:${identity}`;
     const prev=cache.get(key);if(prev&&now()-prev.at<ttl)return clone(prev.value);
     const running=pending.get(key);if(running)return clone(await running);
-    if(now()-rateWindow>=60000){rateWindow=now();rateCount=0;}if(rateCount>=40)throw Error("IG-läsbudgeten är slut för denna minut");rateCount++;
     const promise=job();pending.set(key,promise);try{const value=await promise;if(connectionIdentity(environment)!==identity)throw Error("IG-kontosessionen ändrades under hämtningen");cache.set(key,{at:now(),value});return clone(value);}finally{if(pending.get(key)===promise)pending.delete(key);}
   }
   function connected(mode:IgEnvironment){
@@ -85,23 +86,48 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
   async function searchMarkets(mode:IgEnvironment,term:string) {
     connected(mode);if(typeof term!=="string"||term.trim().length<2||term.length>80)throw Error("Ogiltig IG-sökning");
     return cached(`search:${mode}:${term}`,60000,async()=>{
-      const data=await call(mode,"markets","GET","1",undefined,{query:new URLSearchParams({searchTerm:term.trim()}).toString()});
+      const data=await read(mode,"markets","GET","1",undefined,{query:new URLSearchParams({searchTerm:term.trim()}).toString()});
       if(!Array.isArray(data.markets))throw Error("IG-marknadskatalogen kunde inte verifieras");
       return {environment:mode,status:"ready",error:null,markets:data.markets.filter((m:any)=>typeof m.epic==="string").map((m:any)=>({epic:m.epic,name:str(m.instrumentName),type:str(m.instrumentType),expiry:str(m.expiry),bid:num(m.bid),offer:num(m.offer),marketStatus:str(m.marketStatus),streamingPricesAvailable:m.streamingPricesAvailable===true,delayTime:num(m.delayTime)})),updatedAt:now()};
     });
   }
-  async function market(mode:IgEnvironment,epic:string) {
+  async function rawMarket(mode:IgEnvironment,epic:string) {
     connected(mode);epicGuard(epic);
-    return cached(`market:${mode}:${epic}`,15000,async()=>{
-      const data=await call(mode,`markets/${epic}`,"GET","3");
-      if(data.instrument?.epic!==epic || !data.snapshot || !data.dealingRules)throw Error("IG-instrumentet kunde inte verifieras");
-      const i=data.instrument,s=data.snapshot;
+    return cached(`rawmarket:${mode}:${epic}`,15000,async()=>{
+      const metadata=await cached(`metadata:${mode}:${epic}`,300000,async()=>{
+        const data=await read(mode,`markets/${epic}`,"GET","3");
+        if(data.instrument?.epic!==epic || !data.snapshot || !data.dealingRules)throw Error("IG-instrumentet kunde inte verifieras");
+        return {data,at:now()};
+      });
+      const data=metadata.data,i=data.instrument,s=data.snapshot;let priceSnapshot=s;
+      // Metadata kan återanvändas, men en äldre V3-kvot blir aldrig en ny färsk kvot.
+      if(metadata.at!==now()||igQuoteTimestamp(s.updateTimeUTC,now())===null){
+        priceSnapshot={marketStatus:s.marketStatus,delayTime:s.delayTime,bid:s.bid,offer:s.offer};
+        try{const latest=await read(mode,`markets/${epic}`,"GET","4");if(latest.instrument?.epic===epic&&latest.snapshot?.scalingFactor===s.scalingFactor)priceSnapshot=latest.snapshot;}catch{/* Saknad UTC-tid håller order- och signalgrinden stängd. */}
+      }
       return {environment:mode,epic,name:str(i.name),type:str(i.type),expiry:str(i.expiry),status:"ready",error:null,
-        calculationRules:igCalculationRules(i,s,status().environments[mode].account?.currency??null),
-        quote:{observedAt:igQuoteTimestamp(s.updateTimeUTC,now()),bid:num(s.bid),offer:num(s.offer),marketStatus:str(s.marketStatus),delayTime:num(s.delayTime),updateTimeUTC:str(s.updateTimeUTC),receivedAt:now(),source:"IG REST snapshot"},
+        quote:igSnapshotQuote(priceSnapshot,now()),
         instrument:{epic,type:str(i.type),expiry:str(i.expiry),unit:str(i.unit),contractSize:metadataNumber(i.contractSize),lotSize:metadataNumber(i.lotSize),valueOfOnePip:metadataNumber(i.valueOfOnePip),onePipMeans:str(i.onePipMeans),scalingFactor:num(s.scalingFactor),decimalPlacesFactor:num(s.decimalPlacesFactor),marginFactor:num(i.marginFactor),marginFactorUnit:str(i.marginFactorUnit),marginDepositBands:clone(i.marginDepositBands??[]),currencies:clone(i.currencies??[]),controlledRiskAllowed:i.controlledRiskAllowed===true,forceOpenAllowed:i.forceOpenAllowed===true,stopsLimitsAllowed:i.stopsLimitsAllowed===true},
         dealingRules:clone(data.dealingRules),updatedAt:now()};
     });
+  }
+  async function accountFx(mode:IgEnvironment):Promise<IgAccountFx|null> {
+    connected(mode);const currency=status().environments[mode].account?.currency;
+    if(currency==='USD')return {baseCurrency:'USD',accountCurrency:'USD',bid:1,offer:1,receivedAt:now(),observedAt:now(),source:'USD-konto · ingen valutaomräkning'};
+    if(currency!=='SEK')return null;
+    try{
+      const found=await searchMarkets(mode,'USD/SEK');
+      const pair=found.markets.find((m:any)=>m.type==='CURRENCIES'&&/^USD\s*\/\s*SEK(?:\s+Mini)?\s*$/i.test(m.name??'')&&m.marketStatus==='TRADEABLE');
+      if(!pair)return null;
+      return igUsdSekFx(await rawMarket(mode,pair.epic),now());
+    }catch{return null;}
+  }
+  async function market(mode:IgEnvironment,epic:string) {
+    const detail=await rawMarket(mode,epic),currency=status().environments[mode].account?.currency??null;
+    const currencies=detail.instrument.currencies;
+    const execution=(currencies.find((c:any)=>c.isDefault===true)??(currencies.length===1?currencies[0]:null))?.code;
+    const fx=execution==='USD'&&currency==='SEK'?await accountFx(mode):null;
+    return {...detail,calculationRules:{...igCalculationRules(detail.instrument,{scalingFactor:detail.instrument.scalingFactor},currency,fx,now()),minSize:detail.dealingRules.minDealSize?.value??null}};
   }
   async function candles(mode:IgEnvironment,epic:string,timeframe:IgTimeframe,limit=100) {
     connected(mode);epicGuard(epic);if(!Object.hasOwn(frames,timeframe)||!Number.isInteger(limit)||limit<20||limit>200)throw Error("Ogiltiga IG-ljusparametrar");
@@ -113,7 +139,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     const count=incremental?3:limit;
     const result = await cached(cacheKey,Math.min(3600000,Math.max(60000,frames[timeframe].ms)),async()=>{
       if(prior?.allowance && num(prior.allowance.remainingAllowance)!==null && prior.allowance.remainingAllowance<count)throw Error("IG-historikkvoten räcker inte för nya ljus");
-      const data=await call(mode,`prices/${epic}`,"GET","3",undefined,{query:new URLSearchParams({resolution:frames[timeframe].resolution,max:String(count),pageSize:String(count)}).toString()});
+      const data=await read(mode,`prices/${epic}`,"GET","3",undefined,{query:new URLSearchParams({resolution:frames[timeframe].resolution,max:String(count),pageSize:String(count)}).toString()});
       const normalized=normalizeIgCandles(data.prices,timeframe,now());
       if(incremental && normalized.candles.length){
         const merged=new Map<number,IgCandle>(prior.candles.map((b:IgCandle)=>[b.openTime,b]));
@@ -129,7 +155,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     return cached(`history:${mode}`,60000,async()=>{
       const from=new Date(now()-30*86400000).toISOString().slice(0,19),to=new Date(now()).toISOString().slice(0,19);
       const query=new URLSearchParams({from,to,pageSize:"100",pageNumber:"1"}).toString();
-      const [t,a]=await Promise.all([call(mode,"history/transactions","GET","2",undefined,{query}),call(mode,"history/activity","GET","3",undefined,{query})]);
+      const [t,a]=await Promise.all([read(mode,"history/transactions","GET","2",undefined,{query}),read(mode,"history/activity","GET","3",undefined,{query})]);
       if(!Array.isArray(t.transactions)||!Array.isArray(a.activities))throw Error("IG-historiken kunde inte verifieras");
       const txPages=num(t.metadata?.pageData?.totalPages),hasMore=(txPages!==null&&txPages>1)||!!a.metadata?.paging?.next;
       return {status:hasMore?"partial":"ready",error:null,complete:!hasMore,periodDays:30,transactions:t.transactions.map((r:any)=>({date:str(r.dateUtc)??str(r.date),type:str(r.transactionType),instrumentName:str(r.instrumentName),reference:str(r.reference),profitAndLoss:str(r.profitAndLoss),currency:str(r.currency),openLevel:str(r.openLevel),closeLevel:str(r.closeLevel),size:str(r.size),cashTransaction:typeof r.cashTransaction==="boolean"?r.cashTransaction:["DEPOSIT","WITHDRAWAL","TRANSFER","INTEREST","FEE"].includes(r.transactionType)?true:null})),activities:a.activities.map((r:any)=>({date:str(r.date),type:str(r.type),status:str(r.status),description:str(r.description),epic:str(r.epic),dealId:str(r.dealId)})),pagination:{transactions:{pageNumber:num(t.metadata?.pageData?.pageNumber),pageSize:num(t.metadata?.pageData?.pageSize),totalPages:txPages},activities:{nextPageAvailable:!!a.metadata?.paging?.next,size:num(a.metadata?.size)}},note:"Kontohändelser och kassatransaktioner är inte automatiskt avslutade trades eller strategins PnL",updatedAt:now()};
@@ -247,17 +273,18 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     const connection=status().environments[mode],current=state(mode);
     const markets=[];let pos:any={positions:null,status:"unavailable",error:connection.error},hist:any={transactions:null,activities:null,status:"unavailable",error:connection.error};
     if(connection.status==="connected") {
-      try{await cached(`accounts:${mode}`,15000,()=>accounts(mode));}catch { /* Saknat saldo ska inte bli ett beräknat nollvärde. */ }
-      try{pos=await cached(`positions:${mode}`,10000,()=>positions(mode));}catch(e){pos.error=errorText(e);}
+      try{await cached(`accounts:${mode}`,15000,()=>{consumeRead();return accounts(mode);});}catch { /* Saknat saldo ska inte bli ett beräknat nollvärde. */ }
+      try{pos=await cached(`positions:${mode}`,10000,()=>{consumeRead();return positions(mode);});}catch(e){pos.error=errorText(e);}
       if(Array.isArray(pos.positions)){
         pos.positions=await Promise.all(pos.positions.map(async(p:any)=>{
           try{const m=await market(mode,p.epic),q=m.quote,r=m.calculationRules;
             const fresh=q.marketStatus==="TRADEABLE"&&q.delayTime===0&&q.observedAt!==null&&Number.isFinite(q.observedAt)&&now()-q.observedAt>=0&&now()-q.observedAt<=60000;
             const current=p.direction==="BUY"?q.bid:q.offer;
-            const basis=num(p.level)!==null&&p.level>0&&num(p.size)!==null&&p.size>0&&r.verified&&p.currency===r.pointCurrency;
-            const profitLoss=fresh&&basis&&current!==null&&Number.isFinite(current)?(p.direction==="BUY"?1:-1)*(current-p.level)*p.size*r.pointValue!:null;
+            const basis=["BUY","SELL"].includes(p.direction)&&num(p.level)!==null&&p.level>0&&num(p.size)!==null&&p.size>0&&r.verified&&p.currency===r.executionCurrency;
+            const delta=current!==null&&Number.isFinite(current)?(p.direction==="BUY"?1:-1)*(current-p.level):null;
+            const profitLoss=fresh&&basis&&delta!==null?delta*p.size*(delta>=0?r.profitPointValue!:r.pointValue!):null;
             const exposure=basis?p.level*p.size*r.pointValue!:null;
-            return {...p,bid:q.bid,offer:q.offer,priceFresh:fresh,profitLoss,profitLossPercent:profitLoss!==null&&exposure?profitLoss/exposure*100:null,pnlBasis:"IG-kvot · brutto före kostnader"};
+            return {...p,bid:q.bid,offer:q.offer,priceFresh:fresh,profitLoss,profitLossPercent:profitLoss!==null&&exposure?profitLoss/exposure*100:null,pnlCurrency:r.pointCurrency,pnlBasis:"IG-kvot · konservativ kontovalutaomräkning · brutto före kostnader"};
           }catch{return {...p,profitLoss:null,profitLossPercent:null,priceFresh:false};}
         }));
       }
@@ -270,9 +297,11 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     if(finalConnection.status!=="connected" || connectionIdentity(mode)!==current.connectionGeneration){pos={positions:null,status:"unavailable",error:"IG-anslutningen kunde inte verifieras"};hist={transactions:null,activities:null,status:"unavailable",error:"IG-anslutningen kunde inte verifieras"};}
     return {environment:mode,connection:finalConnection,selection:clone(current.selection),markets:finalConnection.status==="connected"?markets:[],positions:pos.positions,positionsStatus:pos.status,positionsError:pos.error,history:hist,analysis:clone(current.analysis),session:clone(current.session),pendingOrders:clone(current.pendingOrders),transport:"REST polling",execution:{enabled:false,reason:"IG CFD-order kräver verifierad kontrakts-/marginalrisk och servergodkännande"},serverNow:now()};
   }
-  return {searchMarkets,market,candles,history,setSelection,analyze,startSession,stopSession,tickSessions,workspace,positionLimit:(mode:IgEnvironment)=>state(mode).session?.status==="running"?state(mode).session!.maxPositions:10};
+  return {searchMarkets,market,accountFx,candles,history,setSelection,analyze,startSession,stopSession,tickSessions,workspace,positionLimit:(mode:IgEnvironment)=>state(mode).session?.status==="running"?state(mode).session!.maxPositions:10};
 }
 const workspace=createIgWorkspace();
 export const searchIgMarkets=workspace.searchMarkets,getIgMarket=workspace.market,getIgCandles=workspace.candles,getIgHistory=workspace.history,setIgSelection=workspace.setSelection,runIgAnalysis=workspace.analyze,startIgSession=workspace.startSession,stopIgSession=workspace.stopSession,tickIgSessions=workspace.tickSessions,getIgWorkspace=workspace.workspace;
 
 export const getIgSessionPositionLimit=workspace.positionLimit;
+
+export const getIgAccountFx=workspace.accountFx;

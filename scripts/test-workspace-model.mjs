@@ -19,3 +19,6 @@ assert.equal(normalizeSignal({action:'HOLD'},analysis,now).copyable,false);
 assert.equal(normalizeSignal({action:'BUY',entryLevel:1,stopLevel:.9,targetLevel:1.2},analysis,now).copyable,true);
 assert.equal(normalizeSignal({action:'BUY',entryLevel:1,stopLevel:.9,targetLevel:1.2},analysis,now+300001).copyable,false);
 console.log('PASS: kontovaluta, long/short, riskandel, margin, ingen påhittad CFD-avkastning, kvotålder, signalgiltighet, double up-utkast och roll over-tid');
+
+const sek=scenario({...base,currency:'SEK',pointCurrency:'SEK',pointValue:10.04,profitPointValue:10.03});assert.ok(Math.abs(sek.risk-100.4)<1e-9);assert.equal(Number(sek.reward.toFixed(8)),200.6,'Positiv SEK-vinst använder bid, inte riskens ask');
+assert.equal(quoteIsFresh({quote:{bid:100,offer:101,marketStatus:'TRADEABLE',delayTime:0,receivedAt:Date.now()},calculationRules:{fx:{receivedAt:Date.now()-60001,observedAt:Date.now()-60001}}}),false,'Stale valutakurs blockerar även UI-granskning');

@@ -134,7 +134,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     validMode(mode);
     const readOnly = route === "accounts" || route === "positions" || route === "workingorders" || route === "markets" || route === "history/activity" || route === "history/transactions" || /^(markets|prices)\/[A-Za-z0-9._-]{1,100}$/.test(route) || /^confirms\/[A-Za-z0-9_-]{1,100}$/.test(route);
     const write = (route === "positions/otc" || route === "workingorders/otc") && method === "POST";
-    if((method === "GET" && !readOnly) || (method === "POST" && !write) || !["1","2","3"].includes(version)) throw Error("IG-anropet ingår inte i tillåtna endpoints");
+    if((method === "GET" && !readOnly) || (method === "POST" && !write) || !( ["1","2","3"].includes(version) || (version==="4"&&method==="GET"&&/^markets\/[A-Za-z0-9._-]{1,100}$/.test(route)) )) throw Error("IG-anropet ingår inte i tillåtna endpoints");
     if(write && process.env.IG_ORDER_EXECUTION_ENABLED !== "true") throw Error("IG-orderexekvering är avstängd på servern");
     const current=status(mode),session=sessions.get(mode);
     if(!session || current.status !== "connected") throw Error("IG-miljön är inte ansluten");
