@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
-import {createIgStreaming} from '../src/integrations/igStreaming.js';
+import {createIgStreaming,normalizeIgDelayFlag} from '../src/integrations/igStreaming.js';
 import {createIgConnection} from '../src/integrations/igConnection.js';
 
+for(const value of [0,false,'0','false',' FALSE '])assert.equal(normalizeIgDelayFlag(value),0);
+for(const value of [1,true,'1','true',' TRUE '])assert.equal(normalizeIgDelayFlag(value),1);
+for(const value of [null,undefined,'','unknown','00',2])assert.equal(normalizeIgDelayFlag(value),null);
 // Alla anslutningar och SDK-händelser simuleras; inga IG-anrop eller order.
 let clock=Date.parse('2026-10-07T09:00:00Z');
 let generation:string|null='first';

@@ -3,6 +3,14 @@ import {EventEmitter} from 'node:events';
 import {getIgStreamingSession,type IgEnvironment} from './igConnection.js';
 const require=createRequire(import.meta.url);
 export interface StreamingIdentity {endpoint:string;accountId:string;password:string;generation:string}
+// IG:s fördröjningsflagga kan kodas som 0/1 eller explicit boolean.
+// Saknat/okänt värde förblir okänt; det får aldrig behandlas som realtid.
+export function normalizeIgDelayFlag(value:unknown):number|null{
+ if(value===false||value===0)return 0;if(value===true||value===1)return 1;
+ if(typeof value!=='string')return null;
+ const flag=value.trim().toLowerCase();
+ return flag==='0'||flag==='false'?0:flag==='1'||flag==='true'?1:null;
+}
 export function createIgStreaming(deps:{identity?:(mode:IgEnvironment)=>StreamingIdentity|null;sdk?:any;now?:()=>number}={}){
  const identity=deps.identity??getIgStreamingSession,now=deps.now??Date.now;
  const events=new EventEmitter();const states=new Map<IgEnvironment,any>();
@@ -31,7 +39,7 @@ export function createIgStreaming(deps:{identity?:(mode:IgEnvironment)=>Streamin
      const epic=key.slice(6),bid=numeric(fields.BIDPRICE1),offer=numeric(fields.ASKPRICE1),observedAt=numeric(fields.TIMESTAMP);
      if(bid===null||offer===null||bid<=0||offer<bid||observedAt===null||observedAt>receivedAt+2000)return;
      const old=current.quotes.get(epic);if(old&&old.observedAt>observedAt)return;
-     const flag=fields.DLG_FLAG?.trim();const quote={epic,bid,offer,observedAt,receivedAt,changePercent:numeric(fields.NET_CHG_PCT),delayTime:fields.DELAY==='0'?0:null,marketStatus:flag==='DEAL'?'TRADEABLE':flag==='CLOSED'?'CLOSED':flag??'UNKNOWN',source:'IG PRICE · WebSocket',generation:current.generation};
+     const flag=fields.DLG_FLAG?.trim();const quote={epic,bid,offer,observedAt,receivedAt,changePercent:numeric(fields.NET_CHG_PCT),delayTime:normalizeIgDelayFlag(fields.DELAY),delayFlag:typeof fields.DELAY==='string'?fields.DELAY.trim().slice(0,12):typeof fields.DELAY==='boolean'||typeof fields.DELAY==='number'?fields.DELAY:null,marketStatus:flag==='DEAL'?'TRADEABLE':flag==='CLOSED'?'CLOSED':flag??'UNKNOWN',source:'IG PRICE · WebSocket',generation:current.generation};
      current.quotes.set(epic,quote);current.lastPriceAt=receivedAt;events.emit('quote',mode,quote);
     }else if(w.kind==='candle'){
      const timestamp=numeric(fields.UTM);const values=['OPEN','HIGH','LOW','CLOSE'].map(f=>{const b=numeric(fields[`BID_${f}`]),a=numeric(fields[`OFR_${f}`]);return b!==null&&a!==null&&b>0&&a>=b?(a+b)/2:null;});
