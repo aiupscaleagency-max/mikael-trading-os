@@ -175,7 +175,7 @@ console.log('PASS: SEK-scenario/positions-P-L med native forex, konservativ FX-r
  const current=()=>({environments:{live:{...status().environments.live,connectionGeneration:id},demo:{...status().environments.live,environment:'demo',connectionGeneration:'demo-catalog'}}});
  const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-catalog-')),now:()=>clock,status:current as any,call:async(mode,route,method,version,body,extra)=>{assert.equal(route,'markets');assert.equal(method,'GET');reads.push(new URLSearchParams(extra?.query).get('searchTerm')!);return {markets:[...rows,...rows]};}});
  const [a,b]=await Promise.all([w.catalogue('live','forex'),w.catalogue('live','forex')]);
- assert.equal(a.status,'partial');assert.equal(a.complete,false,'Sökresultat bevisar inte en fullständig mäklarkatalog');assert.ok(a.remainingSearches>0);assert.deepEqual(a.markets.map(m=>m.epic).sort(),['FX.AUDJPY','FX.GBPUSD','FX.USDNOK']);assert.deepEqual(a,b);assert.equal(reads.length,24);await w.searchMarkets('live','ReservedMarketRead');assert.equal(reads.length,25,'Katalogen lämnar kapacitet för pris-/FX-läsningar');assert.equal(new Set(reads).size,reads.length,'Parallella kataloganrop delar sökning');
+ assert.equal(a.status,'partial');assert.equal(a.complete,false,'Sökresultat bevisar inte en fullständig mäklarkatalog');assert.ok(a.remainingSearches>0);assert.deepEqual(a.markets.map(m=>m.epic).sort(),['FX.AUDJPY','FX.GBPUSD','FX.USDNOK']);assert.deepEqual(a,b);assert.equal(reads.length,10);await w.searchMarkets('live','ReservedMarketRead');assert.equal(reads.length,11,'Katalogen lämnar kapacitet för pris-/FX-läsningar');assert.equal(new Set(reads).size,reads.length,'Parallella kataloganrop delar sökning');
  const c=await w.catalogue('live','crypto');assert.equal(c.status,'partial');assert.ok(c.remainingSearches>0,'Minutbudget ger återupptagbart delresultat');assert.equal(c.markets.length,0,'Budgetstopp hämtar inte nya kryptouppgifter');
  clock+=61000;let d=await w.catalogue('live','crypto');while(d.remainingSearches){clock+=61000;d=await w.catalogue('live','crypto');}assert.equal(d.remainingSearches,0);assert.equal(d.status,'ready');assert.equal(d.markets.length,2);assert.ok(d.markets.every(m=>m.category==='crypto'));
  clock+=61000;let finished=await w.catalogue('live','forex');while(finished.remainingSearches){clock+=61000;finished=await w.catalogue('live','forex');}const count=reads.length;await w.catalogue('live','forex');assert.equal(reads.length,count,'Samma konto återanvänder kategoriresultatet');
@@ -186,4 +186,39 @@ console.log('PASS: SEK-scenario/positions-P-L med native forex, konservativ FX-r
  const race=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-catalog-race-')),now:()=>clock,status:()=>({...current(),environments:{...current().environments,live:{...current().environments.live,connectionGeneration:switched?'new':'old'}}}) as any,call:async()=>{switched=true;return {markets:rows};}});
  await assert.rejects(race.catalogue('live','forex'),/IG-kontosessionen ändrades/);
  console.log('PASS: bred Forex/kryptokatalog, Cardano/TRON, aktiefilter, deduplicering, singleflight, faktisk minutbudget med återupptagning och kontoisolering; bara mockade läsanrop');
+}
+
+// Verklig 5s UI-pollprofil ska lämna central läskapacitet till interaktion och riskkontroller.
+{
+ const {createIgConnection}=await import('../src/integrations/igConnection.js');
+ const {createIgOrders}=await import('../src/integrations/igOrders.js');
+ let pollNow=Date.UTC(2026,9,7,15,0),networkReads=0;const readsByRoute=new Map<string,number>();
+ const fxEpic='CS.D.USDSEK.CFD.IP';
+ const connection=createIgConnection({now:()=>pollNow,loadCredentials:()=>({demo:{apiKey:'fixture',identifier:'fixture',password:'fixture'}}),fetch:(async(url:string,options:RequestInit)=>{
+  const route=url.split('/gateway/deal/')[1]!.split('?')[0]!;
+  if(route==='session')return new Response(JSON.stringify({currentAccountId:'demo-cfd'}),{headers:{CST:'fixture-cst','X-SECURITY-TOKEN':'fixture-xst'}});
+  networkReads++;readsByRoute.set(route,(readsByRoute.get(route)??0)+1);
+  if(route==='accounts')return new Response(JSON.stringify({accounts:[{accountId:'demo-cfd',accountType:'CFD',currency:'SEK',balance:{balance:100000,available:100000,profitLoss:0}}]}));
+  if(route==='positions')return new Response(JSON.stringify({positions:[]}));
+  if(route==='workingorders')return new Response(JSON.stringify({workingOrders:[]}));
+  if(route==='markets')return new Response(JSON.stringify({markets:[{epic:fxEpic,instrumentName:'USD/SEK',instrumentType:'CURRENCIES',marketStatus:'TRADEABLE'}]}));
+  now=pollNow;
+  const value=await call('demo',route,'GET',(options.headers as Record<string,string>).Version,undefined,{query:new URL(url).search.slice(1)});
+  if(route===`markets/${fxEpic}`)value.instrument.name='USD/SEK';
+  return new Response(JSON.stringify(value));
+ }) as typeof fetch});
+ await connection.testConnection('demo');
+ const poll=createIgWorkspace({now:()=>pollNow,directory:path.join(directory,'poll-profile'),status:connection.getStatus,call:connection.callAuthenticated,accounts:connection.getAccounts,positions:connection.getPositions});
+ const pending=createIgOrders({now:()=>pollNow,directory:path.join(directory,'poll-orders'),status:connection.getStatus,call:connection.callAuthenticated});
+ await poll.setSelection('demo',{epics:[epic],timeframe:'5m',percent:1,horizonMinutes:15});
+ const baseline=pollNow;
+ for(let t=0;t<60000;t+=5000){pollNow=baseline+t;await Promise.all([poll.workspace('demo'),pending.brokerPending('demo'),poll.candles('demo',epic,'5m')]);}
+ assert.equal(connection.getStatus().environments.demo.status,'connected');
+ assert.ok(networkReads<=20,`Normal pollprofil ska lämna utrymme: ${networkReads} läsanrop`);
+ assert.ok(connection.getReadBudget('demo').remaining>=4,'Diagram med USD/SEK-FX lämnar minst fyra läsanrop denna minut');
+ assert.equal(readsByRoute.get('positions'),2);assert.equal(readsByRoute.get('workingorders'),2);assert.equal(readsByRoute.get('accounts'),3,'Initial verifiering plus två visningsläsningar');
+ assert.ok(readsByRoute.has(`markets/${fxEpic}`),'Testet omfattar riktig FX-läsväg');
+ assert.equal(poll.positionLimit('demo'),1,'Utan aktiv session är standardgränsen en position');
+ assert.equal((await poll.startSession('demo',{epics:[epic],timeframe:'5m',percent:1,horizonMinutes:15,durationMinutes:15,intervalMinutes:5})).maxPositions,1,'Ny session börjar med en position');
+ console.log(`PASS: 60s 5s UI-pollning med diagram, kontohistorik, arbetsorder och SEK-FX använder ${networkReads}/24 GET; standard en position`);
 }

@@ -103,3 +103,12 @@ let quoteRate=false;const closeBudget=createIgOrders({...deps,directory:path.joi
 const budgetTimed=await closeBudget.preview('demo',ticket);await closeBudget.confirm('demo',budgetTimed.id);now+=16*60000;quoteRate=true;const budgetPosts=calls.filter(c=>c.method==='POST').length;
 await closeBudget.tick();assert.equal(closeBudget.snapshot('demo').exitPlans[0]!.status,'scheduled');assert.equal(calls.filter(c=>c.method==='POST').length,budgetPosts);quoteRate=false;now+=60001;await closeBudget.tick();assert.equal(closeBudget.snapshot('demo').exitPlans[0]!.status,'confirmed');
 console.log('PASS: lokal kvotbudget bevarar tidsplan utan POST och tillåter senare verifierad stängning');
+
+// UI-pollning återanvänder endast visningsdata; riskvalidering går förbi denna cache.
+let displayNow=1000,displayGeneration='display-A',displayCalls=0;
+const display=createIgOrders({...deps,now:()=>displayNow,status:(()=>({environments:{demo:{...environment('demo'),connectionGeneration:displayGeneration},live:environment('live')}})) as never,call:(async()=>{displayCalls++;await Promise.resolve();return {workingOrders:[]};}) as never});
+await Promise.all([display.brokerPending('demo'),display.brokerPending('demo')]);assert.equal(displayCalls,1,'Parallella visningsanrop delar hämtning');
+for(let t=5000;t<60000;t+=5000){displayNow=1000+t;assert.equal((await display.brokerPending('demo')).status,'ready');}
+assert.equal(displayCalls,2,'Tolv UI-pollningar ger två workingorders-läsningar per minut');
+displayGeneration='display-B';await display.brokerPending('demo');assert.equal(displayCalls,3,'Nytt konto återanvänder aldrig gammal visningscache');
+console.log('PASS: arbetsorder-visning har 30s generationbunden cache/singleflight utan att ändra färsk riskvalidering');

@@ -59,17 +59,44 @@ if(savedOrderFlag!==undefined)process.env.IG_ORDER_EXECUTION_ENABLED=savedOrderF
 console.log("PASS: IG demo/live isolation, session singleflight, Token memory-only, read-only accounts/positions, null missing metrics, permissions/symlink, expiry, missing credentials and sanitized errors; no real IG requests/orders");
 
 // IG:s kända läskvoter är övergående och får inte radera en verifierad kontosession.
-let limitedRoute='',limitedStatus=403,limitedCode:string|undefined='error.public-api.exceeded-account-allowance';let quotaLogins=0;
-const quota=createIgConnection({loadCredentials:()=>credentials,now:()=>1000,fetch:(async(url:string,options:RequestInit)=>{
- if(url.endsWith('/session'))quotaLogins++;
+let limitedRoute='',limitedStatus=403,limitedCode:string|undefined='error.public-api.exceeded-account-allowance';let quotaLogins=0,quotaClock=1000,quotaRequests=0;
+const quota=createIgConnection({loadCredentials:()=>credentials,now:()=>quotaClock,fetch:(async(url:string,options:RequestInit)=>{
+ quotaRequests++;if(url.endsWith('/session'))quotaLogins++;
  if(limitedRoute&&url.endsWith('/'+limitedRoute))return new Response(limitedCode?JSON.stringify({errorCode:limitedCode}):'not-json',{status:limitedStatus});
  return mock(url,options);
 }) as typeof fetch});
 await quota.testConnection('demo');const quotaGeneration=quota.getStatus().environments.demo.connectionGeneration;
 limitedRoute='accounts';const rateAccounts=await quota.getAccounts('demo');assert.equal(rateAccounts.status,'error');assert.equal(rateAccounts.accounts,null);assert.equal(rateAccounts.updatedAt,null);assert.match(rateAccounts.error!,/begränsade antal läsanrop/);assert.equal(quota.getStatus().environments.demo.status,'connected');assert.equal(quota.getStatus().environments.demo.connectionGeneration,quotaGeneration);
-limitedRoute='positions';limitedStatus=429;limitedCode=undefined;const ratePositions=await quota.getPositions('demo');assert.equal(ratePositions.status,'error');assert.equal(ratePositions.positions,null);assert.match(ratePositions.error!,/begränsade antal läsanrop/);assert.equal(quota.getStatus().environments.demo.status,'connected');
-limitedRoute='markets';limitedStatus=403;limitedCode='error.public-api.exceeded-api-key-allowance';await assert.rejects(quota.callAuthenticated('demo','markets','GET','1'),/begränsade antal läsanrop/);assert.equal(quota.getStatus().environments.demo.connectionGeneration,quotaGeneration);
-limitedStatus=429;limitedCode=undefined;await assert.rejects(quota.callAuthenticated('demo','markets','GET','1'),/begränsade antal läsanrop/);
-limitedRoute='';assert.equal((await quota.getAccounts('demo')).status,'ready');assert.equal(quotaLogins,1,'Kvoten återställs utan ny inloggning');
+const requestsAfterQuota=quotaRequests;await assert.rejects(quota.callAuthenticated('demo','workingorders'),/begränsade antal läsanrop/);assert.equal(quotaRequests,requestsAfterQuota,'Känd IG-kvot ger 60 sekunders cooldown innan nästa nätverksanrop');
+quotaClock+=61000;limitedRoute='positions';limitedStatus=429;limitedCode=undefined;const ratePositions=await quota.getPositions('demo');assert.equal(ratePositions.status,'error');assert.equal(ratePositions.positions,null);assert.match(ratePositions.error!,/begränsade antal läsanrop/);assert.equal(quota.getStatus().environments.demo.status,'connected');
+quotaClock+=61000;limitedRoute='markets';limitedStatus=403;limitedCode='error.public-api.exceeded-api-key-allowance';await assert.rejects(quota.callAuthenticated('demo','markets','GET','1'),/begränsade antal läsanrop/);assert.equal(quota.getStatus().environments.demo.connectionGeneration,quotaGeneration);
+quotaClock+=61000;limitedStatus=429;limitedCode=undefined;await assert.rejects(quota.callAuthenticated('demo','markets','GET','1'),/begränsade antal läsanrop/);
+quotaClock+=61000;limitedRoute='';assert.equal((await quota.getAccounts('demo')).status,'ready');assert.equal(quotaLogins,1,'Kvoten återställs utan ny inloggning');
 limitedRoute='positions';limitedStatus=401;limitedCode='error.security.client-token-invalid';assert.equal((await quota.getPositions('demo')).status,'error');assert.equal(quota.getStatus().environments.demo.status,'error','Verkligt autentiseringsfel raderar fortfarande sessionen');
 console.log('PASS: 403 IG allowance och 429 bevarar session/generation, returnerar saknat färskt konto/positionsunderlag och återhämtar sig utan ny login; 401 spärrar fortsatt');
+
+// Central budget får inte kringgås via arbetsorder, konto eller direkta positionsläsningar.
+let budgetClock=1000,budgetRequests=0,budgetLogins=0;
+const budgetConnection=createIgConnection({loadCredentials:()=>credentials,now:()=>budgetClock,fetch:(async(url:string,options:RequestInit)=>{
+ budgetRequests++;if(url.endsWith('/session'))budgetLogins++;
+ if(url.endsWith('/workingorders')||url.endsWith('/markets'))return new Response('{}');
+ return mock(url,options);
+}) as typeof fetch});
+await budgetConnection.testConnection('demo');const initialBudgetGeneration=budgetConnection.getStatus().environments.demo.connectionGeneration;
+await budgetConnection.testConnection('demo');assert.equal(budgetLogins,1,'Återanslutningsknappen återanvänder en giltig verifierad session');
+assert.equal(budgetConnection.getStatus().environments.demo.connectionGeneration,initialBudgetGeneration);
+await budgetConnection.getAccounts('demo');await budgetConnection.getPositions('demo');
+for(let i=0;i<21;i++)await budgetConnection.callAuthenticated('demo','workingorders');
+assert.equal(budgetConnection.getReadBudget('demo').used,24);
+const requestsAtLimit=budgetRequests;
+await assert.rejects(budgetConnection.callAuthenticated('demo','markets'),/begränsade antal läsanrop/);
+assert.equal((await budgetConnection.getAccounts('demo')).status,'error');assert.equal((await budgetConnection.getPositions('demo')).status,'error');
+assert.equal(budgetRequests,requestsAtLimit,'Samtliga GET-vägar stoppas lokalt innan IG-anrop');
+assert.equal(budgetConnection.getStatus().environments.demo.status,'connected','Lokal budget kastar inte verifierad session');
+await budgetConnection.testConnection('live');assert.equal(budgetConnection.getReadBudget('live').used,1,'Demo och Live har separata kontobudgetar');
+for(let i=0;i<23;i++)await budgetConnection.callAuthenticated('live','workingorders');assert.equal(budgetConnection.getReadBudget('live').appUsed,48);await assert.rejects(budgetConnection.callAuthenticated('live','markets'),/begränsade antal läsanrop/);
+budgetClock+=60001;assert.equal((await budgetConnection.getAccounts('demo')).status,'ready');assert.equal(budgetLogins,2,'Återhämtning behöver inte ny Demo-login');
+assert.equal(budgetConnection.getStatus().environments.demo.connectionGeneration,initialBudgetGeneration);
+const initialLimited=createIgConnection({loadCredentials:()=>credentials,fetch:(async(url:string,options:RequestInit)=>url.endsWith('/accounts')?new Response(JSON.stringify({errorCode:'error.public-api.exceeded-account-allowance'}),{status:403}):mock(url,options)) as typeof fetch});
+assert.equal((await initialLimited.testConnection('demo')).status,'error');assert.equal(initialLimited.getStatus().environments.demo.account,null,'Ny login utan verifierat kontounderlag är aldrig connected');
+console.log('PASS: central rullande 24/min-kontobudget över alla GET-vägar, separata miljöer, session reuse, quota-resume och initial konto-verifiering');

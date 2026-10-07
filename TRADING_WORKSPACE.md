@@ -47,3 +47,16 @@ Explicit byte mellan Demo och Live använder respektive befintliga nyckel och HT
 En valfri lokal IG-inloggningsform finns i Inställningar. Den kräver loopback-socket, localhost-host, samma origin och JSON. Tomma fält bevarar befintliga uppgifter, kontomappning och den andra miljön. Uppgifter sparas atomiskt i användarägd privat 600-fil. Inga lösenord eller nycklar skickas tillbaka eller lagras i webbläsaren. IG-inloggning som nekas visas separat från lyckad lokal sparning.
 
 Tillfälliga IG-läskvoter bevarar verifierad session men ger inget färskt konto- eller positionsunderlag. Ordergrinden kräver ett nytt lyckat kontosvar. Planerad stängning väntar minst 60 sekunder efter en känd läskvot före order-POST; okänt skickat orderutfall skickas aldrig om automatiskt. Slutkontroll: nio testsviter, TypeScript och oberoende kodgranskning godkända. Verklig Live-katalog verifierad i webbläsaren; Demo-inloggningen svarar fortfarande 401 invalid-details.
+
+
+## Återställning, läskvot och kursstatus 2026-10-07
+
+Demo och Live har nu båda verifierats separat med befintliga API-uppgifter och respektive CFD-konto. Agentic OS visar den nya arbetsytan lokalt på port 3737/trading; Tailscale var fortsatt avstängt vid senaste nätverkskontrollen. Historiska noteringar om saknade Demo-uppgifter ovan beskriver tidigare felsökning.
+
+Vid öppning återanvänds verifierad Demo-session eller ansluts färdigt konfigurerad Demo en gång. Sparat diagraminstrument återställs per miljö även när det tillhör Forex. Inga analyser, sessioner eller order startas genom omladdning. Tillfälliga läsfel bevarar diagrammet men markerar kvoten inaktuell och blockerar order.
+
+Central rullande GET-budget är 24/minut per miljö och 48 totalt. Katalogen lämnar reserv för kontot och diagrammet. Konto, positioner och arbetsorder har 30 sekunders visningscache; ordervalidering kräver fortsatt färskt underlag. Ett integrerat test med 5-sekunders polling, diagram och SEK-FX använder 19 av 24 GET på en minut.
+
+Standardgränsen är en position. Analysintervall och innehavstid är separata; 1, 5 och 15 minuter finns som innehavstid. Länken IG:s signaler öppnar användarens rätta Demo-/Live-plattform. Autochartist/PIA First-data är inte importerad till agentanalysen; någon dokumenterad IG-signalsfeed har inte verifierats.
+
+Kursens sparade arbete hittades i ../projects/ptqa-trading: dag 1–3 och Luengos-12/21/50 (BTCUSD dagliga ljus), med godkänt Tiingo-dataunderlag. Ursprunglig ETH/USDT-idé och prediction är bevarade separat. Inget sparat dag 4-backtest hittades. Den dagliga BTC-strategin är inte verifierad för 1–15 minuters trades. Nuvarande IG-analys kan behandla flera instrument, men fler namngivna kursstrategier och jämförda kortsiktiga backtestresultat återstår. JEV är förkontroll, inte en marknadsmodell som tränas av Tiingo.

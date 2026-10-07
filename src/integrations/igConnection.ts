@@ -33,6 +33,15 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
   const load=deps.loadCredentials ?? readCredentials, request=deps.fetch ?? ((...args:Parameters<typeof fetch>)=>fetch(...args)), now=deps.now ?? Date.now;
   const sessions=new Map<IgEnvironment,Session>(), states=new Map<IgEnvironment,IgEnvironmentStatus>();
   const inFlight=new Map<IgEnvironment,Promise<IgEnvironmentStatus>>();
+  // Samtliga GET-vägar delar rullande minutbudget, även orderkontroller och kontopollning.
+  const reads:{environment:IgEnvironment;at:number}[]=[];
+  const readBlockedUntil=new Map<IgEnvironment,number>();
+  function readBudget(mode:IgEnvironment){
+    validMode(mode);while(reads.length&&now()-reads[0]!.at>=60000)reads.shift();
+    const used=reads.filter(r=>r.environment===mode).length;
+    return {used,appUsed:reads.length,remaining:now()<(readBlockedUntil.get(mode)??0)?0:Math.max(0,Math.min(24-used,48-reads.length))};
+  }
+  function consumeRead(mode:IgEnvironment){if(readBudget(mode).remaining===0)throw Error(IG_READ_RATE_ERROR);reads.push({environment:mode,at:now()});}
   const sharedLogins=new Map<IgEnvironment,{identifier:string;password:string;source:IgEnvironment;sourceFingerprint:string}>();
   function credentials(mode:IgEnvironment):Credentials {
     const data=load(), row=data?.[mode];
@@ -62,6 +71,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     const current=status(mode), failed={...current,status:"error" as const,error,connectionGeneration:null,account:null,checkedAt:now()};states.set(mode,failed);return {...failed};
   }
   async function call(mode:IgEnvironment,route:"session"|"accounts"|"positions",c:Credentials,session?:Session) {
+    if(route!=="session")consumeRead(mode);
     const response=await request(`${endpoints[mode]}/${route}`,{
       method:route==="session"?"POST":"GET",signal:AbortSignal.timeout(8000),
       headers:{"X-IG-API-KEY":c.apiKey!,Version:route==="accounts"?"1":"2",Accept:"application/json","Content-Type":"application/json; charset=UTF-8",...(session?{CST:session.cst,"X-SECURITY-TOKEN":session.xst}:{})},
@@ -69,7 +79,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     });
     if(!response.ok){
       let code:unknown;try{code=(await response.json() as Record<string,unknown>).errorCode;}catch{/* Privat felbody läses aldrig tillbaka. */}
-      if(response.status===429||typeof code==='string'&&/^error\.public-api\.exceeded-[a-z-]+-allowance$/.test(code))throw Error(IG_READ_RATE_ERROR);
+      if(response.status===429||typeof code==='string'&&/^error\.public-api\.exceeded-[a-z-]+-allowance$/.test(code)){readBlockedUntil.set(mode,now()+60000);throw Error(IG_READ_RATE_ERROR);}
       throw Error(response.status===401||response.status===403?"IG nekade inloggning eller API-behörighet":`IG svarade HTTP ${response.status}`);
     }
     return {response,data:await response.json() as Record<string,any>};
@@ -78,7 +88,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     return {accountId:typeof a.accountId==="string" ? `••••${a.accountId.slice(-4)}` : null,accountType:["CFD","SPREADBET","PHYSICAL"].includes(a.accountType)?a.accountType:null,currency:typeof a.currency==="string"&&/^[A-Z]{3}$/.test(a.currency)?a.currency:null,balance:number(a.balance?.balance),available:number(a.balance?.available),deposit:number(a.balance?.deposit),profitLoss:number(a.balance?.profitLoss),updatedAt:now()};
   }
   async function connect(mode:IgEnvironment):Promise<IgEnvironmentStatus> {
-    const initial=status(mode);if(!initial.credentialsComplete) return initial;
+    const initial=status(mode);if(!initial.credentialsComplete || initial.status==="connected") return initial;
     try {
       const c=credentials(mode), {response,data}=await call(mode,"session",c);
       const cst=response.headers.get("CST"),xst=response.headers.get("X-SECURITY-TOKEN"),accountId=text(data.currentAccountId);
@@ -155,11 +165,12 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     const query=new URLSearchParams(extra?.query || "");
     const allowedParams=new Set(route === "markets"?["searchTerm"]:route.startsWith("prices/")?["resolution","max","from","to","pageSize","pageNumber"]:route.startsWith("history/")?["from","to","detailed","pageSize","pageNumber","type"]:[]);
     for(const [name,value] of query) if(!allowedParams.has(name) || value.length>200) throw Error("Ogiltiga IG-frågeparametrar");
+    if(method==="GET")consumeRead(mode);
     try {
       const response=await request(`${endpoints[mode]}/${route}${query.size?`?${query}`:""}`,{method,headers,signal:AbortSignal.timeout(8000),...(body?{body:JSON.stringify(body)}:{})});
       if(!response.ok) {
         let code:unknown;try{code=(await response.json() as Record<string,unknown>).errorCode;}catch{/* Okänt felsvar behandlas utan privata detaljer. */}
-        if(response.status===429||typeof code==='string'&&/^error\.public-api\.exceeded-[a-z-]+-allowance$/.test(code))throw Error(IG_READ_RATE_ERROR);
+        if(response.status===429||typeof code==='string'&&/^error\.public-api\.exceeded-[a-z-]+-allowance$/.test(code)){readBlockedUntil.set(mode,now()+60000);throw Error(IG_READ_RATE_ERROR);}
         if(response.status===401 || response.status===403)fail(mode,"IG-sessionen eller behörigheten kunde inte verifieras; anslut igen");throw Error(`IG svarade HTTP ${response.status}`);
       }
       const data=await response.json();
@@ -168,7 +179,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
       return data;
     } catch(error) {throw Error(error instanceof Error && /^(?:IG svarade HTTP [1-5][0-9]{2}|IG begränsade antal läsanrop; försök igen om en minut)$/.test(error.message)?error.message:"IG-anropet kunde inte verifieras; utfallet kan vara okänt");}
   }
-  return {getStatus:()=>({environments:{demo:status("demo"),live:status("live")}}),testConnection,testWithSharedLogin,callAuthenticated:authenticated,getAccounts:readAccounts,getPositions:readPositions};
+  return {getReadBudget:readBudget,getStatus:()=>({environments:{demo:status("demo"),live:status("live")}}),testConnection,testWithSharedLogin,callAuthenticated:authenticated,getAccounts:readAccounts,getPositions:readPositions};
 }
 const connection=createIgConnection();
 export const getIgStatus=connection.getStatus;
@@ -179,3 +190,5 @@ export const getIgPositions=connection.getPositions;
 export const callIgAuthenticated=connection.callAuthenticated;
 
 export const testIgConnectionWithSharedLogin=connection.testWithSharedLogin;
+
+export const getIgReadBudget=connection.getReadBudget;

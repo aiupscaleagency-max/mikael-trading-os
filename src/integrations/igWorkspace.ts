@@ -3,7 +3,7 @@ import {getHistoricalContext} from "../data/tiingoHistory.js";
 import fs from "node:fs";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
-import {callIgAuthenticated,getIgStatus,getIgPositions,getIgAccounts,type IgEnvironment} from "./igConnection.js";
+import {callIgAuthenticated,getIgReadBudget,getIgStatus,getIgPositions,getIgAccounts,type IgEnvironment} from "./igConnection.js";
 import {createLlmClient,extractJson,modelFor} from "../llm/gateway.js";
 import {trackClaudeCall,canSpend} from "../cost/tracker.js";
 import {askJev} from "../server/jevClient.js";
@@ -63,7 +63,14 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
   const call=deps.call??callIgAuthenticated,status=deps.status??getIgStatus,positions=deps.positions??getIgPositions,accounts=deps.accounts??getIgAccounts,now=deps.now??Date.now;
   const directory=deps.directory??path.resolve("data/ig-workspace");
   const states=new Map<IgEnvironment,WorkspaceState>(),cache=new Map<string,{at:number,value:any}>(),pending=new Map<string,Promise<any>>(),busy=new Set<IgEnvironment>(),cancellations=new Map<IgEnvironment,number>();
-  let rateWindow=0,rateCount=0;
+  const fixtureReads:{environment:IgEnvironment;at:number}[]=[];
+  // Produktionsanrop räknas centralt i anslutningen; injicerade testanrop får samma miljöbudget.
+  function readBudget(mode:IgEnvironment){
+    if(!deps.call)return getIgReadBudget(mode);
+    while(fixtureReads.length&&now()-fixtureReads[0]!.at>=60000)fixtureReads.shift();
+    const used=fixtureReads.filter(r=>r.environment===mode).length;
+    return {used,appUsed:fixtureReads.length,remaining:Math.max(0,Math.min(24-used,48-fixtureReads.length))};
+  }
   function state(mode:IgEnvironment):WorkspaceState {
     modeGuard(mode);let s=states.get(mode);if(s)return s;
     try {s=JSON.parse(fs.readFileSync(path.join(directory,`${mode}.json`),"utf8"));if(!s||!s.selection||!Array.isArray(s.pendingOrders))throw Error("shape");
@@ -74,8 +81,8 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
   function persist(mode:IgEnvironment,next:WorkspaceState) {fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,`${mode}.json`),temp=`${file}.${process.pid}.tmp`;fs.writeFileSync(temp,JSON.stringify(next));fs.renameSync(temp,file);states.set(mode,next);}
   const clone=<T>(v:T):T=>JSON.parse(JSON.stringify(v));
   const connectionIdentity=(mode:IgEnvironment)=>{const c=status().environments[mode];return c.status==="connected" ? c.connectionGeneration ?? `${c.checkedAt}:${c.account?.accountId}` : null;};
-  function consumeRead(){if(now()-rateWindow>=60000){rateWindow=now();rateCount=0;}if(rateCount>=40)throw Error("IG-läsbudgeten är slut för denna minut");rateCount++;}
-  async function read(...args:Parameters<typeof call>){consumeRead();return call(...args);}
+  function consumeRead(mode:IgEnvironment){if(!deps.call)return;if(readBudget(mode).remaining===0)throw Error("IG-läsbudgeten är slut för denna minut");fixtureReads.push({environment:mode,at:now()});}
+  async function read(...args:Parameters<typeof call>){consumeRead(args[0]);return call(...args);}
   async function cached<T>(key:string,ttl:number,job:()=>Promise<T>):Promise<T> {
     const environment=key.split(":")[1] as IgEnvironment,identity=connectionIdentity(environment);
     key=`${key}:account:${identity}`;
@@ -113,7 +120,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     const job=(async()=>{
       let blocked=false;
       while(progress!.cursor<terms.length){
-        if(rateCount>=24&&now()-rateWindow<60000){blocked=true;break;}
+        if(readBudget(mode).remaining===0||readBudget(mode).used>=10||readBudget(mode).appUsed>=36){blocked=true;break;}
         if(connectionIdentity(mode)!==identity)throw Error('IG-kontosessionen ändrades under kataloghämtningen');
         try{
           const result=await searchMarkets(mode,terms[progress!.cursor]!);
@@ -285,7 +292,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
   async function startSession(mode:IgEnvironment,input:Partial<IgSelection>&{durationMinutes:number;intervalMinutes:number;maxPositions?:number}) {
     modeGuard(mode);if(busy.has(mode)||state(mode).session?.status==="running")throw Error("Session körs redan för IG-miljön");
     if(![15,30,60,120].includes(input.durationMinutes)||![1,5,15,30].includes(input.intervalMinutes))throw Error("Ogiltiga IG-sessionsintervall");
-    const maxPositions=input.maxPositions??3;
+    const maxPositions=input.maxPositions??1;
     if(!Number.isInteger(maxPositions)||maxPositions<1||maxPositions>10)throw Error("Ogiltig gräns för samtidiga positioner");
     connected(mode);const binding=connectionIdentity(mode);
     const selected=selectionGuard(input);for(const epic of selected.epics){const m=await market(mode,epic);if(!["CURRENCIES","INDICES","COMMODITIES","SHARES"].includes(m.type??""))throw Error("IG-instrumenttypen stöds inte i denna CFD-vy");}
@@ -311,8 +318,8 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     const connection=status().environments[mode],current=state(mode);
     const markets=[];let pos:any={positions:null,status:"unavailable",error:connection.error},hist:any={transactions:null,activities:null,status:"unavailable",error:connection.error};
     if(connection.status==="connected") {
-      try{await cached(`accounts:${mode}`,15000,()=>{consumeRead();return accounts(mode);});}catch { /* Saknat saldo ska inte bli ett beräknat nollvärde. */ }
-      try{pos=await cached(`positions:${mode}`,10000,()=>{consumeRead();return positions(mode);});}catch(e){pos.error=errorText(e);}
+      try{await cached(`accounts:${mode}`,30000,()=>{consumeRead(mode);return accounts(mode);});}catch { /* Saknat saldo ska inte bli ett beräknat nollvärde. */ }
+      try{pos=await cached(`positions:${mode}`,30000,()=>{consumeRead(mode);return positions(mode);});}catch(e){pos.error=errorText(e);}
       if(Array.isArray(pos.positions)){
         pos.positions=await Promise.all(pos.positions.map(async(p:any)=>{
           try{const m=await market(mode,p.epic),q=m.quote,r=m.calculationRules;
@@ -335,7 +342,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     if(finalConnection.status!=="connected" || connectionIdentity(mode)!==current.connectionGeneration){pos={positions:null,status:"unavailable",error:"IG-anslutningen kunde inte verifieras"};hist={transactions:null,activities:null,status:"unavailable",error:"IG-anslutningen kunde inte verifieras"};}
     return {environment:mode,connection:finalConnection,selection:clone(current.selection),markets:finalConnection.status==="connected"?markets:[],positions:pos.positions,positionsStatus:pos.status,positionsError:pos.error,history:hist,analysis:clone(current.analysis),session:clone(current.session),pendingOrders:clone(current.pendingOrders),transport:"REST polling",execution:{enabled:false,reason:"IG CFD-order kräver verifierad kontrakts-/marginalrisk och servergodkännande"},serverNow:now()};
   }
-  return {searchMarkets,catalogue,market,accountFx,candles,history,setSelection,analyze,startSession,stopSession,tickSessions,workspace,positionLimit:(mode:IgEnvironment)=>state(mode).session?.status==="running"?state(mode).session!.maxPositions:10};
+  return {searchMarkets,catalogue,market,accountFx,candles,history,setSelection,analyze,startSession,stopSession,tickSessions,workspace,positionLimit:(mode:IgEnvironment)=>state(mode).session?.status==="running"?state(mode).session!.maxPositions:1};
 }
 const workspace=createIgWorkspace();
 export const searchIgMarkets=workspace.searchMarkets,getIgMarket=workspace.market,getIgCandles=workspace.candles,getIgHistory=workspace.history,setIgSelection=workspace.setSelection,runIgAnalysis=workspace.analyze,startIgSession=workspace.startSession,stopIgSession=workspace.stopSession,tickIgSessions=workspace.tickSessions,getIgWorkspace=workspace.workspace;
