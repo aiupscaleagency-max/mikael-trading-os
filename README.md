@@ -198,11 +198,3 @@ JEV (`src/llm/jev.ts`, via samma rutter och nycklar som `src/server/jevClient.ts
 frågas före varje turn om Advisorn behövs. Rutinturer hoppar över den och sparar ett modellanrop. Bara
 anonymiserade band skickas (positionslast, P&L-riktning, läge), aldrig symboler
 eller priser. Svarar inte JEV körs Advisorn som vanligt, och i LIVE körs den alltid.
-
-## Tiingo som historisk referens
-
-Den tekniska agenten hämtar upp till tre års stängda UTC-dagsljus för valda kryptopar. Historiken är Tiingos aggregerade USD-referens; Bybit EU ger fortfarande USDC-orderpriser och de aktuella signalernas valda intervall. Historisk avkastning och drawdown är beskrivande mått, inte ett backtest eller modellträning.
-
-Nyckeln läses från `TIINGO_API_KEY`, därefter befintlig `keys.json` i `PTQ_ACADEMY_HOME`, `~/.ptq-academy` eller kursmiljön `~/ai_upscale_work/projects/ptqa-trading/ptqa-local-environment`. Den sistnämnda platsen kan överstyras med `PTQA_COURSE_HOME`. Nyckelfiler ändras aldrig.
-
-Verifierad historik cachas lokalt i `data/tiingo-history`; dataluckor och otillgänglig historik visas i TRADE. `GET /api/history-status` visar endast status och startar inga hämtningar eller ordrar. Saknad historik stoppar inte befintlig Bybit-analys.

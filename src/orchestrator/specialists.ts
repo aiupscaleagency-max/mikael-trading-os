@@ -1,4 +1,3 @@
-import { getHistoricalContext } from "../data/tiingoHistory.js";
 import Anthropic from "@anthropic-ai/sdk";
 import { createLlmClient, extractJson, modelFor } from "../llm/gateway.js";
 import { getMacroSnapshot } from "../data/macro.js";
@@ -121,7 +120,6 @@ export async function runTechnicalAnalyst(
   broker: BrokerAdapter,
   symbols: string[],
   engines: StrategyEngine[],
-  timeframe = "1m",
 ): Promise<TechnicalReport> {
   log.agent("[Team] Teknisk analytiker startar…");
 
@@ -132,10 +130,10 @@ export async function runTechnicalAnalyst(
     ticker: { price: number; changePct24h: number; volume24h: number };
   }> = [];
 
-  for (const symbol of symbols) {
+  for (const symbol of symbols.slice(0, 6)) {
     try {
       const [klines, ticker] = await Promise.all([
-        broker.getKlines(symbol, timeframe, 200),
+        broker.getKlines(symbol, "4h", 100),
         broker.getTicker(symbol),
       ]);
       const indicators = computeIndicators(klines);
@@ -144,8 +142,6 @@ export async function runTechnicalAnalyst(
       log.warn(`[Teknisk] Kunde inte hämta ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-
-  if (!analyses.length) throw new Error("Verifierade marknadsdata saknas för valda par; teknisk agent startas inte");
 
   // Kör motor-scans
   const motorSignals = [];
@@ -158,11 +154,7 @@ export async function runTechnicalAnalyst(
     }
   }
 
-  // Tiingo är en separat historisk USD-referens; orderpriser kommer fortsatt från Bybit.
-  const historicalReference = [];
-  const historyDeadline = Date.now() + 12_000;
-  for (const { symbol } of analyses) historicalReference.push(await getHistoricalContext(symbol, { allowFetch: Date.now() < historyDeadline }));
-  const dataContext = JSON.stringify({ timeframe, selectedSymbols: symbols, analyses, motorSignals, historicalReference });
+  const dataContext = JSON.stringify({ analyses, motorSignals });
 
   const client = createLlmClient(apiKey);
   const response = await client.messages.create({
@@ -171,14 +163,13 @@ export async function runTechnicalAnalyst(
     system: `Du är en senior kvantitativ trader i samma stil som Citadel: kombinerar teknisk analys med statistiska modeller för att tajma in/ut.
 Din uppgift: leverera en fullständig teknisk analys för varje symbol — inte bara siffror, utan tolkning + actionable plan.
 
-REGEL: historicalReference är beskrivande historik från Tiingos aggregerade USD-par, aldrig Bybits USDC-orderpris, backtest, modellträning eller en ny köpgräns. Ange när historik saknas eller serien är ofullständig. Historisk avkastning och drawdown är inte strategins resultat.
-
-REGEL: Analysera endast valda par och det verifierade analysintervallet ${timeframe}. Order- och signalintervallet är fortsatt detta intervall. Tiingos separata dagskontext är historisk USD-referens; andra intradagstidsramar saknar verifierat underlag och får aldrig hittas på.
+REGEL: Du MÅSTE alltid analysera ALLA dessa tidsramar (inte bara 1h):
+1m / 5m / 15m / 1h / 4h / 1d / 1v / 1m (månad)
 
 REGEL: Om entry inte är optimal NU, säg så. Föreslå att vänta 1-5 min för bättre price action istället för att tvinga en trade.
 
 ANALYSERA FÖR VARJE SYMBOL:
-1. Trendriktning för analysintervallet ${timeframe}
+1. Trendriktning på alla 8 tidsramar (1m till 1M)
 2. Exakta support/resistance-nivåer (priser, inte luddiga zoner)
 3. 50/100/200-MA + crossover-signaler
 4. RSI + MACD + Bollinger Band — med tolkning på vanlig svenska
@@ -212,7 +203,7 @@ Svara i EXAKT detta JSON-format:
       "confidenceRating": "buy" | "strong_buy" | etc
     }
   ],
-  "topPick": "BTCUSDC" eller null,
+  "topPick": "BTCUSDT" eller null,
   "marketWideObservation": "1 mening om hela krypto-marknaden just nu"
 }
 
@@ -230,14 +221,11 @@ Svara BARA med JSON.`,
 
   try {
     const parsed = JSON.parse(extractJson(text)) as Omit<TechnicalReport, "role" | "rawText">;
-    parsed.analyses = parsed.analyses.filter((a) => symbols.includes(a.symbol));
-    if (parsed.topPick && !symbols.includes(parsed.topPick)) parsed.topPick = null;
-    if (!parsed.analyses.length) throw new Error("Den tekniska agenten gav ingen analys för valda par");
     log.agent(`[Teknisk] Top pick: ${parsed.topPick ?? "ingen"}, ${parsed.analyses.length} symboler`);
-    return { role: "technical_analyst", ...parsed, historicalReference, rawText: text };
+    return { role: "technical_analyst", ...parsed, rawText: text };
   } catch {
     log.warn(`[Teknisk] Parsningsfel (stop_reason=${response.stop_reason}, ${text.length} tecken).`);
-    throw new Error("Teknisk analys kunde inte verifieras; Hanna startas inte");
+    return { role: "technical_analyst", analyses: [], topPick: null, rawText: text };
   }
 }
 

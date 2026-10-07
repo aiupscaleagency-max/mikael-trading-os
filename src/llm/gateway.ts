@@ -34,11 +34,29 @@ const GATEWAY_MODELS: Record<LlmRole, string> = {
   monitor: "anthropic/claude-opus-5.5",
 };
 
-// Reservmodell kräver ett uttryckligt godkänt LLM_MODEL_FALLBACK-val.
+// Reserv när Vercel stoppar en modell med 429 ("No access to this model at
+// this time"). Vercel har låga gränser på de nyaste modellerna för vissa
+// konton: första anropet går igenom, nästa stoppas. Då kör turen vidare på
+// reservmodellen i stället för att Head kraschar. Överstyr med
+// LLM_MODEL_FALLBACK (kommaseparerad lista), eller stäng av med
+// LLM_MODEL_FALLBACK=off.
+//
+// Mike 2026-10-03: "sånt här får inte hända". Varje modell har därför en
+// KEDJA av reserver, billigast-som-duger först, och sist alltid Haiku 4.5
+// (billig och nästan aldrig spärrad). Varje reserv provas på alla vägar
+// (Anthropic direkt → Vercel → OpenRouter) innan nästa reserv tas.
+const GATEWAY_FALLBACKS: Record<string, string[]> = {
+  "anthropic/claude-opus-5.5": ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-4.8", "anthropic/claude-sonnet-4.6", "anthropic/claude-haiku-4.5"],
+  "anthropic/claude-sonnet-5.5": ["anthropic/claude-opus-4.8", "anthropic/claude-sonnet-4.6", "anthropic/claude-haiku-4.5"],
+  "anthropic/claude-opus-4.8": ["anthropic/claude-sonnet-4.6", "anthropic/claude-haiku-4.5"],
+  "anthropic/claude-sonnet-4.6": ["anthropic/claude-haiku-4.5"],
+  "anthropic/claude-haiku-4.5": ["anthropic/claude-sonnet-4.6"],
+  "openai/gpt-6-astra": ["anthropic/claude-sonnet-5.5", "anthropic/claude-haiku-4.5"],
+};
 export function fallbackModels(model: string): string[] {
   const override = process.env.LLM_MODEL_FALLBACK?.trim();
   if (override === "off") return [];
-  const chain = override ? override.split(",").map((m) => m.trim()).filter(Boolean) : []; // Modellbyte kräver ett uttryckligt konfigurerat och godkänt reservval.
+  const chain = override ? override.split(",").map((m) => m.trim()).filter(Boolean) : (GATEWAY_FALLBACKS[model] ?? []);
   return chain.filter((m) => m !== model);
 }
 /** Första reserven (bakåtkompatibelt). */
@@ -133,20 +151,6 @@ interface Route {
 // att varje iteration i Head-loopen inte slår i samma spärr igen.
 const ROUTE_COOLDOWN_MS = 10 * 60_000;
 const routeBlockedUntil = new Map<string, number>();
-interface RouteAttempt { route: string; model: string; status: number | null; outcome: "success" | "error"; at: number; requestId: string | null; actualModel?: string | null }
-const routeAttempts: RouteAttempt[] = [];
-function recordRoute(attempt: RouteAttempt): void {
-  routeAttempts.push(attempt);
-  if (routeAttempts.length > 50) routeAttempts.shift();
-}
-/** Endast metadata: nycklar, modellprompter och råa felsvar lämnar aldrig klienten. */
-export function getLlmDiagnostics() {
-  return { configured: { vercel: Boolean(gatewayKey()), openrouter: Boolean(openRouterKey()), anthropic: Boolean(process.env.ANTHROPIC_API_KEY?.trim()) },
-    models: Object.fromEntries((Object.keys(ENV_OVERRIDE) as LlmRole[]).map((role) => [role, modelFor(role, "ej gatewaymodell")])),
-    fallbackOverride: process.env.LLM_MODEL_FALLBACK?.trim() || "off",
-    attempts: routeAttempts.map((a) => ({ ...a })), runtime: "Trading-OS specialist- och Hanna-agenter; Hermes Desktop är separat" };
-}
-
 
 function statusOf(err: unknown): number | undefined {
   return (err as { status?: number } | null)?.status;
@@ -202,7 +206,7 @@ export function createLlmClient(anthropicApiKey?: string | null): Anthropic {
   const directKey = (anthropicApiKey || process.env.ANTHROPIC_API_KEY || "").trim();
   if (!usingGateway()) {
     if (!directKey) throw new Error("Varken AI_GATEWAY_API_KEY, OPENROUTER_API_KEY eller ANTHROPIC_API_KEY är satt");
-    // Direktrutten använder samma verifiering och diagnostik som gateway-rutterna.
+    return new Anthropic({ apiKey: directKey });
   }
 
   const routes = buildRoutes(directKey);
@@ -220,25 +224,17 @@ export function createLlmClient(anthropicApiKey?: string | null): Anthropic {
       const key = `${route.name}:${model}`;
       if (!ignoreCooldown && (routeBlockedUntil.get(key) ?? 0) > Date.now()) continue;
       try {
-        const call = route.create({ ...body, model: route.toModel(model) }, options) as Promise<unknown> & { withResponse?: () => Promise<{data: unknown; response: Response; request_id?: string}> };
-        const envelope = call.withResponse ? await call.withResponse() : null;
-        const response = envelope ? envelope.data : await call;
-        const message = response as {type?: string; content?: unknown[]; model?: string; _request_id?: string};
-        if (message.type !== "message" || !Array.isArray(message.content) || typeof message.model !== "string") throw new Error("Ogiltigt LLM-svarsschema");
-        recordRoute({route: route.name, model, actualModel: message.model, status: envelope?.response.status ?? null, outcome: "success", at: Date.now(), requestId: envelope?.request_id ?? message._request_id ?? null});
-        return response;
+        return await route.create({ ...body, model: route.toModel(model) }, options);
       } catch (err) {
         const status = statusOf(err);
-        recordRoute({route: route.name, model, status: status ?? null, outcome: "error", at: Date.now(), requestId: null});
-        // Nätverksfel provas på nästa befintliga rutt, med exakt samma modell.
-        if (status === undefined) { lastErr = new Error("Nätverksfel i LLM-rutten"); continue; }
+        if (status === undefined) throw err; // nätverksfel i koden, inte ett svar
         lastErr = err;
         const noCredits = status === 400 && /credit/i.test(String((err as Error).message));
         if (noCredits || [401, 402, 403, 429].includes(status)) routeBlockedUntil.set(key, Date.now() + ROUTE_COOLDOWN_MS);
         log.warn(`[LLM] ${route.name} svarade ${status} för ${model} — provar nästa väg`);
       }
     }
-    throw new Error(`Ingen LLM-väg tar modellen ${model}${lastErr ? " efter ruttfel" : ""}`);
+    throw lastErr ?? new Error(`Ingen LLM-väg tar modellen ${model}`);
   };
 
   client.messages.create = (async (body: Anthropic.MessageCreateParams, options?: Anthropic.RequestOptions) => {
@@ -254,6 +250,16 @@ export function createLlmClient(anthropicApiKey?: string | null): Anthropic {
         if (statusOf(err) === undefined && !/Ingen LLM-väg/.test(String((err as Error)?.message))) throw err;
         firstErr ??= err;
         tried.push(m);
+      }
+    }
+    // Sista utvägen: alla vägar stod i paus efter tidigare spärrar. Försök ändå
+    // en gång utan paus, så att en tillfällig 429 inte stoppar hela analysen.
+    for (const m of chain) {
+      try {
+        log.warn(`[LLM] Alla reserver pausade — försöker ${m} igen utan paus`);
+        return await tryRoutes(body, m, options, true);
+      } catch (err) {
+        if (statusOf(err) === undefined && !/Ingen LLM-väg/.test(String((err as Error)?.message))) throw err;
       }
     }
     const reason = firstErr instanceof Error ? firstErr.message : String(firstErr);

@@ -9,16 +9,12 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { BrokerAdapter } from "../brokers/adapter.js";
-import { getCachedTicker } from "./marketStream.js";
+import { getCachedPrice } from "./marketStream.js";
 
 const LIVE_JOURNAL = path.resolve("data/live-journal.jsonl");
-import { getTradeFeeRate } from "../risk/tradeSizing.js";
-const LIVE_FEE = getTradeFeeRate();
+const LIVE_FEE = Number(process.env.PAPER_FEE ?? 0.0025) || 0.0025;
 
 export interface ResultTrade {
-  id?: string;
-  fee?: number;
-  tradeId?: string;
   at: number;
   coin: string;
   side: "BUY" | "SELL";
@@ -31,7 +27,6 @@ export interface ResultTrade {
   pnlPct?: number;
 }
 export interface ResultOpen {
-  costKnown?: boolean;
   coin: string;
   qty: number;
   avg: number;
@@ -41,21 +36,16 @@ export interface ResultOpen {
   upnlPct: number | null;
   tp?: number;
   sl?: number;
-  potentialPnl?: number | null;
-  potentialPnlPct?: number | null;
-  stopPnl?: number | null;
-  stopPnlPct?: number | null;
 }
 export interface Results {
-  feeRate: number;
   mode: "TEST" | "LIVE";
   trades: ResultTrade[];
   open: ResultOpen[];
-  totals: { realized: number | null; unrealized: number | null; wins: number; losses: number; trades: number; today: number | null; complete: boolean; knownRealized: number };
+  totals: { realized: number; unrealized: number; wins: number; losses: number; trades: number; today: number };
 }
 
 const baseOf = (s: string) => s.toUpperCase().replace(/[/-]/g, "").replace(/(USDT|USDC|USD|BUSD|FDUSD)$/, "");
-const priceOf = (coin: string) => { const tick = getCachedTicker(`${coin}USDC`); return tick && Date.now() - tick.ts < 60_000 ? tick.price : null; };
+const priceOf = (coin: string) => getCachedPrice(`${coin}USDT`) ?? getCachedPrice(`${coin}USDC`);
 const startOfDay = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
 
 /** Logga en LIVE-affär (anropas när en LIVE-order fyllts). */
@@ -72,55 +62,41 @@ function summarize(mode: "TEST" | "LIVE", trades: ResultTrade[], open: ResultOpe
   const dayStart = startOfDay();
   return {
     mode,
-    feeRate: LIVE_FEE,
     trades: [...trades].sort((a, b) => b.at - a.at).slice(0, 200),
-    open: open.map((o) => {
-      const cost = o.qty * o.avg;
-      const potentialPnl = o.costKnown !== false && o.tp && cost > 0 ? o.qty * o.tp * (1 - LIVE_FEE) - cost : null;
-      const stopPnl = o.costKnown !== false && o.sl && cost > 0 ? o.qty * o.sl * (1 - LIVE_FEE) - cost : null;
-      return { ...o, potentialPnl, potentialPnlPct: potentialPnl === null ? null : potentialPnl / cost * 100,
-        stopPnl, stopPnlPct: stopPnl === null ? null : stopPnl / cost * 100 };
-    }),
+    open,
     totals: {
-      complete: !trades.some((t) => t.side === "SELL" && t.pnl === undefined) && open.every((o) => o.upnl !== null),
-      knownRealized: sells.reduce((s,t) => s + (t.pnl ?? 0), 0),
-      realized: trades.some((t) => t.side === "SELL" && t.pnl === undefined) ? null : sells.reduce((s, t) => s + (t.pnl ?? 0), 0),
-      unrealized: open.some((o) => o.upnl === null) ? null : open.reduce((s, o) => s + (o.upnl ?? 0), 0),
+      realized: sells.reduce((s, t) => s + (t.pnl ?? 0), 0),
+      unrealized: open.reduce((s, o) => s + (o.upnl ?? 0), 0),
       wins: sells.filter((t) => (t.pnl ?? 0) > 0).length,
       losses: sells.filter((t) => (t.pnl ?? 0) <= 0).length,
       trades: sells.length,
-      today: trades.some((t) => t.side === "SELL" && t.at >= dayStart && t.pnl === undefined) ? null : sells.filter((t) => t.at >= dayStart).reduce((s, t) => s + (t.pnl ?? 0), 0),
+      today: sells.filter((t) => t.at >= dayStart).reduce((s, t) => s + (t.pnl ?? 0), 0),
     },
   };
 }
 
-function testResults(paper: BrokerAdapter, snapshot?: ReturnType<import("../brokers/bybitPaper.js").BybitPaperBroker["snapshot"]>, prices: (coin:string)=>number|null = priceOf): Results {
-  const snap = snapshot ?? (paper as unknown as { snapshot?: () => ReturnType<import("../brokers/bybitPaper.js").BybitPaperBroker["snapshot"]> }).snapshot?.();
+function testResults(paper: BrokerAdapter): Results {
+  const snap = (paper as unknown as { snapshot?: () => ReturnType<import("../brokers/bybitPaper.js").BybitPaperBroker["snapshot"]> }).snapshot?.();
   if (!snap) return summarize("TEST", [], []);
   const trades: ResultTrade[] = snap.fills.map((f) => {
     const usd = f.qty * f.price;
     // Vinst i % av vad köpet kostade (P/L / (sålt värde − P/L))
     const cost = f.pnl !== undefined ? usd - f.fee - f.pnl : 0;
     return {
-      id: f.id, fee: f.fee, tradeId: f.tradeId, at: f.at, coin: f.base, side: f.side === "SELL" ? "SELL" : "BUY", qty: f.qty, price: f.price, usd, kind: f.kind,
+      at: f.at, coin: f.base, side: f.side === "SELL" ? "SELL" : "BUY", qty: f.qty, price: f.price, usd, kind: f.kind,
       ...(f.side === "SELL" && f.pnl !== undefined ? { pnl: f.pnl, pnlPct: cost > 0 ? (f.pnl / cost) * 100 : undefined } : {}),
     };
   });
   const open: ResultOpen[] = Object.entries(snap.holdings)
     .filter(([, h]) => h.qty > 0)
     .map(([coin, h]) => {
-      const price = prices(coin);
+      const price = priceOf(coin);
       // Värde efter säljavgift, mot snittpriset (köpavgiften ingår redan i snittet)
       const value = price ? h.qty * price : null;
-      const knownCost = Object.values(snap.lots).filter((l) => l.base === coin && l.remaining > 1e-12).every((l) => typeof l.costBasisRemaining === "number");
-      const covered = Object.values(snap.lots).filter((l) => l.base === coin).reduce((s,l) => s + l.remaining,0);
-      const upnl = price && knownCost && Math.abs(covered - h.qty) < Math.max(1e-12,h.qty*1e-8) ? h.qty * price * (1 - LIVE_FEE) - h.qty * h.avg : null;
-      // En enda målnivå får bara användas när den täcker hela innehavet.
-      const levels = (kind: string) => snap.open.filter((o) => o.base === coin && o.kind === kind);
-      const level = (kind: string) => { const orders = levels(kind); const unique = new Set(orders.map((o) => o.price));
-        return unique.size === 1 && Math.abs(orders.reduce((s,o) => s + o.qty,0) - h.qty) < Math.max(1e-12,h.qty*1e-8) ? orders[0]?.price : undefined; };
-      const tp = level("TP"), sl = level("SL");
-      return { coin, costKnown: knownCost && Math.abs(covered-h.qty) < Math.max(1e-12,h.qty*1e-8), qty: h.qty, avg: h.avg, price, value, upnl, upnlPct: upnl !== null ? (upnl / (h.qty * h.avg)) * 100 : null, tp, sl };
+      const upnl = price ? h.qty * price * (1 - LIVE_FEE) - h.qty * h.avg : null;
+      const tp = snap.open.find((o) => o.base === coin && o.kind === "TP")?.price;
+      const sl = snap.open.find((o) => o.base === coin && o.kind === "SL")?.price;
+      return { coin, qty: h.qty, avg: h.avg, price, value, upnl, upnlPct: upnl !== null ? (upnl / (h.qty * h.avg)) * 100 : null, tp, sl };
     });
   return summarize("TEST", trades, open);
 }
@@ -142,26 +118,24 @@ async function liveResults(live: BrokerAdapter, tpsl: Array<{ symbol: string; ta
       const avg = p.qty > 0 ? p.cost / p.qty : r.price;
       const q = Math.min(r.qty, p.qty || r.qty);
       const cost = q * avg;
-      const knownCost = p.qty >= r.qty - 1e-12 && p.cost > 0;
-      const pnl = knownCost ? r.usd * (1 - LIVE_FEE) - cost : undefined;
+      const pnl = r.usd * (1 - LIVE_FEE) - cost;
       p.qty = Math.max(0, p.qty - q); p.cost = p.qty > 0 ? p.qty * avg : 0;
-      trades.push({ ...r, pnl, pnlPct: pnl !== undefined && cost > 0 ? (pnl / cost) * 100 : undefined });
+      trades.push({ ...r, pnl, pnlPct: cost > 0 ? (pnl / cost) * 100 : undefined });
     }
     pos.set(r.coin, p);
   }
   // Öppna innehav: det som faktiskt ligger på Bybit, P/L mot bottens snittpris
   const open: ResultOpen[] = [];
-  const positions = await live.getPositions();
+  const positions = await live.getPositions().catch(() => []);
   for (const ps of positions) {
     const coin = ps.baseAsset;
     const j = pos.get(coin);
-    const avg = j && j.qty >= ps.quantity - 1e-12 && j.qty > 0 ? j.cost / j.qty : 0;
+    const avg = j && j.qty > 0 ? j.cost / j.qty : 0;
     const price = priceOf(coin) ?? (ps.currentPrice || null);
     const value = price ? ps.quantity * price : null;
     if (value !== null && value < 0.5) continue; // damm under $0,50 visas inte
     const upnl = price && avg > 0 ? ps.quantity * price * (1 - LIVE_FEE) - ps.quantity * avg : null;
-    const all = tpsl.filter((t) => baseOf(t.symbol) === coin);
-    const w = all.length === 1 && Math.abs(((all[0] as {qty?:number}).qty ?? 0) - ps.quantity) <= Math.max(1e-12, ps.quantity*1e-8) ? all[0] : undefined;
+    const w = tpsl.find((t) => baseOf(t.symbol) === coin);
     open.push({ coin, qty: ps.quantity, avg, price, value, upnl, upnlPct: upnl !== null && avg > 0 ? (upnl / (ps.quantity * avg)) * 100 : null, tp: w?.takeProfit, sl: w?.stopLoss });
   }
   return summarize("LIVE", trades, open);
@@ -171,9 +145,8 @@ export async function getResults(
   brokers: Record<string, BrokerAdapter>,
   mode: "TEST" | "LIVE",
   liveTpSl: Array<{ symbol: string; takeProfit?: number; stopLoss?: number }>,
-  paperView?: { snapshot: ReturnType<import("../brokers/bybitPaper.js").BybitPaperBroker["snapshot"]>; prices: (coin:string)=>number|null },
 ): Promise<Results> {
   if (mode === "LIVE") return brokers.bybit ? liveResults(brokers.bybit, liveTpSl) : summarize("LIVE", [], []);
   const paper = brokers["bybit-paper"];
-  return paper ? testResults(paper,paperView?.snapshot,paperView?.prices) : summarize("TEST", [], []);
+  return paper ? testResults(paper) : summarize("TEST", [], []);
 }

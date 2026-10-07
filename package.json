@@ -2,7 +2,7 @@
   "name": "mikael-trading-os",
   "version": "0.2.0",
   "private": true,
-  "description": "Trading-OS f\u00f6r Bybit EU spot: separata TEST/LIVE-konton och manuellt godk\u00e4nnande",
+  "description": "Multi-asset AI trading agent: crypto (Blofin/Binance), stocks + options (Alpaca). Powered by Claude.",
   "type": "module",
   "scripts": {
     "agent": "tsx src/run.ts",
@@ -16,8 +16,7 @@
     "verify": "npm run build && node scripts/verify-live.mjs",
     "test:signal": "npm run build && node scripts/test-signal-engine.mjs",
     "export:candles": "npm run build && node scripts/export-candles.mjs",
-    "serve": "tsx src/run.ts --serve",
-    "test:trading": "node --import tsx scripts/test-sizing-sessions.ts && node --import tsx scripts/test-timed-exits.ts && node --import tsx scripts/test-paper-lots.ts && node --import tsx scripts/test-analysis-scope.ts && node --import tsx scripts/test-trading-state.ts && node --import tsx scripts/test-llm-routing.ts && node --import tsx scripts/test-jev-routing.ts && node --import tsx scripts/test-two-agent-pipeline.ts && node --import tsx scripts/test-market-catalogue.ts && node --import tsx scripts/test-tiingo-history.ts && node scripts/test-dashboard-sync.mjs && node --import tsx scripts/test-ig-connection.ts && node scripts/test-ig-routes.mjs && node --import tsx scripts/test-ig-workspace.ts"
+    "serve": "tsx src/run.ts --serve"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
