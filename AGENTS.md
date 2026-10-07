@@ -1,5 +1,13 @@
 # mikael-trading-os
 
+## Aktuell standardstart – IG Trading OS
+
+Sedan 2026-10-07 kör `npm run agent`, `npm run serve` och `npm run ui` den nya IG-handelsytan. Läs `TRADING_WORKSPACE.md` för aktuell arkitektur och begränsningar. JEV → Teknisk analytiker → Hanna använder befintlig modellrouting; Tiingo är historisk referens. Kör `npx tsc --noEmit` och `npm run test:workspace` för denna handelsyta. Inga verkliga order får skickas under utveckling/test.
+
+Dokumentationen nedan beskriver äldre signalkod som endast körs med explicit legacy/once/propose. Den kodens verifieringskrav gäller fortfarande när just dessa moduler ändras.
+
+## Äldre signalkod
+
 Kryptosignalsystem. Läser marknadsdata live från Binance, räknar indikatorer och
 producerar LONG/SHORT/NEUTRAL med obligatorisk stop-loss. **Signaler, inte
 automatisk orderläggning.** Allt är PAPER/SIM om inget annat uttryckligen sägs.

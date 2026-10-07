@@ -185,7 +185,7 @@ const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 // systemet utan att först koppla ett riktigt konto — och att koppla ett
 // konto bara för att se ett diagram är fel ordning.
 const viewOnly = !hasAlpaca && !hasAlpacaLive && !hasKraken && !hasBybit && !hasBybitDemo && !hasBlofin && !hasBinance && !hasOanda;
-if (viewOnly) {
+if (viewOnly && process.argv.some(arg=>["--legacy","--once","--propose"].includes(arg))) {
   console.warn(
     "⚠️  Ingen broker konfigurerad — startar i VY-LÄGE.\n" +
     "   Marknadsdata, diagram och signaler fungerar. Inga ordrar kan läggas.\n" +

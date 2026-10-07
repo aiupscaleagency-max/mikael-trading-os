@@ -467,6 +467,15 @@ async function main(): Promise<void> {
   log.info(`  Engines: ${config.engines.join(", ")}`);
   log.info("──────────────────────────────────────────────────────────");
 
+  // Standardstarten kör bara den gemensamma IG-handelsytan. Gamla scheman,
+  // regelbots och separat position monitor konkurrerar inte med agentsessionen.
+  if(!process.argv.includes("--legacy")&&!args.once&&!args.propose){
+    const port=parseInt(process.env.DASHBOARD_PORT??"3939",10);
+    startServer(port,{});
+    log.ok(`IG-handelsyta på http://localhost:${port} · JEV → Teknisk analytiker → Hanna`);
+    log.info("AI startas enbart genom en vald IG-analys eller agentsession. Inga nycklar eller providers ändras.");
+    await new Promise(()=>{});return;
+  }
   const brokers = createBrokers();
   // Visa de mäklare som faktiskt är registrerade (Bybit överallt döljer t.ex. Binance)
   log.info(`  Brokers: ${Object.keys(brokers).join(", ") || "inga"}`);

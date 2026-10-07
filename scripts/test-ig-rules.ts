@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {igCalculationRules,igQuoteTimestamp} from '../src/integrations/igRules.js';
+const instrument={onePipMeans:'0.0001',valueOfOnePip:'1',currencies:[{code:'USD',isDefault:true}],marginFactor:3.33,marginFactorUnit:'PERCENTAGE',marginDepositBands:[{margin:3.33}]};
+assert.equal(igCalculationRules(instrument,{scalingFactor:10000},'USD').pointValue,1);
+assert.equal(igCalculationRules(instrument,{scalingFactor:10000},'SEK').pointValue,null);
+assert.equal(igCalculationRules(instrument,{scalingFactor:null},'USD').pointValue,null);
+assert.equal(igCalculationRules({...instrument,marginDepositBands:[{margin:3.33},{margin:5}]},{scalingFactor:10000},'USD').marginRate,null);
+const now=Date.parse('2026-10-07T00:00:15Z');
+assert.equal(igQuoteTimestamp('23:59:50',now),now-25000);
+assert.equal(igQuoteTimestamp('00:00:10',now),now-5000);
+assert.equal(igQuoteTimestamp('99:99:99',now),null);
+assert.equal(igQuoteTimestamp(null,now),null);
+console.log('PASS: IG punktvärde med pip/scaling, okänd valuta/tiermarginal och UTC-kvot över midnatt');

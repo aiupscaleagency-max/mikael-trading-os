@@ -2,7 +2,7 @@
   "name": "mikael-trading-os",
   "version": "0.2.0",
   "private": true,
-  "description": "Multi-asset AI trading agent: crypto (Blofin/Binance), stocks + options (Alpaca). Powered by Claude.",
+  "description": "IG Trading OS med JEV, teknisk analytiker, Hanna och Tiingo-referens",
   "type": "module",
   "scripts": {
     "agent": "tsx src/run.ts",
@@ -10,13 +10,14 @@
     "propose": "tsx src/run.ts --propose",
     "account": "tsx src/scripts/account.ts",
     "kill": "tsx src/scripts/kill.ts",
-    "ui": "DASHBOARD_PORT=3939 tsx src/run.ts --once",
+    "ui": "DASHBOARD_PORT=3939 tsx src/run.ts --serve",
     "demo": "tsx src/scripts/demo.ts",
     "build": "tsc --outDir dist",
     "verify": "npm run build && node scripts/verify-live.mjs",
     "test:signal": "npm run build && node scripts/test-signal-engine.mjs",
     "export:candles": "npm run build && node scripts/export-candles.mjs",
-    "serve": "tsx src/run.ts --serve"
+    "serve": "tsx src/run.ts --serve",
+    "test:workspace": "tsx scripts/test-ig-connection.ts && tsx scripts/test-ig-workspace.ts && tsx scripts/test-ig-orders.ts && tsx scripts/test-ig-rules.ts && tsx scripts/test-tiingo-history.ts && tsx scripts/test-two-agent-pipeline.ts && node scripts/test-workspace-model.mjs && node scripts/test-workspace-browser.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

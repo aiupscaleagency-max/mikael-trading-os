@@ -1,0 +1,93 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {callIgAuthenticated,getIgStatus,getIgAccounts,getIgPositions,type IgEnvironment} from './igConnection.js';
+import {getIgMarket,getIgSessionPositionLimit} from './igWorkspace.js';
+import {loadState} from '../memory/store.js';
+import {config} from '../config.js';
+
+interface Draft {id:string;environment:IgEnvironment;binding:string;epic:string;direction:'BUY'|'SELL';size:number;orderType:'MARKET'|'LIMIT';entry:number;stopLevel:number;targetLevel:number;holdingMinutes:number;autoClose:boolean;createdAt:number;expiresAt:number;status:'draft'|'submitted'|'accepted'|'rejected'|'unknown';dealReference?:string;dealId?:string;error?:string;positionObserved?:boolean;body:Record<string,unknown>;risk:number;exposure:number;margin:number;currency:string}
+interface ExitPlan {dealId:string;binding:string;closeAt:number;status:'scheduled'|'interrupted'|'submitted'|'confirmed'|'failed'|'unknown';dealReference?:string;error?:string}
+interface OrderState {drafts:Draft[];plans:ExitPlan[]}
+const finite=(v:unknown):v is number=>typeof v==='number'&&Number.isFinite(v);
+function modeGuard(mode:unknown):asserts mode is IgEnvironment {if(mode!=='demo'&&mode!=='live')throw Error('Ogiltig IG-miljö');};
+/** Servern räknar om varje bekräftad order. UI-belopp är aldrig säkerhetsunderlag. */
+export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof getIgAccounts;positions?:typeof getIgPositions;market?:(mode:IgEnvironment,epic:string)=>Promise<any>;call?:typeof callIgAuthenticated;guard?:()=>Promise<{killSwitchActive:boolean}>;now?:()=>number;directory?:string;enabled?:()=>boolean;limits?:{maxPositionUsd:number;maxTotalExposureUsd:number;maxDailyLossUsd:number;maxOpenPositions:number};positionLimit?:(mode:IgEnvironment)=>number}={}) {
+  const status=deps.status??getIgStatus,accounts=deps.accounts??getIgAccounts,positions=deps.positions??getIgPositions,market=deps.market??getIgMarket,call=deps.call??callIgAuthenticated,guard=deps.guard??loadState,now=deps.now??Date.now,enabled=deps.enabled??(()=>process.env.IG_ORDER_EXECUTION_ENABLED==='true');
+  const limits=deps.limits??config.risk,directory=deps.directory??path.resolve('data/ig-orders'),states=new Map<IgEnvironment,OrderState>(),busy=new Set<IgEnvironment>();
+  function state(mode:IgEnvironment){modeGuard(mode);let s=states.get(mode);if(s)return s;try{s=JSON.parse(fs.readFileSync(path.join(directory,`${mode}.json`),'utf8'));if(!Array.isArray(s?.drafts)||!Array.isArray(s?.plans))throw Error('shape');for(const p of s!.plans)if(p.status==='scheduled')p.status='interrupted';}catch{s={drafts:[],plans:[]};}states.set(mode,s!);return s!;}
+  function persist(mode:IgEnvironment){fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,`${mode}.json`),temp=`${file}.${process.pid}.tmp`;fs.writeFileSync(temp,JSON.stringify(state(mode)));fs.renameSync(temp,file);}
+  function binding(mode:IgEnvironment){modeGuard(mode);const c=status().environments[mode];if(c.status!=='connected'||!c.connectionGeneration||c.account?.accountType!=='CFD')throw Error('IG kräver verifierad CFD-kontosession');return c.connectionGeneration;}
+  function stable(mode:IgEnvironment,id:string){if(binding(mode)!==id)throw Error('IG-kontosessionen ändrades; gör om orderunderlaget');}
+  function execution(){return {enabled:enabled(),reason:enabled()?'Manuell IG-order · verifieras på servern':'IG-orderexekvering är avstängd i befintlig serverkonfiguration'};}
+  function fresh(m:any){const q=m?.quote;return q&&q.marketStatus==='TRADEABLE'&&q.delayTime===0&&finite(q.receivedAt)&&finite(q.observedAt)&&now()-q.receivedAt>=0&&now()-q.receivedAt<=60000&&now()-q.observedAt>=0&&now()-q.observedAt<=60000&&finite(q.bid)&&finite(q.offer)&&q.bid>0&&q.offer>=q.bid;}
+  async function dailyPnl(mode:IgEnvironment){
+    const from=new Date(now()).toISOString().slice(0,10)+'T00:00:00';
+    const data=await call(mode,'history/transactions','GET','2',undefined,{query:new URLSearchParams({from,to:new Date(now()).toISOString().slice(0,19),pageSize:'500',pageNumber:'1',type:'ALL'}).toString()});
+    if(!Array.isArray(data.transactions)||data.metadata?.pageData?.totalPages!==1)throw Error('IG daglig P/L är ofullständig; nya order stoppas');
+    let total=0;for(const t of data.transactions){if(t.cashTransaction===true)continue;if(t.cashTransaction!==false||t.transactionType!=='DEAL'||t.currency!=='USD'||typeof t.dateUtc!=='string')throw Error('IG daglig P/L saknar verifierad valuta eller UTC-tid');const transactionTime=Date.parse(t.dateUtc.endsWith('Z')?t.dateUtc:t.dateUtc+'Z');if(!Number.isFinite(transactionTime)||transactionTime<Date.parse(from+'Z')||transactionTime>now())throw Error('IG daglig P/L har ogiltig UTC-tid');const text=String(t.profitAndLoss).replace(/^\$/, '').trim();if(!/^[+-]?\d+(?:\.\d+)?$/.test(text))throw Error('IG daglig P/L kunde inte läsas entydigt');total+=Number(text);}
+    return total;
+  }
+  async function validate(mode:IgEnvironment,input:Record<string,any>,id:string){
+    if((await guard()).killSwitchActive)throw Error('IG-order stoppad av kill switch');
+    if(state(mode).drafts.some(d=>['submitted','unknown'].includes(d.status)||(d.binding!==id&&d.status==='accepted'&&!d.positionObserved)))throw Error('IG tidigare orderutfall måste avstämmas innan nya order');
+    await accounts(mode);stable(mode,id);const a=status().environments[mode].account;
+    // Befintliga riskgränser är USD-gränser. Saknad valutakonvertering får inte gissas.
+    if(a?.currency!=='USD'||!finite(a.available)||a.available<=0||!finite(a.profitLoss))throw Error('IG orderrisk kräver USD-konto och verifierat tillgängligt kapital/P-L');
+    const m=await market(mode,input.epic);if(!fresh(m))throw Error('IG-order stoppad: inaktuell eller fördröjd kvot');
+    const r=m.calculationRules;if(!r?.verified||r.pointCurrency!=='USD'||!finite(r.pointValue)||r.pointValue<=0||!finite(r.marginRate)||r.marginRate<=0)throw Error('IG kontraktsvärde, valuta eller marginal kunde inte verifieras');
+    const direction=input.direction;if(direction!=='BUY'&&direction!=='SELL')throw Error('IG kräver Köp eller Sälj');
+    const type=input.orderType;if(type!=='MARKET'&&type!=='LIMIT')throw Error('IG kräver marknadsorder eller limitorder');
+    const size=input.size,stop=input.stopLevel,target=input.targetLevel,entry=type==='LIMIT'?input.entry:direction==='BUY'?m.quote.offer:m.quote.bid;
+    const min=m.dealingRules?.minDealSize?.value;
+    if(![size,stop,target,entry,min].every(finite)||size<=0||size<min||entry<=0||stop<=0||target<=0)throw Error('IG kräver giltig storlek och prisnivåer');
+    const sign=direction==='BUY'?1:-1;if(sign*(entry-stop)<=0||sign*(target-entry)<=0)throw Error('IG stop-loss och målpris ligger på fel sida');
+    const distance=m.dealingRules?.minNormalStopOrLimitDistance;
+    const minDistance=distance?.unit==='POINTS'?distance.value:distance?.unit==='PERCENTAGE'?entry*distance.value/100:NaN;
+    if(!finite(minDistance)||Math.abs(entry-stop)<minDistance||Math.abs(target-entry)<minDistance)throw Error('IG minsta stop-/målavstånd kunde inte verifieras');
+    const exposure=entry*size*r.pointValue,risk=Math.abs(entry-stop)*size*r.pointValue,margin=exposure*r.marginRate;
+    if(exposure>limits.maxPositionUsd||risk>a.available*.05||margin>a.available)throw Error('IG-order överstiger befintlig positionsgräns, 5 % SL-risk eller tillgänglig marginal');
+    const ps=await positions(mode);if(ps.status!=='ready'||!Array.isArray(ps.positions))throw Error('IG öppna positioner kunde inte verifieras');
+    const working=await call(mode,'workingorders','GET','2');if(!Array.isArray(working.workingOrders))throw Error('IG väntande mäklarorder kunde inte verifieras');
+    const workingRows=working.workingOrders;
+    const verifiedPositions=ps.positions;
+    const pending=state(mode).drafts.filter(d=>d.binding===id&&!d.positionObserved&&['submitted','unknown','accepted'].includes(d.status)&&!verifiedPositions.some((p:any)=>p.dealId===d.dealId)&&!workingRows.some((w:any)=>w.workingOrderData?.dealId===d.dealId));
+    if(ps.positions.length+workingRows.length+pending.length>=Math.min(limits.maxOpenPositions,(deps.positionLimit??getIgSessionPositionLimit)(mode)))throw Error('IG gränsen för samtidiga positioner är nådd');
+    let total=exposure+pending.reduce((sum,d)=>sum+d.exposure,0);
+    for(const p of ps.positions){const pm=await market(mode,p.epic!);if(!finite(p.size)||!finite(p.level)||!pm.calculationRules?.verified||pm.calculationRules.pointCurrency!=='USD')throw Error('IG portföljexponering kunde inte verifieras');total+=p.size*p.level*pm.calculationRules.pointValue;}
+    for(const w of workingRows){const data=w.workingOrderData,m=await market(mode,w.marketData?.epic);if(!finite(data?.size)||!finite(data?.level)||!m.calculationRules?.verified||data.currencyCode!=='USD')throw Error('IG väntande orderexponering kunde inte verifieras');total+=data.size*data.level*m.calculationRules.pointValue;}
+    if(total>limits.maxTotalExposureUsd)throw Error('IG totalexponering överstiger befintlig gräns');
+    const realized=await dailyPnl(mode);if(realized+Math.min(a.profitLoss,0)<=-limits.maxDailyLossUsd)throw Error('IG daglig förlustgräns är nådd');
+    if(!fresh(m))throw Error('IG-kvoten hann bli inaktuell under valideringen');stable(mode,id);if((await guard()).killSwitchActive)throw Error('IG-order stoppad av kill switch');
+    const body:Record<string,unknown>={epic:m.epic,expiry:m.expiry,direction,size,currencyCode:'USD',guaranteedStop:false,forceOpen:true,stopLevel:stop,limitLevel:target};
+    if(type==='MARKET')Object.assign(body,{orderType:'MARKET',timeInForce:'FILL_OR_KILL'});else Object.assign(body,{type:'LIMIT',level:entry,timeInForce:'GOOD_TILL_CANCELLED'});
+    return {body,entry,risk,exposure,margin,currency:'USD'};
+  }
+  async function preview(mode:IgEnvironment,input:Record<string,any>){modeGuard(mode);if(!/^[A-Za-z0-9._-]{1,100}$/.test(input.epic??''))throw Error('Ogiltig IG-epic');if(![1,5,15,30,60,120].includes(input.holdingMinutes)||typeof input.autoClose!=='boolean')throw Error('Ogiltig IG-innehavstid');if(input.orderType==='LIMIT'&&input.autoClose)throw Error('IG limitorder kräver manuell stängning tills fyllnad kan följas entydigt');const id=binding(mode),calc=await validate(mode,input,id);
+    const draft:Draft={...input,...calc,id:randomUUID(),environment:mode,binding:id,createdAt:now(),expiresAt:now()+30000,status:'draft'} as Draft;state(mode).drafts.push(draft);persist(mode);return {...draft,execution:execution()};}
+  async function confirm(mode:IgEnvironment,draftId:string){modeGuard(mode);if(!enabled())throw Error(execution().reason);if(busy.has(mode))throw Error('IG-order behandlas redan');busy.add(mode);
+    try{const d=state(mode).drafts.find(d=>d.id===draftId);if(!d||d.status!=='draft'||now()>d.expiresAt)throw Error('IG-utkastet är utgånget eller redan behandlat');stable(mode,d.binding);const checked=await validate(mode,d,d.binding);if(checked.risk>d.risk*1.02||checked.margin>d.margin*1.02)throw Error('IG-kurs/risk ändrades; granska nytt underlag');
+      if(now()>d.expiresAt)throw Error('IG-utkastet hann gå ut; granska nytt underlag');
+      d.status='submitted';persist(mode);
+      try{const result=await call(mode,d.orderType==='MARKET'?'positions/otc':'workingorders/otc','POST','2',checked.body);stable(mode,d.binding);if(typeof result.dealReference!=='string'||!/^[A-Za-z0-9_-]{1,100}$/.test(result.dealReference))throw Error('confirmation');d.dealReference=result.dealReference;persist(mode);await reconcile(mode,d);}catch{d.status='unknown';d.error='IG-orderutfallet är okänt. Ingen automatisk omsändning.';persist(mode);}
+      return {...d};
+    }finally{busy.delete(mode);}}
+  async function reconcile(mode:IgEnvironment,d:Draft){if(!d.dealReference)return;stable(mode,d.binding);const result=await call(mode,`confirms/${d.dealReference}`,'GET','1');stable(mode,d.binding);
+    if(result.dealStatus==='REJECTED'){d.status='rejected';d.error='IG avvisade ordern';}
+    else if(result.dealStatus==='ACCEPTED'&&typeof result.dealId==='string'){d.status='accepted';d.dealId=result.dealId;d.error=undefined;if(d.autoClose&&d.orderType==='MARKET'&&!state(mode).plans.some(p=>p.dealId===d.dealId&&p.binding===d.binding))state(mode).plans.push({dealId:d.dealId!,binding:d.binding,closeAt:now()+d.holdingMinutes*60000,status:'scheduled'});}
+    else{d.status='unknown';d.error='IG-bekräftelsen har inget verifierat avslut';}persist(mode);}
+  async function close(mode:IgEnvironment,dealId:string,expectedBinding?:string){modeGuard(mode);if(!enabled())throw Error(execution().reason);if(busy.has(mode))throw Error('IG-order behandlas redan');busy.add(mode);
+    try{const id=binding(mode),s=state(mode);if(expectedBinding&&expectedBinding!==id)throw Error('IG-kontot ändrades sedan granskningen');if(s.plans.some(p=>p.dealId===dealId&&['submitted','unknown'].includes(p.status)))throw Error('IG tidigare stängningsutfall måste avstämmas');let plan=s.plans.find(p=>p.dealId===dealId&&p.binding===id);if(plan&&['submitted','unknown','confirmed'].includes(plan.status))throw Error('IG-stängning är redan begärd; invänta bekräftelse');
+      const ps=await positions(mode),p=ps.positions?.find((p:any)=>p.dealId===dealId);if(ps.status!=='ready'||!p||!finite(p.size)||p.size<=0||!['BUY','SELL'].includes(p.direction??''))throw Error('IG-positionen kunde inte verifieras');const m=await market(mode,p.epic!);if(!fresh(m))throw Error('IG-stängning kräver färsk ofördröjd kvot');stable(mode,id);
+      if(!plan){plan={dealId,binding:id,closeAt:now(),status:'scheduled'};s.plans.push(plan);}plan.status='submitted';plan.dealReference=undefined;plan.error=undefined;persist(mode);
+      try{const r=await call(mode,'positions/otc','POST','1',{dealId,direction:p.direction==='BUY'?'SELL':'BUY',size:p.size,orderType:'MARKET',timeInForce:'FILL_OR_KILL'},{_method:'DELETE'});stable(mode,id);if(typeof r.dealReference!=='string'||!/^[A-Za-z0-9_-]{1,100}$/.test(r.dealReference))throw Error('confirmation');plan.dealReference=r.dealReference;persist(mode);await reconcileClose(mode,plan);}catch{plan.status='unknown';plan.error='IG-stängningsutfallet är okänt; positionen antas fortsatt öppen';persist(mode);}return {...plan};
+    }finally{busy.delete(mode);}}
+  async function reconcileClose(mode:IgEnvironment,p:ExitPlan){if(!p.dealReference)return;stable(mode,p.binding);const result=await call(mode,`confirms/${p.dealReference}`,'GET','1');stable(mode,p.binding);if(result.dealStatus==='ACCEPTED'&&result.affectedDeals?.some((d:any)=>d.dealId===p.dealId&&d.status==='DELETED')){p.status='confirmed';p.error=undefined;}else if(result.dealStatus==='REJECTED'){p.status='failed';p.error='IG avvisade stängningen';}else{p.status='unknown';p.error='IG saknar verifierad stängningsbekräftelse';}persist(mode);}
+  async function rollover(mode:IgEnvironment,dealId:string,minutes:number,expectedBinding?:string){const id=binding(mode);if(expectedBinding&&id!==expectedBinding)throw Error('IG-kontot ändrades sedan granskningen');if(!enabled())throw Error(execution().reason);if(!finite(minutes)||minutes<=0||minutes>120)throw Error('Ogiltig IG-förlängning');const plan=state(mode).plans.find(p=>p.dealId===dealId&&p.binding===id);if(!plan||plan.status!=='scheduled')throw Error('IG-positionen har ingen aktiv tidsstängning att förlänga');const ps=await positions(mode);if(!ps.positions?.some((p:any)=>p.dealId===dealId))throw Error('IG-positionen saknas');stable(mode,id);plan.closeAt=Math.max(now(),plan.closeAt)+minutes*60000;persist(mode);return {...plan};}
+  async function tick(){for(const mode of ['demo','live'] as const){if(busy.has(mode))continue;const s=state(mode);for(const d of s.drafts.filter(d=>d.dealReference&&['submitted','unknown'].includes(d.status)))try{await reconcile(mode,d);}catch{/* En okänd order skickas aldrig på nytt. */}for(const p of s.plans){try{if(p.dealReference&&['submitted','unknown'].includes(p.status))await reconcileClose(mode,p);else if(p.status==='scheduled'){if(status().environments[mode].connectionGeneration!==p.binding || (await guard()).killSwitchActive){p.status='interrupted';p.error='Tidsplan avbruten av kontobyte eller kill switch';persist(mode);}else if(enabled()&&now()>=p.closeAt)await close(mode,p.dealId,p.binding);}}catch{if(p.status==='scheduled'){p.status='failed';p.error='Tidsstängning kunde inte verifieras; positionen lämnas öppen';persist(mode);}}}}}
+  function snapshot(mode:IgEnvironment,verifiedPositions?:readonly {dealId:string|null}[]|null){let changed=false;for(const d of state(mode).drafts)if(d.status==='accepted'&&!d.positionObserved&&verifiedPositions?.some(p=>p.dealId===d.dealId)){d.positionObserved=true;changed=true;}if(changed)persist(mode);const id=status().environments[mode].connectionGeneration;return {execution:execution(),pendingOrders:state(mode).drafts.filter(d=>d.status!=='draft'&&!d.positionObserved&&(d.binding===id||['submitted','unknown'].includes(d.status)||d.status==='accepted')).map(({body,binding,...d})=>({...d,previousConnection:binding!==id})),exitPlans:state(mode).plans.filter(p=>p.binding===id||['submitted','unknown'].includes(p.status)).map(({binding,...p})=>({...p,previousConnection:binding!==id}))};}
+  async function brokerPending(mode:IgEnvironment,expectedBinding?:string){if(status().environments[mode].status!=='connected')return {orders:[],status:'unavailable'};const id=binding(mode);if(expectedBinding&&id!==expectedBinding)return {orders:[],status:'unavailable'};try{const data=await call(mode,'workingorders','GET','2');stable(mode,id);if(!Array.isArray(data.workingOrders))throw Error('shape');return {status:'ready',orders:data.workingOrders.map((w:any)=>({id:w.workingOrderData?.dealId,dealId:w.workingOrderData?.dealId,epic:w.marketData?.epic,direction:w.workingOrderData?.direction,size:w.workingOrderData?.size,entry:w.workingOrderData?.level,status:'pending',reason:'Verifierad väntande IG-order'}))};}catch{return {orders:[],status:'unavailable'};}}
+  return {preview,confirm,close,rollover,tick,snapshot,brokerPending};
+}
+const orders=createIgOrders();
+export const previewIgOrder=orders.preview,confirmIgOrder=orders.confirm,closeIgPosition=orders.close,rolloverIgPosition=orders.rollover,tickIgOrders=orders.tick,getIgOrderState=orders.snapshot,getIgBrokerPending=orders.brokerPending;

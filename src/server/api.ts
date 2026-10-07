@@ -1,3 +1,7 @@
+import {tickIgOrders} from "../integrations/igOrders.js";
+import {handleIgRoutes} from "./igRoutes.js";
+import {tickIgSessions} from "../integrations/igWorkspace.js";
+import {getTiingoStatus} from "../data/tiingoHistory.js";
 import http from "node:http";
 import { userAction, agentDone, agentFail, analysisStart, analysisEnd, getAnalysis } from "./agentActivity.js";
 import fs from "node:fs/promises";
@@ -30,6 +34,8 @@ import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, sta
 import { addTimedExit, cancelTimedExit, getHorizonMin, HORIZON_CHOICES, listTimedExits, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
 import { adjustLiveSpend, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
+// Äldre mäklarflöden startas bara genom ett uttryckligt CLI-val.
+const legacyRuntime=process.argv.some(arg=>["--legacy","--once","--propose"].includes(arg));
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
 let binanceTestnetCreds: BinanceCredentials | null = null;
@@ -155,16 +161,18 @@ function initIntegrationsFromEnv(): void {
     log.ok(`Oanda auto-init (mode: ${op ? "PRACTICE" : "LIVE"})`);
   }
 }
-initIntegrationsFromEnv();
+if(legacyRuntime)initIntegrationsFromEnv();
 
 // Starta autonom Position Monitor — ladda lärdomar + entries från disk FÖRST
 // så agenten kommer ihåg över restarts
+if(legacyRuntime){
 initLessonsFromDisk()
   .then(() => startPositionMonitor(binanceTestnetCreds, binanceLiveCreds))
   .catch(err => {
     log.warn(`[lessons] init fail: ${err instanceof Error ? err.message : String(err)}`);
     startPositionMonitor(binanceTestnetCreds, binanceLiveCreds);
   });
+}
 
 // ─── Portfolio-stats cache (60s TTL för att inte spam:a Binance API) ───
 type PortfolioStats = Awaited<ReturnType<BinanceClient["getPortfolioTradeStats"]>>;
@@ -679,7 +687,7 @@ setTimeout(() => {
 // ─── PUBLIC MARKET STREAM (price-cache i realtid) ───
 // Eliminerar REST-polling för pris-data. Alla services kan läsa O(1) från memory.
 // Källa: wss://stream.binance.com:9443/ws/!miniTicker@arr (mainnet, publik, ingen auth).
-startMarketStream();
+if(legacyRuntime)startMarketStream();
 
 // Reset daily-loss-counter vid midnatt
 setInterval(() => {
@@ -797,9 +805,13 @@ export function startServer(
   port: number,
   brokers: Record<string, BrokerAdapter>,
 ): http.Server {
-  const uiDir = path.resolve(import.meta.dirname, "ui");
+  const uiDir = path.resolve(import.meta.dirname, "../../src/server/ui");
   // Bybit-websocket, live-lampor och strategibiblioteket (src/server/liveRoutes.ts)
-  initLiveLayer(brokers, broadcastEvent);
+  if(legacyRuntime)initLiveLayer(brokers, broadcastEvent);
+  const igTimer=setInterval(()=>{void tickIgSessions().catch(()=>log.warn("IG-sessionsbevakningen misslyckades"));},1000);
+  igTimer.unref();
+  const igOrderTimer=setInterval(()=>{void tickIgOrders().catch(()=>log.warn("IG-orderbevakningen misslyckades"));},15000);
+  igOrderTimer.unref();
   // Startad i LIVE (MODE=live + LIVE_TRADING_CONFIRMED) → Bybit LIVE är aktiv
   // mäklare direkt, så att en LIVE-order aldrig tyst blir TEST efter omstart.
   if (liveAllowedByServer() && brokers.bybit && !activeBrokerName) {
@@ -807,8 +819,7 @@ export function startServer(
     log.warn("LIVE: aktiv mäklare = Bybit EU (riktiga pengar, varje order väntar på Godkänn)");
   }
   // TP/SL för LIVE-marknadsköp (src/server/liveTpSl.ts)
-  startLiveTpSl(brokers, broadcastEvent);
-  startTradeHorizon(brokers, broadcastEvent);
+  if(legacyRuntime){startLiveTpSl(brokers, broadcastEvent);startTradeHorizon(brokers, broadcastEvent);}
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -856,7 +867,14 @@ export function startServer(
         }
       }
 
+      // Standardytan tillåter endast IG:s aktiva arbetsflöde. Gamla bots kan inte triggas parallellt.
+      const workspaceApi=new Set(["/api/reference-status","/api/cost","/api/kill-switch","/api/state","/api/auth/login","/api/auth/mode","/api/auth/logout"]);
+      if(!legacyRuntime&&url.pathname.startsWith("/api/")&&!url.pathname.startsWith("/api/ig/")&&!workspaceApi.has(url.pathname)){
+        jsonStatus(res,410,{error:"Det äldre handelsflödet är inaktivt. Använd IG-handelsytan och dess agentsession."});return;
+      }
       // ── Live-lagret: /api/live/*, /api/bybit/*, /api/strategies* ──
+      if (await handleIgRoutes(url, method, req, res, readBody, isLocalNoLogin)) return;
+      if (url.pathname === "/api/reference-status" && method === "GET") { json(res, getTiingoStatus()); return; }
       if (await handleLiveRoutes(url, method, req, res)) return;
 
       // ── Login: sätter sessionen som httpOnly-cookie ──
@@ -1518,6 +1536,17 @@ export function startServer(
         return;
       }
 
+      // Endast dessa lokala UI-filer kan serveras, aldrig godtyckliga filvägar.
+      const workspaceFiles:Record<string,[string,string]>={
+        "/workspace/style.css":["style.css","text/css"],
+        "/workspace/app.mjs":["app.mjs","text/javascript"],
+        "/workspace/model.mjs":["model.mjs","text/javascript"],
+      };
+      const asset=workspaceFiles[url.pathname];
+      if(asset&&method==="GET") {
+        const file=await fs.readFile(path.join(uiDir,"workspace",asset[0]),"utf8");
+        res.writeHead(200,{"Content-Type":asset[1],"Cache-Control":"no-store"});res.end(file);return;
+      }
       // ── Dashboard HTML ──
       // Servera root-dashboard.html (single source of truth) framför gamla ui/index.html
       if ((url.pathname === "/" || url.pathname === "/dashboard.html") && method === "GET") {
@@ -1527,15 +1556,8 @@ export function startServer(
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
           res.end(html);
         } catch {
-          // Fallback: gamla ui/index.html
-          try {
-            const html = await fs.readFile(path.join(uiDir, "index.html"), "utf8");
-            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-            res.end(html);
-          } catch {
-            res.writeHead(500);
-            res.end("Dashboard HTML not found");
-          }
+          res.writeHead(500);
+          res.end("Trading-workspace kunde inte laddas");
         }
         return;
       }
@@ -2257,6 +2279,7 @@ Regler:
     log.error(`Dashboard-servern: ${err.message}`);
   });
 
+  server.on("close",()=>{clearInterval(igTimer);clearInterval(igOrderTimer);} );
   server.listen(port, () => {
     log.ok(`Dashboard: http://localhost:${port}`);
     if (process.env.DASHBOARD_NO_LOGIN === "true") {

@@ -1,3 +1,9 @@
+# Aktuell handelsyta: IG Trading OS
+
+Starta med `npm run agent` på port 3939. Använd Krypto & Forex, JEV → Teknisk analytiker → Hanna, kopierbara signaler och manuellt granskade IG-order. [Arbetsflöde, testning och begränsningar](TRADING_WORKSPACE.md).
+
+Nedanstående dokumentation avser äldre flöden som endast startar med explicit legacy/once/propose.
+
 ---
 summary: En autonom krypto-trading-agent driven av Claude (Anthropic) mot Binance spot.
 ---
