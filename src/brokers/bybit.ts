@@ -326,18 +326,6 @@ export class BybitBroker implements BrokerAdapter {
     };
   }
 
-  /** Stäm av accepterade ordrar innan en ny säljorder får skickas. */
-  async getOrderResult(symbol: string, orderId: string): Promise<OrderResult | null> {
-    type Row = { orderStatus: string; cumExecQty: string; cumExecValue: string; avgPrice: string; side: "Buy" | "Sell"; orderType: "Market" | "Limit" };
-    const params = { category: "spot", symbol: this.pairOf(symbol), orderId };
-    const q = await this.request<{ list: Row[] }>("GET", "/v5/order/realtime", params, true);
-    const o = q.list?.[0] ?? (await this.request<{ list: Row[] }>("GET", "/v5/order/history", params, true)).list?.[0];
-    if (!o) return null;
-    const qty = Number(o.cumExecQty), cost = Number(o.cumExecValue);
-    return { orderId, symbol, side: o.side === "Buy" ? "BUY" : "SELL", type: o.orderType === "Limit" ? "LIMIT" : "MARKET",
-      status: o.orderStatus, executedQty: qty, cummulativeQuoteQty: cost, avgFillPrice: Number(o.avgPrice) || (qty > 0 ? cost / qty : 0), timestamp: Date.now() };
-  }
-
   async cancelOrder(symbol: string, orderId: string): Promise<void> {
     await this.request("POST", "/v5/order/cancel", { category: "spot", symbol: this.pairOf(symbol), orderId }, true);
   }

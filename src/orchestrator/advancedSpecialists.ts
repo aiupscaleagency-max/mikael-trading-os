@@ -178,7 +178,6 @@ export async function runQuantAnalyst(
   apiKey: string,
   broker: BrokerAdapter,
   symbols: string[],
-  timeframe = "1m",
 ): Promise<QuantReport> {
   log.agent("[Team] Kvant-analytiker startar…");
 
@@ -189,10 +188,10 @@ export async function runQuantAnalyst(
     ticker: { price: number; changePct24h: number; volume24h: number };
   }> = [];
 
-  for (const symbol of symbols) {
+  for (const symbol of symbols.slice(0, 6)) {
     try {
       const [klines, ticker] = await Promise.all([
-        broker.getKlines(symbol, timeframe, 200),
+        broker.getKlines(symbol, "4h", 100),
         broker.getTicker(symbol),
       ]);
       const indicators = computeIndicators(klines);
@@ -278,7 +277,6 @@ Svara BARA med JSON.`,
 
   try {
     const parsed = JSON.parse(extractJson(text)) as Omit<QuantReport, "role" | "rawText">;
-    parsed.symbolScores = parsed.symbolScores.filter((a) => symbols.includes(a.symbol));
     log.agent(`[Kvant] Regim: ${parsed.volatilityRegime}, Sharpe: ${parsed.sharpeEstimate}`);
     return { role: "quant_analyst", ...parsed, rawText: text };
   } catch {
@@ -314,7 +312,7 @@ export async function runOptionsStrategist(
     volume24h: number;
   }> = [];
 
-  for (const symbol of symbols) {
+  for (const symbol of symbols.slice(0, 6)) {
     try {
       const [klines, ticker] = await Promise.all([
         broker.getKlines(symbol, "1d", 30),

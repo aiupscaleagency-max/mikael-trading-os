@@ -1,7 +1,7 @@
 import type { Config } from "../config.js";
 import type { Account, OrderRequest, Position } from "../types.js";
 import type { AgentState } from "../memory/store.js";
-import { getTradePercent, percentageAmount } from "./tradeSizing.js";
+import { currentStake } from "./stakeLadder.js";
 import { MAX_LIVE_STAKE_USD, testStakeCapUsd } from "../server/orderGate.js";
 
 export interface RiskCheckResult {
@@ -43,6 +43,8 @@ export class RiskManager {
     // Samla alla tillåtna symboler från alla motorer
     const allowedSymbols = [
       ...this.config.crypto.symbols,
+      ...this.config.stocks.symbols,
+      ...this.config.wheel.underlyings,
     ];
 
     if (state.killSwitchActive) {
@@ -50,8 +52,8 @@ export class RiskManager {
     }
 
     // Om symbolen finns i en av listorna ELLER är ett options-kontrakt (innehåller siffror), tillåt.
-    const isOption = false;
-    if (!isOption && allowedSymbols.length > 0 && !allowedSymbols.some((s) => s.replace(/USDT$/, "USDC") === order.symbol.replace(/USDT$/, "USDC"))) {
+    const isOption = /\d/.test(order.symbol) && order.symbol.length > 6;
+    if (!isOption && allowedSymbols.length > 0 && !allowedSymbols.includes(order.symbol)) {
       return {
         allowed: false,
         reason: `Symbol ${order.symbol} finns inte i tillåtna listor (${allowedSymbols.join(", ")}).`,
@@ -86,13 +88,16 @@ export class RiskManager {
         return { allowed: false, reason: "Kan inte beräkna order-storlek i USD." };
       }
 
-      // Samma procent av det färska kontovärdet i TEST och LIVE.
-      const stakeUsd = percentageAmount(account.totalValueUsdt, account.totalValueUsdt, getTradePercent());
-      const maxPos = stakeUsd;
-      const minPos = Math.min(risk.minPositionUsd, maxPos);
+      // Per-position-ramar: golv (MIN), tak (MAX). Hanna får anpassa inom ramen.
+      // Insats-trappan (1 → 5 % av TEST-kontot) styr storleken BARA i TEST.
+      // LIVE behåller .env-taket oförändrat.
+      const stake = ctx.paper ? currentStake() : null;
+      // LIVE: aldrig över LIVE-taket per order ($5), och golvet följer med ned
+      // (annars stoppas varje LIVE-förslag på MIN_POSITION_USD).
+      const maxPos = ctx.paper ? testStakeCapUsd() : Math.min(risk.maxPositionUsd, MAX_LIVE_STAKE_USD);
+      const minPos = ctx.paper ? risk.minPositionUsd : Math.min(risk.minPositionUsd, MAX_LIVE_STAKE_USD);
       let adjustedOrder: OrderRequest | undefined;
-      if (maxPos <= 0) return { allowed: false, reason: "Kontovärdet är tomt eller ogiltigt" };
-      if (Math.abs(orderUsd - maxPos) > 0.005) {
+      if (orderUsd > maxPos) {
         const scaled: OrderRequest = {
           ...order,
           quoteOrderQty: maxPos,
@@ -113,7 +118,7 @@ export class RiskManager {
         0,
       );
       // Insats-trappan: tillåt maxOpenPositions × insatsen, men aldrig under .env-värdet
-      const maxExposure = Math.max(risk.maxTotalExposureUsd, (risk.maxOpenPositions ?? 0) * stakeUsd);
+      const maxExposure = Math.max(risk.maxTotalExposureUsd, (risk.maxOpenPositions ?? 0) * (stake?.usd ?? 0));
       if (currentExposure + orderUsd > maxExposure) {
         const remaining = maxExposure - currentExposure;
         if (remaining < 10) {

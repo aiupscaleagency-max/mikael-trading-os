@@ -1,5 +1,3 @@
-import { config } from "../config.js";
-import { BybitBroker } from "../brokers/bybit.js";
 import { computeIndicators } from "../indicators/ta.js";
 import { log } from "../logger.js";
 import { detectAllPatterns, type DetectedPattern } from "./patternDetection.js";
@@ -7,14 +5,14 @@ import { detectAllPatterns, type DetectedPattern } from "./patternDetection.js";
 // ═══════════════════════════════════════════════════════════════════════════
 // Market Context — ger agenterna ÖGONEN på marknaden
 //
-// Hämtar live-priser från Bybit EU public API + räknar tekniska indikatorer
+// Hämtar live-priser från Binance public API + räknar tekniska indikatorer
 // (RSI, SMA, EMA, MACD, ATR) lokalt. Resultatet injiceras i prompten
 // innan agenter (Hanna, Tomas, Karin, Viktor) anropas.
 //
-// Cache: 60s TTL för att inte spam:a Bybit EU
+// Cache: 60s TTL för att inte spam:a Binance
 // ═══════════════════════════════════════════════════════════════════════════
 
-const market = new BybitBroker({ apiKey: "", apiSecret: "", quote: "USDC", baseUrl: "https://api.bybit.eu" });
+const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "POLUSDT"];
 const CACHE_TTL_MS = 60_000;
 
 interface MarketSnapshot {
@@ -53,22 +51,35 @@ export async function getMarketSnapshot(): Promise<MarketSnapshot | null> {
   }
   try {
     // Hämta 24h ticker (pris, volym, change)
-    const tickerRes = await fetch("https://api.bybit.eu/v5/market/tickers?category=spot", { signal: AbortSignal.timeout(10000) });
-    if (!tickerRes.ok) throw new Error(`Bybit EU ticker svar ${tickerRes.status}`);
-    const body = await tickerRes.json() as { retCode: number; result?: { list?: Array<{symbol: string; lastPrice: string; price24hPcnt: string; turnover24h: string; highPrice24h: string; lowPrice24h: string}> } };
-    if (body.retCode !== 0) throw new Error("Bybit EU ticker saknas");
-    const allTickers = body.result?.list ?? [];
+    const tickerRes = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+    if (!tickerRes.ok) throw new Error(`Binance ticker svar ${tickerRes.status}`);
+    const allTickers = (await tickerRes.json()) as Array<{
+      symbol: string;
+      lastPrice: string;
+      priceChangePercent: string;
+      volume: string;
+      quoteVolume: string;
+      highPrice: string;
+      lowPrice: string;
+    }>;
 
     const symbolSnapshots: SymbolSnapshot[] = [];
 
     // För varje symbol: hämta 1h candles för indikatorer
-    for (const sym of config.crypto.symbols) {
+    for (const sym of SYMBOLS) {
       const ticker = allTickers.find((t) => t.symbol === sym);
       if (!ticker) continue;
 
       try {
         // 50 senaste 1h candles räcker för RSI(14), SMA(20), MACD osv
-        const klines = (await market.getKlines(sym, "1h", 200)).filter((k) => k.closeTime < Date.now());
+        const klineRes = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=1h&limit=50`);
+        if (!klineRes.ok) continue;
+        const raw = (await klineRes.json()) as Array<Array<string | number>>;
+        const klines = raw.map((k) => ({
+          high: parseFloat(k[2] as string),
+          low: parseFloat(k[3] as string),
+          close: parseFloat(k[4] as string),
+        }));
         const ind = computeIndicators(klines);
         const price = parseFloat(ticker.lastPrice);
 
@@ -80,8 +91,8 @@ export async function getMarketSnapshot(): Promise<MarketSnapshot | null> {
         }
 
         // S/R-närhet: jämför med 24h high/low
-        const high24 = parseFloat(ticker.highPrice24h);
-        const low24 = parseFloat(ticker.lowPrice24h);
+        const high24 = parseFloat(ticker.highPrice);
+        const low24 = parseFloat(ticker.lowPrice);
         const nearResistance = price > high24 * 0.995;
         const nearSupport = price < low24 * 1.005;
         // Detektera alla mönster (candlestick + reversal + continuation)
@@ -96,8 +107,8 @@ export async function getMarketSnapshot(): Promise<MarketSnapshot | null> {
         symbolSnapshots.push({
           symbol: sym,
           price,
-          changePct24h: Number(ticker.price24hPcnt) * 100,
-          volume24h: parseFloat(ticker.turnover24h),
+          changePct24h: parseFloat(ticker.priceChangePercent),
+          volume24h: parseFloat(ticker.quoteVolume),
           high24h: high24,
           low24h: low24,
           rsi14: ind.rsi14,
@@ -133,14 +144,14 @@ export async function getMarketSnapshot(): Promise<MarketSnapshot | null> {
     return cache;
   } catch (err) {
     log.error(`Market snapshot-fel: ${err instanceof Error ? err.message : String(err)}`);
-    return null; // Gammal data får inte presenteras som aktuell.
+    return cache; // returnera gammal cache om fail
   }
 }
 
 // Format snapshot som markdown-text för att stoppa in i prompt
 export function formatSnapshotForPrompt(snap: MarketSnapshot): string {
   const lines: string[] = [];
-  lines.push(`# 📊 LIVE MARKNADSDATA — Bybit EU (${new Date(snap.fetchedAt).toISOString().slice(11, 19)} UTC)`);
+  lines.push(`# 📊 LIVE MARKNADSDATA — Binance (${new Date(snap.fetchedAt).toISOString().slice(11, 19)} UTC)`);
   lines.push(``);
   lines.push(`**${snap.marketSummary}**`);
   lines.push(``);
@@ -176,6 +187,6 @@ export function formatSnapshotForPrompt(snap: MarketSnapshot): string {
     }
   }
   lines.push(``);
-  lines.push(`*Källa: Bybit EU public API · Cache 60s*`);
+  lines.push(`*Källa: Binance public API · Cache 60s*`);
   return lines.join("\n");
 }

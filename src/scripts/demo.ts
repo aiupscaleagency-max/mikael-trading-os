@@ -101,7 +101,7 @@ function calcIndicators(candles: Candle[]) {
 
 const uiDir = path.resolve(import.meta.dirname, "../server/ui");
 let sseClients: Set<http.ServerResponse> = new Set();
-let activeBroker = "bybit-paper";
+let activeBroker = "binance";
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
@@ -142,11 +142,11 @@ const server = http.createServer(async (req, res) => {
   // Status
   if (url.pathname === "/api/status") {
     json({
-      "bybit-paper": {
+      binance: {
         account: { totalValueUsdt: 12847.53, balances: [{ asset: "USDT", free: 11200, locked: 0 }, { asset: "BTC", free: 0.0234, locked: 0 }, { asset: "ETH", free: 1.5, locked: 0 }], updatedAt: Date.now() },
         positions: POSITIONS, error: null,
       },
-      "bybit": {
+      alpaca: {
         account: { totalValueUsdt: 25430.00, balances: [{ asset: "USD", free: 22000, locked: 3430 }], updatedAt: Date.now() },
         positions: [
           { symbol: "NVDA", baseAsset: "NVDA", quoteAsset: "USD", quantity: 4, avgEntryPrice: 842, currentPrice: 878, unrealizedPnlUsdt: 144, openedAt: Date.now() - 86400000 * 5 },
@@ -171,8 +171,8 @@ const server = http.createServer(async (req, res) => {
   // Brokers
   if (url.pathname === "/api/brokers") {
     json({ brokers: [
-      { name: "bybit-paper", mode: "paper", active: activeBroker === "bybit-paper" },
-      { name: "bybit", mode: "live", active: activeBroker === "bybit" },
+      { name: "binance", mode: "paper", active: activeBroker === "binance" },
+      { name: "alpaca", mode: "paper", active: activeBroker === "alpaca" },
     ], activeBroker });
     return;
   }
