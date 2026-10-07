@@ -83,3 +83,12 @@ Denna fortsättning bygger på `092b0e5` i en isolerad branch. Originalcheckout 
 Dator2:s gamla localhost-vidarekoppling saknar WebSocket-upgrade. Uppdatera den med repo `scripts/forward-dashboard.mjs` tillsammans med backend på dator1; båda vyerna ska peka på samma backend. Agentic OS:s `/trading` iframe behöver fortfarande fungerande Tailscale-adress. Senaste åtkomstkontroll gav localhost 3939 HTTP 502 och timeout till dator1:9443. Driftsättning och end-to-end liveverifiering återstår tills dator1 är nåbar. Kör aldrig två agentbackends mot samma konto för att synka datorerna.
 
 Officiella referenser: https://labs.ig.com/streaming-api-guide.html · https://labs.ig.com/streaming-api-reference.html · https://labs.ig.com/rest-trading-api-reference.html
+
+
+## Strategiunderlag och IG-signalimport – komplettering
+
+Sparad Luengos-12/21/50-specifikation är nu ett versionsbundet registry och en ren regelutvärderare i `igStrategies`. Den gäller endast verifierat BTC/USD på stängda dagsljus, med close > EMA12 > EMA21 > SMA50, EMA-korsning för exit, nästa ljusöppning och fast 2×Wilder ATR14-stopp. Nästa öppningspris är okänt, därför fabriceras ingen stopnivå. Utvärderingen läggs i Teknisk analytikers och Hannas underlag som `strategyContext`, med `notBacktested` och `analysis_only`. Den parkerade ETH-idén aktiveras inte. JEV är fortsatt anonymiserad förkontroll; ingen inlärd marknadsprognos eller tränad JEV-modell har verifierats.
+
+IG-signaler kan klistras in som privata kontobundna utkast. Användaren anger instrument, riktning, entry, stopp, mål och giltighet (högst24h) och originaltexten lagras som data, aldrig agentinstruktioner. Servern validerar prisriktning och kontogeneration. Dessa utkast är inte en verifierad IG-feed. Kopiering till orderformuläret kräver aktuell generation, giltighet och färsk kvot; order skickas först via den vanliga servergrinden och manuellt godkännande. Originaltexten skickas inte till JEV/agenterna.
+
+Verifierad inbäddning: en verklig läsande browserkontroll av `https://agentic-os.tail64d627.ts.net/trading` laddade iframe `https://aiupscale-dator1.tail64d627.ts.net:9443/` utan JavaScript-fel. Dator2-forwardern är installerad med backup. Backend på dator1 är fortfarande föregående version: nya realtime-rutten svarar404 tills uppdatering görs. SSH nekas även för macOS-användaren i befintlig LaunchAgent-konfiguration; driftsättning behöver köras på dator1 eller åtkomst ordnas.

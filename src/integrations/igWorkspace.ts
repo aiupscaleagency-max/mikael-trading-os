@@ -1,3 +1,4 @@
+import {evaluateIgStrategy} from './igStrategies.js';
 import {igChanged} from './igEvents.js';
 import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igUsdSekFx,type IgAccountFx} from "./igRules.js";
 import {getHistoricalContext} from "../data/tiingoHistory.js";
@@ -223,7 +224,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     if(deps.llm)return deps.llm(role,context);
     const model=role==="technical"?modelFor("specialist","claude-haiku-4-5-20251001"):modelFor("head","claude-sonnet-4-6");
     const client=createLlmClient(config.anthropicApiKey);
-    const response=await client.messages.create({model,max_tokens:4000,system:`Du är ${role==="technical"?"Teknisk analytiker":"Hanna, Head Trader"} för IG CFD/forex. Använd endast valda EPICs och verifierade stängda mid-ljus för angivet intervall. Bid/offer är separat indikativ REST-kvot, inte garanterat exekveringspris. Använd inte Bybit, USDC-spot, USD/price som kontraktsstorlek, fabricerad volym eller saknade belopp som noll. Marknad som inte är TRADEABLE eller har fördröjd/okänd kvot ska få HOLD med tydligt skäl. ${role==="technical"?'Svara JSON {analyses:[{epic,bias,signals,reason}]} för varje valt instrument.':'Svara JSON {analyses:[{epic,action:"BUY"|"SELL"|"HOLD",reason,entryLevel:null|number,stopLevel:null|number,targetLevel:null|number}],summary:string}. BUY/SELL är förslag för manuell granskning, inga orders skickas. Kvantitet och margin/valutarisk ska inte gissas.'}`,messages:[{role:"user",content:JSON.stringify(context)}]},{timeout:45000});
+    const response=await client.messages.create({model,max_tokens:4000,system:`Du är ${role==="technical"?"Teknisk analytiker":"Hanna, Head Trader"} för IG CFD/forex. Använd endast valda EPICs och verifierade stängda mid-ljus för angivet intervall. strategyContext är en deterministisk regelutvärdering, inte en JEV-prognos. Ej backtestade eller not_applicable strategier får inte beskrivas som verifierade eller överföras till andra tidsramar. Bid/offer är separat indikativ REST-kvot, inte garanterat exekveringspris. Använd inte Bybit, USDC-spot, USD/price som kontraktsstorlek, fabricerad volym eller saknade belopp som noll. Marknad som inte är TRADEABLE eller har fördröjd/okänd kvot ska få HOLD med tydligt skäl. ${role==="technical"?'Svara JSON {analyses:[{epic,bias,signals,reason}]} för varje valt instrument.':'Svara JSON {analyses:[{epic,action:"BUY"|"SELL"|"HOLD",reason,entryLevel:null|number,stopLevel:null|number,targetLevel:null|number}],summary:string}. BUY/SELL är förslag för manuell granskning, inga orders skickas. Kvantitet och margin/valutarisk ska inte gissas.'}`,messages:[{role:"user",content:JSON.stringify(context)}]},{timeout:45000});
     await trackClaudeCall(role, response.model||model,response.usage).catch(()=>{});
     const text=response.content.filter((c:any)=>c.type==="text").map((c:any)=>c.text).join("");return JSON.parse(extractJson(text));
   }
@@ -260,7 +261,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
             const refs:[[RegExp,string],...[RegExp,string][]]=[[/bitcoin|\bBTC\b/i,"BTCUSDC"],[/ethereum|\bETH\b/i,"ETHUSDC"],[/solana|\bSOL\b/i,"SOLUSDC"],[/litecoin|\bLTC\b/i,"LTCUSDC"]];
             const reference=refs.find(([pattern])=>pattern.test(m.name??""))?.[1];
             const historicalReference=reference&&!deps.llm?await getHistoricalContext(reference):{source:"Tiingo",purpose:"historical_reference_only",status:"unavailable",error:"Ingen verifierad Tiingo-referens för detta instrument"};
-            observations.push({epic,market:m,candles:c.candles,historicalReference,indicators:{sma20:sma(closes,20),sma50:sma(closes,50),ema20:ema(closes,20),rsi14:rsi(closes,14),volumeSignal:null},dataQuality:{rejected:c.rejected,forming:c.forming,allowance:c.allowance}});}
+            observations.push({epic,market:m,candles:c.candles,historicalReference,strategyContext:evaluateIgStrategy({candles:c.candles,epic,name:m.name,timeframe:selected.timeframe,now:now()}),indicators:{sma20:sma(closes,20),sma50:sma(closes,50),ema20:ema(closes,20),rsi14:rsi(closes,14),volumeSignal:null},dataQuality:{rejected:c.rejected,forming:c.forming,allowance:c.allowance}});}
           if(connectionIdentity(mode)!==accountBinding)throw Error("IG-kontoanslutningen ändrades under analysen");
           const technical=await llm("technical",{environment:mode,selection:selected,observations,jev});
           if(!Array.isArray(technical.analyses))throw Error("Analys saknas i teknisk IG-rapport");

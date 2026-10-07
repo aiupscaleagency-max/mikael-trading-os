@@ -17,7 +17,7 @@
     "test:signal": "npm run build && node scripts/test-signal-engine.mjs",
     "export:candles": "npm run build && node scripts/export-candles.mjs",
     "serve": "tsx src/run.ts --serve",
-    "test:workspace": "tsx scripts/test-ig-connection.ts && tsx scripts/test-ig-credentials.ts && tsx scripts/test-ig-workspace.ts && tsx scripts/test-ig-orders.ts && tsx scripts/test-ig-rules.ts && tsx scripts/test-tiingo-history.ts && tsx scripts/test-two-agent-pipeline.ts && node scripts/test-workspace-model.mjs && node scripts/test-workspace-browser.mjs && tsx scripts/test-ig-directory-schedules.ts && tsx scripts/test-ig-streaming-review.ts && tsx scripts/test-ig-realtime-review.ts && tsx scripts/test-ig-session-start-review.ts",
+    "test:workspace": "tsx scripts/test-ig-connection.ts && tsx scripts/test-ig-credentials.ts && tsx scripts/test-ig-workspace.ts && tsx scripts/test-ig-orders.ts && tsx scripts/test-ig-rules.ts && tsx scripts/test-tiingo-history.ts && tsx scripts/test-two-agent-pipeline.ts && node scripts/test-workspace-model.mjs && node scripts/test-workspace-browser.mjs && tsx scripts/test-ig-directory-schedules.ts && tsx scripts/test-ig-streaming-review.ts && tsx scripts/test-ig-realtime-review.ts && tsx scripts/test-ig-session-start-review.ts && tsx scripts/test-ig-strategies.ts && tsx scripts/test-ig-imported-signals.ts",
     "test:forwarder": "node scripts/test-forward-dashboard.mjs"
   },
   "dependencies": {

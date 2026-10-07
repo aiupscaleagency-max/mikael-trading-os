@@ -1,3 +1,5 @@
+import {listIgImportedSignals,saveIgImportedSignal,deleteIgImportedSignal} from '../integrations/igImportedSignals.js';
+import {listIgStrategies} from '../integrations/igStrategies.js';
 import {readIgView} from './igRealtime.js';
 import {getIgMarketDirectory,getIgDirectoryEnrichment} from '../integrations/igMarketDirectory.js';
 import {listIgSchedules,saveIgSchedule,deleteIgSchedule,setIgScheduleEnabled} from '../integrations/igSchedules.js';
@@ -79,6 +81,7 @@ export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMess
           "/api/ig/close":["environment","dealId","connectionGeneration"],
           "/api/ig/rollover":["environment","dealId","minutes","connectionGeneration"],
         };
+        tradingFields['/api/ig/imported-signals']=['environment','id','epic','sourceText','direction','entryLevel','stopLevel','targetLevel','validUntil'];
         tradingFields['/api/ig/preferences']=['environment','favorites','revision'];
         tradingFields['/api/ig/schedules']=['environment','id','name','epics','timeframe','percent','horizonMinutes','durationMinutes','intervalMinutes','maxPositions','localTime','recurrence','date','weekdays','enabled','timezone'];
         const allowed = tradingFields[url.pathname]??(url.pathname === "/api/ig/session" && method === "POST" ? ["environment","epics","timeframe","percent","horizonMinutes","durationMinutes","intervalMinutes","maxPositions"] : ["environment","epics","timeframe","percent","horizonMinutes"]);
@@ -86,6 +89,10 @@ export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMess
         try {
           const selection = {epics:body.epics as string[],timeframe:body.timeframe as IgTimeframe,percent:body.percent as number|undefined,horizonMinutes:body.horizonMinutes as number|undefined};
           if (url.pathname === "/api/ig/workspace" && method === "GET") json(res,await readIgView(environment));
+          else if(url.pathname==='/api/ig/imported-signals'&&method==='GET') json(res,{signals:listIgImportedSignals(environment)});
+          else if(url.pathname==='/api/ig/imported-signals'&&method==='POST'){const signal=saveIgImportedSignal(environment,body as any);json(res,{signal,signals:listIgImportedSignals(environment)});igChanged(environment);}
+          else if(url.pathname==='/api/ig/imported-signals'&&method==='DELETE'){deleteIgImportedSignal(environment,String(body.id??''));json(res,{signals:listIgImportedSignals(environment)});igChanged(environment);}
+          else if(url.pathname==='/api/ig/strategies'&&method==='GET') json(res,{strategies:listIgStrategies()});
           else if(url.pathname==='/api/ig/directory'&&method==='GET') json(res,await getIgMarketDirectory(environment,url.searchParams.get('category')));
           else if(url.pathname==='/api/ig/directory/enrichment'&&method==='GET') json(res,await getIgDirectoryEnrichment(environment,url.searchParams.get('epic')??''));
           else if(url.pathname==='/api/ig/preferences'&&method==='POST'){json(res,igPreferences.set(environment,body));igChanged(environment);}
