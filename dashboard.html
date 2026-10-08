@@ -49,7 +49,7 @@
     <section class="agent-strip"><div class="row"><b>AGENTSESSION</b><span id="session-status" class="badge">Vilande</span></div><div id="agent-steps" class="steps"><span>01 <b>JEV</b><small>Förkontroll</small></span><i>→</i><span>02 <b>Teknisk analytiker</b><small>Inväntar analys</small></span><i>→</i><span>03 <b>Hanna / Head Trader</b><small>Inväntar beslut</small></span></div><div class="row muted"><span id="session-timing">Analys, innehavstid och sessionslängd är separata.</span><button id="session-stop" hidden>Stoppa session</button></div></section>
   </section>
   <section class="panel order-panel" aria-label="Orderpanel">
-    <div class="panel-title"><h2>Order</h2><span id="order-environment" class="badge">IG DEMO</span></div><div id="order-symbol" class="order-symbol">Välj instrument</div>
+    <div class="panel-title"><h2>Order</h2><span id="order-environment" class="badge">IG DEMO</span></div><div id="order-symbol" class="order-symbol">Välj instrument</div><div id="order-instrument-context" class="instrument-context" aria-live="polite"></div>
     <div class="segment directions"><button data-direction="BUY" class="active buy">Köp / Long</button><button data-direction="SELL" class="sell">Sälj / Short</button></div>
     <div class="segment order-types"><button data-order-type="MARKET" class="active">Marknad</button><button data-order-type="LIMIT">Limit</button></div>
     <label id="limit-field" hidden>Limitpris<input id="limit" type="number" min="0" step="any"></label>

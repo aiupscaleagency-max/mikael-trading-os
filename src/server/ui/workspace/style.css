@@ -86,3 +86,6 @@ body{display:grid;grid-template-columns:184px minmax(0,1fr);grid-template-rows:a
 /* Checkbox, ikon, namn, bid, mått, favorit och diagram är sju separata kolumner. */
 @media(min-width:751px){.catalog-row{grid-template-columns:18px 30px minmax(160px,1fr) 100px 95px 30px 96px}.market-filters{grid-template-columns:1fr 1.5fr 1fr}}
 @media(max-width:750px){.catalog-row{grid-template-columns:16px 26px minmax(90px,1fr) 62px 25px}.catalog-row>button:last-child{grid-column:3/6}.catalog-row .catalog-name{min-width:0}}
+
+/* Instrumentets identitet ska förbli läsbar i alla diagramstorlekar. */
+.chart-heading>div:first-child{min-width:0;flex:1}.chart-heading h1,.order-symbol,.extra-name{white-space:normal;overflow-wrap:anywhere;font-weight:700}.chart-tile-caption span{font-size:11px;line-height:1.5;white-space:normal;overflow-wrap:anywhere}.instrument-context{font-size:12px;line-height:1.5;color:var(--fg);overflow-wrap:anywhere;padding-bottom:12px}.extra-chart-heading{font-size:15px;line-height:1.4}.extra-chart-heading .extra-name{min-width:0}.chart-heading{gap:12px;flex-wrap:wrap}

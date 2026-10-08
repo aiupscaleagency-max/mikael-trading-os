@@ -32,7 +32,7 @@ try{
  assert.equal(await page.evaluate(()=>document.querySelector('.instruments').getBoundingClientRect().x>document.querySelector('.activity-panel').getBoundingClientRect().x),true,'Marknadslistan ligger till höger');
  await page.screenshot({path:'/tmp/trading-workspace-four-charts.png',fullPage:true});await page.uncheck('#link-chart-symbols');await page.uncheck('#link-chart-frames');await page.click('[data-chart-count="1"]');
  const geometry=await page.evaluate(()=>({overflow:document.documentElement.scrollWidth>innerWidth,panels:[...document.querySelectorAll('.workspace>.panel')].map(p=>({x:p.getBoundingClientRect().x,width:p.getBoundingClientRect().width}))}));assert.equal(geometry.overflow,false);assert.equal(geometry.panels.length,4);
- await page.locator('[data-category="forex"]').click();assert.match(await page.locator('#instruments').textContent(),/EUR/);await page.locator('[data-chart="DEMO.EUR.USD"]').first().click();assert.match(await page.locator('#instrument-name').textContent(),/EUR/);
+ await page.locator('[data-category="forex"]').click();assert.match(await page.locator('#instruments').textContent(),/EUR/);await page.locator('[data-chart="DEMO.EUR.USD"]').first().click();assert.match(await page.locator('#instrument-name').textContent(),/EUR/);assert.match(await page.locator('.primary-chart-tile .chart-tile-caption span').first().textContent(),/EUR.*DEMO.EUR.USD/);assert.match(await page.locator('#order-instrument-context').textContent(),/EUR.*DEMO.EUR.USD/);
  await page.locator('[data-copy="DEMO.BTC.USD"]').click();assert.match(await page.locator('#instrument-name').textContent(),/Bitcoin/);assert.equal(await page.locator('#holding').inputValue(),'15');
  const originalStop=await page.locator('#stop').inputValue();await page.locator('[data-frame="5m"]').click();assert.equal(await page.locator('#stop').inputValue(),originalStop,'Diagramintervall ändrar inte orderutkastet');
  await page.locator('[data-percent="1"]').click();assert.match(await page.locator('#scenario-note').textContent(),/risk 1|risk 0,9/);
@@ -90,7 +90,7 @@ try{
   else if(path==='/api/ig/selection'){if(req.postDataJSON().epics.length>10){await route.fulfill({status:400,json:{error:'Max 10 instrument'}});return;}fixtureSelection=req.postDataJSON().epics;data={ok:true};}
   else if(path==='/api/ig/analysis'){fixtureAnalysis={status:'completed',selection:req.postDataJSON(),completedAt:Date.now(),head:{analyses:[]}};data=fixtureAnalysis;}
   else if(path==='/api/ig/markets'){discovery.push(new URL(req.url()).searchParams.get('searchTerm'));data={markets:[{epic:'FIX.EXTRA',name:'MXN / NOK',type:'CURRENCIES',category:'forex',marketStatus:'TRADEABLE'}]};}
-  else if(path==='/api/ig/market'){const epic=new URL(req.url()).searchParams.get('epic');data={...markets.find(m=>m.epic===(mismatchMarket?'FIX.BTC':epic)),quote:{bid:100,offer:101,receivedAt:Date.now(),observedAt:Date.now(),marketStatus:'TRADEABLE',delayTime:0},instrument:{decimalPlacesFactor:2}};}
+  else if(path==='/api/ig/market'){const epic=new URL(req.url()).searchParams.get('epic');data={...markets.find(m=>m.epic===(mismatchMarket?'FIX.BTC':epic)),quote:{bid:100,offer:101,receivedAt:Date.now(),observedAt:Date.now(),marketStatus:'TRADEABLE',delayTime:0},instrument:{decimalPlacesFactor:2},name:undefined};}
   else if(path==='/api/ig/candles')data={candles:[]};
   else throw Error(`Otillåtet fixture-anrop: ${path}`);
   await route.fulfill({json:data});
