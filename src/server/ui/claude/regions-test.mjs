@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {instrumentRegions as classify} from './regions.mjs';
+assert.deepEqual(classify({category:'forex',name:'EUR / USD'}).regions,['Europa','Nordamerika']);
+assert.deepEqual(classify({category:'forex',name:'USD / TRY'}).regions,['Nordamerika','Europa','Asien']);
+assert.deepEqual(classify({category:'forex',name:'AUD / NZD'}).regions,['Oceanien']);
+assert.deepEqual(classify({category:'forex',baseCurrency:'ZAR',quoteCurrency:'JPY',name:'Different broker label'}).regions,['Afrika','Asien']);
+assert.deepEqual(classify({category:'forex',name:'Dollar',symbol:'USD',epic:'USDJPY'}).regions,['Ej klassificerat']);
+assert.deepEqual(classify({category:'forex',name:'XYZ / USD'}).regions,['Ej klassificerat','Nordamerika']);
+assert.deepEqual(classify({category:'crypto',name:'Bitcoin / USD'}).regions,['Globalt']);
+assert.deepEqual(classify({category:'forex',name:'US Dollar / Japanese Yen'}).regions,['Ej klassificerat']);
+console.log('PASS regionklassificering: dubbla regioner, TRY, metadata, okända och krypto; inga symbolgissningar');
