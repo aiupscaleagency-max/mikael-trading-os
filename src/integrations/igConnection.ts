@@ -27,6 +27,7 @@ function readCredentials(): CredentialFile {
   return JSON.parse(fs.readFileSync(file,"utf8")) as CredentialFile;
 }
 /** Bara lokala credentials och explicita läsanrop; inga orderfunktioner finns. */
+export const IG_HISTORY_RATE_ERROR="IG-historikkvoten är tillfälligt slut; nya historiska priser pausas";
 export const IG_READ_RATE_ERROR="IG begränsade antal läsanrop; försök igen om en minut";
 export function isIgTemporaryRateError(error:unknown){const message=error instanceof Error?error.message:error;return message===IG_READ_RATE_ERROR||message==="IG begränsade antal anrop"||message==="IG svarade HTTP 429"||message==="IG-läsbudgeten är slut för denna minut";}
 export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fetch?:typeof fetch;now?:()=>number}={}) {
@@ -36,6 +37,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
   // Samtliga GET-vägar delar rullande minutbudget, även orderkontroller och kontopollning.
   const reads:{environment:IgEnvironment;at:number}[]=[];
   const readBlockedUntil=new Map<IgEnvironment,number>();
+  const historyBlockedUntil=new Map<IgEnvironment,number>();
   function readBudget(mode:IgEnvironment){
     validMode(mode);while(reads.length&&now()-reads[0]!.at>=60000)reads.shift();
     const used=reads.filter(r=>r.environment===mode).length;
@@ -166,11 +168,14 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     const allowedParams=new Set(route === "markets"?["searchTerm"]:/^categories\/[A-Za-z0-9._-]{1,100}\/instruments$/.test(route)?["pageNumber","pageSize"]:route.startsWith("prices/")?["resolution","max","from","to","pageSize","pageNumber"]:route.startsWith("history/")?["from","to","detailed","pageSize","pageNumber","type"]:[]);
     for(const [name,value] of query) if(!allowedParams.has(name) || value.length>200) throw Error("Ogiltiga IG-frågeparametrar");
     if(route==='categories'||route.startsWith('categories/')||route.startsWith('client-sentiment/')){if(version!=='1')throw Error('Ogiltig IG-kategoriversion');for(const [name,value] of query){if(!/^\d{1,6}$/.test(value)||name==='pageSize'&&(Number(value)<1||Number(value)>1000))throw Error('Ogiltig IG-katalogpaginering');}}
+    if(method==="GET"&&route.startsWith("prices/")&&now()<(historyBlockedUntil.get(mode)??0))throw Error(IG_HISTORY_RATE_ERROR);
     if(method==="GET")consumeRead(mode);
     try {
       const response=await request(`${endpoints[mode]}/${route}${query.size?`?${query}`:""}`,{method,headers,signal:AbortSignal.timeout(8000),...(body?{body:JSON.stringify(body)}:{})});
       if(!response.ok) {
         let code:unknown;try{code=(await response.json() as Record<string,unknown>).errorCode;}catch{/* Okänt felsvar behandlas utan privata detaljer. */}
+        // Historiska datapunkter har en egen kvot och får inte stoppa katalog, konton eller prisverifiering.
+        if(code==='error.public-api.exceeded-account-historical-data-allowance'&&route.startsWith('prices/')){historyBlockedUntil.set(mode,now()+60000);throw Error(IG_HISTORY_RATE_ERROR);}
         if(response.status===429||typeof code==='string'&&/^error\.public-api\.exceeded-[a-z-]+-allowance$/.test(code)){readBlockedUntil.set(mode,now()+60000);throw Error(IG_READ_RATE_ERROR);}
         if(code==='endpoint.unavailable.for.api-key'&&(route==='categories'||route.startsWith('categories/')||route.startsWith('client-sentiment/')))throw Error(`IG svarade HTTP ${response.status}`);
         if(response.status===401 || response.status===403)fail(mode,"IG-sessionen eller behörigheten kunde inte verifieras; anslut igen");throw Error(`IG svarade HTTP ${response.status}`);
@@ -179,7 +184,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
       if(!data || typeof data!=="object" || Array.isArray(data)) throw Error("format");
       if(sessions.get(mode)!==session || fingerprint(credentials(mode))!==session.fingerprint)throw Error("session changed");
       return data;
-    } catch(error) {throw Error(error instanceof Error && /^(?:IG svarade HTTP [1-5][0-9]{2}|IG begränsade antal läsanrop; försök igen om en minut)$/.test(error.message)?error.message:"IG-anropet kunde inte verifieras; utfallet kan vara okänt");}
+    } catch(error) {throw Error(error instanceof Error && (error.message===IG_HISTORY_RATE_ERROR||/^(?:IG svarade HTTP [1-5][0-9]{2}|IG begränsade antal läsanrop; försök igen om en minut)$/.test(error.message))?error.message:"IG-anropet kunde inte verifieras; utfallet kan vara okänt");}
   }
   // Endast serverintern åtkomst. Returneras aldrig av status-/HTTP-rutterna.
   function streamingSession(mode:IgEnvironment){const current=status(mode),s=sessions.get(mode);if(current.status!=="connected"||!s?.streamingEndpoint)return null;let endpoint:URL;try{endpoint=new URL(s.streamingEndpoint);}catch{return null;}if(endpoint.protocol!=="https:"||!/(^|\.)(ig\.com|marketdatasystems\.com)$/.test(endpoint.hostname))return null;return {endpoint:endpoint.href,accountId:s.accountId,password:`CST-${s.cst}|XST-${s.xst}`,generation:current.connectionGeneration!};}

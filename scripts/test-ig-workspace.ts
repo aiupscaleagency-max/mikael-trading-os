@@ -175,8 +175,8 @@ console.log('PASS: SEK-scenario/positions-P-L med native forex, konservativ FX-r
  const current=()=>({environments:{live:{...status().environments.live,connectionGeneration:id},demo:{...status().environments.live,environment:'demo',connectionGeneration:'demo-catalog'}}});
  const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-catalog-')),now:()=>clock,status:current as any,call:async(mode,route,method,version,body,extra)=>{if(route==='categories')throw Error('IG svarade HTTP 404');assert.equal(route,'markets');assert.equal(method,'GET');reads.push(new URLSearchParams(extra?.query).get('searchTerm')!);return {markets:[...rows,...rows]};}});
  const [a,b]=await Promise.all([w.catalogue('live','forex'),w.catalogue('live','forex')]);
- assert.equal(a.status,'partial');assert.equal(a.complete,false,'Sökresultat bevisar inte en fullständig mäklarkatalog');assert.ok(a.remainingSearches>0);assert.deepEqual(a.markets.map(m=>m.epic).sort(),['FX.AUDJPY','FX.GBPUSD','FX.USDNOK']);assert.deepEqual(a,b);assert.equal(reads.length,9);await w.searchMarkets('live','ReservedMarketRead');assert.equal(reads.length,10,'Katalogen lämnar kapacitet för pris-/FX-läsningar');assert.equal(new Set(reads).size,reads.length,'Parallella kataloganrop delar sökning');
- const c=await w.catalogue('live','crypto');assert.equal(c.status,'partial');assert.ok(c.remainingSearches>0,'Minutbudget ger återupptagbart delresultat');assert.equal(c.markets.length,0,'Budgetstopp hämtar inte nya kryptouppgifter');
+ assert.equal(a.status,'partial');assert.equal(a.complete,false,'Sökresultat bevisar inte en fullständig mäklarkatalog');assert.ok(a.remainingSearches>0);assert.deepEqual(a.markets.map(m=>m.epic).sort(),['FX.AUDJPY','FX.GBPUSD','FX.USDNOK']);assert.deepEqual(a,b);assert.equal(reads.length,4);await w.searchMarkets('live','ReservedMarketRead');assert.equal(reads.length,5,'Katalogen lämnar kapacitet för pris-/FX-läsningar');assert.equal(new Set(reads).size,reads.length,'Parallella kataloganrop delar sökning');
+ const c=await w.catalogue('live','crypto');assert.equal(c.status,'partial');assert.ok(c.remainingSearches>0,'Minutbudget ger återupptagbart delresultat');assert.equal(c.markets.length,2,'Forex lämnar separat läsutrymme åt krypto samma minut');
  clock+=61000;let d=await w.catalogue('live','crypto');while(d.remainingSearches){clock+=61000;d=await w.catalogue('live','crypto');}assert.equal(d.remainingSearches,0);assert.equal(d.status,'ready');assert.equal(d.markets.length,2);assert.ok(d.markets.every(m=>m.category==='crypto'));
  clock+=61000;let finished=await w.catalogue('live','forex');while(finished.remainingSearches){clock+=61000;finished=await w.catalogue('live','forex');}const count=reads.length;await w.catalogue('live','forex');assert.equal(reads.length,count,'Samma konto återanvänder kategoriresultatet');
  clock+=61000;id='catalog-account-b';await w.catalogue('live','forex');assert.ok(reads.length>count,'Nytt konto återanvänder inte tidigare katalog');
@@ -256,7 +256,7 @@ console.log('PASS: SEK-scenario/positions-P-L med native forex, konservativ FX-r
  }});
  let r=await w.catalogue('live','forex');assert.ok(r.markets.some(m=>m.epic==='REAL.EUR'));assert.ok(r.markets.every(m=>m.type==='CURRENCIES'));assert.equal(r.complete,false);assert.equal(r.source,'IG kontosökning');assert.ok(r.remainingSearches>0);
  for(let i=0;i<10&&r.remainingSearches;i++){clock+=61000;r=await w.catalogue('live','forex');}
- assert.equal(r.remainingSearches,0);assert.equal(reads.filter(r=>r==='categories').length,1);
+ assert.equal(r.remainingSearches,0);assert.equal(reads.filter(r=>r==='categories').length,2,'Kategorin omprövas efter fem minuter medan den begränsade sökningen fortsätter');
 }
 // IG:s faktiskt rapporterade sidstorlek styr fortsättningen, även om 1000 begärdes.
 {

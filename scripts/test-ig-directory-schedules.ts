@@ -73,3 +73,34 @@ fs.rmSync(directory,{recursive:true,force:true});console.log('IG directory + sch
  connected=false;clock+=65000;const before=scans.length;await scanner.tickCatalogues();assert.deepEqual(scans.slice(before),['live:forex','live:crypto'],'Frånkopplad miljö hoppas över');
  console.log('PASS: kontobunden automatisk katalogladdning i Demo/Live, rotation, cooldown, diagnoser och singleflight');
 }
+
+// En aktiv kryptoflik kommer alltid före bakgrunden: Forex ska ändå göra framsteg.
+{
+ let clock=now;const requests:{mode:string;at:number;term:string|null}[]=[];
+ const both=()=>({environments:{demo:{status:'connected',connectionGeneration:'fair-demo'},live:{status:'connected',connectionGeneration:'fair-live'}}}) as any;
+ const work=createIgWorkspace({directory:path.join(directory,'fair'),status:both,now:()=>clock,call:async(mode,route,_method,_version,_body,extra)=>{
+  const term=new URLSearchParams(extra?.query).get('searchTerm');requests.push({mode,at:clock,term});
+  if(route==='categories')throw Error('IG svarade HTTP 404');
+  return {markets:[{epic:`FX.${term}`,instrumentName:'EUR/USD',instrumentType:'CURRENCIES'},{epic:`CR.${term}`,instrumentName:'Bitcoin',instrumentType:'CURRENCIES'}]};
+ }});
+ const dir=createIgMarketDirectory({status:both,now:()=>clock,fallback:work.catalogue});
+ const previous=new Map<string,number>();
+ for(let round=0;round<4;round++){
+  for(const mode of ['demo','live'] as const){
+   // Vanlig kontoläsning konkurrerar; två kryptoklienter får inte dubblera budgeten.
+   for(let i=0;i<5;i++)await work.searchMarkets(mode,`ordinary-${round}-${i}`);
+   await Promise.all([dir.catalogue(mode,'crypto'),dir.catalogue(mode,'crypto')]);
+  }
+  clock+=6000;
+  for(const mode of ['demo','live'] as const){
+   const forex=await dir.catalogue(mode,'forex');
+   assert.ok(forex.markets.length>0,'Kryptofliken får inte lämna Forex tom');
+   assert.ok(forex.remainingSearches!<(previous.get(mode)??36),'Forex går framåt varje minut trots tidigare kryptoklienter');
+   previous.set(mode,forex.remainingSearches!);
+  }
+  await dir.tickCatalogues();
+  for(const mode of ['demo','live'])assert.ok(requests.filter(r=>r.mode===mode&&r.at>=clock-6000).length<=14,'Vanliga läsningar plus katalog håller central reserv');
+  clock+=61000;
+ }
+ console.log('PASS: två kryptoklienter, bakgrundshämtning och vanliga GET kan inte svälta Forex i Demo/Live');
+}

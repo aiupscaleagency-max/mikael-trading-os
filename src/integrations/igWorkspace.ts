@@ -69,13 +69,15 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
   const analysisMemory=deps.status?createIgAnalysisMemory({directory:path.join(directory,"analysis-memory"),status:status as any,now}):igAnalysisMemory;
   const states=new Map<IgEnvironment,WorkspaceState>(),cache=new Map<string,{at:number,value:any}>(),pending=new Map<string,Promise<any>>(),busy=new Set<IgEnvironment>(),cancellations=new Map<IgEnvironment,number>();
   const fixtureReads:{environment:IgEnvironment;at:number}[]=[];
-  const catalogueReads:{environment:IgEnvironment;at:number}[]=[];
-  function catalogueBudget(mode:IgEnvironment){
+  const catalogueReads:{environment:IgEnvironment;at:number;category:'forex'|'crypto'|null}[]=[];
+  function catalogueBudget(mode:IgEnvironment,category:'forex'|'crypto'|null=null){
     while(catalogueReads.length&&now()-catalogueReads[0]!.at>=60000)catalogueReads.shift();
     const global=readBudget(mode);
-    return global.remaining>6&&global.appUsed<36&&catalogueReads.filter(r=>r.environment===mode).length<10;
+    return global.remaining>6&&global.appUsed<36&&catalogueReads.filter(r=>r.environment===mode).length<10&&(category===null||catalogueReads.filter(r=>r.environment===mode&&r.category===category).length<4);
   }
-  async function catalogueRead(...args:Parameters<typeof call>){if(!catalogueBudget(args[0]))throw Error("Katalogens läsutrymme är slut för denna minut");catalogueReads.push({environment:args[0],at:now()});return read(...args);}
+  // Fyra sökläsningar per kategori reserverar plats åt den andra även när HTTP-klienter kommer först.
+  async function catalogueReadFor(category:'forex'|'crypto'|null,...args:Parameters<typeof call>){if(!catalogueBudget(args[0],category))throw Error("Katalogens läsutrymme är slut för denna minut");catalogueReads.push({environment:args[0],at:now(),category});return read(...args);}
+  const catalogueRead=(...args:Parameters<typeof call>)=>catalogueReadFor(null,...args);
   // Produktionsanrop räknas centralt i anslutningen; injicerade testanrop får samma miljöbudget.
   function readBudget(mode:IgEnvironment){
     if(!deps.call)return getIgReadBudget(mode);
@@ -111,10 +113,10 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     }
   }
   function marketRow(m:any){return {epic:m.epic,name:str(m.instrumentName)??m.epic,type:str(m.instrumentType),category:igMarketCategory(m),expiry:str(m.expiry),bid:num(m.bid),offer:num(m.offer),percentageChange:num(m.percentageChange),netChange:num(m.netChange),high:num(m.high),low:num(m.low),updateTimeUTC:str(m.updateTimeUTC),observedAt:igQuoteTimestamp(m.updateTimeUTC,now()),receivedAt:now(),marketStatus:str(m.marketStatus),streamingPricesAvailable:m.streamingPricesAvailable===true,delayTime:num(m.delayTime)};}
-  async function searchMarkets(mode:IgEnvironment,term:string,catalogueRequest=false) {
+  async function searchMarkets(mode:IgEnvironment,term:string,catalogueRequest:false|'forex'|'crypto'=false) {
     connected(mode);if(typeof term!=="string"||term.trim().length<2||term.length>80)throw Error("Ogiltig IG-sökning");
     return cached(`search:${mode}:${term}`,60000,async()=>{
-      const data=await (catalogueRequest?catalogueRead:read)(mode,"markets","GET","1",undefined,{query:new URLSearchParams({searchTerm:term.trim()}).toString()});
+      const data=await (catalogueRequest?((...args:Parameters<typeof call>)=>catalogueReadFor(catalogueRequest,...args)):read)(mode,"markets","GET","1",undefined,{query:new URLSearchParams({searchTerm:term.trim()}).toString()});
       if(!Array.isArray(data.markets))throw Error("IG-marknadskatalogen kunde inte verifieras");
       return {environment:mode,status:"ready",error:null,markets:data.markets.filter((m:any)=>typeof m.epic==="string").map((m:any)=>({...marketRow(m)})),updatedAt:now()};
     });
@@ -174,13 +176,13 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
       let blocked=false;
       const retried=new Set<string>();
       while(progress!.cursor<terms.length||[...progress!.failed].some(([term,f])=>f.retryAt<=now()&&!retried.has(term))){
-        if(!catalogueBudget(mode)){blocked=true;progress!.reason='budget';break;}
+        if(!catalogueBudget(mode,category)){blocked=true;progress!.reason='budget';break;}
         const normal=progress!.cursor<terms.length,term=normal?terms[progress!.cursor]!: [...progress!.failed].find(([t,f])=>f.retryAt<=now()&&!retried.has(t))![0];
         if(normal&&(progress!.failed.get(term)?.retryAt??0)>now()){blocked=true;progress!.reason='search_error';break;}
         if(!normal)retried.add(term);
         if(connectionIdentity(mode)!==identity)throw Error('IG-kontosessionen ändrades under kataloghämtningen');
         try{
-          const result=await searchMarkets(mode,term,true);
+          const result=await searchMarkets(mode,term,category);
           for(const m of result.markets){
             if(m.type!=='CURRENCIES')continue;
             if(igMarketCategory(m)!==category)continue;
