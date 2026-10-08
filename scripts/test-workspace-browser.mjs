@@ -67,11 +67,14 @@ try{
  ];
  let fixtureImports=[];let fixtureSchedules=[];let emptyCrypto=false,catalogComplete=true,catalogFailure=false,fixtureSelection=[],fixtureAnalysis=null;const discovery=[],credentialRequests=[];let credentialAuthFails=false;
  let connected=false,failConnect=false,connectGate=null,connectRequests=0,marketRequests=0,marketGate=null,workspaceMarkets=[];
- const fixtureWrites=[];
+ const fixtureWrites=[],sessionRequests=[];
  await real.route('**/api/**',async route=>{
   const req=route.request(),path=new URL(req.url()).pathname;if(req.method()!=='GET')fixtureWrites.push(path);
   let data;
-  if(path==='/api/ig/status')data={environments:{demo:{status:connected?'connected':'missing',credentialsComplete:false}}};
+  if(path==='/api/cost')data={todayUsd:0.12,weekUsd:0.5,monthUsd:1.2,dailyCap:5,weeklyCap:20,capStatus:'ok',byAgent:{technical:{calls:2,costUsd:0.12}},byModel:{}};
+  else if(path==='/api/course')data={name:'Luengos fixture',symbol:'btcusd',interval:'1d',status:'blocked',canRun:false,note:'Tiingo saknas · fixture'};
+  else if(path==='/api/ig/session'){sessionRequests.push(req.postDataJSON());data={status:'running',epics:req.postDataJSON().epics};}
+  else if(path==='/api/ig/status')data={environments:{demo:{status:connected?'connected':'missing',credentialsComplete:false}}};
   else if(path==='/api/ig/connect'){
    connectRequests++;if(connectGate)await connectGate.promise;
    if(failConnect){await route.fulfill({status:401,json:{error:'Fixture: Demo-inloggning nekad'}});return;}
@@ -102,6 +105,9 @@ try{
  assert.match(await real.locator('#notice').textContent(),/ansluten.*Diagrammet/);
  await real.click('#markets-open');await real.waitForFunction(()=>document.querySelector('#markets-forex-list').textContent.includes('NOK'));assert.match(await real.locator('#markets-crypto-list').textContent(),/Bitcoin/);await real.selectOption('#markets-sort','activity');assert.match(await real.locator('#markets-forex-list .market-card').first().textContent(),/NOK.*2 registrerade affärer/s);assert.match(await real.locator('#markets-page-status').textContent(),/Ingen global IG/);assert.equal(await real.locator('.workspace').isVisible(),false);await real.click('#trading-view');assert.equal(await real.locator('.workspace').isVisible(),true);await real.click('#tools-open');await real.locator('[data-tool="closed"]').click();assert.match(await real.locator('#trades').textContent(),/NOK/);assert.equal(fixtureWrites.filter(p=>p.includes('analysis')).length,0,'Verktygsgenvägar startar ingen analys');await real.click('[data-trades="open"]');
  await real.click('#strategies-open');await real.waitForFunction(()=>document.querySelector('#strategies-page #strategies-list').textContent.includes('Luengos'));assert.equal(await real.locator('.workspace').isVisible(),false);await real.click('#settings-open');assert.equal(await real.locator('#settings-dialog #strategies-list').count(),1);await real.click('[data-close="settings-dialog"]');await real.locator('#strategies-page #strategies-list').waitFor({state:'visible'});await real.click('#trading-view');
+ await real.click('#trades-open');assert.equal(await real.locator('#trades-page .trades-section').count(),1);await real.click('#trading-view');assert.equal(await real.locator('.activity-panel .trades-section').count(),1,'Trades återanvänder samma funktioner');
+ await real.click('#cost-open');await real.waitForFunction(()=>document.querySelector('#cost-content').textContent.includes('0,1200'));assert.match(await real.locator('#cost-content').textContent(),/technical/);await real.click('#course-open');await real.waitForFunction(()=>document.querySelector('#course-content').textContent.includes('Tiingo saknas'));assert.equal(await real.locator('#course-run').isDisabled(),true,'Saknad kursdata kan inte ge påhittat backtest');
+ await real.click('#markets-open');await real.click('#markets-session-open');await real.selectOption('#session-scope','all');assert.match(await real.locator('#session-selection').textContent(),/instrument/);await real.locator('#session-form button[type="submit"]').click();await real.waitForFunction(()=>!document.querySelector('#session-dialog').open);assert.ok(sessionRequests.at(-1).epics.length>10,'Alla hämtade instrument går till sessionskön');await real.click('#trading-view');
  // Hela kategoriurvalet, separat dialogsökning, favoriter och synkat analysurval.
  assert.match(await real.locator('#instruments').textContent(),/Cardano/);assert.match(await real.locator('#instruments').textContent(),/TRON/);
  await real.click('#catalog-open');await real.locator('#catalog-content [data-chart="FIX.CARDANO"]').click();await real.waitForFunction(()=>document.querySelector('#instrument-name').textContent.includes('Cardano'));assert.match(await real.locator('#market-kind').textContent(),/KRYPTO/);await real.click('#catalog-open');await real.fill('#catalog-search','TRON');assert.equal(await real.locator('#catalog-content .catalog-row').count(),1);await real.locator('#catalog-content [data-star="FIX.TRON"]').click();
@@ -137,7 +143,7 @@ try{
  while(marketRequests===beforeRace)await real.waitForTimeout(25);
  await real.click('#settings-open');await real.click('#simulation-toggle');await real.click('[data-close="settings-dialog"]');marketGate.release();await real.waitForTimeout(200);
  assert.equal(await real.locator('#connect').isDisabled(),true,'Slutförd gammal anslutning återaktiverar inte knappen i designläge');assert.match(await real.locator('#notice').textContent(),/DESIGNLÄGE/);assert.equal(await real.locator('[data-chart="FIX.CARDANO"]').count(),0,'Gammalt katalogsvar läcker inte över kontogenerationer');
- assert.equal(connectRequests,4);assert.equal(fixtureWrites.filter(p=>p==='/api/ig/connect').length,4);assert.ok(fixtureWrites.every(p=>['/api/ig/connect','/api/ig/selection','/api/ig/analysis','/api/ig/credentials','/api/ig/schedules','/api/ig/preferences','/api/ig/imported-signals'].includes(p)),'Fixture skickar inga orderanrop'); // Ny browser utan sparat diagram får Forex när IG inte returnerar krypto.
+ assert.equal(connectRequests,4);assert.equal(fixtureWrites.filter(p=>p==='/api/ig/connect').length,4);assert.ok(fixtureWrites.every(p=>['/api/ig/connect','/api/ig/session','/api/ig/selection','/api/ig/analysis','/api/ig/credentials','/api/ig/schedules','/api/ig/preferences','/api/ig/imported-signals'].includes(p)),'Fixture skickar inga orderanrop'); // Ny browser utan sparat diagram får Forex när IG inte returnerar krypto.
  emptyCrypto=true;connected=true;workspaceMarkets=[];marketGate=null;await real.evaluate(()=>localStorage.clear());await real.reload();await real.waitForFunction(()=>document.querySelector('#instrument-name').textContent.includes('EUR / USD'));assert.match(await real.locator('#instruments').textContent(),/EUR/);assert.equal(await real.locator('[data-category="forex"]').getAttribute('class'),'active');emptyCrypto=false;
  await real.close();
 

@@ -306,3 +306,20 @@ console.log('PASS: tom IG-kategori använder progressiv sökreserv, aktier utesl
  assert.equal(r.remainingSearches,0);assert.ok(cryptoAttempts>=3);assert.deepEqual(r.progress?.search?.failedTerms,[],'Missad term återhämtas från retrykön');assert.equal(r.complete,false);
  console.log('PASS: felande första sökterm, cooldown, senare kryptoinstrument, aktiefilter och återhämtad retrykö');
 }
+
+// Hela sessionsurvalet roteras i begränsade omgångar; misslyckade försök är inte analyser.
+{
+ let clock=now,allow=false;const scopes:string[][]=[];
+ const epics=Array.from({length:12},(_,i)=>`BATCH.${i}`);
+ const w=createIgWorkspace({...deps,directory:path.join(directory,'batches'),now:()=>clock,status:()=>({environments:{live:{...status().environments.live,account:{currency:'USD'},connectionGeneration:'batch-live'},demo:{status:'missing'}}}) as any,
+  guard:async()=>({allowed:allow,killSwitchActive:false}),call:async(mode,route,method,version,body,extra)=>{
+   assert.equal(method,'GET');if(route.startsWith('prices/')){const last=Math.floor(clock/300000)*300000;return {prices:Array.from({length:50},(_,i)=>bar(last-(50-i)*300000)),metadata:{allowance:{remainingAllowance:9999}}};}
+   const saved=now;now=clock;try{return await call(mode,route,method,version,body,extra);}finally{now=saved;}
+  },llm:async(role,context)=>{if(role==='technical')scopes.push(context.selection.epics);return {analyses:context.selection.epics.map((epic:string)=>({epic,action:'HOLD',reason:'Fixture'}))};}});
+ await w.startSession('live',{epics,timeframe:'5m',percent:1,horizonMinutes:15,durationMinutes:15,intervalMinutes:1});
+ await w.tickSessions();let v=await w.workspace('live');assert.equal(v.session.cursor,5);assert.equal(v.session.analyses,0);assert.equal(v.session.cycles,0);assert.ok(v.session.batchReports[0].error);
+ allow=true;for(let i=0;i<5;i++){clock+=61000;await w.tickSessions();}
+ v=await w.workspace('live');assert.equal(v.session.cycles,1);assert.equal(v.session.attemptedCycles,2);assert.equal(v.session.analyses,5);assert.ok(scopes.every(s=>s.length<=5));assert.deepEqual(new Set(scopes.flat()),new Set(epics));assert.ok(v.selection.epics.length<=10,'Manuellt urval behåller sin gräns');
+ assert.ok(v.session.batchReports.some((r:any)=>r.error));w.stopSession('live');const count=scopes.length;clock+=61000;await w.tickSessions();assert.equal(scopes.length,count,'Stopp hindrar nästa omgång');
+ console.log('PASS: tolv sessionsinstrument roteras i femmor, budgetavslag märks som misslyckat försök, bara hela lyckade varv räknas och stopp hindrar nästa batch');
+}

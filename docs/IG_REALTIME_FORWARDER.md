@@ -98,3 +98,15 @@ Ett HTTP-anrop för krypto kunde tidigare ta alla tio katalogläsningar innan Fo
 Regressionen konkurrerar med två kryptoklienter, kontoläsningar och bakgrundshämtning i båda miljöerna och verifierar att Forex fortsätter varje budgetperiod. Detta bevisar inte komplett mäklarutbud eller ofördröjda produktionspriser.
 
 Historikens `error.public-api.exceeded-account-historical-data-allowance` har nu en egen begränsad återförsökspaus för `prices/`. Den utlöser inte den generella GET-pausen och raderar inte sessionen. Katalog, konton, positioner och prisernas metadata kan fortsätta hämtas; saknade historiska ljus förblir saknade och får inte användas som verifierat analysunderlag. [IG:s prisreferens](https://labs.ig.com/reference/prices-epic.html) skiljer historikkvoten från konto-/API-trafikkvoten. Detta rättar ett verifierat kodfel; det exakta historiska felmeddelandet från driftens tidigare avbrott har inte loggats.
+
+## Trade, Trades, Cost och Backtest & kurs
+
+Vänstermenyn har separata Trade-, Trades- och Cost-sidor. Trades återanvänder befintliga positionskontroller och riskgrindar. Cost visar verkliga gemensamma AI-kostnader, agent-/modellfördelning och budgetar; det är inte IG:s handelsavgifter.
+
+På Valutapar kan Starta agentsession använda markerade instrument, favoriter eller hela den inlästa Forex-/kryptokatalogen. Poolen får innehålla högst 500 instrument och behandlas i omgångar om högst fem. En partiell katalog är inte hela IG:s utbud. Sessionens tidsgräns, kostnadstak och datakrav gäller även stora urval. Lyckade genomgångar skiljs från genomgångsförsök, och batchfel visas. Manuell direktanalys och scheman behåller sina befintliga urvalsgränser. JEV → teknisk analytiker → Hanna och manuella orderförslag bevaras.
+
+Backtest & kurs läser den sparade kursstrategin i `~/ai_upscale_work/projects/ptqa-trading/day-1-recording-work/strategy.json`. Den privata Python-miljön förväntas i projektets `ptqa-local-environment/venv/bin/python`. Lokala servervariabler `PTQA_COURSE_WORKSPACE` och `PTQA_COURSE_PYTHON` kan ange andra redan betrodda installationer. Inga sökvägs-/strategiändringar tas emot via HTTP. Kursens Tiingo-nyckel används där den redan är konfigurerad; inga nycklar visas i gränssnittet.
+
+Kör Day 4 hämtar riktig historik med den checksummeverifierade officiella kursmotorn. Befintliga kursfiler/resultat säkerhetskopieras först. Strategins identitet och resultatets prisunderlagsidentitet verifieras innan resultat visas. Ändrad strategi eller misslyckad körning får inte visa gammalt resultat som nytt. Tryck Uppdatera för körstatus. Day 5 börjar inte automatiskt. Kurskörningen lägger inga order och ändrar inte sparade regler, tidsram eller kostnader.
+
+Agentminnet och Strategy Library ger sparade underlag och beslut till analyserna. Det innebär inte finjustering av modellvikter eller bevisad resultatförbättring. Day 4-resultatet gäller den sparade kursstrategin och datakällan, inte automatiskt IG:s CFD-kontrakt eller andra strategier.

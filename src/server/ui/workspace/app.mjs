@@ -91,13 +91,14 @@ function renderInstruments(){
   $('instruments').innerHTML=(S.searchStatus?`<p class="field-note">${esc(S.searchStatus)}</p>`:'')+note+(markets.length?markets.map(instrumentRow).join(''):`<div class="empty-state"><b>Inga instrument</b>${esc(catalogMessage(S.category))} <button data-reload-markets="true">Hämta Forex & krypto</button></div>`);
   $('favorites-toggle').classList.toggle('positive',S.favoritesOnly);renderSelection();
 }
+function sessionEpics(){const scope=$('session-scope').value;return scope==='selected'?[...S.selected]:[...new Set(S.catalog.filter(m=>['forex','crypto'].includes(kind(m))&&(scope==='all'||S.favorites.has(m.epic))).map(m=>m.epic))];}
 function renderSelection(){
   renderMarketsPage();
   subscribeRealtime();
   $('selection-list').textContent=S.selected.size?[...S.selected].map(nameOf).join(' · '):'Inga instrument valda';
   $('analyze').disabled=!S.selected.size||S.analysis?.status==='running'||S.quoteState==='disconnected';
   $('selection-status').textContent=`${S.selected.size} valda · ${S.analysisFrame} analys · ${S.simulation?'demodata':'delat serverurval'}`;
-  $('session-selection').textContent=`${S.simulation?'DEMODATA':`IG ${S.mode.toUpperCase()}`} · ${[...S.selected].map(nameOf).join(', ')||'Välj instrument i marknadslistan'}`;
+  $('session-selection').textContent=`${S.simulation?'DEMODATA':`IG ${S.mode.toUpperCase()}`} · ${sessionEpics().length} instrument · ${sessionEpics().slice(0,10).map(nameOf).join(', ')}${sessionEpics().length>10?' …':''}`;
   $('session-frame').value=S.analysisFrame;
 }
 async function syncSelection(){
@@ -123,7 +124,7 @@ function renderMarketsPage(){
   $('markets-page-status').textContent=`${catalogMessage('all')} · ${activity.note}`;
   $('markets-selected-count').textContent=`${S.selected.size} / 10 valda`;
   $('markets-analyze').disabled=!S.selected.size||S.analysis?.status==='running'||(!S.simulation&&S.connection?.status!=='connected');
-  $('markets-session-open').disabled=!S.selected.size;
+  $('markets-session-open').disabled=!S.catalog.some(m=>['forex','crypto'].includes(kind(m)));
   for(const category of ['forex','crypto']){
     const group=rows.filter(m=>m.category===category);$('markets-'+category+'-count').textContent=`${group.length} instrument`;
     marketPages[category]=Math.min(marketPages[category],Math.max(0,Math.ceil(group.length/9)-1));
@@ -137,13 +138,15 @@ function renderMarketsPage(){
   }
   subscribeRealtime();
 }
+const tradesSection=document.querySelector('.trades-section'),tradesHome=tradesSection.parentElement;
 const signalSection=document.querySelector('.signals-section'),signalHome=signalSection.parentElement;
 const strategySection=document.querySelector('.strategy-section'),strategyHome=strategySection.parentElement;
 function showWorkspaceView(view){
- signalHome.append(signalSection);strategyHome.append(strategySection);
- for(const name of ['markets','strategies','signals','agents','library'])$(name+'-page').hidden=name!==view;
+ signalHome.append(signalSection);strategyHome.append(strategySection);tradesHome.append(tradesSection);
+ for(const name of ['markets','strategies','signals','agents','library','trades','cost','course'])$(name+'-page').hidden=name!==view;
  document.querySelector('.workspace').hidden=view!=='trading';document.querySelector('.mobile-tabs').hidden=view!=='trading';
- for(const [id,name] of [['trading-view','trading'],['markets-open','markets'],['strategies-open','strategies'],['signals-open','signals'],['agents-open','agents'],['library-open','library']]){ $(id).classList.toggle('active',name===view);$(id).setAttribute('aria-current',name===view?'page':'false'); }
+ for(const [id,name] of [['trading-view','trading'],['markets-open','markets'],['strategies-open','strategies'],['signals-open','signals'],['agents-open','agents'],['library-open','library'],['trades-open','trades'],['cost-open','cost'],['course-open','course']]){ $(id).classList.toggle('active',name===view);$(id).setAttribute('aria-current',name===view?'page':'false'); }
+ if(view==='trades')$('trades-page-content').append(tradesSection);
  if(view==='signals')$('signals-page-content').append(signalSection);
  if(view==='strategies')$('strategies-page-content').append(strategySection);
  if(view==='trading')chart?.resize($('chart').clientWidth,$('chart').clientHeight);
@@ -151,6 +154,13 @@ function showWorkspaceView(view){
 const research=createResearch({state:S,api,esc,toast,showView:showWorkspaceView});
 function showTradingView(){showWorkspaceView('trading');}
 $('trading-view').onclick=showTradingView;
+$('trades-open').onclick=()=>{showWorkspaceView('trades');renderTrades();};
+function renderCost(){const c=S.cost;if(!c){$('cost-content').textContent=S.simulation?'Designläge · ingen verklig kostnadsstatistik':'Kostnader ej hämtade';return;}const rows=x=>Object.entries(x??{}).map(([name,v])=>`<article class="settings-card"><b>${esc(name)}</b><p>${number(v.calls,0)} anrop · $${number(v.costUsd,4)}</p></article>`).join('')||'<p>Inga registrerade anrop.</p>';$('cost-content').innerHTML=`<div class="agent-overview"><article><h2>Idag</h2><p>$${number(c.todayUsd,4)} / $${number(c.dailyCap)}</p></article><article><h2>Veckan</h2><p>$${number(c.weekUsd,4)} / $${number(c.weeklyCap)}</p></article><article><h2>Månaden</h2><p>$${number(c.monthUsd,4)}</p></article></div><p>Budgetstatus: ${esc(c.capStatus)} · registrerade kostnader, externa fakturor kan skilja sig.</p><h2>Per agent idag</h2>${rows(c.byAgent)}<h2>Per modell idag</h2>${rows(c.byModel)}`;}
+async function loadCost(){if(S.simulation){S.cost=null;renderCost();return;}S.cost=await api('/api/cost');renderHeader();renderCost();}
+$('cost-open').onclick=safe(async()=>{showWorkspaceView('cost');renderCost();await loadCost();});$('cost-reload').onclick=safe(loadCost);
+async function loadCourse(){if(S.simulation){$('course-content').textContent='Designläge · inget backtest körs';$('course-run').disabled=true;return;}const c=await api('/api/course');$('course-content').innerHTML=`<h2>${esc(c.name??'Sparad strategi saknas')}</h2><p>${esc(c.symbol??'—')} · ${esc(c.interval??'—')} · ${esc(c.status)}</p><p>${esc(c.note)}</p>${c.metrics?`<pre>${esc(JSON.stringify(c.metrics,null,2))}</pre>`:''}`;$('course-run').disabled=!c.canRun;}
+$('course-open').onclick=safe(async()=>{showWorkspaceView('course');await loadCourse();});$('course-reload').onclick=safe(loadCourse);$('course-run').onclick=safe(async()=>{await api('/api/course/backtest',{method:'POST',body:{}});await loadCourse();toast('Day 4-körningen startad. Uppdatera status för resultat.');});
+
 $('markets-open').onclick=safe(async()=>{showWorkspaceView('markets');renderMarketsPage();const generation=S.generation;await loadCatalog('forex');if(generation===S.generation)await loadCatalog('crypto');renderMarketsPage();});
 $('settings-dialog').addEventListener('close',()=>{if(!$('strategies-page').hidden)$('strategies-page-content').append(strategySection);});
 $('strategies-open').onclick=safe(async()=>{showWorkspaceView('strategies');await loadStrategies();});
@@ -160,7 +170,7 @@ $('agents-start').onclick=()=>$('session-open').click();$('agents-schedule').onc
 $('markets-search').oninput=renderMarketsPage;$('markets-scope').onchange=renderMarketsPage;$('markets-sort').onchange=renderMarketsPage;
 $('markets-reload').onclick=safe(async()=>{const generation=S.generation;await loadCatalog('forex',{force:true});if(generation===S.generation)await loadCatalog('crypto',{force:true});renderMarketsPage();});
 $('markets-select-visible').onclick=safe(async()=>{S.selected=new Set([...document.querySelectorAll('[data-market-epic]')].slice(0,10).map(e=>e.dataset.marketEpic));await syncSelection();renderMarketsPage();});
-$('markets-analyze').onclick=safe(analyze);$('markets-session-open').onclick=()=>{renderSelection();$('session-dialog').showModal();};
+$('markets-analyze').onclick=safe(analyze);$('markets-session-open').onclick=()=>{$('session-scope').value=S.selected.size?'selected':'all';renderSelection();$('session-dialog').showModal();};
 function catalogRows(){const q=$('catalog-search').value.trim().toLowerCase();return rankMarkets(S.catalog.filter(m=>['forex','crypto'].includes(kind(m))&&(S.catalogView==='all'||(S.catalogView==='favorites'?S.favorites.has(m.epic):kind(m)===S.catalogView))&&($('market-status').value==='all'||(m.marketStatus??m.quote?.marketStatus)===$('market-status').value)&&(!q||`${m.name} ${m.epic}`.toLowerCase().includes(q))),$('market-ranking').value);}
 function catalogMessage(view=S.catalogView){
   if(S.simulation)return 'DESIGNLÄGE · lokal instrumentlista';
@@ -290,7 +300,8 @@ function renderSession(){
   if($('settings-dialog').open||!$('strategies-page').hidden)renderStrategyEvidence();
   const session=S.session,running=session?.status==='running';$('session-status').textContent=running?'● Aktiv':session?.status==='completed'?'Avslutad':session?.status==='stopped'?'Stoppad':session?.status==='interrupted'?'Avbruten':'Vilande';$('session-status').classList.toggle('positive',running);$('session-stop').hidden=!running;
   $('session-timing').textContent=running?`${duration(session.endsAt-Date.now())} kvar · senaste ${time(S.analysis?.completedAt)} · nästa ${time(session.nextRunAt)}`:session?.lastError??'Analys, innehavstid och sessionslängd är separata.';
-  $('agents-page-status').textContent=`${$('session-status').textContent} · ${$('session-timing').textContent} · ${S.selected.size} instrument valda · ${S.analysisFrame} analys`;
+  $('agents-page-status').textContent=`${$('session-status').textContent} · ${$('session-timing').textContent} · ${session?.epics?.length??S.selected.size} instrument valda · ${session?.cursor??0} i aktuell genomgång · ${session?.cycles??0} helt analyserade genomgångar / ${session?.attemptedCycles??0} försök · ${S.analysisFrame} analys`;
+  const reports=session?.batchReports??[];if(reports.length){const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent=`Senaste ${reports.length} omgångar · misslyckade omgångar räknas inte som analyserade`;details.append(summary);for(const report of reports.slice(-20).reverse()){const p=document.createElement('p');p.textContent=`${report.epics.map(nameOf).join(', ')} · ${report.error??'Analys klar'}`;details.append(p);}$('agents-page-status').append(details);}
   const a=S.analysis,steps=a?.steps??[];
   if(a?.status==='completed'&&a.jev?.available===false)steps[0]={status:'Otillgänglig · tidigare routing'};
   $('agent-steps').innerHTML=[['JEV','Förkontroll'],['Teknisk analytiker','Stängda ljus'],['Hanna / Head Trader','Beslut']].map(([name,caption],i)=>`${i?'<i>→</i>':''}<span>0${i+1} <b>${name}</b><small>${esc(steps[i]?.status??(a?.status==='completed'?'Klar':a?.status==='running'&&i===0?'Arbetar':'Inväntar analys'))} · ${caption}</small></span>`).join('');
@@ -341,7 +352,7 @@ async function refresh(snapshot=null){
   if(S.simulation||refreshing)return;refreshing=true;const generation=S.generation;
   try{const w=snapshot??await api(ig('workspace'));if(generation!==S.generation)return;
     if(Object.prototype.hasOwnProperty.call(w,'analysisMemory'))S.analysisMemory=w.analysisMemory;if(w.importedSignals)importedSignals=w.importedSignals;if(w.preferences){S.favorites=new Set(w.preferences.favorites??[]);S.preferencesRevision=w.preferences.revision??0;}if(w.schedules){S.schedules=w.schedules;if($('schedules-dialog').open)renderSchedules();}if(w.streaming)S.streaming=w.streaming;
-    S.connection=w.connection;environmentStates[S.mode]=w.connection;S.history=w.history;S.positionsStatus=w.positionsStatus??"unavailable";S.account=w.connection?.account;const accountAt=w.checkedAt??w.connection?.checkedAt??0;if(streamedAccount&&streamedAccount.generation===w.connection?.connectionGeneration&&streamedAccount.receivedAt>accountAt&&Date.now()-streamedAccount.receivedAt<60000)S.account={...S.account,...Object.fromEntries(Object.entries(streamedAccount).filter(([,value])=>value!==null))};S.positions=w.positions??[];S.pending=w.pendingOrders??[];if(w.pendingOrderStatus==='unavailable'&&w.connection?.status==='connected')S.pending.push({status:'unknown',error:'IG:s väntande order kunde inte hämtas. Listan kan vara ofullständig.'});S.closed=(w.history?.transactions??[]).filter(t=>t.cashTransaction===false&&t.type==='DEAL').map(t=>({...t,closedAt:Date.parse(t.date?.replace(/\//g,'-')??''),epic:(w.history?.activities??[]).find(a=>a.dealId===t.reference)?.epic}));
+    if(w.cost){S.cost=w.cost;renderCost();}S.connection=w.connection;environmentStates[S.mode]=w.connection;S.history=w.history;S.positionsStatus=w.positionsStatus??"unavailable";S.account=w.connection?.account;const accountAt=w.checkedAt??w.connection?.checkedAt??0;if(streamedAccount&&streamedAccount.generation===w.connection?.connectionGeneration&&streamedAccount.receivedAt>accountAt&&Date.now()-streamedAccount.receivedAt<60000)S.account={...S.account,...Object.fromEntries(Object.entries(streamedAccount).filter(([,value])=>value!==null))};S.positions=w.positions??[];S.pending=w.pendingOrders??[];if(w.pendingOrderStatus==='unavailable'&&w.connection?.status==='connected')S.pending.push({status:'unknown',error:'IG:s väntande order kunde inte hämtas. Listan kan vara ofullständig.'});S.closed=(w.history?.transactions??[]).filter(t=>t.cashTransaction===false&&t.type==='DEAL').map(t=>({...t,closedAt:Date.parse(t.date?.replace(/\//g,'-')??''),epic:(w.history?.activities??[]).find(a=>a.dealId===t.reference)?.epic}));
     S.historyPartial=w.history?.complete===false;S.analysis=w.analysis;S.signals=w.analysis?.status==='completed'?(w.analysis?.head?.analyses??[]).map(s=>normalizeSignal(s,w.analysis)):[];S.session=w.session;S.execution=w.execution??S.execution;
     // Ett osparat lokalt urval skrivs aldrig över av en äldre polling-request.
     if(!S.selectionRevision||(snapshot&&Date.now()-(S.selectionSavedAt??0)>2000)){S.selected=new Set(w.selection?.epics??[]);S.analysisFrame=w.selection?.timeframe??S.analysisFrame;$('analysis-frame').value=S.analysisFrame;}
@@ -463,7 +474,7 @@ $('analysis-frame').onchange=safe(async()=>{S.analysisFrame=$('analysis-frame').
 for(const id of ['size','stop','target','limit','holding','auto-close'])$(id).addEventListener('input',recalculate);
 $('chart-type').onchange=()=>renderChart();$('indicator-toggle').onclick=()=>{indicator=!indicator;$('indicator-toggle').classList.toggle('positive',indicator);renderChart();};$('chart-fit').onclick=()=>chart?.timeScale().fitContent();
 $('review-order').onclick=safe(reviewOrder);$('confirm-order').onclick=safe(async()=>{const callback=S.review;if(!callback)return;$('confirm-order').disabled=true;try{await callback();$('review-dialog').close();}finally{$('confirm-order').disabled=false;}});
-$('settings-open').onclick=()=>{strategyHome.append(strategySection);clearCredentialFields();void api('/api/ig/status').then(status=>{environmentStates=status.environments??{};renderEnvironmentStatus();}).catch(()=>{});$('ig-credentials-environment').value=S.mode;const disabled=!localHost||S.simulation||credentialsBusy;for(const id of ['ig-identifier','ig-password','ig-api-key','ig-credentials-environment','ig-credentials-submit'])$(id).disabled=disabled;if(!localHost)$('ig-credentials-feedback').textContent='Uppgifter kan bara sparas från localhost på denna dator.';else if(S.simulation)$('ig-credentials-feedback').textContent='Lämna designläget för att testa IG-inloggningen.';$('settings-dialog').showModal();void loadStrategies();};$('catalog-open').onclick=safe(async()=>{S.catalogView='all';renderCatalog();$('catalog-dialog').showModal();await loadCatalogView();});$('session-open').onclick=()=>{renderSelection();$('session-dialog').showModal();};
+$('settings-open').onclick=()=>{strategyHome.append(strategySection);clearCredentialFields();void api('/api/ig/status').then(status=>{environmentStates=status.environments??{};renderEnvironmentStatus();}).catch(()=>{});$('ig-credentials-environment').value=S.mode;const disabled=!localHost||S.simulation||credentialsBusy;for(const id of ['ig-identifier','ig-password','ig-api-key','ig-credentials-environment','ig-credentials-submit'])$(id).disabled=disabled;if(!localHost)$('ig-credentials-feedback').textContent='Uppgifter kan bara sparas från localhost på denna dator.';else if(S.simulation)$('ig-credentials-feedback').textContent='Lämna designläget för att testa IG-inloggningen.';$('settings-dialog').showModal();void loadStrategies();};$('catalog-open').onclick=safe(async()=>{S.catalogView='all';renderCatalog();$('catalog-dialog').showModal();await loadCatalogView();});$('session-scope').onchange=renderSelection;$('session-open').onclick=()=>{$('session-scope').value='selected';renderSelection();$('session-dialog').showModal();};
 $('tools-open').onclick=()=>$('tools-dialog').showModal();
 $('ig-credentials-environment').onchange=()=>{clearCredentialFields();$('ig-credentials-feedback').textContent=`IG ${$('ig-credentials-environment').value.toUpperCase()} valt. Tomma fält behåller endast denna miljös sparade uppgifter.`;};
 $('ig-credentials-form').onsubmit=safe(async e=>{
@@ -483,7 +494,7 @@ $('ig-credentials-form').onsubmit=safe(async e=>{
 });
 $('simulation-toggle').onclick=safe(async()=>{S.simulation=!S.simulation;clearAccountState();S.quoteState='ready';$('simulation-states').hidden=!S.simulation;$('simulation-toggle').textContent=S.simulation?'Lämna designläge':'Aktivera designläge';$('demo-state').value='ready';if(S.simulation)loadSimulation();else{connectRealtime();renderAll();notice('Designläget avslutat. IG-kontot verifieras på nytt.');await refresh();}});
 $('demo-state').onchange=()=>setSimulationState($('demo-state').value);
-$('session-form').onsubmit=safe(async e=>{e.preventDefault();if(!S.selected.size)throw Error('Välj instrument före sessionen');S.analysisFrame=$('session-frame').value;$('analysis-frame').value=S.analysisFrame;S.maxPositions=Number($('session-max').value);const durationMinutes=Number($('session-duration').value),intervalMinutes=Number($('session-frequency').value),payload={...selection(),horizonMinutes:Number($('session-holding').value),durationMinutes,intervalMinutes,maxPositions:S.maxPositions};
+$('session-form').onsubmit=safe(async e=>{e.preventDefault();const epics=sessionEpics();if(!epics.length||epics.length>500)throw Error('Välj 1–500 hämtade instrument före sessionen');S.analysisFrame=$('session-frame').value;$('analysis-frame').value=S.analysisFrame;S.maxPositions=Number($('session-max').value);const durationMinutes=Number($('session-duration').value),intervalMinutes=Number($('session-frequency').value),payload={...selection(),epics,horizonMinutes:Number($('session-holding').value),durationMinutes,intervalMinutes,maxPositions:S.maxPositions};
   if(S.simulation){S.session={...payload,status:'running',startedAt:Date.now(),endsAt:Date.now()+durationMinutes*60000,nextRunAt:Date.now()+intervalMinutes*60000};simulateAnalysis();}else{await syncSelection();S.session=await api('/api/ig/session',{method:'POST',body:payload});await refresh();}renderSession();$('session-dialog').close();toast(S.simulation?'Simulerad agentsession startad':'IG-agentsession startad · manuella orderförslag');});
 $('session-stop').onclick=safe(async()=>{if(S.simulation){S.session.status='stopped';}else{await api('/api/ig/session',{method:'DELETE',body:{environment:S.mode}});await refresh();}renderSession();toast('Session stoppad. Öppna positioner stängs inte automatiskt.');});
 $('kill').onclick=safe(async()=>{if(S.simulation){if(S.session)S.session.status='stopped';S.analysis={status:'failed',error:'Simulerat nödstopp'};S.signals=[];renderAll();toast('Simulerat nödstopp aktivt');}else{await api('/api/kill-switch',{method:'POST',body:{active:true}});await api('/api/ig/session',{method:'DELETE',body:{environment:S.mode}});await refresh();toast('Kill switch aktiverad. Inga positioner har stängts.');}});

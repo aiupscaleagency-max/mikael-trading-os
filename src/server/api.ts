@@ -1,3 +1,4 @@
+import {igCourse} from '../integrations/igCourse.js';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -90,6 +91,8 @@ export function startServer(port:number):http.Server{
    }
    if(await handleIgRoutes(url,method,req,res,readBody,isLocalNoLogin))return;
    if(url.pathname==='/api/reference-status'&&method==='GET'){json(res,getTiingoStatus());return;}
+   if(url.pathname==='/api/course'&&method==='GET'){json(res,igCourse.view());return;}
+   if(url.pathname==='/api/course/backtest'&&method==='POST'){try{if(!req.headers['content-type']?.startsWith('application/json'))throw Error('JSON krävs');const body=JSON.parse(await readBody(req));if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length)throw Error('Backtest tar inga ändringar av strategi eller sökväg via HTTP');json(res,await igCourse.run());}catch(e){jsonStatus(res,400,{error:e instanceof Error?e.message:'Backtest kunde inte startas'});}return;}
    if(url.pathname==='/api/cost'&&method==='GET'){json(res,await getCostSummary({dailyCapUsd:config.costCap.dailyUsd,weeklyCapUsd:config.costCap.weeklyUsd}));return;}
    if(url.pathname==='/api/state'&&method==='GET'){const s=await loadState();json(res,{killSwitchActive:s.killSwitchActive});return;}
    if(url.pathname==='/api/kill-switch'&&method==='POST'){const {active}=JSON.parse(await readBody(req));if(typeof active!=='boolean'){jsonStatus(res,400,{error:'Ogiltig kill-switch'});return;}const s=await loadState();s.killSwitchActive=active;await saveState(s);json(res,{ok:true,active});return;}

@@ -19,7 +19,7 @@ import {config} from "../config.js";
 const frames={"1m":{resolution:"MINUTE",ms:60000},"3m":{resolution:"MINUTE_3",ms:180000},"5m":{resolution:"MINUTE_5",ms:300000},"15m":{resolution:"MINUTE_15",ms:900000},"30m":{resolution:"MINUTE_30",ms:1800000},"1h":{resolution:"HOUR",ms:3600000},"4h":{resolution:"HOUR_4",ms:14400000},"1d":{resolution:"DAY",ms:86400000}} as const;
 export type IgTimeframe=keyof typeof frames;
 export interface IgSelection {epics:string[];timeframe:IgTimeframe;percent:number;horizonMinutes:number}
-export interface IgSession extends IgSelection {id:string;environment:IgEnvironment;startedAt:number;endsAt:number;intervalMinutes:number;nextRunAt:number;status:"running"|"stopped"|"completed"|"interrupted";analyses:number;lastError:string|null;maxPositions:number}
+export interface IgSession extends IgSelection {id:string;environment:IgEnvironment;startedAt:number;endsAt:number;intervalMinutes:number;nextRunAt:number;status:"running"|"stopped"|"completed"|"interrupted";analyses:number;lastError:string|null;maxPositions:number;cursor?:number;cycles?:number;attemptedCycles?:number;cycleFailures?:number;batchSize?:number;lastBatch?:string[];lastBatchError?:string|null;batchReports?:{epics:string[];at:number;error:string|null}[]}
 export interface IgCandle {openTime:number;closeTime:number;open:number;high:number;low:number;close:number;volume:number|null}
 interface WorkspaceState {connectionGeneration?:string|null;selection:IgSelection;session:IgSession|null;analysis:Record<string,any>|null;pendingOrders:Record<string,any>[]}
 const num=(v:unknown):number|null=>typeof v==="number"&&Number.isFinite(v)?v:null;
@@ -29,8 +29,8 @@ const safeErrors=new Set(["IG-analys avbruten av sessionsstopp","IG-ljusserien �
 const errorText=(e:unknown)=>e instanceof Error && safeErrors.has(e.message)?e.message:"IG-underlaget eller analysen kunde inte verifieras; inga order skickades";
 function modeGuard(mode:unknown):asserts mode is IgEnvironment {if(mode!=="demo"&&mode!=="live")throw Error("Ogiltig IG-miljö");}
 function epicGuard(epic:unknown):asserts epic is string {if(typeof epic!=="string"||!/^[A-Za-z0-9._-]{1,100}$/.test(epic))throw Error("Ogiltig IG-epic");}
-function selectionGuard(input:Partial<IgSelection>,allowEmpty=false):IgSelection {
-  if(!Array.isArray(input.epics)||(!allowEmpty&&input.epics.length<1)||input.epics.length>10)throw Error("Välj 1–10 verkliga IG-instrument");
+function selectionGuard(input:Partial<IgSelection>,allowEmpty=false,maxEpics=10):IgSelection {
+  if(!Array.isArray(input.epics)||(!allowEmpty&&input.epics.length<1)||input.epics.length>maxEpics)throw Error(`Välj 1–${maxEpics} verkliga IG-instrument`);
   for(const epic of input.epics)epicGuard(epic);
   if(!input.timeframe||!Object.hasOwn(frames,input.timeframe))throw Error("Ogiltigt IG-intervall");
   const percent=input.percent??1,horizonMinutes=input.horizonMinutes??15;
@@ -388,13 +388,13 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     const maxPositions=input.maxPositions??1;
     if(!Number.isInteger(maxPositions)||maxPositions<1||maxPositions>10)throw Error("Ogiltig gräns för samtidiga positioner");
     connected(mode);const binding=connectionIdentity(mode),cancellation=cancellations.get(mode)??0;
-    const selected=selectionGuard(input);for(const epic of selected.epics){const m=await market(mode,epic);if(!["CURRENCIES","INDICES","COMMODITIES","SHARES"].includes(m.type??""))throw Error("IG-instrumenttypen stöds inte i denna CFD-vy");}
+    const selected=selectionGuard(input,false,500);for(const epic of selected.epics.slice(0,5)){const m=await market(mode,epic);if(!["CURRENCIES","INDICES","COMMODITIES","SHARES"].includes(m.type??""))throw Error("IG-instrumenttypen stöds inte i denna CFD-vy");}
     if(connectionIdentity(mode)!==binding)throw Error("IG-kontoanslutningen ändrades under sessionsstarten");
     if((cancellations.get(mode)??0)!==cancellation)throw Error("Sessionens start avbröts");
     if(busy.has(mode)||state(mode).session?.status==="running")throw Error("Session körs redan för IG-miljön");
     if(stillAllowed&&!stillAllowed())throw Error('Schemalagd start avbruten');
-    const session:IgSession={...selected,id:randomUUID(),environment:mode,startedAt:now(),endsAt:now()+input.durationMinutes*60000,intervalMinutes:input.intervalMinutes,nextRunAt:now(),status:"running",analyses:0,lastError:null,maxPositions};
-    persist(mode,{...state(mode),selection:selected,session});return clone(session);
+    const session:IgSession={...selected,id:randomUUID(),environment:mode,startedAt:now(),endsAt:now()+input.durationMinutes*60000,intervalMinutes:input.intervalMinutes,nextRunAt:now(),status:"running",analyses:0,lastError:null,maxPositions,cursor:0,cycles:0,attemptedCycles:0,cycleFailures:0,batchSize:5,lastBatch:[],lastBatchError:null,batchReports:[]};
+    persist(mode,{...state(mode),selection:{...selected,epics:selected.epics.slice(0,10)},session});return clone(session);
   }
   function stopSession(mode:IgEnvironment){modeGuard(mode);cancellations.set(mode,(cancellations.get(mode)??0)+1);const current=state(mode);if(current.session?.status==="running")persist(mode,{...current,session:{...current.session,status:"stopped"}});return clone(state(mode).session);}
   let tickingSessions=false;
@@ -406,8 +406,9 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
       const current=state(mode),s=current.session;if(!s||s.status!=="running"||busy.has(mode))continue;
       if(now()>=s.endsAt){persist(mode,{...current,session:{...s,status:"completed"}});continue;}if(now()<s.nextRunAt)continue;
       const id=s.id;persist(mode,{...current,session:{...s,nextRunAt:now()+s.intervalMinutes*60000}});
-      let error:string|null=null;try{await analyze(mode,s);}catch(e){error=errorText(e);}
-      const updated=state(mode);if(updated.session?.id===id)persist(mode,{...updated,session:{...updated.session,analyses:updated.session.analyses+(error?0:1),lastError:error,status:updated.session.status==="running"&&now()>=updated.session.endsAt?"completed":updated.session.status}});
+      const cursor=s.cursor??0,batchSize=s.batchSize??5,batch=s.epics.slice(cursor,cursor+batchSize);
+      let error:string|null=null;try{await analyze(mode,{...s,epics:batch});}catch(e){error=errorText(e);}
+      const updated=state(mode);if(updated.session?.id===id)persist(mode,{...updated,session:{...updated.session,analyses:updated.session.analyses+(error?0:1),lastError:error,lastBatch:batch,lastBatchError:error,batchReports:[...(updated.session.batchReports??[]),{epics:batch,at:now(),error}].slice(-100),cursor:cursor+batch.length>=s.epics.length?0:cursor+batch.length,cycles:(s.cycles??0)+(cursor+batch.length>=s.epics.length&&(s.cycleFailures??0)===0&&!error?1:0),attemptedCycles:(s.attemptedCycles??0)+(cursor+batch.length>=s.epics.length?1:0),cycleFailures:cursor+batch.length>=s.epics.length?0:(s.cycleFailures??0)+(error?1:0),status:updated.session.status==="running"&&now()>=updated.session.endsAt?"completed":updated.session.status}});
     }
     }finally{tickingSessions=false;}
   }
