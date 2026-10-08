@@ -13,7 +13,7 @@ import type http from "node:http";
 import {getIgStatus,testIgConnection} from "../integrations/igConnection.js";
 import {getIgCatalogue,searchIgMarkets,getIgMarket,getIgCandles,getIgWorkspace,setIgSelection,runIgAnalysis,startIgSession,stopIgSession,type IgTimeframe} from "../integrations/igWorkspace.js";
 // Auth-gate körs i api.ts innan denna modul; mutationer kräver även samma origin.
-export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMessage,res:http.ServerResponse,readBody:(req:http.IncomingMessage)=>Promise<string>,isLocalNoLogin:(req:http.IncomingMessage)=>boolean):Promise<boolean> {
+export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMessage,res:http.ServerResponse,readBody:(req:http.IncomingMessage)=>Promise<string>,isLocalNoLogin:(req:http.IncomingMessage)=>boolean,deps:{startSession?:typeof startIgSession}={}):Promise<boolean> {
  const json=(res:http.ServerResponse,data:unknown)=>{res.writeHead(200,{"Content-Type":"application/json"});res.end(JSON.stringify(data));};
  const jsonStatus=(res:http.ServerResponse,status:number,data:unknown)=>{res.writeHead(status,{"Content-Type":"application/json"});res.end(JSON.stringify(data));};
       if(url.pathname==='/api/ig/credentials'&&method==='POST'){
@@ -88,8 +88,8 @@ export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMess
         tradingFields['/api/ig/research/test']=['environment','connectionGeneration','revision','id','epic'];
         tradingFields['/api/ig/imported-signals']=['environment','id','epic','sourceText','direction','entryLevel','stopLevel','targetLevel','validUntil'];
         tradingFields['/api/ig/preferences']=['environment','favorites','revision'];
-        tradingFields['/api/ig/schedules']=['environment','id','name','epics','timeframe','percent','horizonMinutes','durationMinutes','intervalMinutes','maxPositions','localTime','recurrence','date','weekdays','enabled','timezone'];
-        const allowed = tradingFields[url.pathname]??(url.pathname === "/api/ig/session" && method === "POST" ? ["environment","epics","timeframe","percent","horizonMinutes","durationMinutes","intervalMinutes","maxPositions"] : ["environment","epics","timeframe","percent","horizonMinutes"]);
+        tradingFields['/api/ig/schedules']=['environment','id','name','epics','timeframe','percent','horizonMinutes','durationMinutes','intervalMinutes','maxPositions','marginPercent','maxTrades','localTime','recurrence','date','weekdays','enabled','timezone'];
+        const allowed = tradingFields[url.pathname]??(url.pathname === "/api/ig/session" && method === "POST" ? ["environment","epics","timeframe","percent","horizonMinutes","durationMinutes","intervalMinutes","maxPositions","marginPercent","maxTrades"] : ["environment","epics","timeframe","percent","horizonMinutes"]);
         if (Object.keys(body).some(key => !allowed.includes(key))) { jsonStatus(res, 400, {error:"Okända fält i IG-begäran."}); return true; }
         try {
           const selection = {epics:body.epics as string[],timeframe:body.timeframe as IgTimeframe,percent:body.percent as number|undefined,horizonMinutes:body.horizonMinutes as number|undefined};
@@ -115,7 +115,7 @@ export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMess
           else if (url.pathname === "/api/ig/candles" && method === "GET") json(res, await getIgCandles(environment,url.searchParams.get("epic") ?? "",url.searchParams.get("timeframe") as IgTimeframe,Number(url.searchParams.get("limit") ?? 100)));
           else if (url.pathname === "/api/ig/selection" && method === "POST") json(res, await setIgSelection(environment,selection));
           else if (url.pathname === "/api/ig/analysis" && method === "POST") json(res, await runIgAnalysis(environment,selection));
-          else if (url.pathname === "/api/ig/session" && method === "POST") json(res, await startIgSession(environment,{...selection,durationMinutes:body.durationMinutes as number,intervalMinutes:body.intervalMinutes as number,maxPositions:body.maxPositions as number}));
+          else if (url.pathname === "/api/ig/session" && method === "POST") json(res, await (deps.startSession??startIgSession)(environment,{...selection,durationMinutes:body.durationMinutes as number,intervalMinutes:body.intervalMinutes as number,maxPositions:body.maxPositions as number,marginPercent:body.marginPercent as number|undefined,maxTrades:body.maxTrades as number|undefined}));
           else if (url.pathname === "/api/ig/session" && method === "DELETE") json(res, {session:stopIgSession(environment)});
           else if(url.pathname==="/api/ig/order-preview"&&method==="POST")json(res,await previewIgOrder(environment,body));
           else if(url.pathname==="/api/ig/order-confirm"&&method==="POST")json(res,await confirmIgOrder(environment,String(body.draftId??"")));

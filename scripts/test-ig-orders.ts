@@ -112,3 +112,20 @@ for(let t=5000;t<60000;t+=5000){displayNow=1000+t;assert.equal((await display.br
 assert.equal(displayCalls,2,'Tolv UI-pollningar ger två workingorders-läsningar per minut');
 displayGeneration='display-B';await display.brokerPending('demo');assert.equal(displayCalls,3,'Nytt konto återanvänder aldrig gammal visningscache');
 console.log('PASS: arbetsorder-visning har 30s generationbunden cache/singleflight utan att ändra färsk riskvalidering');
+
+// Sessionskvoten följer de beständigt reserverade orderförsöken, inte öppna positioner.
+let sessionPolicy:any={id:'session-five',marginPercent:1,maxTrades:5,riskPercent:1,holdingMinutes:3},slowSession=false;
+const sessionDir=path.join(directory,'session-policy'),sessionCalls:any[]=[];
+const sessionDeps={...deps,directory:sessionDir,status:(()=>({environments:{demo:{...environment('demo'),account:{accountType:'CFD',balance:1000,available:1000,profitLoss:0,currency:'USD'}},live:environment('live')}})) as never,sessionPolicy:()=>sessionPolicy,positions:async()=>({status:'ready',positions:[]}) as never,accounts:(async()=>{if(slowSession)sessionPolicy=null;return {status:'ready'};}) as never,call:(async(...args:any[])=>{sessionCalls.push(args);if(args[2]==='POST')return {dealReference:'session-ref'};if(args[1].startsWith('confirms/'))return {dealStatus:'REJECTED'};return call(...args as Parameters<typeof call>);}) as never};
+const sessionOrders=createIgOrders(sessionDeps),sessionTicket={...ticket,size:.5,holdingMinutes:3};
+await assert.rejects(sessionOrders.preview('demo',{...sessionTicket,size:1}),/marginal-/);
+await assert.rejects(sessionOrders.preview('demo',{...sessionTicket,stopLevel:50}),/SL-risk/);
+await assert.rejects(sessionOrders.preview('demo',{...sessionTicket,autoClose:false}),/tidsstängning/);
+await assert.rejects(sessionOrders.preview('demo',{...sessionTicket,orderType:'LIMIT',autoClose:false}),/marknadsorder/);
+const six=await Promise.all(Array.from({length:6},()=>sessionOrders.preview('demo',sessionTicket)));
+const concurrent=await Promise.allSettled(six.map(d=>sessionOrders.confirm('demo',d.id)));assert.equal(concurrent.filter(x=>x.status==='fulfilled').length,1,'Samtida confirm serialiseras');
+for(const d of six.slice(1,5))await sessionOrders.confirm('demo',d.id);
+await assert.rejects(sessionOrders.confirm('demo',six[5].id),/gräns/);assert.equal(sessionCalls.filter(c=>c[2]==='POST').length,5);
+const sessionRestart=createIgOrders(sessionDeps);await assert.rejects(sessionRestart.preview('demo',sessionTicket),/gräns/,'Omstart nollställer inte samma sessions fem reservationer');
+sessionPolicy={...sessionPolicy,id:'next-session',marginPercent:3,riskPercent:2};const newDraft=await sessionOrders.preview('demo',{...sessionTicket,size:2});assert.ok(Math.abs(newDraft.margin-20.2)<1e-9);slowSession=true;const posts=sessionCalls.filter(c=>c[2]==='POST').length;await assert.rejects(sessionOrders.confirm('demo',newDraft.id),/sessionen ändrades/);assert.equal(sessionCalls.filter(c=>c[2]==='POST').length,posts);slowSession=false;
+console.log('PASS: 1–3% marginal separat från SL-risk, 3min tidsstängning, fem beständiga orderförsök inklusive avvisningar, samtidighet, omstart och stopp under validering; endast mocks');

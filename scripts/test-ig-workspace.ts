@@ -323,3 +323,12 @@ console.log('PASS: tom IG-kategori använder progressiv sökreserv, aktier utesl
  assert.ok(v.session.batchReports.some((r:any)=>r.error));w.stopSession('live');const count=scopes.length;clock+=61000;await w.tickSessions();assert.equal(scopes.length,count,'Stopp hindrar nästa omgång');
  console.log('PASS: tolv sessionsinstrument roteras i femmor, budgetavslag märks som misslyckat försök, bara hela lyckade varv räknas och stopp hindrar nästa batch');
 }
+
+{
+ const policyWorkspace=createIgWorkspace({...deps,directory:path.join(directory,'policy-default')});
+ const p=await policyWorkspace.startSession('live',{epics:[epic],timeframe:'5m',percent:1,marginPercent:2,maxTrades:5,durationMinutes:60,intervalMinutes:5});
+ assert.equal(p.horizonMinutes,5,'Utelämnad horisont får inte ärva legacy 15 minuter för marginalsession');assert.equal(policyWorkspace.sessionPolicy('live')?.marginPercent,2);
+ policyWorkspace.stopSession('live');assert.equal(policyWorkspace.sessionPolicy('live'),null);
+ await assert.rejects(policyWorkspace.startSession('live',{...p,horizonMinutes:15,durationMinutes:60}),/1–5/);
+ console.log('PASS: marginalsession har fem minuters standardhorisont och stopp tar bort aktiv orderpolicy');
+}

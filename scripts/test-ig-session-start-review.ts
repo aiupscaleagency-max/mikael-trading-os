@@ -33,3 +33,15 @@ try{
  }
  console.log('IG session start review: pause/delete/stop under metadata-await förhindrar sessionsstart');
 }finally{fs.rmSync(root,{recursive:true,force:true});}
+
+// Den faktiska HTTP-route-vägen får inte tappa den nya policyn.
+{
+ const {handleIgRoutes}=await import('../src/server/igRoutes.js');
+ let captured:any,response:any,code=0;
+ const body={environment:'demo',epics:['EUR'],timeframe:'1m',percent:1,marginPercent:2,maxTrades:5,horizonMinutes:3,durationMinutes:60,intervalMinutes:5,maxPositions:1};
+ const req={headers:{origin:'http://localhost:3939',host:'localhost:3939','content-type':'application/json'}} as any;
+ const res={setHeader(){},writeHead(value:number){code=value;},end(value:string){response=JSON.parse(value);}} as any;
+ await handleIgRoutes(new URL('http://localhost:3939/api/ig/session'),'POST',req,res,async()=>JSON.stringify(body),()=>true,{startSession:(async(_mode,input)=>{captured=input;return {id:'fixture',...input};}) as any});
+ assert.equal(code,200);assert.equal(captured.marginPercent,2);assert.equal(captured.maxTrades,5);assert.equal(response.horizonMinutes,3);
+ console.log('PASS: HTTP-sessionroute förmedlar marginalandel, femgräns och innehavstid till sessionsservern');
+}

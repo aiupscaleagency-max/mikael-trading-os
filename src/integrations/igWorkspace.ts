@@ -19,7 +19,7 @@ import {config} from "../config.js";
 const frames={"1m":{resolution:"MINUTE",ms:60000},"3m":{resolution:"MINUTE_3",ms:180000},"5m":{resolution:"MINUTE_5",ms:300000},"15m":{resolution:"MINUTE_15",ms:900000},"30m":{resolution:"MINUTE_30",ms:1800000},"1h":{resolution:"HOUR",ms:3600000},"4h":{resolution:"HOUR_4",ms:14400000},"1d":{resolution:"DAY",ms:86400000}} as const;
 export type IgTimeframe=keyof typeof frames;
 export interface IgSelection {epics:string[];timeframe:IgTimeframe;percent:number;horizonMinutes:number}
-export interface IgSession extends IgSelection {id:string;environment:IgEnvironment;startedAt:number;endsAt:number;intervalMinutes:number;nextRunAt:number;status:"running"|"stopped"|"completed"|"interrupted";analyses:number;lastError:string|null;maxPositions:number;cursor?:number;cycles?:number;attemptedCycles?:number;cycleFailures?:number;batchSize?:number;lastBatch?:string[];lastBatchError?:string|null;batchReports?:{epics:string[];at:number;error:string|null}[]}
+export interface IgSession extends IgSelection {id:string;environment:IgEnvironment;startedAt:number;endsAt:number;intervalMinutes:number;nextRunAt:number;status:"running"|"stopped"|"completed"|"interrupted";analyses:number;lastError:string|null;maxPositions:number;marginPercent?:number;maxTrades?:number;cursor?:number;cycles?:number;attemptedCycles?:number;cycleFailures?:number;batchSize?:number;lastBatch?:string[];lastBatchError?:string|null;batchReports?:{epics:string[];at:number;error:string|null}[]}
 export interface IgCandle {openTime:number;closeTime:number;open:number;high:number;low:number;close:number;volume:number|null}
 interface WorkspaceState {connectionGeneration?:string|null;selection:IgSelection;session:IgSession|null;analysis:Record<string,any>|null;pendingOrders:Record<string,any>[]}
 const num=(v:unknown):number|null=>typeof v==="number"&&Number.isFinite(v)?v:null;
@@ -34,7 +34,7 @@ function selectionGuard(input:Partial<IgSelection>,allowEmpty=false,maxEpics=10)
   for(const epic of input.epics)epicGuard(epic);
   if(!input.timeframe||!Object.hasOwn(frames,input.timeframe))throw Error("Ogiltigt IG-intervall");
   const percent=input.percent??1,horizonMinutes=input.horizonMinutes??15;
-  if(!Number.isFinite(percent)||percent<0.1||percent>5||![1,5,15,30,60,120].includes(horizonMinutes))throw Error("Ogiltig IG-riskprocent eller horisont");
+  if(!Number.isFinite(percent)||percent<0.1||percent>5||![1,2,3,4,5,15,30,60,120].includes(horizonMinutes))throw Error("Ogiltig IG-riskprocent eller horisont");
   return {epics:[...new Set(input.epics)],timeframe:input.timeframe,percent,horizonMinutes};
 }
 // Endast kända fiatpar eller kryptonamn kategoriseras; aktier med liknande namn utesluts.
@@ -382,18 +382,21 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     } catch(e){const current=state(mode);persist(mode,{...current,analysis:{requestId,environment:mode,selection:selected,startedAt,completedAt:now(),status:(cancellations.get(mode)??0)!==cancellation?"stopped":"failed",steps:clone(steps),error:errorText(e)}});throw Error(errorText(e));}
     finally{busy.delete(mode);}
   }
-  async function startSession(mode:IgEnvironment,input:Partial<IgSelection>&{durationMinutes:number;intervalMinutes:number;maxPositions?:number},stillAllowed?:()=>boolean) {
+  async function startSession(mode:IgEnvironment,input:Partial<IgSelection>&{durationMinutes:number;intervalMinutes:number;maxPositions?:number;marginPercent?:number;maxTrades?:number},stillAllowed?:()=>boolean) {
     modeGuard(mode);if(busy.has(mode)||state(mode).session?.status==="running")throw Error("Session körs redan för IG-miljön");
     if(![15,30,60,120].includes(input.durationMinutes)||![1,5,15,30].includes(input.intervalMinutes))throw Error("Ogiltiga IG-sessionsintervall");
+    const marginPercent=input.marginPercent,maxTrades=input.maxTrades??5;
+    if((marginPercent!==undefined&&(!Number.isFinite(marginPercent)||marginPercent<1||marginPercent>3))||!Number.isInteger(maxTrades)||maxTrades<1||maxTrades>5)throw Error('Session kräver 1–3 % marginal och högst fem nya order');
+    if(marginPercent!==undefined&&![1,2,3,4,5].includes(input.horizonMinutes??5))throw Error('Session kräver 1–5 minuters innehavstid');
     const maxPositions=input.maxPositions??1;
     if(!Number.isInteger(maxPositions)||maxPositions<1||maxPositions>10)throw Error("Ogiltig gräns för samtidiga positioner");
     connected(mode);const binding=connectionIdentity(mode),cancellation=cancellations.get(mode)??0;
-    const selected=selectionGuard(input,false,500);for(const epic of selected.epics.slice(0,5)){const m=await market(mode,epic);if(!["CURRENCIES","INDICES","COMMODITIES","SHARES"].includes(m.type??""))throw Error("IG-instrumenttypen stöds inte i denna CFD-vy");}
+    const selected=selectionGuard({...input,horizonMinutes:input.horizonMinutes??(marginPercent!==undefined?5:15)},false,500);for(const epic of selected.epics.slice(0,5)){const m=await market(mode,epic);if(!["CURRENCIES","INDICES","COMMODITIES","SHARES"].includes(m.type??""))throw Error("IG-instrumenttypen stöds inte i denna CFD-vy");}
     if(connectionIdentity(mode)!==binding)throw Error("IG-kontoanslutningen ändrades under sessionsstarten");
     if((cancellations.get(mode)??0)!==cancellation)throw Error("Sessionens start avbröts");
     if(busy.has(mode)||state(mode).session?.status==="running")throw Error("Session körs redan för IG-miljön");
     if(stillAllowed&&!stillAllowed())throw Error('Schemalagd start avbruten');
-    const session:IgSession={...selected,id:randomUUID(),environment:mode,startedAt:now(),endsAt:now()+input.durationMinutes*60000,intervalMinutes:input.intervalMinutes,nextRunAt:now(),status:"running",analyses:0,lastError:null,maxPositions,cursor:0,cycles:0,attemptedCycles:0,cycleFailures:0,batchSize:5,lastBatch:[],lastBatchError:null,batchReports:[]};
+    const session:IgSession={...selected,id:randomUUID(),environment:mode,startedAt:now(),endsAt:now()+input.durationMinutes*60000,intervalMinutes:input.intervalMinutes,nextRunAt:now(),status:"running",analyses:0,lastError:null,maxPositions,marginPercent,maxTrades,cursor:0,cycles:0,attemptedCycles:0,cycleFailures:0,batchSize:5,lastBatch:[],lastBatchError:null,batchReports:[]};
     persist(mode,{...state(mode),selection:{...selected,epics:selected.epics.slice(0,10)},session});return clone(session);
   }
   function stopSession(mode:IgEnvironment){modeGuard(mode);cancellations.set(mode,(cancellations.get(mode)??0)+1);const current=state(mode);if(current.session?.status==="running")persist(mode,{...current,session:{...current.session,status:"stopped"}});return clone(state(mode).session);}
@@ -441,7 +444,8 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     if(finalConnection.status!=="connected" || connectionIdentity(mode)!==current.connectionGeneration){pos={positions:null,status:"unavailable",error:"IG-anslutningen kunde inte verifieras"};hist={transactions:null,activities:null,status:"unavailable",error:"IG-anslutningen kunde inte verifieras"};}
     return {environment:mode,connection:finalConnection,selection:clone(current.selection),markets:finalConnection.status==="connected"?markets:[],positions:pos.positions,positionsStatus:pos.status,positionsError:pos.error,history:hist,analysis:clone(current.analysis),session:clone(current.session),pendingOrders:clone(current.pendingOrders),transport:"REST polling",execution:{enabled:false,reason:"IG CFD-order kräver verifierad kontrakts-/marginalrisk och servergodkännande"},serverNow:now()};
   }
-  return {searchMarkets,catalogue,marketOverview,market,accountFx,candles,history,setSelection,analyze,startSession,stopSession,tickSessions,workspace,positionLimit:(mode:IgEnvironment)=>state(mode).session?.status==="running"?state(mode).session!.maxPositions:1};
+  function sessionPolicy(mode:IgEnvironment){const current=state(mode),s=current.session;return current.connectionGeneration===connectionIdentity(mode)&&s?.status==='running'&&now()<s.endsAt&&s.marginPercent!==undefined?{id:s.id,marginPercent:s.marginPercent,maxTrades:s.maxTrades??5,riskPercent:s.percent,holdingMinutes:s.horizonMinutes}:null;}
+  return {sessionPolicy,searchMarkets,catalogue,marketOverview,market,accountFx,candles,history,setSelection,analyze,startSession,stopSession,tickSessions,workspace,positionLimit:(mode:IgEnvironment)=>state(mode).session?.status==="running"?state(mode).session!.maxPositions:1};
 }
 const workspace=createIgWorkspace();
 export const searchIgMarkets=workspace.searchMarkets,getIgMarket=workspace.market,getIgCandles=workspace.candles,getIgHistory=workspace.history,setIgSelection=workspace.setSelection,runIgAnalysis=workspace.analyze,startIgSession=workspace.startSession,stopIgSession=workspace.stopSession,tickIgSessions=workspace.tickSessions,getIgWorkspace=workspace.workspace;
@@ -453,3 +457,5 @@ export const getIgAccountFx=workspace.accountFx;
 export const getIgCatalogue=workspace.catalogue;
 
 export const getIgMarketOverview=workspace.marketOverview;
+
+export const getIgSessionPolicy=workspace.sessionPolicy;
