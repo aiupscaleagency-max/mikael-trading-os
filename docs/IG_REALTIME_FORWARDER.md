@@ -120,3 +120,11 @@ Nya marginalsessioner anger marginPercent (1–3 procent av verifierat kontosald
 Orderförsöket reserveras beständigt i samma orderjournal före POST till IG. Avvisningar och okända utfall förbrukar också ett försök; gränsen är konservativ och innebär inte krav på fem genomförda trades. Stängning frigör inte försöket. Double Up går genom samma gränser. Stopp/start är en ny manuell session med egen kvot; det finns inget separat dagstak som blockerar användarstartade extrasessioner.
 
 Sessionsorder måste vara marknadsorder med aktiv tidsstängning. Sessionspositioners tid får inte förlängas med Roll-over. Tiden räknas konservativt från orderbegäran; IG-bekräftelse, avbrott, kvoter och 15-sekunders bevakning kan fördröja avslut. Omstart/kontobyte/nödstopp behåller befintligt beteende som avbryter tidsplaner; inga garanterade femminutersavslut utlovas. Scheman behöver återaktiveras efter serveromstart. Aktiveringsskriptet gör detta för de fyra fönstren efter uppdatering.
+
+## Samlad Valutapar-sida – 8 oktober 2026
+
+Forex och Krypto visas som två sektioner på samma sida med centrerade, lika breda kort. Tolv kort visas från början per sektion; Visa mer lägger till tolv utan att ersätta tidigare kort. Sökning, sortering och filter återställer expansionen. Kontobyte rensar sidans sökning och urvalsfilter så att ett tomt Live-favoriturval inte döljer Demo-listan. Tomlägen skiljer anslutning, hämtning, fel och filtrering.
+
+Browserregression verifierar 12→24→36 kort, bevarat första instrument, lika kolumnbredd och återställning efter sökning. Typkontroll, workspace-svit och forwarder passerar. Reviewer har granskat ändringen. Inga order- eller backendändringar.
+
+Läsbar driftkontroll före uppdateringen: Demo anslutet, 196 Forex-instrument och två kryptoinstrument i directory-svaren. Den ofullständiga kryptoupptäckten löses inte av denna layoutändring. Uppdateraren utgår från senast bekräftat installerade 69954d9.

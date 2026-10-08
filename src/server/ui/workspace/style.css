@@ -72,3 +72,13 @@ body{display:grid;grid-template-columns:184px minmax(0,1fr);grid-template-rows:a
 @media(max-width:550px){body{grid-template-columns:52px minmax(0,1fr)}.market-list{grid-template-columns:1fr}.markets-page,.feature-page{padding:12px}.market-pagination{gap:6px;font-size:9px}.market-pagination button{font-size:10px}.markets-controls>label:not(.search){min-width:100px}.library-panel{padding:14px}#chat-floating{font-size:10px;right:10px;bottom:32px}.statusbar{overflow:hidden}}
 
 .workspace-nav{height:100%;justify-content:flex-start}.workspace-nav button.active{height:auto;padding-top:12px}
+
+/* Samlad och centrerad marknadsöversikt med växande kortlistor. */
+#markets-page{padding:clamp(12px,2vw,28px)}
+#markets-page>.markets-heading,#markets-page>.markets-controls,#markets-page>.field-note,#markets-page>.markets-sections,#markets-page>.markets-source-note{width:100%;max-width:1560px;margin-left:auto;margin-right:auto}
+#markets-page .market-list{grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),300px));justify-content:center;gap:16px}
+#markets-page .market-card{width:100%;height:100%;text-align:left}
+#markets-page .market-section-heading{max-width:1560px;margin-inline:auto}
+#markets-page .market-pagination,#markets-page .market-empty{grid-column:1/-1;justify-self:center;text-align:center}
+#markets-page .market-pagination{flex-wrap:wrap;padding:18px 0;gap:14px}
+#markets-page .market-pagination button{min-width:180px;min-height:42px;border-color:#2f6a47;color:#7aefa3}
