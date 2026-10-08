@@ -17,7 +17,7 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
  const remainingSearches=Number.isInteger(result.remainingSearches)&&result.remainingSearches>=0?result.remainingSearches:null;
  const rows=[...markets.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name),'sv'));const hasChanges=rows.some(m=>m.changePercent!==null),hasSpread=rows.some(m=>m.spread!==null);
  const rankings=structuredClone(igDirectoryRankings);rankings.gainers.available=hasChanges;rankings.losers.available=hasChanges;rankings.movers.available=hasChanges;rankings.spread.available=hasSpread;
- const value={environment:mode,category,markets:rows,complete,status:complete?'ready':'partial',source,note,error:null,updatedAt:now(),remainingSearches,unclassifiedInstruments:unclassified,rankings};cache.set(key,{at:now(),value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}}
+ const value={environment:mode,category,markets:rows,complete,status:complete?'ready':'partial',source,note,error:result.error??result.categoryError??null,progress:result.progress??null,updatedAt:now(),remainingSearches,unclassifiedInstruments:unclassified,rankings};cache.set(key,{at:now(),value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}}
  async function enrich(mode:IgEnvironment,epic:string){
  if(typeof epic!=='string'||!/^[A-Za-z0-9._-]{1,100}$/.test(epic))throw Error('Ogiltigt IG-instrument');
  const binding=identity(mode),key=`enrich:${mode}:${binding}:${epic}`,cached=cache.get(key);if(cached&&now()-cached.at<60000)return structuredClone(cached.value);if(pending.has(key))return structuredClone(await pending.get(key));
@@ -30,6 +30,22 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
  if(identity(mode)!==binding)throw Error('IG-kontoanslutningen ändrades');const value={environment:mode,epic,trendScore,sentimentLongPercent,trendBasis:'SMA20/SMA50 på 50 stängda 1h-ljus · procentuell skillnad',sentimentBasis:'IG andel långa positioner · inte köpvolym',updatedAt:now(),reasons};cache.set(key,{at:now(),value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}
  }
 
- return {catalogue,enrich};
+ // Båda anslutna miljöer fortsätter oberoende av vilken flik användaren visar.
+ const scans=new Map<IgEnvironment,{binding:string;at:number;cryptoFirst:boolean}>();let scanning=false;
+ async function tickCatalogues(){
+  if(scanning)return;scanning=true;
+  try{for(const mode of ['demo','live'] as const){
+   if(status().environments[mode].status!=='connected')continue;
+   const binding=identity(mode),previous=scans.get(mode);
+   if(previous?.binding===binding&&now()-previous.at<65000)continue;
+   const cryptoFirst=previous?.binding===binding?!previous.cryptoFirst:false;
+   scans.set(mode,{binding,at:now(),cryptoFirst});
+   for(const category of cryptoFirst?['crypto','forex']:['forex','crypto']){
+    if(identity(mode)!==binding)break;
+    try{await catalogue(mode,category);}catch{/* Nästa begränsade cykel försöker igen; HTTP-anrop visar felet. */}
+   }
+  }}finally{scanning=false;}
+ }
+ return {catalogue,enrich,tickCatalogues};
 }
-const directory=createIgMarketDirectory();export const getIgMarketDirectory=directory.catalogue,getIgDirectoryEnrichment=directory.enrich;
+const directory=createIgMarketDirectory();export const getIgMarketDirectory=directory.catalogue,getIgDirectoryEnrichment=directory.enrich,tickIgCatalogues=directory.tickCatalogues;

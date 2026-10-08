@@ -275,3 +275,34 @@ console.log('PASS: tom IG-kategori använder progressiv sökreserv, aktier utesl
  let categoryReads=0;const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-page-mismatch-')),now:()=>now,status:status as any,call:async(_mode,route)=>{if(route==='categories')return {categories:[{code:'CURRENCIES'}]};if(route.startsWith('categories/')){categoryReads++;return {instruments:[],metadata:{pageNumber:99,pageSize:150}};}return {markets:[{epic:'SAFE.EUR',instrumentName:'EUR/USD',instrumentType:'CURRENCIES'}]};}});
  const r=await w.catalogue('live','forex');assert.equal(r.source,'IG kontosökning');assert.ok(r.markets.some(m=>m.epic==='SAFE.EUR'));await w.catalogue('live','crypto');assert.equal(categoryReads,1,'Felaktig sidmetadata ger ingen upprepad kategoriloop');
 }
+
+// Diagram- och kontoläsningar får inte permanent svälta katalogen.
+{
+ let clock=now;const calls:{mode:string;route:string}[]=[];
+ const both=()=>({environments:{live:{...status().environments.live,connectionGeneration:'fair-live'},demo:{...status().environments.live,environment:'demo',connectionGeneration:'fair-demo'}}});
+ const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-catalog-contention-')),now:()=>clock,status:both as any,call:async(mode,route)=>{calls.push({mode,route});if(route==='categories')return {categories:[{code:'CURRENCIES'}]};if(route.startsWith('categories/'))return {instruments:[{epic:'FX.EUR',instrumentName:'EUR/USD',instrumentType:'CURRENCIES'},{epic:'CR.BTC',instrumentName:'Bitcoin',instrumentType:'CURRENCIES'}],metadata:{pageNumber:0,pageSize:150}};return {markets:[]};}});
+ for(const mode of ['live','demo'] as const){for(let i=0;i<10;i++)await w.searchMarkets(mode,`ordinary-${i}`);const r=await w.catalogue(mode,'forex');assert.equal(r.markets.length,1,'Tio övriga läsningar blockerar inte katalogen');assert.equal(r.complete,true);const c=await w.catalogue(mode,'crypto');assert.equal(c.markets[0].epic,'CR.BTC');}
+ assert.equal(calls.filter(c=>c.route==='categories').length,2);assert.ok(calls.length<=36,'Appreserven bevaras');
+ // Upprepade nätfel får synlig diagnos och sökreserv, med återförsök av kategorin.
+ let attempts=0;const failing=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-catalog-errors-')),now:()=>clock,status:both as any,call:async(_mode,route)=>{if(route==='categories'){attempts++;throw Error('IG-anropet kunde inte verifieras; utfallet kan vara okänt');}return {markets:[{epic:'FX.RECOVERED',instrumentName:'EUR/USD',instrumentType:'CURRENCIES'}]};}});
+ const first=await failing.catalogue('demo','forex');assert.equal(first.progress?.reason,'endpoint_error');assert.match(first.error!,/IG-kategorin/);await failing.catalogue('demo','crypto');assert.equal(attempts,1,'Ingen retryloop under cooldown');
+ clock+=61000;const second=await failing.catalogue('demo','forex');assert.equal(attempts,2);assert.equal(second.markets[0].epic,'FX.RECOVERED');assert.equal(second.complete,false,'Sökreserven utger sig aldrig för fullständig');assert.equal(second.progress?.category?.failures,2);
+ clock+=61000;await failing.catalogue('demo','forex');assert.equal(attempts,3,'Kategorivägen återförsöks även med fungerande sökreserv');
+ console.log('PASS: konkurrerande läsanrop, båda miljöer, global reserv, synliga kategorifel, begränsad retry och sökreserv');
+}
+
+// En trasig generisk sökterm får inte gömma fungerande Bitcoin/Ether-sökningar.
+{
+ let clock=now,failed=true,cryptoAttempts=0;const terms:string[]=[];
+ const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-term-retry-')),now:()=>clock,status:status as any,call:async(_mode,route,_method,_version,_body,extra)=>{
+  if(route==='categories')throw Error('IG svarade HTTP 404');
+  const term=new URLSearchParams(extra?.query).get('searchTerm')!;terms.push(term);
+  if(term==='Crypto'){cryptoAttempts++;if(failed)throw Error('IG svarade HTTP 500');}
+  return {markets:term==='Bitcoin'?[{epic:'RETRY.BTC',instrumentName:'Bitcoin',instrumentType:'CURRENCIES'}]:term==='Ether'?[{epic:'SH.ETH',instrumentName:'Ether ETF',instrumentType:'SHARES'}]:[]};
+ }});
+ let r=await w.catalogue('live','crypto');assert.equal(r.progress?.search?.reason,'search_error');assert.equal(cryptoAttempts,1);await w.catalogue('live','crypto');assert.equal(cryptoAttempts,1,'Cooldown även för första söktermen');
+ clock+=61000;r=await w.catalogue('live','crypto');assert.equal(cryptoAttempts,2);assert.ok(r.markets.some(m=>m.epic==='RETRY.BTC'));assert.ok(!r.markets.some(m=>m.epic==='SH.ETH'));assert.ok(r.progress?.search?.failedTerms.includes('Crypto'));assert.match(r.categoryError!,/sökningar misslyckades/);assert.equal(r.complete,false);
+ failed=false;for(let i=0;i<10&&r.remainingSearches;i++){clock+=61000;r=await w.catalogue('live','crypto');}
+ assert.equal(r.remainingSearches,0);assert.ok(cryptoAttempts>=3);assert.deepEqual(r.progress?.search?.failedTerms,[],'Missad term återhämtas från retrykön');assert.equal(r.complete,false);
+ console.log('PASS: felande första sökterm, cooldown, senare kryptoinstrument, aktiefilter och återhämtad retrykö');
+}

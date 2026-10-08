@@ -6,6 +6,7 @@ import {handleIgRoutes} from './igRoutes.js';
 import {tickIgSchedules} from '../integrations/igSchedules.js';
 import {tickIgOrders} from '../integrations/igOrders.js';
 import {tickIgSessions} from '../integrations/igWorkspace.js';
+import {tickIgCatalogues} from '../integrations/igMarketDirectory.js';
 import {getTiingoStatus} from '../data/tiingoHistory.js';
 import {verifyAccessToken,signInWithPassword} from '../auth/supabase.js';
 import {loadState,saveState} from '../memory/store.js';
@@ -73,6 +74,7 @@ export function startServer(port:number):http.Server{
  const uiDir=path.resolve(import.meta.dirname,'ui');
  const igTimer=setInterval(()=>{void tickIgSchedules().catch(()=>log.warn('IG-schemabevakningen misslyckades'));void tickIgSessions().catch(()=>log.warn('IG-sessionsbevakningen misslyckades'));},1000);igTimer.unref();
  const orderTimer=setInterval(()=>void tickIgOrders().catch(()=>log.warn('IG-orderbevakningen misslyckades')),15000);orderTimer.unref();
+ const catalogueTimer=setInterval(()=>void tickIgCatalogues().catch(()=>log.warn('IG-katalogbevakningen misslyckades')),5000);catalogueTimer.unref();
  const server=http.createServer(async(req,res)=>{
   try{
    const url=new URL(req.url??'/','http://localhost'),method=req.method??'GET';
@@ -197,7 +199,7 @@ export function startServer(port:number):http.Server{
   if(isLocalNoLogin(req)||isTailnetNoLogin(req))return true;
   return (await verifyAccessToken(parseCookies(req.headers.cookie)[SESSION_COOKIE]))?.status==='active';
  }});
- server.on('close',()=>{clearInterval(igTimer);clearInterval(orderTimer);igRealtime.close();});
+ server.on('close',()=>{clearInterval(igTimer);clearInterval(orderTimer);clearInterval(catalogueTimer);igRealtime.close();});
  server.on('error',(err:NodeJS.ErrnoException)=>{log.error(err.code==='EADDRINUSE'?'Porten används redan. Ingen andra handelsmotor startas.':'IG-servern kunde inte starta');});
  server.listen(port,()=>log.ok(`IG Trading OS: http://localhost:${port}`));return server;
 }

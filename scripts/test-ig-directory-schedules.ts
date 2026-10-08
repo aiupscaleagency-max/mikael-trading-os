@@ -59,3 +59,17 @@ const allowedCalls=endpointCalls.length;await assert.rejects(connection.callAuth
 let sessionAllowed=true,finishMarket!:()=>void;let enteredMarket!:()=>void;const entered=new Promise<void>(r=>enteredMarket=r);const waitingMarket=new Promise<void>(r=>finishMarket=r);const cancelWorkspace=createIgWorkspace({status,now:()=>now,directory:path.join(directory,'cancel-start'),call:async(_mode,route)=>{enteredMarket();await waitingMarket;return {instrument:{epic:'EUR',type:'CURRENCIES'},snapshot:{},dealingRules:{}};}});
 const pendingStart=cancelWorkspace.startSession('demo',{...input,epics:['EUR']},()=>sessionAllowed);await entered;sessionAllowed=false;finishMarket();await assert.rejects(pendingStart,/start avbruten/);assert.equal((await cancelWorkspace.workspace('demo')).session,null,'Paus under metadatahämtning skapar ingen session');
 fs.rmSync(directory,{recursive:true,force:true});console.log('IG directory + schedules: alla kontroller godkända');
+
+// Bakgrundsladdningen fortsätter även utan öppen handelsflik, i båda miljöer.
+{
+ let clock=now,gen='scan-a',connected=true;const scans:string[]=[];
+ const scanner=createIgMarketDirectory({now:()=>clock,status:()=>({environments:{demo:{status:connected?'connected':'disconnected',connectionGeneration:gen},live:{status:'connected',connectionGeneration:'scan-live'}}}) as any,fallback:async(mode,category)=>{scans.push(`${mode}:${category}`);return {markets:[],complete:false,remainingSearches:20,progress:{reason:'budget'},error:'IG-kategorifel',source:'fixture'} as any;}});
+ await Promise.all([scanner.tickCatalogues(),scanner.tickCatalogues()]);
+ assert.deepEqual(scans,['demo:forex','demo:crypto','live:forex','live:crypto'],'Singleflight, endast läskataloger och båda miljöerna');
+ const result=await scanner.catalogue('demo','forex');assert.equal(result.progress.reason,'budget');assert.equal(result.error,'IG-kategorifel','Diagnosen bevaras till UI');
+ clock+=64000;await scanner.tickCatalogues();assert.equal(scans.length,4,'Ingen tät katalogpollning');
+ clock+=1000;await scanner.tickCatalogues();assert.deepEqual(scans.slice(4),['demo:crypto','demo:forex','live:crypto','live:forex'],'Nästa kategori får första budgetchansen');
+ gen='scan-b';await scanner.tickCatalogues();assert.deepEqual(scans.slice(-2),['demo:forex','demo:crypto'],'Ny kontobindning laddas direkt, inte gammal cache');
+ connected=false;clock+=65000;const before=scans.length;await scanner.tickCatalogues();assert.deepEqual(scans.slice(before),['live:forex','live:crypto'],'Frånkopplad miljö hoppas över');
+ console.log('PASS: kontobunden automatisk katalogladdning i Demo/Live, rotation, cooldown, diagnoser och singleflight');
+}
