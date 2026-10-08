@@ -66,7 +66,7 @@ try{
   ...['USD / JPY','GBP / JPY','AUD / JPY','EUR / GBP','CAD / CHF','USD / CHF','USD / NOK','EUR / SEK'].map((name,i)=>({epic:`FIX.FOREX.${i}`,name,type:'CURRENCIES',category:'forex',marketStatus:'TRADEABLE'}))
  ];
  let fixtureImports=[];let fixtureSchedules=[];let emptyCrypto=false,catalogComplete=true,catalogFailure=false,fixtureSelection=[],fixtureAnalysis=null;const discovery=[],credentialRequests=[];let credentialAuthFails=false;
- let connected=false,failConnect=false,connectGate=null,connectRequests=0,marketRequests=0,marketGate=null,workspaceMarkets=[];
+ let mismatchMarket=false;let connected=false,failConnect=false,connectGate=null,connectRequests=0,marketRequests=0,marketGate=null,workspaceMarkets=[];
  const fixtureWrites=[],sessionRequests=[];
  await real.route('**/api/**',async route=>{
   const req=route.request(),path=new URL(req.url()).pathname;if(req.method()!=='GET')fixtureWrites.push(path);
@@ -90,7 +90,7 @@ try{
   else if(path==='/api/ig/selection'){if(req.postDataJSON().epics.length>10){await route.fulfill({status:400,json:{error:'Max 10 instrument'}});return;}fixtureSelection=req.postDataJSON().epics;data={ok:true};}
   else if(path==='/api/ig/analysis'){fixtureAnalysis={status:'completed',selection:req.postDataJSON(),completedAt:Date.now(),head:{analyses:[]}};data=fixtureAnalysis;}
   else if(path==='/api/ig/markets'){discovery.push(new URL(req.url()).searchParams.get('searchTerm'));data={markets:[{epic:'FIX.EXTRA',name:'MXN / NOK',type:'CURRENCIES',category:'forex',marketStatus:'TRADEABLE'}]};}
-  else if(path==='/api/ig/market'){const epic=new URL(req.url()).searchParams.get('epic');data={...markets.find(m=>m.epic===epic),quote:{bid:100,offer:101,receivedAt:Date.now(),observedAt:Date.now(),marketStatus:'TRADEABLE',delayTime:0},instrument:{decimalPlacesFactor:2}};}
+  else if(path==='/api/ig/market'){const epic=new URL(req.url()).searchParams.get('epic');data={...markets.find(m=>m.epic===(mismatchMarket?'FIX.BTC':epic)),quote:{bid:100,offer:101,receivedAt:Date.now(),observedAt:Date.now(),marketStatus:'TRADEABLE',delayTime:0},instrument:{decimalPlacesFactor:2}};}
   else if(path==='/api/ig/candles')data={candles:[]};
   else throw Error(`Otillåtet fixture-anrop: ${path}`);
   await route.fulfill({json:data});
@@ -155,6 +155,7 @@ try{
  assert.equal(await real.locator('#connect').isDisabled(),true,'Slutförd gammal anslutning återaktiverar inte knappen i designläge');assert.match(await real.locator('#notice').textContent(),/DESIGNLÄGE/);assert.equal(await real.locator('[data-chart="FIX.CARDANO"]').count(),0,'Gammalt katalogsvar läcker inte över kontogenerationer');
  assert.equal(connectRequests,4);assert.equal(fixtureWrites.filter(p=>p==='/api/ig/connect').length,4);assert.ok(fixtureWrites.every(p=>['/api/ig/connect','/api/ig/session','/api/ig/selection','/api/ig/analysis','/api/ig/credentials','/api/ig/schedules','/api/ig/preferences','/api/ig/imported-signals'].includes(p)),'Fixture skickar inga orderanrop'); // Ny browser utan sparat diagram får Forex när IG inte returnerar krypto.
  emptyCrypto=true;connected=true;workspaceMarkets=[];marketGate=null;await real.evaluate(()=>localStorage.clear());await real.reload();await real.waitForFunction(()=>document.querySelector('#instrument-name').textContent.includes('EUR / USD'));assert.match(await real.locator('#instruments').textContent(),/EUR/);assert.equal(await real.locator('[data-category="forex"]').getAttribute('class'),'active');emptyCrypto=false;
+ mismatchMarket=true;await real.locator('[data-chart="FIX.GBP"]').first().click();await real.waitForFunction(()=>document.querySelector('#toast').textContent.includes('instrument stämmer inte'));assert.equal(await real.locator('#instrument-name').textContent(),'Välj instrument');assert.equal(await real.locator('#chart-empty').isVisible(),true,'Felaktigt instrumentunderlag kan aldrig lämna föregående diagram synligt');assert.equal(await real.locator('#review-order').isDisabled(),true);mismatchMarket=false;
  await real.close();
 
  // Explicit Demo/Live-byte ansluter med befintliga uppgifter en gång; 401 ger ingen dold retry.

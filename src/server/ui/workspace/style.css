@@ -82,3 +82,7 @@ body{display:grid;grid-template-columns:184px minmax(0,1fr);grid-template-rows:a
 #markets-page .market-pagination,#markets-page .market-empty{grid-column:1/-1;justify-self:center;text-align:center}
 #markets-page .market-pagination{flex-wrap:wrap;padding:18px 0;gap:14px}
 #markets-page .market-pagination button{min-width:180px;min-height:42px;border-color:#2f6a47;color:#7aefa3}
+
+/* Checkbox, ikon, namn, bid, mått, favorit och diagram är sju separata kolumner. */
+@media(min-width:751px){.catalog-row{grid-template-columns:18px 30px minmax(160px,1fr) 100px 95px 30px 96px}.market-filters{grid-template-columns:1fr 1.5fr 1fr}}
+@media(max-width:750px){.catalog-row{grid-template-columns:16px 26px minmax(90px,1fr) 62px 25px}.catalog-row>button:last-child{grid-column:3/6}.catalog-row .catalog-name{min-width:0}}
