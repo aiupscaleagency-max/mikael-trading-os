@@ -1,76 +1,1086 @@
-<!doctype html>
-<html lang="sv">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Mikael · Trading OS</title><link rel="stylesheet" href="/workspace/style.css"><script src="/vendor/lightweight-charts.js" defer></script><script type="module" src="/workspace/app.mjs"></script></head>
-<body>
-<header class="topbar">
-  <a class="brand" href="/" aria-label="Trading OS"><span class="brand-icon">M</span><span>MIKAEL <b>TRADING OS</b></span></a>
-  <div class="segment" aria-label="Kontomiljö"><button data-mode="demo" class="active">Demo</button><button data-mode="live">Live</button></div>
-  <div class="balance"><small>Kontovärde <span id="currency">—</span></small><strong id="balance">—</strong></div>
-  <div class="balance"><small>Tillgängligt kapital</small><strong id="available">—</strong></div>
-  <div class="balance"><small>Öppen vinst / förlust</small><strong id="pnl">—</strong></div>
-  <span class="connection" id="connection">○ Ej ansluten</span>
-  <button id="connect">Anslut IG</button><button id="schedules-open">Scheman</button><button id="session-open" class="primary">▶ Starta agentsession</button><button id="kill" class="danger-outline" title="Stoppa nya analyser med befintlig kill switch">■ Nödstopp</button>
+<!doctype html><html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Claude Trading OS · IG</title><link rel="stylesheet" href="/claude/original.css"><link rel="stylesheet" href="/claude/style.css"><script src="/vendor/lightweight-charts.js"></script><script type="module" src="/claude/app.mjs"></script></head><body class="app-state-app claude-port"><div id="port-notice" role="status">CLAUDE TRADING OS · ursprunglig arbetsyta · IG-anslutning inväntas</div><header>
+  <span class="brand">MIKAEL TRADING OS</span>
+  <span class="dot live" id="conn-dot" title="Connection"></span>
+  <select id="broker-select">
+    <option value="IG-paper">IG TEST (låtsaspengar, riktiga priser)</option>
+    <option value="IG-demo">IG TEST (demo, låtsaspengar)</option>
+    <option value="IG">IG LIVE (riktiga pengar)</option>
+  </select>
+  <div class="mode-switcher" id="mode-switcher">
+    <button class="mode-btn paper active" data-mode="paper" title="TEST: IG demo (låtsaspengar, samma par som LIVE)">
+      <span>🧪 TEST</span><span class="mode-sub">IG demo</span>
+    </button>
+    <button class="mode-btn live" data-mode="live" title="LIVE: IG (RIKTIGA pengar, max $5/order)">
+      <span>💚 LIVE</span><span class="mode-sub">real money</span>
+    </button>
+  </div>
+  <button class="kill" id="kill-btn">⏻ KILL SWITCH</button>
+  <span class="pnl up" id="pnl">+$0.00 (0.00%)</span>
+  <button class="run-btn" id="run-btn">▶ Kör analys</button>
+  <button class="paper-balance" id="paper-balance" title="TEST-saldo (klicka för Trades-sidan)">📊 TEST <b id="pb-equity">—</b> <span id="pb-pnl">TEST</span></button>
+  <button class="paper-balance" id="live-balance" style="background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(16,185,129,.08));border-color:rgba(34,197,94,.5)" title="LIVE-saldo på IG (riktiga pengar)">💚 LIVE <b id="lb-equity" style="color:var(--green)">—</b></button>
+  <button class="cost-mini" id="cost-mini" title="Klicka för detaljerad kostnadsvy">💰 <b id="cost-today">$0.00</b> idag</button>
+  <div class="user-wrap">
+    <button class="user-chip" id="user-chip" title="Konto-meny">
+      <span class="uc-avatar" id="uc-avatar">M</span>
+      <span class="uc-name" id="uc-name">User</span>
+      <span style="color:var(--dim);font-size:9px">▾</span>
+    </button>
+    <div class="user-menu" id="user-menu">
+      <button id="um-account">👤 Mitt konto</button>
+      <button id="um-billing">💳 Billing</button>
+      <div class="um-divider"></div>
+      <button class="um-logout" id="um-logout">⏻ Logga ut</button>
+    </div>
+  </div>
 </header>
-<nav class="workspace-nav" aria-label="Huvudmeny"><div><button id="trading-view" class="active"><svg class="nav-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 13l4-5 4 3 7-8 M3 3v15h15"/></svg><span>Trade</span></button><button id="trades-open" title="Trades"><span class="nav-icon">↗</span><span>Trades</span></button><button id="cost-open" title="Cost"><span class="nav-icon">$</span><span>Cost</span></button><button id="course-open" title="Backtest & kurs"><span class="nav-icon">▥</span><span>Backtest & kurs</span></button><button id="markets-open"><svg class="nav-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14 M3 10h14 M3 15h14 M6 3v14"/></svg><span>Valutapar</span></button><button id="strategies-open"><svg class="nav-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3v5h5V3z M11 12v5h5v-5z M9 5h5v7 M4 8v6h7"/></svg><span>Strategier</span></button><button id="library-open" title="Strategy Library"><span class="nav-icon">▤</span><span>Strategy Library</span></button><button id="signals-open"><svg class="nav-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 11h3l3-7 3 12 3-7h3"/></svg><span>Signaler</span></button><button id="agents-open"><svg class="nav-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 7h8v8H6z M10 3v4 M8 10h.1 M12 10h.1 M8 13h4 M3 9v4 M17 9v4"/></svg><span>Agentsessioner</span></button><button id="chat-open" title="Agentchatt"><span class="nav-icon">◌</span><span>Agentchatt</span></button><button id="catalog-open"><svg class="nav-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h4v4H4z M12 4h4v4h-4z M4 12h4v4H4z M12 12h4v4h-4z"/></svg><span>Alla marknader</span></button><button id="tools-open"><svg class="nav-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3l4 4-2 2-4-4 M9 10l6 7 2-2-7-6 M15 3l2 2-5 5-2-2z"/></svg><span>Verktyg</span></button><button id="settings-open"><svg class="nav-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v2 M10 15v2 M3 10h2 M15 10h2 M5 5l2 2 M13 13l2 2 M5 15l2-2 M13 7l2-2 M13 10a3 3 0 1 1-6 0 3 3 0 0 1 6 0"/></svg><span>Inställningar & datakällor</span></button></div><span id="source-label">IG CFD · priser inväntas</span></nav>
-<div id="notice" class="notice" role="status" aria-live="polite">Anslut IG för att läsa kontots instrument, priser och positioner.</div>
-<nav class="mobile-tabs" aria-label="Handelspaneler"><button data-panel="chart" class="active">Diagram</button><button data-panel="instruments">Instrument</button><button data-panel="order">Order</button><button data-panel="activity">Affärer & signaler</button></nav>
-<section id="markets-page" class="markets-page" aria-label="Marknadsöversikt" hidden>
-  <div class="markets-heading"><div><small>DITT IG-KONTO · FOREX & KRYPTO</small><h1>Valutapar & krypto</h1><p>Välj instrument till samma analysurval och agentsession. Öppna diagrammet för att gå till handelsytan.</p></div><div class="markets-actions"><button id="markets-analyze" class="primary">Analysera valda</button><button id="markets-session-open" class="primary">▶ Starta agentsession</button></div></div>
-  <div class="markets-controls"><label class="search"><span>⌕</span><input id="markets-search" placeholder="Sök valutapar eller kryptovaluta" aria-label="Sök på marknadssidan"></label><label>Visa<select id="markets-scope"><option value="all">Alla hämtade</option><option value="selected">Mitt analysurval</option><option value="favorites">Favoriter</option></select></label><label>Sortera<select id="markets-sort"><option value="alpha">A–Ö</option><option value="activity">Mest handlat · mitt konto</option><option value="movers">Störst rörelse · IG idag</option><option value="trend">Dagens riktning · IG</option><option value="profit">Högst verifierad vinst · mitt konto</option><option value="buying">Mest köpintresse · IG-klienter</option></select></label><button id="markets-select-visible">Markera visade</button><button id="markets-reload">Ladda om listorna</button><span id="markets-selected-count" class="badge">0 / 10 valda</span></div>
-  <p id="markets-page-status" class="field-note" role="status" aria-live="polite">IG-katalog och statistik inväntas. Saknad statistik visas som okänd.</p>
-  <div class="markets-sections"><section class="market-section" aria-label="Forexmarknader"><div class="market-section-heading"><div><small>VALUTAPAR</small><h2>Forex</h2></div><span id="markets-forex-count" class="badge">—</span></div><div class="market-columns"><span>Analys / valutapar</span><span>IG idag</span><span>Kontots affärer</span><span>Vinst / köpintresse</span><span>Diagram</span></div><div id="markets-forex-list" class="market-list"><p class="market-empty">Forexmarknader inväntas.</p></div></section><section class="market-section" aria-label="Kryptomarknader"><div class="market-section-heading"><div><small>KRYPTOVALUTOR</small><h2>Krypto</h2></div><span id="markets-crypto-count" class="badge">—</span></div><div class="market-columns"><span>Analys / kryptovaluta</span><span>IG idag</span><span>Kontots affärer</span><span>Vinst / köpintresse</span><span>Diagram</span></div><div id="markets-crypto-list" class="market-list"><p class="market-empty">Kryptomarknader inväntas.</p></div></section></div>
-  <p class="markets-source-note">Störst rörelse och dagens riktning använder IG:s dagsförändring. Kontots aktivitet och vinst hålls isär från IG-klienters köpintresse. Ofullständig historik eller katalog märks; ingen statistik uppskattas för instrument som saknar underlag.</p>
+
+<div class="app-shell">
+<aside class="sidebar">
+  <button class="active" data-page="trade" title="Trade — chart + bet + team">
+    <span class="ico">📊</span><span>Trade</span>
+  </button>
+  <button data-page="pairs" title="Alla par — en kolumn per par, CALL/PUT och analys under varje">
+    <span class="ico">🧮</span><span>Alla par</span>
+  </button>
+  <button data-page="team" title="AI-Team — alla agenter">
+    <span class="ico">🤖</span><span>Team</span>
+  </button>
+  <button data-page="chat" title="Chatta med teamet — instruera trades">
+    <span class="ico">💬</span><span>Chat</span>
+  </button>
+  <button data-page="live" title="Live aktivitet — rullande par">
+    <span class="ico">⚡</span><span>Live</span>
+    <span class="live-dot"></span>
+  </button>
+  <button data-page="strategies" title="Strategier — bibliotek, live-lampor, IG-saldo">
+    <span class="ico">🧠</span><span>Strategi</span>
+  </button>
+  <button data-page="tree" title="Arbetsträd — vem jobbar, var i processen">
+    <span class="ico">🌳</span><span>Träd</span>
+  </button>
+  <button data-page="trades" title="Trades — positioner + beslut">
+    <span class="ico">📈</span><span>Trades</span>
+  </button>
+  <button data-page="cost" title="Cost — spend tracking">
+    <span class="ico">💰</span><span>Cost</span>
+  </button>
+  <button data-page="settings" title="Settings — backend, mode, risk">
+    <span class="ico">⚙️</span><span>Settings</span>
+  </button>
+  <div class="spacer"></div>
+  <button id="kill-sidebar" title="Kill switch">
+    <span class="ico">⏻</span><span>Kill</span>
+  </button>
+</aside>
+
+
+<div class="modal-bg" id="cost-modal-bg">
+  <div class="modal" style="max-width:680px">
+    <button class="close" id="cost-close">×</button>
+    <div class="modal-header">
+      <div class="modal-avatar" style="background:linear-gradient(135deg,#facc15,#a16207);color:#000">$</div>
+      <div class="modal-info">
+        <h2>Kostnadsöversikt</h2>
+        <span class="modal-role">Bara för dig (ditt konto)</span>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="cost-summary">
+        <div class="cost-row">
+          <span class="lbl">Idag</span>
+          <span class="val" id="c-today">$0.00</span>
+          <span class="cap" id="c-today-cap">/ $2 cap</span>
+        </div>
+        <div class="bar" id="c-today-bar"><span style="width:0%"></span></div>
+        <div class="cost-row">
+          <span class="lbl">Denna vecka</span>
+          <span class="val" id="c-week">$0.00</span>
+          <span class="cap" id="c-week-cap">/ $10 cap</span>
+        </div>
+        <div class="bar" id="c-week-bar"><span style="width:0%"></span></div>
+        <div class="cost-row">
+          <span class="lbl">Senaste 30 dagarna</span>
+          <span class="val" id="c-month">$0.00</span>
+        </div>
+        <div class="cost-status" id="c-status">✓ Inom budget</div>
+      </div>
+
+      <h4 style="margin-top:14px">Idag — per agent</h4>
+      <div id="c-by-agent" style="font-size:11px"></div>
+
+      <h4 style="margin-top:12px">Idag — per modell</h4>
+      <div id="c-by-model" style="font-size:11px"></div>
+
+      <h4 style="margin-top:12px">Senaste anrop</h4>
+      <div id="c-recent" style="font-size:10px;max-height:200px;overflow-y:auto"></div>
+
+      <div class="cost-info">
+        💡 <b>Cap = circuit breaker.</b> När dagens spend når $<span id="c-cap-val">2</span> stoppas alla framtida sessions automatiskt tills imorgon. Sätt högre via <code>MAX_DAILY_SPEND_USD</code> i .env om du vill.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="main-wrap" style="min-width:0">
+
+
+<div class="setup-banner" id="setup-banner" style="display:none">
+  <span class="sb-ico">🔒</span>
+  <div>
+    <b>TRADING LÅST</b>
+    <div style="color:var(--label);margin-top:2px">Du har dashboard-access — men för att <b style="color:#fff">köra trades (test eller live)</b> behöver du koppla din Anthropic + IG API först.</div>
+  </div>
+  <span class="sb-spacer"></span>
+  <button id="setup-banner-go">Koppla API nu →</button>
+</div>
+
+
+<section class="page active" id="page-trade">
+<div class="page-header"><span class="ph-ico">📊</span>Trade<span class="ph-sub">— marknaden, handla, signaler, analys och ordrar</span>
+  <button type="button" style="margin-left:auto;padding:6px 14px;border:1px solid var(--cyan);background:transparent;color:var(--cyan);border-radius:6px;font-weight:800;cursor:pointer;letter-spacing:.4px">ALLA PAR SIDA VID SIDA →</button></div>
+<main>
+
+<section id="tradeInfo">
+  <div class="ti-box"><div class="ti-h">Signaltabellen (sektion 5)</div><div id="ti-sig">Laddar…</div>
+    <form id="cs-form" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap" autocomplete="off">
+      <input id="cs-input" placeholder="Lägg till mynt, t.ex. PEPE" maxlength="20" style="flex:1;min-width:120px;background:#0f141c;border:1px solid #2a3140;color:#e6e6e6;border-radius:6px;padding:4px 8px;font:inherit">
+      <button type="submit" style="background:#f0b90b;color:#111;border:0;border-radius:6px;padding:4px 10px;font-weight:700;cursor:pointer">+ Lägg till</button>
+    </form>
+    <div id="cs-msg" style="font-size:11px;margin-top:4px"></div>
+    <div id="cs-list" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px"></div>
+  </div>
+  
+  <div class="ti-box"><div class="ti-h">Agenterna (sektion 3)</div><div id="ti-agents">Laddar…</div></div>
+  <div class="ti-box"><div class="ti-h">Diagram och orderbok (sektion 1–2)</div><div id="ti-chart">Det par du väljer i diagrammet. Priserna kommer live från IG, samma som på IG.eu. Orderboken visar samma mynt i USDC.</div></div>
+  <div class="ti-box"><div class="ti-h">Läge</div><div id="ti-mode">Laddar…</div></div>
 </section>
-<section id="strategies-page" class="feature-page" hidden aria-label="Strategier"><div class="markets-heading"><div><small>STRATEGIBIBLIOTEK</small><h1>Strategier & underlag</h1><p>Jämför kursregler och senaste analys på samma instrument och tidsram.</p></div><button data-workspace-view="trading">Till handelsytan</button></div><div id="strategies-page-content"></div></section>
-<section id="signals-page" class="feature-page" hidden aria-label="Signaler"><div class="markets-heading"><div><small>ANALYS & SIGNALIMPORT</small><h1>Signaler</h1><p>Agenternas senaste beslut och manuellt importerade IG-utkast.</p></div><button data-workspace-view="trading">Till handelsytan</button></div><div id="signals-page-content"></div><p class="field-note">Kopiering fyller orderutkastet. Varje order granskas separat. IG:s externa signalfeed är inte ansluten.</p></section>
-<section id="agents-page" class="feature-page" hidden aria-label="Agentsessioner"><div class="markets-heading"><div><small>JEV → TVÅ AGENTER</small><h1>Agentsessioner</h1><p>Starta bevakningen manuellt eller vid bestämda tider.</p></div><div class="markets-actions"><button id="agents-start" class="primary">▶ Starta manuellt</button><button id="agents-schedule">Schemalägg</button></div></div><div class="agent-overview"><article><small>01 · FÖRKONTROLL</small><h2>JEV</h2><p>Bedömer underlaget via befintlig API-routing.</p></article><article><small>02 · AGENT</small><h2>Teknisk analytiker</h2><p>Läser stängda ljus och jämför strategiregler.</p></article><article><small>03 · AGENT</small><h2>Hanna / Head Trader</h2><p>Väger analysen och lämnar beslut med motivering.</p></article></div><div id="agents-page-status" class="settings-card" role="status"></div><p class="field-note">Urvalet delas med Valutapar och handelsytan. Sessioner och scheman startar analyser och manuella orderförslag.</p></section>
-<section id="trades-page" class="feature-page" hidden aria-label="Trades"><div class="markets-heading"><div><h1>Trades</h1><p>Öppna, väntande och stängda affärer på valt IG-konto.</p></div><button data-workspace-view="trading">Till Trade</button></div><div id="trades-page-content"></div></section>
-<section id="cost-page" class="feature-page" hidden aria-label="Cost"><div class="markets-heading"><div><h1>Cost · AI-kostnader</h1><p>Serverns gemensamma AI-budget för Demo och Live. Detta är API-kostnader, inte mäklaravgifter.</p></div><button id="cost-reload">Uppdatera</button></div><div id="cost-content" role="status">Kostnader inväntas.</div></section>
-<section id="course-page" class="feature-page" hidden aria-label="Backtest och kurs"><div class="markets-heading"><div><h1>Backtest & kurs</h1><p>Day 4 använder kursens sparade strategi och officiella motor. Inga order skickas.</p></div><button id="course-reload">Uppdatera status</button></div><div id="course-content" role="status">Kursunderlag inväntas.</div><button id="course-run" class="primary" disabled>Kör Day 4-backtest</button><p class="field-note">Strategiutkast och regelkontroller i Strategy Library är separata från ett historiskt backtest. Ett test på BTCUSD dagsljus verifierar inte andra marknader eller tidsramar.</p></section>
-<section id="library-page" class="feature-page" hidden aria-label="Strategy Library"><div class="markets-heading"><div><small>STRATEGY LIBRARY</small><h1>Din strategiverkstad</h1><p>Spara idéer, kursmaterial och regelkontroller för det valda IG-kontot.</p></div><button id="research-chat-link" class="primary">Prata med agentteamet</button></div><p id="research-status" role="status" class="field-note">Anslut IG för att läsa biblioteket.</p><div class="library-grid"><div><form id="research-strategy-form" class="library-panel"><h2>Ny strategi</h2><label>Namn<input id="research-name" maxlength="120" required></label><label>Regler, hypotes & testplan<textarea id="research-spec" maxlength="12000" rows="7" required placeholder="Entry, exit, risk, marknader och tidsram…"></textarea></label><label>Basstrategi för regelkontroll<select id="research-baseline" required></select></label><p class="field-note">Texten sparas som utkast. Regelkontrollen kör enbart den registrerade basstrategin; den är inget resultatbacktest.</p><button class="primary" type="submit">Spara i Strategy Library</button></form><section class="library-panel"><h2>Källmaterial</h2><label class="file-upload">Ladda upp textfil · TXT / MD / JSON / CSV · max 20 kB<input id="research-file" type="file" accept=".txt,.md,.json,.csv"></label><form id="research-link-form"><label>Källans namn<input id="research-link-name" maxlength="120" required></label><label>HTTPS-länk<input id="research-url" type="url" required placeholder="https://…"></label><button type="submit">Spara länkreferens</button></form><p class="field-note">Länkar hämtas inte automatiskt. Klistra in relevant text eller ladda upp den för analys.</p><div id="research-sources"></div></section></div><section><h2>Sparade strategier & kontroller</h2><div id="research-strategies"></div></section></div></section>
-<aside id="research-chat" hidden aria-label="Agentchatt"><div class="dialog-heading"><div><small>JEV → TEKNISK ANALYTIKER → HANNA</small><h2>Agentteamet</h2></div><button id="research-close" aria-label="Stäng agentchatt">×</button></div><p id="research-context" class="field-note"></p><div id="research-messages" role="log" aria-live="polite"></div><form id="research-chat-form"><label for="research-message">Ditt meddelande</label><textarea id="research-message" rows="3" maxlength="6000" required placeholder="Diskutera en strategi eller ställ en fråga…"></textarea><button id="research-send" class="primary full" type="submit">Skicka till agentteamet</button></form></aside><button id="chat-floating" title="Öppna agentchatt">◌ Agentteamet</button>
-<main class="workspace" data-panel="chart">
-  <aside class="panel instruments" aria-label="Instrument">
-    <div class="panel-title"><h2>Valutapar & krypto</h2><span id="instrument-count" class="badge">0</span></div>
-    <div class="segment category"><button data-category="crypto" class="active">Krypto</button><button data-category="forex">Forex</button></div>
-    <label class="search"><span>⌕</span><input id="search" placeholder="Sök i katalogen, t.ex. EUR/USD" aria-label="Sök instrument"></label>
-    <div class="list-tools"><button id="favorites-toggle">☆ Favoriter</button><button id="select-all">Välj alla</button></div>
-    <div id="instruments" class="instrument-list"></div>
-    <div class="selection-box"><div class="row"><b>Analysurval</b><button id="selection-clear">Rensa</button></div><div id="selection-list" class="muted">Inga instrument valda</div><label>Analysintervall<select id="analysis-frame"><option>1m</option><option selected>5m</option><option>15m</option><option>30m</option><option>1h</option><option>4h</option><option>1d</option></select></label><button id="analyze" class="primary full">Analysera valda</button><small id="selection-status">Urvalet delas med agentsessionen.</small></div>
-  </aside>
-  <section class="panel chart-panel" aria-label="Prisdiagram">
-    <div class="chart-workspace-tools"><div><span class="workspace-eyebrow">TRADE SPACE</span><b>Marknadsstudio</b></div><div class="chart-layout-picker" aria-label="Antal diagram"><button data-chart-count="1" class="active">1</button><button data-chart-count="2">2</button><button data-chart-count="3">3</button><button data-chart-count="4">4</button></div><label><input id="link-chart-symbols" type="checkbox">Länka instrument</label><label><input id="link-chart-frames" type="checkbox">Länka intervall</label></div>
-    <div id="chart-grid" class="chart-grid" data-count="1"><article class="chart-tile primary-chart-tile" data-chart-slot="0"><div class="chart-tile-caption"><span>01 · Huvuddiagram</span><span>Orderpanelen följer detta instrument</span></div>
-    <div class="chart-heading"><div><small id="market-kind">IG CFD</small><h1 id="instrument-name">Välj instrument</h1><span id="epic-label" class="muted">Samma handelsyta för krypto och forex</span></div><div class="quotes"><span><small>SÄLJ / BID</small><b id="bid" class="negative">—</b></span><span><small>KÖP / ASK</small><b id="ask" class="positive">—</b></span></div></div>
-    <div class="chart-controls"><div class="segment" id="chart-frames"><button data-frame="1m">1m</button><button data-frame="5m">5m</button><button data-frame="15m" class="active">15m</button><button data-frame="1h">1h</button><button data-frame="4h">4h</button><button data-frame="1d">1D</button></div><select id="chart-type" aria-label="Diagramtyp"><option value="candles">Candles</option><option value="line">Linje</option></select><button id="indicator-toggle">SMA 20</button><button id="chart-fit" title="Anpassa diagram">↔</button></div>
-    <div class="chart-body"><div id="chart"></div><div id="chart-empty" class="chart-empty"><span class="empty-icon">⌁</span><b>Din marknad. Ett tydligt beslut.</b><p>Välj ett instrument för att öppna diagrammet.<br>IG-priser och historiskt underlag visas med datakälla.</p></div></div>
-    <div class="chart-footer"><span id="chart-source">Inga prisdata</span><span id="chart-freshness">—</span></div>
-    </article><div id="extra-charts" class="extra-charts"></div></div>
-    <section class="agent-strip"><div class="row"><b>AGENTSESSION</b><span id="session-status" class="badge">Vilande</span></div><div id="agent-steps" class="steps"><span>01 <b>JEV</b><small>Förkontroll</small></span><i>→</i><span>02 <b>Teknisk analytiker</b><small>Inväntar analys</small></span><i>→</i><span>03 <b>Hanna / Head Trader</b><small>Inväntar beslut</small></span></div><div class="row muted"><span id="session-timing">Analys, innehavstid och sessionslängd är separata.</span><button id="session-stop" hidden>Stoppa session</button></div></section>
-  </section>
-  <section class="panel order-panel" aria-label="Orderpanel">
-    <div class="panel-title"><h2>Order</h2><span id="order-environment" class="badge">IG DEMO</span></div><div id="order-symbol" class="order-symbol">Välj instrument</div>
-    <div class="segment directions"><button data-direction="BUY" class="active buy">Köp / Long</button><button data-direction="SELL" class="sell">Sälj / Short</button></div>
-    <div class="segment order-types"><button data-order-type="MARKET" class="active">Marknad</button><button data-order-type="LIMIT">Limit</button></div>
-    <label id="limit-field" hidden>Limitpris<input id="limit" type="number" min="0" step="any"></label>
-    <label>Storlek <span id="unit" class="muted">kontrakt</span><input id="size" type="number" min="0" step="any" value="1"></label>
-    <button id="size-session-margin">Beräkna storlek från sessionens marginalandel</button><div class="quick-size"><button data-percent="1">1 %</button><button data-percent="2">2 %</button><button data-percent="3">3 %</button><button data-percent="5">5 %</button></div><p class="field-note">Procent = maximal beräknad förlust vid stop-loss av tillgängligt kapital. Spread ingår via ingångspriset; slippage och okända avgifter ingår inte.</p>
-    <label>Stop-loss<input id="stop" type="number" min="0" step="any" placeholder="Prisnivå"></label><label>Take-profit<input id="target" type="number" min="0" step="any" placeholder="Prisnivå"></label>
-    <label>◷ Planerad innehavstid<select id="holding"><option value="1">1 minut</option><option value="2">2 minuter</option><option value="3">3 minuter</option><option value="4">4 minuter</option><option value="5">5 minuter</option><option value="15" selected>15 minuter</option><option value="30">30 minuter</option><option value="60">1 timme</option><option value="120">2 timmar</option></select></label><label class="checkbox"><input id="auto-close" type="checkbox">Begär stängning när tiden löper ut</label>
-    <div class="scenario"><div class="row"><span>Risk vid SL</span><strong id="risk" class="negative">—</strong></div><div class="row"><span>Vinst vid mål</span><strong id="reward" class="positive">—</strong></div><div class="row"><span>Avkastning på exponering</span><strong id="reward-percent">—</strong></div><small id="scenario-note">Kräver verifierade instrumentregler och valutagrund.</small></div>
-    <details><summary>Visa mer · marginal & kostnader</summary><div class="row"><span>Exponering</span><b id="exposure">Okänd</b></div><div class="row"><span>Beräknad marginal</span><b id="margin">Okänd</b></div><div class="row"><span>Spread, prissteg</span><b id="spread">—</b></div><div class="row"><span>Kända avgifter</span><b id="fees">Okända</b></div><small>Ingen fast utbetalning eller vinstsannolikhet. Automatisk stängning är en begäran; pris och avslut garanteras inte.</small></details>
-    <p id="order-warning" class="field-note">Inga order skickas när en signal kopieras.</p><button id="review-order" class="primary full">Granska order</button><small id="execution-status">Inväntar serverns handelsstatus</small>
-  </section>
-  <aside class="panel activity-panel" aria-label="Affärer och agentsignaler">
-    <section class="trades-section"><div class="panel-title"><h2>Affärer</h2><span id="trade-count" class="badge">0</span></div><div class="segment trade-tabs"><button data-trades="open" class="active">Öppna</button><button data-trades="pending">Väntande</button><button data-trades="closed">Stängda</button></div><div class="history-filters" id="history-filters" hidden><select id="trade-filter" aria-label="Filtrera instrument"><option value="all">Alla instrument</option><option value="current">Valt instrument</option></select><select id="period-filter" aria-label="Filtrera tidsperiod"><option value="30">30 dagar</option><option value="1">Idag</option><option value="7">7 dagar</option></select></div><div id="trades" class="cards-scroll"></div></section>
-    <section class="signals-section"><div class="panel-title"><h2>Agentsignaler</h2><span id="signal-count" class="badge">0</span></div><div class="row signal-caption"><span id="analysis-status">Inväntar analys</span><a id="ig-platform-signals" href="https://demo-deal.ig.com/web-platform/" target="_blank" rel="noopener noreferrer" title="Öppna Signals i IG:s plattform. Extern signalfeed är inte ansluten här.">IG:s signaler ↗</a><button id="import-signal-open">Klistra in signal</button><button id="signals-refresh" title="Läs senaste analys">↻</button></div><div id="signals" class="cards-scroll"></div></section>
-  </aside>
+
+
+
+<section id="liveChart" data-sec="6 · Signalmotorns diagram · stängda ljus från IG, det signaltabellen räknar på" style="
+         font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+    <h2 style="margin:0;font-size:17px;font-weight:600">Signaldiagram</h2>
+    <select id="chartSymbol" style="padding:5px 8px;background:#0b0e14;color:#e6e6e6;
+            border:1px solid #2a3140;border-radius:6px;font-size:12px"></select>
+    <span id="chartForming" style="font-size:12px;color:#8b95a7"></span>
+    <span style="margin-left:auto;font-size:11px;color:#5a6374">
+      Egen ström · IG WebSocket
+    </span>
+  </div>
+  <div id="chartBox" style="border:1px solid #2a3140;border-radius:10px;
+       background:#151a23;overflow:hidden"></div>
+</section>
+
+
+
+
+<section id="signalPanel" data-sec="5 · Signaler · alla par som följs, räknas om när varje ljus stänger · klicka på en rad för att se paret i diagrammet" style="
+         font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
+  <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px">
+    <h2 style="margin:0;font-size:17px;font-weight:600">Signaler</h2>
+    <span id="sigMode" style="font-size:11px;font-weight:700;letter-spacing:.6px;
+          padding:3px 9px;border-radius:4px;background:#3a2f0b;color:#f0b90b;
+          border:1px solid #5c4a10">TEST — LÅTSASPENGAR · VARJE ORDER KRÄVER GODKÄNN</span>
+    <label style="font-size:12px;color:#8b95a7;margin-left:auto">
+      Intervall
+      <select id="sigInterval" style="margin-left:6px;padding:5px 8px;background:#0b0e14;
+              color:#e6e6e6;border:1px solid #2a3140;border-radius:6px;font-size:12px">
+        <option value="1m">1 min</option><option value="5m">5 min</option>
+        <option value="15m">15 min</option><option value="1h">1 tim</option>
+        <option value="4h">4 tim</option>
+      </select>
+    </label>
+    <span id="sigStream" style="font-size:12px;color:#8b95a7"></span>
+  </div>
+
+  <div style="overflow-x:auto;border:1px solid #2a3140;border-radius:10px;background:#151a23">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1100px">
+      <thead>
+        <tr style="text-align:left;color:#8b95a7;font-size:11px;letter-spacing:.4px;
+                   text-transform:uppercase;background:#11161f">
+          <th style="padding:11px 12px">Par</th>
+          <th style="padding:11px 12px">Riktning</th>
+          <th style="padding:11px 12px;text-align:right">Score</th>
+          <th style="padding:11px 12px;text-align:right">Entry</th>
+          <th style="padding:11px 12px;text-align:right">Stop-loss</th>
+          <th style="padding:11px 12px;text-align:right">Target</th>
+          <th style="padding:11px 12px;text-align:right">R:R</th>
+          <th style="padding:11px 12px;text-align:right">Risk</th>
+          <th style="padding:11px 12px;text-align:right">RSI</th>
+          <th style="padding:11px 12px">Nästa ljus</th>
+          <th style="padding:11px 12px">Åtgärd</th>
+        </tr>
+      </thead>
+      <tbody id="sigRows">
+        <tr><td colspan="11" style="padding:26px 12px;color:#8b95a7;text-align:center">
+          Väntar på första ljusstängningen…
+        </td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p id="sigReasons" style="margin:12px 2px 0;font-size:12px;color:#8b95a7;line-height:1.6"></p>
+</section>
+
+  
+  <div class="card" id="multiChart" data-sec="Fler diagram · flera par samtidigt, live från IG (samma som IG.eu)">
+    <div class="mc-bar">
+      <span style="font-size:11px;color:var(--dim);font-weight:700">Layout:</span>
+      <button type="button" data-mc="1">1</button>
+      <button type="button" data-mc="2">2 sida vid sida</button>
+      <button type="button" data-mc="2v">2 ovanpå varandra</button>
+      <button type="button" data-mc="3">3 i rad</button>
+      <button type="button" data-mc="4">4 (2×2)</button>
+      <label style="font-size:11px;margin-left:10px;display:flex;gap:4px;align-items:center"><input type="checkbox" id="mcSyncIv" /> Samma intervall i alla</label>
+      <label style="font-size:11px;display:flex;gap:4px;align-items:center"><input type="checkbox" id="mcSyncXh" /> Synka hårkors</label>
+      <span style="font-size:11px;color:var(--dim);margin-left:auto">Klicka på ett diagram för att handla det paret (orderbok + Köp/Sälj ovan)</span>
+    </div>
+    <div class="mc-grid" id="mcGrid"></div>
+  </div>
+
+  <div id="analysisBox" data-sec="3 · Agenternas analys · vad AI-teamet föreslår efter Kör analys eller schemat" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <strong style="font-size:13px">Senaste analys <span style="color:#8b95a7;font-weight:400">· vad agenterna föreslår</span></strong>
+      <span style="display:flex;gap:8px;align-items:center">
+        <span id="analysisMeta" style="font-size:12px;color:#8b95a7"></span>
+        <button id="analysisRun" style="padding:4px 12px;border:1px solid #3fb950;background:#0d2a14;color:#3fb950;border-radius:6px;font-weight:700;cursor:pointer">▶ Kör analys</button>
+      </span>
+    </div>
+    <div id="hzRow" style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px;color:#8b95a7">
+      <span>Tidshorisont för trades:</span>
+      <button type="button" class="hz-btn" data-hz="1">1 min</button>
+      <button type="button" class="hz-btn" data-hz="5">5 min</button>
+      <button type="button" class="hz-btn" data-hz="15">15 min</button>
+      <button type="button" class="hz-btn" data-hz="30">30 min</button>
+      <span id="hzHint" style="flex-basis:100%"></span>
+    </div>
+    <div id="analysisRows" style="margin-top:8px;font-size:13px;color:#8b95a7">Ingen analys än. Tryck Kör analys.</div>
+  </div>
+  <style>
+    .hz-btn{padding:3px 10px;border:1px solid #2a3140;background:#0f141c;color:#c9d1d9;border-radius:6px;cursor:pointer;font-size:12px}
+    .hz-btn.on{border-color:#3fb950;background:#0d2a14;color:#3fb950;font-weight:700}
+    #anaModal{position:fixed;inset:0;z-index:9500;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.6)}
+    #anaModal.open{display:flex}
+    #anaModal .am-card{width:min(560px,94vw);max-height:86vh;overflow:auto;background:#151a23;border:2px solid #3fb950;border-radius:12px;padding:16px 18px;box-shadow:0 10px 40px rgba(0,0,0,.6)}
+    #anaModal .am-row{border-top:1px solid #2a3140;padding:10px 0}
+    #anaModal .am-big{font-size:18px;font-weight:800}
+    #anaModal .am-btns{display:flex;gap:8px;margin-top:8px}
+    #anaModal .am-btns button{flex:1;padding:10px;border-radius:8px;font-weight:800;font-size:15px;cursor:pointer}
+    #anaModal .am-ok{background:#16a34a;border:1px solid #22c55e;color:#fff}
+    #anaModal .am-no{background:transparent;border:1px solid #8b95a7;color:#c9d1d9}
+    #anaModal .am-cd{font-variant-numeric:tabular-nums;color:#fbbf24;font-weight:700}
+  </style>
+  <div id="anaModal" role="dialog" aria-modal="true">
+    <div class="am-card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <strong style="font-size:15px">Analysen är klar</strong>
+        <button type="button" id="anaClose" style="background:none;border:none;color:#8b95a7;font-size:20px;cursor:pointer" title="Stäng (Esc)">✕</button>
+      </div>
+      <div id="anaBody" style="margin-top:6px;font-size:13px;color:#c9d1d9"></div>
+    </div>
+  </div>
+  
+
+  
+  <div id="moversBox" data-sec="Mest rörelse just nu · mynten med störst rörelse på vald tid" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <strong style="font-size:13px">🔥 Marknaden just nu <span id="mvIv" style="font-size:11px;color:#8b95a7"></span></strong>
+      <span id="mvUpd" style="font-size:11px;color:#8b95a7"></span>
+    </div>
+    <div id="mvTabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+    <div id="mvRows" style="margin-top:8px;font-size:13px;color:#8b95a7">Laddar…</div>
+    <div style="margin-top:8px;font-size:11px;color:#8b95a7;line-height:1.5"><b>Rörelse</b> = hur mycket priset brukar röra sig under en trade på vald tid. <b>Efter avgift</b> = det som kan bli vinst när 0,5 % avgift (in + ut) är dragen. Grönt = rörelsen är större än avgiften. Mer rörelse betyder större vinst <b>och</b> större förlust.</div>
+  </div>
+  
+  
+  <div id="resultsBox" data-sec="Resultat · vinst och förlust på alla affärer" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <strong style="font-size:13px">Resultat <span id="resMode" style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid #f0b90b;color:#f0b90b;margin-left:4px">TEST</span></strong>
+      <span id="resUpdated" style="font-size:11px;color:#8b95a7"></span>
+    </div>
+    <div id="resTotals" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:10px"></div>
+    <div style="margin-top:12px;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Öppna innehav, just nu</div>
+    <div id="resOpen" style="margin-top:4px;font-size:13px;color:#8b95a7">Laddar…</div>
+    <div style="margin-top:12px;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Händelser (senaste först)</div>
+    <div id="resTrades" style="margin-top:4px;font-size:13px;color:#8b95a7;max-height:320px;overflow-y:auto">Laddar…</div>
+    <div style="margin-top:8px;font-size:11px;color:#8b95a7;line-height:1.5">Säkra vinst: sätt TP (målpris) när du köper, så säljer boten själv. Eller tryck <b>Sälj</b> på ett innehav, så hamnar en "Sälj allt" i Väntande ordrar och du trycker Godkänn. Siffrorna är efter avgift (0,25 % per köp och sälj).</div>
+  </div>
+  
+  <div id="pendingBox" data-sec="4 · Väntande ordrar · här godkänner du" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <strong style="font-size:13px">Väntande ordrar <span id="pendingCount" class="pend-count"></span></strong>
+      <span id="pendingMeta" style="font-size:12px;color:#8b95a7"></span>
+    </div>
+    <div class="exec-switch" id="execSwitch">
+      <span class="exec-lbl">Agenternas ordrar:</span>
+      <button type="button" data-exec="approve">✋ MANUELL · jag godkänner</button>
+      <button type="button" data-exec="auto">⚡ AUTO · agenterna lägger själva</button>
+    </div>
+    <div id="execHint" class="exec-hint"></div>
+    <div id="pendingRows" style="margin-top:8px;font-size:13px;color:#8b95a7">Laddar…</div>
+  </div>
+
+
+
+
+  
+  <div class="left">
+    <div class="card" id="mainChartCard" data-sec="1 · Marknaden live · det par du väljer, IG via WebSocket">
+      <div class="chart-toolbar">
+        <div class="symbol-picker">
+          <select id="cat-select">
+            <option value="usdc">Crypto / USDC (IG)</option>
+            <option value="crypto">Crypto / USDT</option>
+            <option value="cross">Korspar</option>
+            <option value="forex">Forex</option>
+            <option value="stocks">Aktier</option>
+            <option value="index">Index</option>
+            <option value="commod">Råvaror</option>
+          </select>
+          <select id="sym-select"></select>
+        </div>
+        <span class="cur-price" id="cur-price">--</span>
+        <span id="cur-chg" class="ch">--</span>
+        <span id="data-source-indicator" style="margin-left:auto;font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px"><span style="color:var(--label)">○</span> Demo (simulerade priser)</span>
+        <span id="sync-indicator" title="Cross-device sync mellan dator + mobil — klicka för tvinga refresh från server" style="font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px;margin-left:10px;cursor:pointer;user-select:none"><span style="color:var(--label)">○</span> Sync init...</span>
+        <div class="tf-group" id="tf-group">
+          <button data-tf="1s" title="Byggs av varje affär live (IG har inga färdiga 1s-ljus)">1s</button>
+          <button data-tf="1m">1m</button>
+          <button data-tf="5m">5m</button>
+          <button data-tf="15m">15m</button>
+          <button data-tf="30m">30m</button>
+          <button data-tf="1h" class="active">1h</button>
+          <button data-tf="4h">4h</button>
+          <button data-tf="1d">1d</button>
+          <button data-tf="1w">1w</button>
+          <button data-tf="1M">1M</button>
+        </div>
+        <div class="ind-toggles" id="ind-toggles">
+          <button class="ind-toggle" data-ind="sma20">SMA20</button>
+          <button class="ind-toggle" data-ind="sma50">SMA50</button>
+          <button class="ind-toggle" data-ind="sma200">SMA200</button>
+          <button class="ind-toggle" data-ind="ema9">EMA9</button>
+          <button class="ind-toggle" data-ind="ema21">EMA21</button>
+          <button class="ind-toggle" data-ind="bb">BB(20,2)</button>
+          <button class="ind-toggle" data-ind="vwap">VWAP</button>
+          <button class="ind-toggle" data-ind="rsi">RSI</button>
+          <button class="ind-toggle" data-ind="macd">MACD</button>
+          <button class="ind-toggle" data-ind="vol">Volume</button>
+        </div>
+      </div>
+      <div class="price-row">
+        <span><span class="lbl">24h:</span> <b id="d-chg">--</b></span>
+        <span><span class="lbl">High:</span> <b id="d-hi">--</b></span>
+        <span><span class="lbl">Low:</span> <b id="d-lo">--</b></span>
+        <span><span class="lbl">Vol:</span> <b id="d-vol">--</b></span>
+      </div>
+      <div id="chart"></div>
+      <div id="vol-pane"></div>
+      <div id="rsi-pane"></div>
+      <div id="macd-pane"></div>
+    </div>
+
+    <div class="card" id="ai-team-card" data-sec="6 · AI-teamet · vem som gjorde vad i senaste analysen" style="scroll-margin-top:70px">
+      <h3>AI-Team <span class="tag" id="last-turn">väntar…</span></h3>
+      <div class="team-banner" id="team-banner"></div>
+      <div class="agent-grid" id="agent-grid"></div>
+      <div class="timing" id="timing">
+        Specialists: <b id="t-spec">–</b> | Exec: <b id="t-exec">–</b> | Head: <b id="t-head">–</b> | Total: <b id="t-tot">–</b>
+      </div>
+    </div>
+  </div>
+
+  
+  <div class="right" data-sec="2 · Handla · orderbok och köp/sälj för samma par som diagrammet">
+    
+    <div class="card" id="IGTradeCard">
+      <h3>Orderbok <span class="tag" id="bk-pair">–</span><span style="float:right;font-size:10px;color:var(--dim)" id="bk-status">ansluter…</span></h3>
+      <a id="bk-open" href="#" target="_blank" rel="noopener" style="display:block;font-size:11px;color:var(--cyan);margin:-4px 0 6px">↗ Öppna samma par på IG</a>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;font-size:9px;color:var(--dim);padding:0 2px 3px">
+        <span>Pris (USDC)</span><span style="text-align:right">Antal</span><span style="text-align:right">Totalt</span></div>
+      <div id="bk-asks" class="bk-side"></div>
+      <div id="bk-mid" style="font-size:15px;font-weight:800;padding:5px 2px;font-family:'SF Mono',monospace">–</div>
+      <div id="bk-bids" class="bk-side"></div>
+      <div id="bk-ratio" style="display:flex;height:4px;border-radius:2px;overflow:hidden;margin:6px 0 2px"><span style="flex:1;background:#3fb950"></span><span style="flex:1;background:#f85149"></span></div>
+
+      <h3 style="margin-top:12px">Senaste affärer</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;font-size:9px;color:var(--dim);padding:0 2px 3px">
+        <span>Pris</span><span style="text-align:right">Antal</span><span style="text-align:right">Tid</span></div>
+      <div id="bk-trades" class="bk-side" style="max-height:150px;overflow:hidden"></div>
+
+    </div>
+    <div class="card" id="orderCard">
+      <h3>Köp / Sälj <span class="tag" id="ot-venue">–</span></h3>
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button type="button" class="ot-type active" data-ot="LIMIT">Limit</button>
+        <button type="button" class="ot-type" data-ot="MARKET">Market</button>
+      </div>
+      <label style="font-size:10px;color:var(--dim)" id="ot-price-label">Pris (USDC)</label>
+      <input type="number" id="ot-price" step="any" min="0" style="width:100%;margin-bottom:6px" />
+      <label style="font-size:10px;color:var(--dim)">Belopp (USDC)</label>
+      <input type="number" id="ot-amt" value="5" min="1" step="1" style="width:100%;margin-bottom:4px" />
+      <input type="range" id="ot-pct" min="0" max="100" step="1" value="0" list="ot-pct-stops" style="width:100%;margin:2px 0 0" />
+      <datalist id="ot-pct-stops"><option value="0"></option><option value="25"></option><option value="50"></option><option value="75"></option><option value="100"></option></datalist>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:4px"><span>0 %</span><span>25 %</span><span>50 %</span><span>75 %</span><span>100 %</span></div>
+      <div id="ot-avail" style="font-size:10px;color:var(--dim);margin-bottom:6px">Tillgängligt: –</div>
+      <label style="display:flex;gap:6px;align-items:center;font-size:11px;margin:4px 0"><input type="checkbox" id="ot-tpsl" /> TP/SL (sälj automatiskt vid vinst eller förlust, med limit)</label>
+      <div id="ot-tpsl-box" style="display:none;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+        <div><label style="font-size:10px;color:#3fb950">TP-pris (vinst)</label><input type="number" id="ot-tp" step="any" min="0" style="width:100%" /></div>
+        <div><label style="font-size:10px;color:#f85149">SL-pris (förlust)</label><input type="number" id="ot-sl" step="any" min="0" style="width:100%" /></div>
+      </div>
+      <label style="font-size:10px;color:var(--dim)">Tidshorisont (hur länge du tänker hålla)</label>
+      <div class="bet-tf" id="ot-tf" style="margin-bottom:4px">
+        <button type="button" data-tf="0" class="active">Ingen</button>
+        <button type="button" data-tf="60">1m</button>
+        <button type="button" data-tf="300">5m</button>
+        <button type="button" data-tf="900">15m</button>
+        <button type="button" data-tf="3600">1h</button>
+        <button type="button" data-tf="14400">4h</button>
+        <button type="button" data-tf="86400">1d</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 64px;gap:6px;margin-bottom:6px">
+        <input type="number" id="ot-tf-custom" min="1" step="1" placeholder="Egen tid" style="width:100%" />
+        <select id="ot-tf-unit"><option value="60">min</option><option value="3600">tim</option><option value="86400">dagar</option></select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <button type="button" id="ot-buy" class="bet-call" style="margin:0">▲ Köp (CALL)</button>
+        <button type="button" id="ot-sell" class="bet-put" style="margin:0">▼ Sälj (PUT)</button>
+      </div>
+      <button type="button" id="ot-sell-all" class="bet-put" style="margin:6px 0 0;width:100%;opacity:.85" title="Säljer allt du har av myntet (efter avgiften), inget belopp behövs">▼ Sälj allt</button>
+      <div id="ot-est" style="margin-top:8px;font-size:11px;line-height:1.6;padding:6px 8px;border:1px solid var(--border);border-radius:5px;background:var(--card2)"></div>
+      <div class="sim-note" id="ot-note" style="margin-top:6px">Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. Köp med tidshorisont upp till 30 min säljs automatiskt när tiden är slut (om TP/SL inte sålt innan). Samma gränser gäller som för alla ordrar.</div>
+    </div>
+
+    <div class="card bet-panel">
+      <h3>Snabb-trade <span class="tag">UP / DOWN</span><span class="sim-badge" id="bet-badge" title="Låtsasdata i webbläsaren. Ingen riktig order, ingen riktig analys.">SIMULERING</span></h3>
+      <div class="sim-note" id="bet-note">Låtsas-vad i webbläsaren med påhittad utbetalning (85%). Ingen order skickas till någon mäklare.</div>
+      <label style="font-size:10px;color:var(--dim)">Par</label>
+      <select id="bet-sym"></select>
+      <label style="font-size:10px;color:var(--dim)">Tidshorisont</label>
+      <div class="bet-tf" id="bet-tf">
+        <button data-tf="60">1m</button>
+        <button data-tf="300" class="active">5m</button>
+        <button data-tf="900">15m</button>
+        <button data-tf="1800">30m</button>
+        <button data-tf="3600">1h</button>
+        <button data-tf="14400">4h</button>
+        <button data-tf="86400">1d</button>
+      </div>
+      <div style="margin-bottom:6px;font-size:10px;color:var(--dim);font-weight:700;letter-spacing:.4px;text-transform:uppercase">⏱ Egen tid</div>
+      <div style="display:grid;grid-template-columns:1fr 70px 56px;gap:6px;align-items:stretch;margin-bottom:4px">
+        <input type="text" id="bet-tf-custom" placeholder="30" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+               style="padding:8px 10px;background:var(--card2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:14px;font-weight:700;font-family:'SF Mono',monospace;width:100%;box-sizing:border-box;outline:none;-webkit-user-select:text;user-select:text" />
+        <select id="bet-tf-unit" style="padding:8px 6px;background:var(--card2);border:1px solid var(--cyan);border-radius:4px;color:var(--cyan);font-size:12px;font-weight:700;cursor:pointer;-webkit-appearance:menulist;appearance:menulist">
+          <option value="1" selected>sek</option>
+          <option value="60">min</option>
+          <option value="3600">tim</option>
+        </select>
+        <button type="button" id="bet-tf-apply" style="padding:8px;background:var(--cyan);color:#000;border:none;border-radius:4px;font-weight:800;font-size:11px;cursor:pointer;letter-spacing:.5px">SET</button>
+      </div>
+      <div style="font-size:10px;color:var(--dim);margin-bottom:10px;line-height:1.5">💡 Skriv t.ex. <b style="color:var(--text)">30</b> + dropdown <b style="color:var(--cyan)">sek</b> + <b>SET</b> · Aktuell: <span id="bet-tf-current" style="color:var(--cyan);font-weight:700">5m</span></div>
+      <label style="font-size:10px;color:var(--dim)">Belopp (USD)</label>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
+        <input type="number" id="bet-amt" value="10" min="1" step="1" style="flex:1" />
+        <button id="bet-auto-2pct" title="Auto-size: 2% av total equity (Mikes risk-regel)" style="padding:6px 10px;background:var(--card2);border:1px solid var(--cyan);border-radius:3px;color:var(--cyan);font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap">2% AUTO</button>
+      </div>
+      <div style="font-size:9px;color:var(--dim);margin-bottom:6px" id="bet-auto-hint">2% av equity = ~$<span id="bet-auto-val">200</span> (auto-size för LIVE)</div>
+      <div class="payout">Payout: <b>1.85x</b> · Möjlig vinst: <span id="bet-win">$8.50</span></div>
+      <button class="bet-call" id="bet-call">▲ CALL (UP)</button>
+      <button class="bet-put" id="bet-put">▼ PUT (DOWN)</button>
+
+      <h3 style="margin-top:14px">Aktiva positioner</h3>
+      <div class="positions-list" id="positions-list"></div>
+
+      <h3 style="margin-top:14px">Historik</h3>
+      <div class="win-rate"><span class="sim-badge" title="Låtsasdata i webbläsaren. Ingen riktig order, ingen riktig analys.">SIMULERING</span> Win-rate: <b id="win-rate">0%</b> · <span id="win-stats">0W / 0L</span></div>
+      <div class="history" id="history"></div>
+    </div>
+  </div>
 </main>
-<footer class="statusbar"><span id="footer-source">IG · kontodata hålls separat för Demo och Live</span><span id="footer-cost">AI-kostnad: —</span><span>JEV → Teknisk → Hanna</span></footer>
-<dialog id="session-dialog"><form id="session-form"><div class="dialog-heading"><div><small>AGENTDRIVEN HANDEL</small><h2>Starta agentsession</h2></div><button type="button" data-close="session-dialog" aria-label="Stäng">×</button></div><label>Instrument för sessionen<select id="session-scope"><option value="selected">Valda instrument</option><option value="favorites">Alla hämtade favoriter</option><option value="all">Alla hämtade Forex- och kryptoinstrument</option></select></label><div id="session-selection" class="selected-summary"></div><p class="field-note">Stora urval körs i omgångar om högst fem instrument. Varje omgång går genom JEV → Teknisk analytiker → Hanna. IG-kvoter, AI-budget och sessionslängd kan begränsa hur långt kön hinner. En ofullständig katalog betyder att urvalet inte omfattar hela IG-utbudet.</p><div class="form-grid"><label>Sessionslängd<select id="session-duration"><option value="15">15 minuter</option><option value="30">30 minuter</option><option value="60" selected>1 timme</option><option value="120">2 timmar</option></select></label><label>Ny analys var<select id="session-frequency"><option value="1">1 minut</option><option value="5" selected>5 minuter</option><option value="15">15 minuter</option><option value="30">30 minuter</option></select></label><label>Analysintervall<select id="session-frame"><option>1m</option><option selected>5m</option><option>15m</option><option>30m</option><option>1h</option><option>4h</option><option>1d</option></select></label><label>Innehavstid per trade<select id="session-holding"><option value="1">1 minut</option><option value="2">2 minuter</option><option value="3">3 minuter</option><option value="4">4 minuter</option><option value="5" selected>5 minuter</option></select></label><label>Marginalandel av kontobudget (%)<input id="session-margin" type="number" min="1" max="3" step="0.1" value="1"></label><label>Max nya orderförsök per session<input id="session-trades" type="number" min="1" max="5" value="5"></label><label>Separat max riskandel vid SL (%)<input id="session-percent" type="number" min="0.1" max="5" step="0.1" value="1"></label><label>Max samtidiga positioner<input id="session-max" type="number" min="1" max="10" value="1"></label></div><p class="field-note">Marginalandel är högsta reserverade marginal av kontots saldo, inte maximal förlust. SL-risk har ett separat tak. Högst fem skickade orderförsök, inklusive avvisade/okända utfall; ingen skyldighet att handla. Sessionsorder är marknadsorder med tidsstängning. IG, avbrott och läskvoter kan fördröja avslut; tiden är ingen garanti.</p><label>Ordergodkännande<select id="session-approval"><option value="manual">Manuellt — granska varje förslag</option><option value="auto" disabled>Automatisk handel — saknar verifierad servergrind</option></select></label><p class="field-note">Exakt två AI-roller. JEV verifierar före analysen. Inga regelbaserade bots ersätter agenterna. Befintliga kostnadsgränser och kill switch gäller.</p><button type="submit" class="primary full">Starta session</button></form></dialog>
-<dialog id="settings-dialog"><div class="dialog-heading"><h2>Inställningar & datakällor</h2><button data-close="settings-dialog" aria-label="Stäng">×</button></div><div class="settings-card"><b>IG Demo / Live</b><div id="ig-environment-status" aria-live="polite"></div><form id="ig-credentials-form" autocomplete="off"><p class="field-note">Ange dina egna IG-uppgifter. Tomma fält behåller den valda miljöns uppgifter som redan finns sparade lokalt. Demo kan kräva en separat Web API-inloggning.</p><label>Miljö<select id="ig-credentials-environment"><option value="demo">IG Demo</option><option value="live">IG Live</option></select></label><label>IG API-användarnamn<input id="ig-identifier" autocomplete="off" placeholder="Användarnamn eller mejladress"></label><label>Lösenord<input id="ig-password" type="password" autocomplete="off" placeholder="Behåll sparat om tomt"></label><label>API-nyckel<input id="ig-api-key" type="password" autocomplete="off" placeholder="Behåll sparad om tomt"></label><button id="ig-credentials-submit" type="submit" class="primary full">Spara lokalt och testa</button><p id="ig-credentials-feedback" role="status" aria-live="polite"></p></form><p id="connection-details">Separata konton och verifierade IG-priser. Credentials läses enbart på servern.</p></div><section class="settings-card strategy-section"><div class="row"><b>Strategier & agentteam</b><button id="strategies-refresh">Uppdatera</button></div><p>JEV gör förkontroll. Teknisk analytiker och Hanna / Head Trader är de två agenterna. Alla strategiförslag kräver manuell granskning.</p><p class="amber">Luengos 12/21/50: endast BTCUSD på 1d · EJ BACKTESTAD. Inga verifierade prognoser. ETH är parkerad.</p><div id="strategies-list" role="status"><p>Strategiregistret har inte hämtats.</p></div><div id="jev-market-status" class="strategy-evidence"></div><div id="strategy-analysis-context"></div><details id="analysis-memory" class="analysis-memory"><summary>Analysminne <span id="analysis-memory-count"></span></summary><p>Spårbar historik över analyser och beslut. Ingen verifierad P/L och ingen automatisk självträning.</p><div id="analysis-memory-content"></div></details></section><div class="settings-card"><b>Historik & diagram</b><p>IG:s handelspriser styr order och positioner. Tiingo är historiskt referensunderlag, separat från IG-priser. ProRealTime är din externa diagrammiljö.</p><span id="transport-info" class="muted">Transport inväntar anslutning</span></div><div class="settings-card"><b>Testa arbetsflödet</b><p>Designläget använder bara tydligt märkt lokal demodata, utan mäklar- eller AI-anrop.</p><button id="simulation-toggle">Aktivera designläge</button><label id="simulation-states" hidden>Simulerat tillstånd<select id="demo-state"><option value="ready">Ansluten · analys klar</option><option value="analyzing">Analys pågår</option><option value="empty">Inga signaler</option><option value="disconnected">Frånkopplad</option><option value="stale">Inaktuella priser</option><option value="order-error">Orderfel</option></select></label></div></dialog>
-<dialog id="review-dialog"><div class="dialog-heading"><h2 id="review-title">Granska order</h2><button data-close="review-dialog" aria-label="Stäng">×</button></div><div id="review-content"></div><button id="confirm-order" class="primary full">Bekräfta</button></dialog>
-<dialog id="catalog-dialog"><div class="dialog-heading"><h2>Krypto & Forex</h2><button data-close="catalog-dialog" aria-label="Stäng">×</button></div><p class="field-note">Valen här är samma analysurval som i handelsytan och agentsessionen. Instrumenten kommer från IG-kontots katalog.</p><div class="catalog-layout"><nav class="catalog-categories" aria-label="Instrumentkategori"><button data-catalog-category="all">Alla marknader</button><button data-catalog-category="forex">＄ Forex</button><button data-catalog-category="crypto">₿ Kryptovalutor</button><button data-catalog-category="favorites">☆ Favoriter</button><p>IG-katalogen för valt konto.<br>Max 10 instrument per analys.</p></nav><section class="catalog-results"><label class="search"><span>⌕</span><input id="catalog-search" placeholder="Sök i hela kategorin" aria-label="Sök instrument i katalogen"></label><div class="catalog-tools"><span id="catalog-status" role="status" aria-live="polite"></span><button id="market-enrich">Hämta trend & sentiment för valda</button><button id="catalog-reload">Ladda om</button></div><div id="catalog-discovery" class="field-note" role="status"></div><div class="market-filters"><label>Rangordna<select id="market-ranking"><option value="name">Alla · namn</option><option value="up">Största uppgång</option><option value="down">Största nedgång</option><option value="movement">Rör sig mest</option><option value="trendUp">Trendar upp</option><option value="trendDown">Trendar ned</option><option value="spread">Lägsta relativa spread</option><option value="sentiment">Mest köpta · IG-kundsentiment</option><option value="profit" disabled>Mest vinster · kräver verifierad journal</option></select></label><label>Status<select id="market-status"><option value="all">Alla marknadsstatusar</option><option value="TRADEABLE">Öppna nu</option></select></label></div><p id="market-ranking-note" class="field-note"></p><div class="catalog-column-heading"><span>Analys / instrument</span><span>Favorit / diagram</span></div><div id="catalog-content"></div><div class="catalog-selection"><span id="catalog-selection-count"></span><button id="catalog-select-results">Välj sökresultat</button><button id="catalog-session">Starta session</button><button id="catalog-schedule">Schemalägg</button><button id="catalog-analyze" class="primary">Analysera valda</button></div></section></div></dialog>
-<dialog id="tools-dialog"><div class="dialog-heading"><h2>Verktyg & arbetsflöde</h2><button data-close="tools-dialog" aria-label="Stäng">×</button></div><div class="tools-grid"><button data-tool="markets"><b>Marknadsöversikt</b><small>Alla hämtade Forex- och kryptoinstrument, favoriter och ditt kontos handelsantal.</small></button><button data-tool="session"><b>Agentsession</b><small>JEV → Teknisk analytiker → Hanna. Granska urval och intervall innan start.</small></button><button data-tool="signals"><b>Agentsignaler</b><small>Visa senaste analys och förslag i handelsytan.</small></button><button data-tool="open"><b>Öppna positioner</b><small>Visa positioner på det valda IG-kontot.</small></button><button data-tool="closed"><b>Kontohistorik</b><small>Visa kontots historik, utan att blanda Demo och Live.</small></button><button data-tool="settings"><b>Datakällor & anslutning</b><small>IG-priser, Tiingo som historiskt underlag och separata inloggningar.</small></button></div><section class="settings-card course-status"><b>Kursstatus</b><p>Dag 1–3: sparat arbete finns. Dag 4: inget sparat backtestresultat hittat.</p><small>Luengos-12/21/50 är undersökt för BTCUSD på dagliga ljus. Det verifierar inte korta trades eller en ny marknad. Tiingo ger underlag; JEV verifierar före agentanalysen.</small></section></dialog>
-<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-<dialog id="schedules-dialog"><div class="dialog-heading"><div><small>AGENTER · EUROPE/STOCKHOLM</small><h2>Schemalagda sessioner</h2></div><button data-close="schedules-dialog" aria-label="Stäng">×</button></div><p class="field-note">Scheman startar analys och manuella orderförslag. De ger inte automatisk handelsbehörighet. Servern behöver vara igång.</p><button id="schedule-day-plan" class="primary">Spara / aktivera Morgon, Lunch, Eftermiddag & Kväll</button><p class="field-note">08–09, 12–13, 15–16 och 19–20 Stockholm. Alla veckodagar; Forex analyseras bara med giltiga marknadsdata. Använder alla inlästa Forex-/kryptoinstrument, högst fem nya orderförsök per session. Partiell katalog betyder partiellt urval.</p><div id="schedules-list"></div><form id="schedule-form"><p id="schedule-selection" class="selected-summary"></p><div class="form-grid"><label>Namn<input id="schedule-name" required maxlength="80" value="Marknadsbevakning"></label><label>Upprepning<select id="schedule-recurrence"><option value="once">En gång</option><option value="weekly">Varje vecka</option></select></label><label>Datum<input id="schedule-date" type="date" required></label><label>Tid i Stockholm<input id="schedule-time" type="time" required value="09:00"></label><label>Sessionslängd (min)<input id="schedule-duration" type="number" min="5" max="480" value="60" required></label><label>Analys var (min)<input id="schedule-interval" type="number" min="1" max="60" value="5" required></label></div><fieldset id="schedule-weekdays" hidden><legend>Veckodagar</legend><label><input type="checkbox" value="1">Mån</label><label><input type="checkbox" value="2">Tis</label><label><input type="checkbox" value="3">Ons</label><label><input type="checkbox" value="4">Tor</label><label><input type="checkbox" value="5">Fre</label><label><input type="checkbox" value="6">Lör</label><label><input type="checkbox" value="7">Sön</label></fieldset><p id="schedule-feedback" role="status" class="field-note"></p><button type="submit" class="primary">Spara schema för valda instrument</button></form></dialog><dialog id="import-signal-dialog"><div class="dialog-heading"><div><small>MANUELL IMPORT</small><h2>Klistra in IG-signal</h2></div><button data-close="import-signal-dialog" aria-label="Stäng">×</button></div><p class="field-note">Inklistrad text är ett ej verifierat utkast, inte en ansluten IG-feed. Fyll själv i och granska samtliga nivåer. Sparande och kopiering skickar ingen order.</p><form id="import-signal-form"><p id="import-instrument" class="selected-summary"></p><label>Källtext<textarea id="import-source" maxlength="12000" rows="5" required placeholder="Klistra in originalsignalen här"></textarea></label><div class="form-grid"><label>Riktning<select id="import-direction"><option value="BUY">Köp / Long</option><option value="SELL">Sälj / Short</option></select></label><label>Giltig i minuter<input id="import-expiry" type="number" min="1" max="1440" step="1" value="15" required></label><label>Entry<input id="import-entry" type="number" min="0.00000001" step="any" required></label><label>Stop loss<input id="import-stop" type="number" min="0.00000001" step="any" required></label><label>Take profit<input id="import-target" type="number" min="0.00000001" step="any" required></label></div><button type="submit" class="primary">Spara ej verifierat utkast</button></form><p id="import-feedback" class="field-note" role="status"></p><div class="settings-card"><label class="checkbox"><input id="import-copy-limit" type="checkbox">Kopiera signalens entry som limitorder. Annars används marknadsorderutkast med aktuellt pris.</label><div id="imported-signals-list"></div></div></dialog></body></html>
+</section>
+
+
+<section class="page" id="page-pairs">
+  <div class="page-header"><span class="ph-ico">🧮</span>Alla par<span class="ph-sub">— en kolumn per par · analysera flera samtidigt · CALL / PUT under varje</span></div>
+  <div class="pp-bar">
+    <div class="pp-help">
+      <b>Så fungerar sidan:</b> varje kolumn är ett par som agenterna följer. Priset och diagrammet kommer live från IG (USDC).
+      <b>Signal</b> är indikatorernas läge just nu. <b>Agenterna</b> visar vad AI-teamet föreslog senast för just det paret.
+      Bocka i flera par och tryck <b>Analysera valda</b>, så analyseras de samtidigt i en körning. Följ arbetet i fliken Träd.
+      <b>CALL</b> = köp och <b>PUT</b> = sälj. Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn.
+    </div>
+    <div class="pp-tools">
+      <span id="pp-mode" class="pp-chip">–</span>
+      <label>Belopp (USDC) <input type="number" id="pp-amt" value="5" min="1" step="1"></label>
+      <label>Tidshorisont <select id="pp-tf"><option value="1">1 min</option><option value="5">5 min</option><option value="15">15 min</option><option value="30">30 min</option></select></label>
+      <button type="button" id="pp-all" class="pp-btn">Markera alla</button>
+      <button type="button" id="pp-run" class="pp-btn pp-go">▶ Analysera valda (0)</button>
+    </div>
+    <div id="pp-status" class="pp-status"></div>
+  </div>
+  <div id="pp-grid" class="pp-grid"><div style="padding:20px;color:var(--dim)">Laddar par…</div></div>
+</section>
+
+
+<section class="page live-section" id="page-live">
+  <div class="page-header"><span class="ph-ico">⚡</span>Live aktivitet<span class="ph-sub">— 4 rullande rader, realtid</span></div>
+  <div style="margin:0 10px;display:flex;flex-direction:column;gap:6px">
+    <div class="live-strip-row" data-speed="40">
+      <div class="lsr-label"><span class="lsr-pulse"></span>CRYPTO VS USDT</div>
+      <div class="lsr-track" id="lsr-crypto"></div>
+    </div>
+    <div class="live-strip-row" data-speed="55">
+      <div class="lsr-label"><span class="lsr-pulse" style="background:var(--blue);box-shadow:0 0 6px var(--blue)"></span>KORSPAR</div>
+      <div class="lsr-track" id="lsr-cross"></div>
+    </div>
+    <div class="live-strip-row" data-speed="50">
+      <div class="lsr-label"><span class="lsr-pulse" style="background:var(--yellow);box-shadow:0 0 6px var(--yellow)"></span>FOREX</div>
+      <div class="lsr-track" id="lsr-forex"></div>
+    </div>
+    <div class="live-strip-row" data-speed="45">
+      <div class="lsr-label"><span class="lsr-pulse" style="background:var(--orange);box-shadow:0 0 6px var(--orange)"></span>RÅVAROR &amp; INDEX</div>
+      <div class="lsr-track" id="lsr-other"></div>
+    </div>
+  </div>
+  <p style="margin:14px 12px;font-size:11px;color:var(--dim);line-height:1.5">
+    💡 Klicka på ett par för att ladda det i charten på Trade-sidan. Hovra för att pausa rullningen.
+  </p>
+</section>
+
+
+<style>
+#page-strategies .sl-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 10px 10px}
+#page-strategies .card{margin-bottom:0}
+#page-strategies .sl-wide{margin:0 10px 10px}
+.sl-lamp{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--border);font-size:12px}
+.sl-lamp:last-child{border-bottom:none}
+.sl-dot{width:10px;height:10px;border-radius:50%;flex:0 0 10px;background:#475569}
+.sl-dot.on{background:var(--green);box-shadow:0 0 8px var(--green);animation:slPulse 1.6s infinite}
+.sl-dot.off{background:var(--red);box-shadow:0 0 6px var(--red)}
+.sl-dot.idle{background:#eab308}
+@keyframes slPulse{0%,100%{opacity:1}50%{opacity:.45}}
+.sl-lamp .sl-name{font-weight:700;min-width:150px;color:#fff}
+.sl-lamp .sl-det{color:var(--dim);flex:1}
+.sl-lamp .sl-ago{color:var(--dim);font-size:11px;white-space:nowrap}
+.sl-big{font-size:26px;font-weight:800;color:var(--green)}
+.sl-sub{color:var(--dim);font-size:11px}
+.sl-coins{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.sl-chip{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:2px 9px;font-size:11px}
+.sl-btn{background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:inherit}
+.sl-btn:hover{border-color:var(--cyan)}
+.sl-btn.pri{background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.6);color:#fff}
+.sl-btn.warn{border-color:rgba(239,68,68,.5);color:#fca5a5}
+.sl-btn:disabled{opacity:.5;cursor:default}
+.sl-strat{border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px;background:var(--card2)}
+.sl-strat.off{opacity:.6}
+.sl-strat-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sl-strat-h b{color:#fff;font-size:13px}
+.sl-badge{font-size:10px;font-weight:800;padding:2px 6px;border-radius:3px;letter-spacing:.4px}
+.sl-badge.test{background:rgba(59,130,246,.2);color:#93c5fd}
+.sl-badge.live{background:rgba(239,68,68,.2);color:#fca5a5}
+.sl-badge.ai{background:rgba(168,85,247,.2);color:#d8b4fe}
+.sl-rules{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.6}
+.sl-rules b{color:var(--text)}
+.sl-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.sl-out{margin-top:8px;font-size:12px}
+.sl-out table,.sl-sig table{width:100%;border-collapse:collapse;font-size:12px}
+.sl-out td,.sl-out th,.sl-sig td,.sl-sig th{padding:4px 6px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+.sl-out th,.sl-sig th{color:var(--dim);font-weight:600}
+.sl-pass{color:var(--green)} .sl-fail{color:var(--red)}
+.sl-switch{position:relative;width:34px;height:18px;flex:0 0 34px;cursor:pointer}
+.sl-switch input{display:none}
+.sl-switch span{position:absolute;inset:0;background:#334155;border-radius:9px;transition:.15s}
+.sl-switch span:before{content:"";position:absolute;width:14px;height:14px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s}
+.sl-switch input:checked+span{background:var(--green)}
+.sl-switch input:checked+span:before{transform:translateX(16px)}
+#sl-editor{display:none;border:1px solid var(--cyan);border-radius:6px;padding:12px;margin-bottom:10px;background:var(--card2)}
+#sl-editor .sl-form{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px}
+#sl-editor label{display:block;font-size:11px;color:var(--dim);margin-bottom:3px}
+#sl-editor input,#sl-editor select,#sl-editor textarea{width:100%;box-sizing:border-box}
+#sl-editor textarea{font-family:inherit;font-size:12px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px}
+.sl-rule-row{display:grid;grid-template-columns:2fr 1.3fr 1fr 2fr .8fr auto;gap:6px;margin-bottom:5px;align-items:center}
+.sl-rule-h{font-weight:700;color:#fff;margin:10px 0 5px;font-size:12px}
+.sl-note{font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5}
+.sl-side-buy{color:var(--green);font-weight:800} .sl-side-sell{color:var(--red);font-weight:800}
+@media (max-width:900px){#page-strategies .sl-grid{grid-template-columns:1fr}#sl-editor .sl-form{grid-template-columns:1fr 1fr}.sl-rule-row{grid-template-columns:1fr 1fr}}
+</style>
+<section class="page" id="page-strategies">
+  <div class="page-header"><span class="ph-ico">🧠</span>Strategier<span class="ph-sub">— live-anslutningar, IG-saldo, strategibibliotek</span></div>
+
+  <div class="sl-grid">
+    <div class="card">
+      <h3>🟢 Live-anslutningar <span class="tag" id="sl-status-time">—</span></h3>
+      <div id="sl-lamps"><div class="sl-sub">Hämtar…</div></div>
+      <div class="sl-note">Grön = data har kommit in de senaste sekunderna via websocket. Röd = anslutningen är nere och återansluter av sig själv.</div>
+    </div>
+    <div class="card">
+      <h3>💚 IG-saldo (riktiga pengar) <span class="tag" id="sl-bal-src">—</span></h3>
+      <div id="sl-balance"><div class="sl-sub">Hämtar…</div></div>
+      <div class="sl-actions"><button class="sl-btn" id="sl-bal-refresh">Uppdatera nu</button></div>
+    </div>
+  </div>
+
+  <div class="card sl-wide">
+    <h3>📚 Strategibibliotek <span class="tag" id="sl-lib-meta">—</span></h3>
+    <div class="sl-actions" style="margin:0 0 10px;align-items:center"><button class="sl-btn pri" id="sl-new">+ Ny strategi</button>
+      <span class="sl-sub" style="margin-left:12px">Träningskrav: minst</span><input id="sl-min-per-day" type="number" min="0" step="1" value="10" style="width:60px" title="Träningen föreslår bara varianter som gör minst så här många affärer per dag" /><span class="sl-sub">affärer per dag</span></div>
+    <div id="sl-editor">
+      <div class="sl-rule-h" id="sl-ed-title">Ny strategi</div>
+      <label>Beskriv med egna ord (AI gör om det till regler)</label>
+      <textarea id="sl-ed-text" rows="2" placeholder="T.ex. köp ETH och SOL när RSI är under 30 och priset ligger över SMA 200, sälj när RSI går över 60. 15 minuters ljus."></textarea>
+      <div class="sl-actions"><button class="sl-btn" id="sl-ed-ai">✨ Gör regler med AI</button><span class="sl-sub" id="sl-ed-ai-msg"></span></div>
+      <div class="sl-form">
+        <div><label>Namn</label><input id="sl-ed-name" /></div>
+        <div><label>Coins (komma mellan)</label><input id="sl-ed-coins" list="sl-pairs" placeholder="BTC, ETH, SOL" /></div>
+        <div><label>Ljus (intervall)</label><select id="sl-ed-interval"></select></div>
+        <div><label>Var signalerna köas</label><select id="sl-ed-venue"><option value="test">TEST (IG demo, låtsaspengar)</option><option value="live">LIVE (IG, riktiga pengar)</option></select></div>
+        <div><label>Belopp per köp (USD)</label><input id="sl-ed-stake" type="number" min="1" step="1" /></div>
+        <div><label>Stop-loss (ATR, 0 = av)</label><input id="sl-ed-stop" type="number" min="0" step="0.1" /></div>
+        <div><label>Target (ATR, 0 = av)</label><input id="sl-ed-target" type="number" min="0" step="0.1" /></div>
+        <div><label>Granskning</label><select id="sl-ed-review"><option value="off">Bara regler</option><option value="jev">JEV bedömer</option><option value="jev_ai">JEV + AI-modell</option></select></div>
+        <div><label>AI-modell</label><select id="sl-ed-model"></select></div>
+        <div style="grid-column:span 3"><label>Beskrivning</label><input id="sl-ed-desc" /></div>
+      </div>
+      <label style="margin-top:8px;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text)"><input type="checkbox" id="sl-ed-auto" style="width:auto" /> Lägg godkända signaler direkt bland väntande ordrar (du trycker fortfarande Godkänn)</label>
+      <div class="sl-rule-h">KÖP när alla stämmer</div>
+      <div id="sl-ed-entry"></div>
+      <button class="sl-btn" data-add="entry">+ regel</button>
+      <div class="sl-rule-h">SÄLJ när alla stämmer (eller stop/target nås)</div>
+      <div id="sl-ed-exit"></div>
+      <button class="sl-btn" data-add="exit">+ regel</button>
+      <div class="sl-actions" style="margin-top:12px">
+        <button class="sl-btn pri" id="sl-ed-save">Spara</button>
+        <button class="sl-btn" id="sl-ed-bt">Backtesta utkastet</button>
+        <button class="sl-btn" id="sl-ed-cancel">Avbryt</button>
+        <span class="sl-sub" id="sl-ed-msg"></span>
+      </div>
+      <div class="sl-out" id="sl-ed-out"></div>
+    </div>
+    <div id="sl-list"><div class="sl-sub">Hämtar…</div></div>
+    <datalist id="sl-pairs"></datalist>
+  </div>
+
+  <div class="card sl-wide sl-sig">
+    <h3>🏆 Poängtavla — så hade strategierna gått <span class="tag" id="sl-score-meta">—</span></h3>
+    <div id="sl-score"><div class="sl-sub">Hämtar…</div></div>
+    <div class="sl-note">Varje godkänd köpsignal räknas som en låtsasaffär och nästa godkända sälj stänger den, med 0,1 % avgift per sida. Det gäller oavsett om du lade ordern eller inte. Så ser du vilka strategier som tjänar pengar innan riktiga pengar används. Inget flyttas till LIVE automatiskt.</div>
+  </div>
+
+  <div class="card sl-wide sl-sig">
+    <h3>⚡ Signaler från strategierna <span class="tag" id="sl-sig-meta">—</span></h3>
+    <div id="sl-signals"><div class="sl-sub">Inga signaler än. De kommer när ett ljus stänger och reglerna stämmer.</div></div>
+    <div class="sl-note">Strategierna lägger inga ordrar själva. "Lägg som väntande order" lägger ordern i rutan Väntande ordrar på Trade-sidan, och där trycker du Godkänn. LIVE har samma gränser som förut: max $5 per order och $10 per dag, och LIVE måste vara upplåst i .env.</div>
+  </div>
+</section>
+
+
+<section class="page" id="page-tree">
+  <div class="page-header"><span class="ph-ico">🌳</span>Arbetsträd<span class="ph-sub">— vem jobbar, var i processen. Svag rörelse = lyssnar, stark rörelse + ARBETAR = jobbar på riktigt</span></div>
+  <style>
+    #tr-box{margin:12px;background:#0b0d12;border:1px solid var(--border);border-radius:10px;overflow:auto}
+    #tr-bar{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid #1a1d24;color:#64748b;font:11px 'SF Mono',Monaco,monospace}
+    #tr-bar i{width:10px;height:10px;border-radius:50%;display:inline-block}
+    #tr-pre{margin:0;padding:14px 16px;color:#cbd5e1;font:12.5px/1.42 'SF Mono',SFMono-Regular,Menlo,Monaco,monospace;white-space:pre}
+    #tr-pre .o{color:#fb923c} #tr-pre .p{color:#a78bfa} #tr-pre .g{color:#34d399} #tr-pre .b{color:#60a5fa}
+    #tr-pre .c{color:#22d3ee} #tr-pre .r{color:#f87171} #tr-pre .y{color:#fbbf24} #tr-pre .d{color:#3f4654}
+    #tr-pre .w{color:#e5e7eb;font-weight:700} #tr-pre .k{font-weight:700}
+    #tr-pre .inv{background:currentColor} #tr-pre .inv>span{color:#0b0d12}
+    #tr-pre .hl{filter:brightness(1.35);text-shadow:0 0 8px currentColor}
+    #tr-pre .bgp{background:rgba(139,92,246,.22)} #tr-pre .bgo{background:rgba(251,146,60,.20)} #tr-pre .bgg{background:rgba(16,185,129,.16)}
+    #tr-pre .bgb{background:rgba(59,130,246,.24)} #tr-pre .bgr{background:transparent}
+    #tr-pre .hlp{background:rgba(139,92,246,.30)} #tr-pre .hlg{background:rgba(16,185,129,.28)} #tr-pre .hlo{background:rgba(251,146,60,.30)}
+    #tr-pre .hlb{background:rgba(59,130,246,.32)} #tr-pre .hlw{background:rgba(229,231,235,.25)}
+  </style>
+  <div id="tr-box">
+    <div id="tr-bar"><i style="background:#ef4444"></i><i style="background:#f59e0b"></i><i style="background:#10b981"></i><span style="margin-left:auto" id="tr-src">~/trading-os · /api/live/agent-tree</span></div>
+    <pre id="tr-pre">Ritar arbetsträdet…</pre>
+  </div>
+</section>
+
+<section class="page" id="page-team">
+  <div class="page-header"><span class="ph-ico">🤖</span>AI-Team<span class="ph-sub">— 10 personer, schemalagd autonomi</span></div>
+  <div class="card" style="margin:0 10px;padding:14px">
+    <div class="team-banner" id="team-banner-page"></div>
+    <div class="agent-grid" id="agent-grid-page" style="margin-top:10px"></div>
+    <div class="timing" id="timing-page" style="margin-top:12px">
+      Specialists: <b id="t-spec-page">–</b> | Exec: <b id="t-exec-page">–</b> | Head: <b id="t-head-page">–</b> | Total: <b id="t-tot-page">–</b>
+    </div>
+  </div>
+</section>
+
+
+<section class="page chat-page" id="page-chat">
+  <div class="page-header">
+    <span class="ph-ico">💬</span>Chatta med teamet
+    <span class="ph-sub">— skriv instruktioner i klartext, Hanna kör</span>
+    <span class="ph-spacer"></span>
+    <button class="ph-action" id="chat-clear-btn">↻ Rensa</button>
+  </div>
+  <div class="card chat-card" style="margin:0 10px;display:flex;flex-direction:column;gap:0;padding:0;height:calc(100vh - 140px)">
+    <div class="chat-banner">
+      <span class="auto-dot"></span>
+      <b>Direktinstruktion</b>
+      <span class="lbl">·</span>
+      <span class="lbl">Risk-managern blockerar fortfarande orders utanför ramen (MIN/MAX_POSITION_USD).</span>
+    </div>
+    <div class="team-chat-log" id="team-chat-log"></div>
+    <div class="team-chat-input">
+      <div class="team-chat-suggestions" id="team-chat-suggestions">
+        <button data-q="Köp BTC för $50">Köp BTC för $50</button>
+        <button data-q="Köp ETH och SOL för $30 vardera">ETH + SOL $30 vardera</button>
+        <button data-q="Sälj alla mina BTC-positioner nu">Sälj alla BTC</button>
+        <button data-q="Vad tycker teamet om SOL just nu?">Vad tycker ni om SOL?</button>
+        <button data-q="Stäng alla positioner och avvakta">Stäng allt + avvakta</button>
+        <button data-q="Justera stop-loss till -2% på alla positioner">Stop-loss -2%</button>
+      </div>
+      <div class="team-chat-row">
+        <textarea id="team-chat-text" rows="2" placeholder="Skriv instruktion eller fråga... t.ex. 'Köp BTC för $50' eller 'Vad är bäst entry på ETH?'"></textarea>
+        <button class="send-btn" id="team-chat-send">Skicka <span style="font-size:9px;color:rgba(0,0,0,.6);margin-left:4px">⌘↵</span></button>
+      </div>
+      <div class="team-chat-info">
+        💡 Hanna får din instruktion som "SPECIAL INSTRUKTION" — hon väger den mot Risk + Advisor innan hon agerar.
+        Live-läge → riktiga ordrar. Paper-läge → testnet. Propose-läge → förslag du godkänner.
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<section class="page" id="page-trades">
+  <div class="page-header">
+    <span class="ph-ico">📈</span>Trades
+    <span class="ph-sub">— aktiva positioner, beslut, historik, P&amp;L</span>
+    <span class="ph-spacer"></span>
+    <span id="trades-summary" style="font-size:11px;color:var(--label);font-weight:600">–</span>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr;gap:10px;margin:0 10px">
+    
+    <div class="paper-card" id="paper-card">
+      <div class="pc-row">
+        <div class="pc-col">
+          <div class="pc-lbl" id="pc-mode-label">📊 TEST-SALDO</div>
+          <div class="pc-equity" id="pc-equity">$0.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">REALISERAT PNL</div>
+          <div class="pc-pnl" id="pc-realized">+$0.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">UNREALIZED (ÖPPNA)</div>
+          <div class="pc-pnl" id="pc-unrealized">+$0.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">CASH FRI</div>
+          <div class="pc-cash" id="pc-cash">$0.00</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">TRADES (W/L)</div>
+          <div class="pc-trades" id="pc-trades">0/0</div>
+        </div>
+        <div class="pc-col">
+          <div class="pc-lbl">WIN-RATE</div>
+          <div class="pc-winrate" id="pc-winrate">–</div>
+        </div>
+        <button class="pc-reset" id="pc-reset" style="display:none">↻ Reset</button>
+      </div>
+    </div>
+
+    
+    <div class="card" id="binance-sync-card" hidden style="display:none!important;border-left:3px solid #f0b90b">
+      <h3 style="display:flex;align-items:center;gap:8px">
+        🟡 IG Live Sync
+        <span id="binance-sync-mode" class="tag" style="font-size:10px;color:#f0b90b">init...</span>
+        <span id="binance-sync-time" style="margin-left:auto;font-size:10px;color:var(--dim);font-family:'SF Mono',monospace"></span>
+      </h3>
+      <div id="binance-sync-body" style="font-size:12px">
+        <div style="color:var(--dim)">Hämtar från IG...</div>
+      </div>
+    </div>
+
+    
+    <div class="card session-card" id="session-card">
+      <div id="session-body"></div>
+    </div>
+
+    
+    <div class="card confirm-card" id="confirm-card" style="display:none">
+      <h3>🎯 A+ Setup väntar på bekräftelse<span class="sim-badge" title="Låtsasdata i webbläsaren. Ingen riktig order, ingen riktig analys.">SIMULERING</span> <span id="confirm-count" class="tag" style="margin-left:auto;color:#22c55e">0</span></h3>
+      <div class="sim-note">Score och vinstchans är slumpade i webbläsaren, inte beräknade från marknaden. Bekräfta lägger ingen riktig order. Riktiga signaler finns i Signaler-tabellen.</div>
+      <div id="confirms-list"></div>
+    </div>
+
+    
+    <div class="card watch-card" id="watch-card" style="display:none">
+      <h3>🔍 Pågående bevakningar<span class="sim-badge" title="Låtsasdata i webbläsaren. Ingen riktig order, ingen riktig analys.">SIMULERING</span> <span id="watch-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span></h3>
+      <div id="watches-list"></div>
+    </div>
+
+    <div class="card">
+      <h3>🟢 Aktiva positioner <span id="trades-mode-tag" class="tag" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px">🧪 TEST</span> <span id="pos-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span> <span id="pos-refresh-tag" class="tag" style="font-size:9px;color:var(--label);font-weight:500">⏱ var 3s</span></h3>
+      <div id="trade-positions-table"></div>
+    </div>
+
+    <div class="card">
+      <h3>🤖 Hannas beslut (senaste) <span class="tag" style="margin-left:auto;font-size:9px;color:var(--label);font-weight:500">⏱ Trades · uppdateras var 30s</span></h3>
+      <div id="trade-decisions-table"></div>
+    </div>
+
+    
+    <div class="card stats-card" id="stats-card">
+      <h3>📈 Statistik sedan start <span id="stats-period" class="tag" style="margin-left:auto;color:var(--label);font-weight:500"></span></h3>
+      <div id="lifetime-stats"></div>
+    </div>
+
+    <div class="card" id="audit-card">
+      <h3>🔍 Audit Trail <span id="audit-check" class="tag" style="margin-left:auto;font-weight:600;font-size:10px"></span></h3>
+      <div id="audit-summary" style="font-size:11px;color:var(--label);margin-bottom:10px;line-height:1.5"></div>
+      <div id="audit-table" style="max-height:400px;overflow-y:auto"></div>
+    </div>
+
+    <div class="card">
+      <h3>📊 Stängda trades <span class="tag" style="margin-left:auto;font-size:9px;color:var(--label);font-weight:500">FIFO realized PnL · auto-uppdateras</span></h3>
+      <div id="trade-history-table"></div>
+    </div>
+
+    <div class="card">
+      <h3>🧠 Agent Learnings <span id="learnings-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span> <span class="tag" style="font-size:9px;color:var(--label);font-weight:500">persistent · överlever restart</span></h3>
+      <div id="learnings-summary" style="font-size:11px;color:var(--label);margin-bottom:10px;line-height:1.5">Agenterna lär sig av varje stängd trade. Edge per symbol visas när du har ≥1 sell.</div>
+      <div id="learnings-edges"></div>
+    </div>
+  </div>
+</section>
+
+
+<section class="page" id="page-cost">
+  <div class="page-header"><span class="ph-ico">💰</span>Cost<span class="ph-sub">— spend tracking, cap, breakdown</span></div>
+  <div class="card" style="margin:0 10px">
+    <p style="font-size:12px;color:var(--dim);line-height:1.5">Cost-tracker loggar varje Claude-anrop i realtid. Daily cap (MAX_DAILY_SPEND_USD) stoppar automatiskt sessions vid överskridande.</p>
+    <button class="run-btn" style="margin-top:10px">Öppna detaljerad kostnadsöversikt</button>
+  </div>
+</section>
+
+
+<section class="page settings-page" id="page-settings">
+  <div class="page-header"><span class="ph-ico">⚙️</span>Settings<span class="ph-sub">— backend, API-nycklar, mode</span></div>
+  <div class="card" style="margin:0 10px">
+    <h4>Backend-anslutning</h4>
+    <div class="grid">
+      <div>
+        <label>Backend URL</label>
+        <input type="text" id="cfg-url" placeholder="http://localhost:3939" />
+      </div>
+      <div>
+        <label>API Key (valfri)</label>
+        <span class="ig-muted">Nyckelfält borttaget: befintlig IG-backend används.</span>
+      </div>
+      <div>
+        <label>Mode</label>
+        <select id="cfg-mode">
+          <option value="demo">Demo (simulerad data)</option>
+          <option value="live">Egen server (riktig data, ordrar enligt botens läge)</option>
+        </select>
+      </div>
+    </div>
+    <button class="test-btn" id="test-conn">Test Connection</button>
+    <div class="status-line" id="conn-status"></div>
+
+    <h4 style="margin-top:18px">Mina API-nycklar</h4>
+    <p style="font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:14px">Dina egna nycklar — du betalar själv för Anthropic-tokens och tradar med ditt eget IG-konto. Vi rör aldrig dina pengar.</p>
+    <div class="grid">
+      <div>
+        <label>🧠 Anthropic API <span style="color:var(--red);font-size:9px">KRÄVS</span></label>
+        <span class="ig-muted">Nyckelfält borttaget: befintlig IG-backend används.</span>
+      </div>
+      <div>
+        <label>🟡 IG API Key <span style="color:var(--red);font-size:9px">KRÄVS</span></label>
+        <span class="ig-muted">Nyckelfält borttaget: befintlig IG-backend används.</span>
+      </div>
+      <div>
+        <label>🟡 IG Secret <span style="color:var(--red);font-size:9px">KRÄVS</span></label>
+        <span class="ig-muted">Nyckelfält borttaget: befintlig IG-backend används.</span>
+      </div>
+      <div>
+        <label>🔍 Perplexity (Lars) <span style="color:var(--dim);font-size:9px">VALFRI</span></label>
+        <span class="ig-muted">Nyckelfält borttaget: befintlig IG-backend används.</span>
+      </div>
+      <div>
+        <label>💱 IG Token (forex) <span style="color:var(--dim);font-size:9px">VALFRI</span></label>
+        <span class="ig-muted">Nyckelfält borttaget: befintlig IG-backend används.</span>
+      </div>
+      <div>
+        <label>💱 IG Account ID <span style="color:var(--dim);font-size:9px">VALFRI</span></label>
+        <input type="text" id="set-oanda-account" placeholder="001-004-12345-001" />
+      </div>
+    </div>
+    <button class="run-btn" id="save-keys-btn" style="margin-top:8px">Spara nycklar</button>
+    <span id="save-keys-status" style="margin-left:12px;font-size:11px"></span>
+
+    <h4 style="margin-top:18px">📱 Telegram-notiser</h4>
+    <p style="font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:8px">Få push när session startar/slutar, A+ setup hittas, eller mål uppnått. Skapa bot via <a href="https://t.me/BotFather" target="_blank" style="color:var(--cyan)">@BotFather</a> → /newbot → kopiera token. Hämta chat-id via <a href="https://t.me/userinfobot" target="_blank" style="color:var(--cyan)">@userinfobot</a>.</p>
+    <div class="key-grid">
+      <div>
+        <label>🤖 Bot Token <span style="color:var(--dim);font-size:9px">FRÅN BOTFATHER</span></label>
+        <span class="ig-muted">Nyckelfält borttaget: befintlig IG-backend används.</span>
+      </div>
+      <div>
+        <label>💬 Chat ID <span style="color:var(--dim);font-size:9px">FRÅN USERINFOBOT</span></label>
+        <input type="text" id="set-tg-chat" placeholder="123456789" />
+      </div>
+    </div>
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+        <input type="checkbox" id="set-tg-enabled" style="margin:0" />
+        <span>Aktivera Telegram-push</span>
+      </label>
+      <button class="run-btn" id="save-tg-btn">Spara</button>
+      <button class="run-btn" id="test-tg-btn" style="background:var(--card2);border:1px solid var(--border)">📨 Skicka test</button>
+      <span id="tg-status" style="font-size:11px"></span>
+    </div>
+
+    <h4 style="margin-top:18px">🔗 Live Broker-integrationer</h4>
+    <p style="font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:8px">IG-nycklarna ligger i .env på din dator (IG_API_KEY för LIVE, IG_DEMO_API_KEY för TEST). IG nedan är valfritt för forex.</p>
+
+    <div style="display:none;background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:10px">
+      <div style="font-size:13px;font-weight:700;color:#f0b90b;margin-bottom:8px">🪙 IG (crypto + EUR/GBP/AUDUSDT)</div>
+      <div class="key-grid">
+        <div>
+          <label>API Key (testnet eller live)</label>
+          <span class="ig-muted">Nyckelfält borttaget: befintlig IG-backend används.</span>
+        </div>
+        <div>
+          <label>API Secret</label>
+          <span class="ig-muted">Nyckelfält borttaget: befintlig IG-backend används.</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="bnc-testnet" checked style="margin:0" />
+          <span>Testnet-läge (gratis demo USDT)</span>
+        </label>
+        <button class="run-btn" id="bnc-connect-btn" style="background:#f0b90b;color:#000">🔗 Anslut IG</button>
+        <button class="run-btn" id="bnc-fetch-btn" style="background:var(--card2);border:1px solid var(--border)">🔄 Hämta saldo</button>
+        <span id="bnc-status" style="font-size:11px"></span>
+      </div>
+      <div id="bnc-account-display" style="margin-top:10px;font-size:11px;color:var(--dim);font-family:'SF Mono',monospace"></div>
+    </div>
+
+    <div style="background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:10px">
+      <div style="font-size:13px;font-weight:700;color:#22c55e;margin-bottom:8px">💱 IG (forex — alla pairs)</div>
+      <div class="key-grid">
+        <div>
+          <label>API Token</label>
+          <span class="ig-muted">Nyckelfält borttaget: befintlig IG-backend används.</span>
+        </div>
+        <div>
+          <label>Account ID</label>
+          <input type="text" id="oanda-account-2" placeholder="001-004-XXXXXXX-001" />
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="oanda-practice" checked style="margin:0" />
+          <span>Practice-läge (demo, gratis)</span>
+        </label>
+        <button class="run-btn" id="oanda-connect-btn" style="background:#22c55e;color:#000">🔗 Anslut IG</button>
+        <button class="run-btn" id="oanda-fetch-btn" style="background:var(--card2);border:1px solid var(--border)">🔄 Hämta saldo</button>
+        <span id="oanda-status" style="font-size:11px"></span>
+      </div>
+      <div id="oanda-account-display" style="margin-top:10px;font-size:11px;color:var(--dim);font-family:'SF Mono',monospace"></div>
+    </div>
+
+    <h4 style="margin-top:18px">Risk &amp; Position-sizing</h4>
+    <p style="font-size:11px;color:var(--dim);line-height:1.5">Sätts i <code style="background:var(--bg);padding:1px 4px;border-radius:2px">.env</code>-filen på VPS:en (DEFAULT/MIN/MAX_POSITION_USD, MAX_DAILY_SPEND_USD osv). Editor i appen byggs i Fas 2.</p>
+  </div>
+</section>
+
+<div class="ticker-strip">
+  <div class="ticker-track" id="ticker"></div>
+</div>
+
+</div>
+</div>
+
+
+
+
+<div class="live-modal-bg" id="live-modal-bg">
+  <div class="live-modal">
+    <h2>⚠ LIVE-LÄGE AKTIVERAS</h2>
+    <div class="warning" style="font-size:14px;line-height:1.6">
+      Du växlar till <b>LIVE</b>. Alla trades blir <b>RIKTIGA orders</b> med <b>RIKTIGA pengar</b> på din IG.<br><br>
+      Säkerhetslås: <b id="live-cap-stake">max $5/order</b> · <b id="live-cap-day">max $10 köp per dag</b> · kill-switch tillgänglig längst ner i sidomenyn.
+      <div id="live-lock-note" style="margin-top:10px;font-size:13px"></div>
+    </div>
+    <div class="actions">
+      <button class="cancel" id="live-cancel">Avbryt</button>
+      <button class="confirm" id="live-confirm">💚 Aktivera LIVE</button>
+    </div>
+  </div>
+</div>
+
+
+<button class="fc-toggle" id="fc-toggle" title="Chatta med teamet" aria-label="Öppna chat">
+  💬
+</button>
+<div class="fc-panel" id="fc-panel">
+  <div class="fc-header">
+    <span>💬</span>
+    <b>Team Chat</b>
+    <span class="fc-sub">Alla agenter</span>
+    <div class="fc-actions">
+      <button id="fc-fullscreen" title="Öppna full chat-sida">↗</button>
+      <button id="fc-close" title="Stäng">×</button>
+    </div>
+  </div>
+  <div class="fc-body" id="fc-body"></div>
+  <div class="fc-input">
+    <div class="fc-quicks">
+      <button data-q="Köp BTC för $50">BTC $50</button>
+      <button data-q="Köp ETH för $50">ETH $50</button>
+      <button data-q="Köp SOL för $50">SOL $50</button>
+      <button data-q="Stäng alla positioner">Stäng allt</button>
+      <button data-q="Vad tycker teamet om marknaden just nu?">Status?</button>
+    </div>
+    <div class="fc-input-row">
+      <textarea id="fc-text" rows="2" placeholder="Skriv instruktion eller fråga..."></textarea>
+      <button class="fc-send" id="fc-send">Skicka</button>
+    </div>
+  </div>
+</div>
+
+
+<div class="modal-bg" id="modal-bg">
+  <div class="modal">
+    <button class="close" id="modal-close">×</button>
+    <div class="modal-header">
+      <div class="modal-avatar" id="modal-avatar">—</div>
+      <div class="modal-info">
+        <h2 id="modal-title">—</h2>
+        <span class="modal-role" id="modal-role"></span>
+      </div>
+      <span class="meta" id="modal-meta"></span>
+    </div>
+    <div class="modal-tabs">
+      <button class="on" data-tab="analysis" id="tab-analysis">Analys</button>
+      <button data-tab="chat" id="tab-chat">Fråga &amp; Order</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-tab on" id="tab-analysis-pane">
+        <div class="detail" id="analysis-detail">—</div>
+      </div>
+      <div class="modal-tab" id="tab-chat-pane">
+        <div class="chat" id="chat-log"></div>
+        <div class="quick-prompts" id="quick-prompts"></div>
+      </div>
+    </div>
+    <div class="modal-footer" id="modal-footer" style="display:none">
+      <input type="text" id="chat-input" placeholder="Skriv fråga eller order…" />
+      <button class="send" id="chat-send">Skicka</button>
+    </div>
+  </div>
+</div>
+
+<dialog id="ig-review"><h2 id="ig-review-title">Granska order</h2><div id="ig-review-body"></div><div class="ig-actions"><button id="ig-review-cancel">Avbryt</button><button id="ig-review-confirm">Bekräfta</button></div></dialog><div id="claude-toast" role="status" hidden></div></body></html>
