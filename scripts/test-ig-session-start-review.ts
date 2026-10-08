@@ -11,6 +11,10 @@ const now=Date.parse('2026-10-07T07:00:00Z');
 const status=()=>({environments:{demo:{status:'connected',connectionGeneration:'fixture',account:{currency:'USD'}},live:{status:'missing'}}}) as any;
 const input={epics:['EUR'],timeframe:'5m' as const,percent:1,horizonMinutes:15,durationMinutes:15,intervalMinutes:5,maxPositions:1};
 try{
+ const capacityReads:string[]=[];const capacity=createIgWorkspace({directory:path.join(root,'capacity'),now:()=>now,status,call:async(_mode,route)=>{capacityReads.push(route);throw Error('Ingen marknads-/AI-läsning ska ske');}});
+ await assert.rejects(capacity.startSession('demo',{...input,epics:Array.from({length:16},(_,i)=>`FX.${i}`)}),/hela urvalet/);
+ assert.deepEqual(capacityReads,[],'För kort session nekas före pris- eller modelläsningar');
+
  for(const action of ['pause','delete','stop'] as const){
   let entered!:()=>void,release!:(value:any)=>void;
   const waiting=new Promise<void>(resolve=>entered=resolve);

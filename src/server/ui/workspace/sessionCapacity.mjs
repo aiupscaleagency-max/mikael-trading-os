@@ -1,0 +1,2 @@
+export function sessionCapacity(count,duration,interval){const slots=Number.isFinite(duration)&&duration>0&&Number.isFinite(interval)&&interval>0?Math.ceil(duration/interval)*5:0;return {slots,valid:Number.isInteger(count)&&count>0&&count<=500&&count<=slots,note:`${count} instrument i kön · beräknat utrymme ${slots} instrument (${duration} min / ${interval} min × 5). Sekventiella omgångar; AI-tid, kvoter och avbrott kan fördröja eller hindra en full genomgång.`};}
+export function sessionDefaults(count){return count>10?{interval:1,duration:count>300?120:60}:null;}

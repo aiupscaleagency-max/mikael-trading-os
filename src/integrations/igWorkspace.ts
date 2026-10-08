@@ -162,11 +162,50 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     return {environment:mode,category,status:p.done&&p.unclassified===0?'ready':'partial',complete:p.done&&p.unclassified===0,traversalComplete:p.done,progress:{reason:p.reason,failures:p.failures,page:p.page,categoryIndex:p.index,lastProgressAt:p.at,retryAt:p.retryAt},unclassifiedInstruments:p.unclassified,error:p.failures?'IG-kategorin kunde inte hämtas; nytt försök sker automatiskt och sökreserv används vid upprepade fel':null,markets:[...p.markets.values()].filter(m=>m.category===category).sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:p.at,remainingSearches:p.done?0:Math.max(1,(p.codes?.length??1)-p.index),source:'IG aktiverade kontokategorier',note:p.done?'Alla hämtade Forex- och kryptoinstrument i IG-kontots aktiverade valutakategorier.':'Kontokategorier hämtas automatiskt inom IG:s läskvot.'};
   }
   const catalogProgress=new Map<string,{cursor:number;markets:Map<string,any>;updatedAt:number;failed:Map<string,{attempts:number;retryAt:number}>;reason:string|null}>();
+  // Cross-environment discovery transfers identifiers only. Every visible Demo row is
+  // independently read from Demo; no Live name, quote or market status is copied.
+  const demoCandidates=new Map<string,Map<string,{at:number;row:any|null}>>();
+  async function discoverDemoCrypto(){
+    const identity=connectionIdentity('demo');
+    let checked=demoCandidates.get(identity!);if(!checked){checked=new Map();demoCandidates.set(identity!,checked);}
+    const liveIdentity=connectionIdentity('live');let candidates:any[]=[];
+    if(liveIdentity){
+      // The existing background catalogue tick discovers Live; never recurse or
+      // spend Live quota from a Demo request. Read current-generation EPICs only.
+      candidates=[...(categoryProgress.get(`live:${liveIdentity}`)?.markets.values()??[]),...(catalogProgress.get(`live:${liveIdentity}:crypto`)?.markets.values()??[])];
+      candidates=[...new Map(candidates.map(m=>[m.epic,m])).values()];
+    }
+    let pendingCount=0,reason:string|null=liveIdentity?(candidates.length?null:'waiting_live_catalogue'):'live_not_connected';
+    // Never-seen EPICs precede refreshes; otherwise a catalogue larger than
+    // five minutes of quota can permanently starve its final candidates.
+    candidates.sort((a,b)=>(checked.get(a.epic)?.at??Number.NEGATIVE_INFINITY)-(checked.get(b.epic)?.at??Number.NEGATIVE_INFINITY));
+    for(const candidate of candidates){
+      const epic=candidate.epic;if(typeof epic!=='string'||igMarketCategory(candidate)!=='crypto')continue;
+      const previous=checked.get(epic);if(previous&&now()-previous.at<300000)continue;
+      if(!catalogueBudget('demo','crypto')){pendingCount++;reason='budget';continue;}
+      try{
+        epicGuard(epic);
+        const data=await catalogueReadFor('crypto','demo',`markets/${epic}`,'GET','3');
+        if(connectionIdentity('demo')!==identity)throw Error('IG-kontosessionen ändrades under kataloghämtningen');
+        const i=data.instrument,q=data.snapshot;
+        if(i?.epic!==epic||!q||!data.dealingRules||igMarketCategory({name:i.name,type:i.type})!=='crypto')throw Error('Demo-instrumentet kunde inte verifieras');
+        const row=marketRow({...q,epic,instrumentName:i.name,instrumentType:i.type,expiry:i.expiry,streamingPricesAvailable:i.streamingPricesAvailable});
+        checked.set(epic,{at:now(),row});
+      }catch(e){
+        if(connectionIdentity('demo')!==identity)throw Error('IG-kontosessionen ändrades under kataloghämtningen');
+        // Negative probes cool down as well; transient errors remain visible in progress.
+        checked.set(epic,{at:now(),row:null});reason='verification_unavailable';
+      }
+    }
+    if(connectionIdentity('demo')!==identity)throw Error('IG-kontosessionen ändrades under kataloghämtningen');
+    return {markets:[...checked.values()].flatMap(v=>v.row?[v.row]:[]),progress:{source:'Live EPIC candidates; individually verified with Demo',candidates:candidates.length,verified:[...checked.values()].filter(v=>v.row).length,pending:pendingCount,reason}};
+  }
   async function catalogue(mode:IgEnvironment,category:unknown){
     connected(mode);if(category!=='forex'&&category!=='crypto')throw Error('Välj Forex eller Kryptovalutor');
+    const discovery=mode==='demo'&&category==='crypto'?await cached('demodiscovery:demo',15000,discoverDemoCrypto):null;
     const enabled=await accountCatalogue(mode,category);
     // Tomt eller oklassificerat kategorisvar bevisar inte att kontot saknar marknader.
-    if(enabled&&(!enabled.traversalComplete&&enabled.progress.failures<2||enabled.traversalComplete&&enabled.markets.length>0&&enabled.unclassifiedInstruments===0))return enabled;
+    if(!discovery&&enabled&&(!enabled.traversalComplete&&enabled.progress.failures<2||enabled.traversalComplete&&enabled.markets.length>0&&enabled.unclassifiedInstruments===0))return enabled;
     const identity=connectionIdentity(mode),key=`${mode}:${identity}:${category}`;
     let progress=catalogProgress.get(key);const terms=category==='forex'?['Forex',...fiatCodes]:cryptoTerms;
     if(!progress||progress.cursor===terms.length&&progress.failed.size===0&&now()-progress.updatedAt>300000){progress={cursor:0,markets:progress?.markets??new Map(),updatedAt:now(),failed:new Map(),reason:null};catalogProgress.set(key,progress);}
@@ -200,7 +239,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
         }
       }
       if(connectionIdentity(mode)!==identity)throw Error('IG-kontosessionen ändrades under kataloghämtningen');
-      return {environment:mode,category,status:blocked?'partial':'ready',complete:false,error:null,markets:[...new Map([...(enabled?.markets??[]),...progress!.markets.values()].map(m=>[m.epic,m])).values()].sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:progress!.updatedAt,remainingSearches:terms.length-progress!.cursor+[...progress!.failed].filter(([term])=>terms.indexOf(term)<progress!.cursor).length,source:'IG kontosökning',progress:{category:enabled?.progress??null,search:{reason:progress!.reason,failedTerms:[...progress!.failed.keys()]}},categoryError:progress!.failed.size?'En eller flera IG-sökningar misslyckades; övriga termer hämtas och felande termer återförsöks':enabled?.error??null,unclassifiedInstruments:enabled?.unclassifiedInstruments??0,note:blocked?'Hämtningen är delvis klar och fortsätter automatiskt inom IG:s läskvot.':'Alla hämtade IG-instrument. Ytterligare instrument kan sökas hos IG; fullständigheten kan inte verifieras.'};
+      return {environment:mode,category,status:blocked?'partial':'ready',complete:false,error:null,markets:[...new Map([...(enabled?.markets??[]),...(discovery?.markets??[]),...progress!.markets.values()].map(m=>[m.epic,m])).values()].sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:progress!.updatedAt,remainingSearches:terms.length-progress!.cursor+[...progress!.failed].filter(([term])=>terms.indexOf(term)<progress!.cursor).length,source:'IG kontosökning',progress:{discovery:discovery?.progress??null,category:enabled?.progress??null,search:{reason:progress!.reason,failedTerms:[...progress!.failed.keys()]}},categoryError:progress!.failed.size?'En eller flera IG-sökningar misslyckades; övriga termer hämtas och felande termer återförsöks':enabled?.error??null,unclassifiedInstruments:enabled?.unclassifiedInstruments??0,note:blocked?'Hämtningen är delvis klar och fortsätter automatiskt inom IG:s läskvot.':'Alla hämtade IG-instrument. Ytterligare instrument kan sökas hos IG; fullständigheten kan inte verifieras.'};
     })();pending.set(`catalog:${key}`,job);try{return clone(await job);}finally{pending.delete(`catalog:${key}`);}
   }
   async function marketOverview(mode:IgEnvironment,epics:string[]=[]){
@@ -391,7 +430,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
     const maxPositions=input.maxPositions??1;
     if(!Number.isInteger(maxPositions)||maxPositions<1||maxPositions>10)throw Error("Ogiltig gräns för samtidiga positioner");
     connected(mode);const binding=connectionIdentity(mode),cancellation=cancellations.get(mode)??0;
-    const selected=selectionGuard({...input,horizonMinutes:input.horizonMinutes??(marginPercent!==undefined?5:15)},false,500);for(const epic of selected.epics.slice(0,5)){const m=await market(mode,epic);if(!["CURRENCIES","INDICES","COMMODITIES","SHARES"].includes(m.type??""))throw Error("IG-instrumenttypen stöds inte i denna CFD-vy");}
+    const selected=selectionGuard({...input,horizonMinutes:input.horizonMinutes??(marginPercent!==undefined?5:15)},false,500);if(selected.epics.length>Math.ceil(input.durationMinutes/input.intervalMinutes)*5)throw Error("Sessionen hinner inte gå igenom hela urvalet: välj längre session eller kortare analysintervall");for(const epic of selected.epics.slice(0,5)){const m=await market(mode,epic);if(!["CURRENCIES","INDICES","COMMODITIES","SHARES"].includes(m.type??""))throw Error("IG-instrumenttypen stöds inte i denna CFD-vy");}
     if(connectionIdentity(mode)!==binding)throw Error("IG-kontoanslutningen ändrades under sessionsstarten");
     if((cancellations.get(mode)??0)!==cancellation)throw Error("Sessionens start avbröts");
     if(busy.has(mode)||state(mode).session?.status==="running")throw Error("Session körs redan för IG-miljön");

@@ -138,3 +138,10 @@ Efter uppdatering av dator 1: `node --import tsx scripts/import-strategyfactory-
 En direkt IG-analys tillåter upp till tio instrument. Större val (högst 500) hålls i gränssnittets kontobundna sessionsurval och skickas komplett till agentsessionens befintliga batchkö. Snapshot från serverns tiourval ersätter inte den större poolen. Kontobyte nollställer den. Regionfiltren klassificerar valutakoder lokalt; de påstår inte att detta är IG:s officiella handelsplatser eller ett komplett marknadsutbud.
 
 Claude TRADE visar kontosaldo/tillgängligt kapital och marginalbudget i kontots valuta, separat från kontraktsantal. Storleksberäkning kräver verifierade kontraktsregler, färsk kvot och samma punktvaluta som kontot; annars används ingen antagen valutakurs. Serverns förhandsgranskning visar marginal och separat stopprisk. Ingen ordergrind aktiveras av ändringen.
+
+### Demo-instrument som saknas i IG:s sökindex
+Direktkontroll visade Bitcoin ($1) tillgängligt på Demo trots avsaknad i demosökningen. Därför använder Demo-katalogen nu endast identifierare från redan upptäckt, aktuellt Live-katalogcache som kandidater. Varje kandidat hämtas separat från Demo innan namn/pris/status publiceras. Ingen Live-kvot kopieras. Den befintliga bakgrundsskanningen fyller båda miljöers kataloger; vid kallstart visas väntan tills Live-kandidater finns.
+
+Kontrollerna delar befintlig läsbudget (högst fyra kryptoläsningar/minut), prioriterar aldrig prövade kandidater och återupptas progressivt. Negativa svar har cooldown. Katalogen förblir märkt ofullständig när fullständighet inte kan styrkas. Regression med30kandidater över8min verifierar att sena kandidater inte svälter. Inga nya API-inloggningar görs av upptäckten.
+
+Sessionsstart kontrollerar också att antalet schemalagda femgrupper ryms inom valt intervall och sessionstid. För kort session avvisas före metadata-/AI-anrop. Detta är en kapacitetskontroll; API-/modellfel redovisas fortfarande och räknas inte som lyckade analyser.
