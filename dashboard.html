@@ -1410,6 +1410,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 <section class="page active" id="page-trade">
 <div class="page-header"><span class="ph-ico">📊</span>Trade<span class="ph-sub">— marknaden, handla, signaler, analys och ordrar</span>
   <button type="button" onclick="switchPage('pairs')" style="margin-left:auto;padding:6px 14px;border:1px solid var(--cyan);background:transparent;color:var(--cyan);border-radius:6px;font-weight:800;cursor:pointer;letter-spacing:.4px">ALLA PAR SIDA VID SIDA →</button></div>
+<div id="posBanner" style="display:none;margin:8px 12px;padding:10px 12px;border:1px solid var(--cyan);border-radius:10px;background:var(--card);font-size:13px"></div>
 <main>
 <!-- Vad som analyseras: läser /api/live/watchlist + /api/brokers. Bara visning. -->
 <section id="tradeInfo">
@@ -4537,6 +4538,8 @@ function tick(){
 
   // evaluate active positions (READ-ONLY: live PnL för rendering)
   evalPositions();
+  settleExpiredScalps(); // stäng scalp-trades när tiden är slut (riktigt pris avgör)
+  renderPosBanner();
   // PAPER-LOOPS DISABLED: dessa körde mot STATE.tradePositions vilket nu är 437 Binance-positioner
   // → 437 spam-notiser till Telegram per tick. Auto-sell/trailing hanteras nu av positionMonitor.ts (backend).
   // evalScalpTrades();
@@ -6767,6 +6770,85 @@ function evalScalpTrades(){
   }
 }
 
+// Utgångna scalp-trades stängs själva. Vinst/förlust avgörs av RIKTIGT pris
+// vid utgång (inte slump): rätt riktning = stake × (payout−1), fel = −stake, oförändrat = pengarna tillbaka.
+// Rör bara type "scalp", aldrig Binance/spot-positioner.
+function settleExpiredScalps(){
+  const list = STATE.tradePositions || [];
+  const now = Date.now();
+  const due = list.filter(p => p.type === "scalp" && p.expiresAt && now >= p.expiresAt && STATE.livePrices[p.sym] != null);
+  if(!due.length) return;
+  const acc = loadPaperAccount();
+  if(!STATE.tradeHistory) STATE.tradeHistory = [];
+  if(!STATE.tradeDecisions) STATE.tradeDecisions = [];
+  for(const p of due){
+    const cur = STATE.livePrices[p.sym];
+    const right = p.side === "BUY" ? cur > p.entry : cur < p.entry;
+    const flat = cur === p.entry;
+    const won = !flat && right;
+    const pnl = flat ? 0 : (won ? p.amount * ((p.payoutMultiplier || 1.85) - 1) : -p.amount);
+    acc.cash += p.amount + pnl;
+    acc.realizedPnl += pnl;
+    if(won) acc.winningTrades++; else if(!flat) acc.losingTrades++;
+    STATE.tradeHistory.unshift({...p, exit:cur, pnl, won, status:"closed", closedAt:now, closedBy:"tid-slut"});
+    STATE.tradeDecisions.unshift({
+      timestamp: now, action: flat ? "PUSH" : (won ? "WIN" : "LOSS"), sym:p.sym, amount:p.amount,
+      reasoning: `Tiden slut · ${p.side === "BUY" ? "📈 LONG" : "📉 SHORT"} ${formatPrice(p.entry,p.sym)}→${formatPrice(cur,p.sym)} · PnL ${pnl>=0?'+':''}$${pnl.toFixed(2)}`,
+      source: "auto"
+    });
+    if(p.inSession && STATE.session && STATE.session.sessionNum === p.sessionNum && typeof recordSessionTrade === "function"){
+      recordSessionTrade(p.score || 0, won, pnl, p.sym, p.side);
+    }
+  }
+  STATE.tradePositions = list.filter(p => !due.includes(p));
+  savePaperAccount();
+  saveTradeData();
+  localLastChangeAt = Date.now();
+  pushSyncToServer().catch(()=>{});
+  if(document.getElementById("page-trades")?.classList.contains("active")) renderTradesPage();
+}
+
+// Öppna diagrammet (Trade-sidan) för ett par — med alla indikatorer
+function openChartFor(sym){
+  const catEl = document.getElementById("cat-select");
+  const cat = typeof symCategory === "function" ? symCategory(sym) : null;
+  if(catEl && cat && [...catEl.options].some(o=>o.value===cat)) catEl.value = cat;
+  if(typeof fillSymbols === "function") fillSymbols();
+  const symEl = document.getElementById("sym-select");
+  if(symEl && ![...symEl.options].some(o=>o.value===sym)){
+    const o = document.createElement("option"); o.value = sym; o.textContent = sym; symEl.appendChild(o);
+  }
+  if(symEl) symEl.value = sym;
+  STATE.symbol = sym;
+  loadCandles(sym, STATE.tf);
+  switchPage("trade");
+  renderPosBanner();
+}
+
+// Banner överst på Trade-sidan: öppna positioner i paret du tittar på, med live P/L och "Sälj nu"
+function renderPosBanner(){
+  const el = document.getElementById("posBanner");
+  if(!el) return;
+  const mine = (STATE.tradePositions || []).filter(p => !p.fromBinance);
+  if(!mine.length){ el.style.display = "none"; el.innerHTML = ""; return; }
+  el.style.display = "block";
+  el.innerHTML = `<div style="font-weight:800;margin-bottom:6px">🟢 Öppna trades (${mine.length}) — klicka ett par för diagrammet</div>` + mine.map(p=>{
+    const cur = STATE.livePrices[p.sym] ?? p.entry;
+    const pnl = (cur - p.entry) * (p.qty || (p.amount / p.entry)) * (p.side === "BUY" ? 1 : -1);
+    const left = p.expiresAt ? Math.max(0, Math.ceil((p.expiresAt - Date.now())/1000)) : null;
+    const t = left == null ? "" : ` · ⏱ ${String(Math.floor(left/60)).padStart(2,"0")}:${String(left%60).padStart(2,"0")}`;
+    const on = p.sym === STATE.symbol;
+    return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 6px;border-radius:6px;${on?'background:rgba(6,182,212,.12)':''}">
+      <button type="button" data-pb-chart="${p.sym}" style="background:transparent;border:1px solid var(--cyan);color:var(--cyan);border-radius:6px;padding:2px 8px;cursor:pointer;font-weight:700">📈 ${p.sym}</button>
+      <span>${p.side === "BUY" ? "LONG" : "SHORT"} · in ${formatPrice(p.entry,p.sym)} → ${formatPrice(cur,p.sym)}${t}</span>
+      <b style="color:${pnl>=0?'var(--green)':'var(--red)'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</b>
+      <button type="button" data-pb-close="${p.id}" style="margin-left:auto;background:${pnl>=0?'var(--green)':'#374151'};color:#fff;border:0;border-radius:6px;padding:3px 10px;cursor:pointer;font-weight:800">Sälj nu</button>
+    </div>`;
+  }).join("");
+  el.querySelectorAll("[data-pb-chart]").forEach(b=>b.addEventListener("click", ()=>openChartFor(b.dataset.pbChart)));
+  el.querySelectorAll("[data-pb-close]").forEach(b=>b.addEventListener("click", ()=>{ closePosition(b.dataset.pbClose); renderPosBanner(); }));
+}
+
 function log_warn(msg){ console.warn("[PaperAcct]", msg); }
 function log_ok(msg){ console.log("[OK]", msg); }
 
@@ -7237,7 +7319,8 @@ function renderTradesPage(){
           <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
             <span class="tt-time">${t}</span>
             ${countdown}
-            <button class="tt-act" data-close="${p.id}">Stäng</button>
+            <button class="tt-act" data-chart="${p.sym}">📈 Diagram</button>
+            <button class="tt-act" data-close="${p.id}">Sälj nu</button>
           </div>
         </div>`;
       }).join("")}</div>`;
@@ -7245,6 +7328,9 @@ function renderTradesPage(){
       // Wire stäng-knappar
       posTbl.querySelectorAll("[data-close]").forEach(b=>{
         b.addEventListener("click", ()=>closePosition(b.dataset.close));
+      });
+      posTbl.querySelectorAll("[data-chart]").forEach(b=>{
+        b.addEventListener("click", ()=>openChartFor(b.dataset.chart));
       });
     }
   }
