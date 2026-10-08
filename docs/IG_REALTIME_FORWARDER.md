@@ -52,3 +52,11 @@ Driftkontrollen efter 8e339b5 visade noll katalograder på både Demo och Live, 
 Directory använder nu enbart igWorkspace.catalogue för kategorier, pagination och sökreserv. Directory berikar, rankar och cachar resultat med samma kontobindning. En regression med 12 stora sidor verifierar framsteg över flera minutbudgetar, en enda rootläsning, inga egna directory-traverseringar och båda kategorierna. Kontobyte under väntande hämtning avvisas.
 
 Navigeringen har större klickytor, lokala linjeikoner och grön aktiv markering. Handelspanelerna ligger kvar. Uppdateraren utgår från installerad 8e339b5. Prisfördröjning och ordergrindar är oförändrade: fungerande WebSocket betyder inte automatiskt verifierad prisfördröjning.
+
+### Tom kategorirespons och verklig sidstorlek
+
+Efter installation av 0b0169b returnerade IG:s kategoriväg en färdig tom kategori på Live, medan EUR/USD-sökning returnerade instrument. En färdig tom eller delvis oklassificerad kategori behandlas därför som otillräckligt katalogunderlag och övergår till samma progressiva IG-kontosökning. Kända kategorirader unioneras; aktier omklassificeras aldrig till Forex/krypto. Sökbaserade resultat är fortsatt complete:false.
+
+Pagination är nollbaserad och använder metadata.pageSize, samt totalPages när detta finns. Källa: https://labs.ig.com/reference/categories-category-id-instruments.html. Fel sidnummer ger sökreserv i stället för obegränsad upprepning. Klassificeringsbortfall exponeras vidare av directory.
+
+Regressioner täcker tom kategori med sökträffar, aktiefilter, mindre svarssidor än begärt, bevarade kända rader, oklassificerade valutainstrument och avvikande sidmetadata. Hela workspace-sviten, forwarder, typkontroll och riktade eftertester passerar. Uppdateraren utgår från installerad 0b0169b. Inga order eller nyckeländringar.

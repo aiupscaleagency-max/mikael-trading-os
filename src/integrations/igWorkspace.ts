@@ -115,11 +115,11 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
   // IG:s tidigare navigation finns inte längre. Katalogen byggs från verkliga kontosökningar och märks som sökbaserad.
   const fiatCodes=['USD','EUR','GBP','AUD','CAD','CHF','CNH','CNY','NZD','JPY','NOK','SEK','DKK','SGD','HKD','ZAR','TRY','PLN','HUF','MXN','INR','ILS','CZK','BRL','RUB','KRW','TWD','IDR','THB','MYR','PHP','RON','CLP','COP'];
   const cryptoTerms=['Crypto','Bitcoin','Ether','Litecoin','Ripple','Cardano','Solana','Dogecoin','Polkadot','Chainlink','Stellar','Avalanche','Uniswap','NEO','EOS','TRON','Toncoin','Polygon','BNB','Cosmos','Aave','Sui','Near','Tezos','Filecoin','Shiba','Arbitrum','Optimism','Algorand'];
-  const categoryProgress=new Map<string,{codes:string[]|null;index:number;page:number;done:boolean;unsupported:boolean;markets:Map<string,any>;at:number}>();
+  const categoryProgress=new Map<string,{codes:string[]|null;index:number;page:number;done:boolean;unsupported:boolean;unclassified:number;markets:Map<string,any>;at:number}>();
   async function accountCatalogue(mode:IgEnvironment,category:'forex'|'crypto'){
     const identity=connectionIdentity(mode),key=`${mode}:${identity}`;
     let p=categoryProgress.get(key);
-    if(!p||p.done&&now()-p.at>300000){p={codes:null,index:0,page:0,done:false,unsupported:false,markets:new Map(),at:now()};categoryProgress.set(key,p);}
+    if(!p||p.done&&now()-p.at>300000){p={codes:null,index:0,page:0,done:false,unsupported:false,unclassified:0,markets:new Map(),at:now()};categoryProgress.set(key,p);}
     if(p.unsupported)return null;
     const jobKey=`categories:${key}`,running=pending.get(jobKey);
     const work=async()=>{
@@ -136,22 +136,27 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
           const data=await read(mode,`categories/${p!.codes[p!.index]}/instruments`,'GET','1',undefined,{query:new URLSearchParams({pageNumber:String(p!.page),pageSize:'1000'}).toString()});
           if(!Array.isArray(data.instruments)||data.instruments.length>1000)throw Error('categories shape');
           if(data.metadata?.pageNumber!==undefined&&data.metadata.pageNumber!==p!.page)throw Error('category page mismatch');
-          for(const m of data.instruments){if(typeof m?.epic==='string'&&igMarketCategory(m))p!.markets.set(m.epic,marketRow(m));}
-          p!.at=now();if(data.instruments.length<1000){p!.index++;p!.page=0;}else p!.page++;
+          for(const m of data.instruments){const category=igMarketCategory(m);if(typeof m?.epic==='string'&&category)p!.markets.set(m.epic,marketRow(m));else if(!['SHARES','INDICES','COMMODITIES','RATES','SECTORS'].includes(m?.type??m?.instrumentType))p!.unclassified++;}
+          const pageSize=data.metadata?.pageSize??1000,totalPages=data.metadata?.totalPages;
+          if(!Number.isInteger(pageSize)||pageSize<1||pageSize>1000||data.instruments.length>pageSize||totalPages!==undefined&&(!Number.isInteger(totalPages)||totalPages<0||totalPages>101))throw Error('categories shape');
+          const lastPage=totalPages!==undefined?totalPages===0||p!.page>=totalPages-1:data.instruments.length<pageSize;
+          p!.at=now();if(lastPage){p!.index++;p!.page=0;}else p!.page++;
           if(p!.page>100)throw Error('category page cap');
         }
         p!.done=true;
-      }catch(e){if(e instanceof Error&&/HTTP (404|400|403)|categories shape/.test(e.message))p!.unsupported=true;}
+      }catch(e){if(e instanceof Error&&/HTTP (404|400|403)|categories shape|category page mismatch|category page cap/.test(e.message))p!.unsupported=true;}
     };
     if(running)await running;else{const job=work();pending.set(jobKey,job);try{await job;}finally{pending.delete(jobKey);}}
     if(connectionIdentity(mode)!==identity)throw Error('IG-kontosessionen ändrades under kataloghämtningen');
     if(p.unsupported)return null;
-    return {environment:mode,category,status:p.done?'ready':'partial',complete:p.done,error:null,markets:[...p.markets.values()].filter(m=>m.category===category).sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:p.at,remainingSearches:p.done?0:Math.max(1,(p.codes?.length??1)-p.index),source:'IG aktiverade kontokategorier',note:p.done?'Alla hämtade Forex- och kryptoinstrument i IG-kontots aktiverade valutakategorier.':'Kontokategorier hämtas inom läskvoten. Fortsätt efter en minut.'};
+    return {environment:mode,category,status:p.done&&p.unclassified===0?'ready':'partial',complete:p.done&&p.unclassified===0,traversalComplete:p.done,unclassifiedInstruments:p.unclassified,error:null,markets:[...p.markets.values()].filter(m=>m.category===category).sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:p.at,remainingSearches:p.done?0:Math.max(1,(p.codes?.length??1)-p.index),source:'IG aktiverade kontokategorier',note:p.done?'Alla hämtade Forex- och kryptoinstrument i IG-kontots aktiverade valutakategorier.':'Kontokategorier hämtas inom läskvoten. Fortsätt efter en minut.'};
   }
   const catalogProgress=new Map<string,{cursor:number;markets:Map<string,any>;updatedAt:number}>();
   async function catalogue(mode:IgEnvironment,category:unknown){
     connected(mode);if(category!=='forex'&&category!=='crypto')throw Error('Välj Forex eller Kryptovalutor');
-    const enabled=await accountCatalogue(mode,category);if(enabled)return enabled;
+    const enabled=await accountCatalogue(mode,category);
+    // Tomt eller oklassificerat kategorisvar bevisar inte att kontot saknar marknader.
+    if(enabled&&(!enabled.traversalComplete||enabled.markets.length>0&&enabled.unclassifiedInstruments===0))return enabled;
     const identity=connectionIdentity(mode),key=`${mode}:${identity}:${category}`;
     let progress=catalogProgress.get(key);const terms=category==='forex'?['Forex',...fiatCodes]:cryptoTerms;
     if(!progress||progress.cursor===terms.length&&now()-progress.updatedAt>300000){progress={cursor:0,markets:new Map(),updatedAt:now()};catalogProgress.set(key,progress);}
@@ -173,7 +178,7 @@ export function createIgWorkspace(deps:{call?:typeof callIgAuthenticated;status?
         }catch{blocked=true;break;}
       }
       if(connectionIdentity(mode)!==identity)throw Error('IG-kontosessionen ändrades under kataloghämtningen');
-      return {environment:mode,category,status:blocked?'partial':'ready',complete:false,error:null,markets:[...progress!.markets.values()].sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:progress!.updatedAt,remainingSearches:terms.length-progress!.cursor,source:'IG kontosökning',note:blocked?'Hämtningen är delvis klar. Ladda om efter en minut för att fortsätta.':'Alla hämtade IG-instrument. Ytterligare instrument kan sökas hos IG; fullständigheten kan inte verifieras.'};
+      return {environment:mode,category,status:blocked?'partial':'ready',complete:false,error:null,markets:[...new Map([...(enabled?.markets??[]),...progress!.markets.values()].map(m=>[m.epic,m])).values()].sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:progress!.updatedAt,remainingSearches:terms.length-progress!.cursor,source:'IG kontosökning',unclassifiedInstruments:enabled?.unclassifiedInstruments??0,note:blocked?'Hämtningen är delvis klar. Ladda om efter en minut för att fortsätta.':'Alla hämtade IG-instrument. Ytterligare instrument kan sökas hos IG; fullständigheten kan inte verifieras.'};
     })();pending.set(`catalog:${key}`,job);try{return clone(await job);}finally{pending.delete(`catalog:${key}`);}
   }
   async function marketOverview(mode:IgEnvironment,epics:string[]=[]){

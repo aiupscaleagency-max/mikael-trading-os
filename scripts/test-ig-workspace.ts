@@ -246,3 +246,32 @@ console.log('PASS: SEK-scenario/positions-P-L med native forex, konservativ FX-r
  const searched=await categoryWork.searchMarkets('live','EUR');assert.equal(searched.markets[0].percentageChange,-0.75);assert.equal(searched.markets[2].netChange,null);
  console.log('PASS: aktiverade IG-valutakategorier pagineras/delas utan bulkdetaljer; riktiga dagliga procent/high/low och valt kundsentiment utan vinstinferens');
 }
+
+// IG kan svara med tom kategori trots att kontosökning returnerar Forex.
+{
+ let clock=now;const reads:string[]=[];
+ const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-empty-category-')),now:()=>clock,status:status as any,call:async(_mode,route)=>{
+ reads.push(route);if(route==='categories')return {categories:[{code:'CURRENCIES'}]};if(route.startsWith('categories/'))return {instruments:[],metadata:{pageNumber:0,pageSize:150,totalPages:0}};
+ if(route==='markets')return {markets:[{epic:'REAL.EUR',instrumentName:'EUR/USD',instrumentType:'CURRENCIES'},{epic:'STOCK.BTC',instrumentName:'Bitcoin Mining',instrumentType:'SHARES'}]};throw Error('Oväntad endpoint');
+ }});
+ let r=await w.catalogue('live','forex');assert.ok(r.markets.some(m=>m.epic==='REAL.EUR'));assert.ok(r.markets.every(m=>m.type==='CURRENCIES'));assert.equal(r.complete,false);assert.equal(r.source,'IG kontosökning');assert.ok(r.remainingSearches>0);
+ for(let i=0;i<10&&r.remainingSearches;i++){clock+=61000;r=await w.catalogue('live','forex');}
+ assert.equal(r.remainingSearches,0);assert.equal(reads.filter(r=>r==='categories').length,1);
+}
+// IG:s faktiskt rapporterade sidstorlek styr fortsättningen, även om 1000 begärdes.
+{
+ const pages:number[]=[];const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-page-size-')),now:()=>now,status:status as any,call:async(_mode,route,_method,_version,_body,extra)=>{
+ if(route==='categories')return {categories:[{code:'CURRENCIES'}]};const page=Number(new URLSearchParams(extra?.query).get('pageNumber'));pages.push(page);return {instruments:page===0?[{epic:'SMALL.BTC',instrumentName:'Bitcoin',instrumentType:'CURRENCIES'},{epic:'SMALL.ETH',instrumentName:'Ethereum',instrumentType:'CURRENCIES'}]:[{epic:'SMALL.EUR',instrumentName:'EUR/USD',instrumentType:'CURRENCIES'}],metadata:{pageNumber:page,pageSize:2,totalPages:2}};
+ }});const r=await w.catalogue('live','forex');assert.deepEqual(pages,[0,1]);assert.equal(r.markets[0]?.epic,'SMALL.EUR');assert.equal(r.complete,true);
+}
+// Okänd valuta på en färdig kategorisida ger sökreserv; kända rader bevaras.
+{
+ const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-unclassified-')),now:()=>now,status:status as any,call:async(_mode,route)=>route==='categories'?{categories:[{code:'CURRENCIES'}]}:route.startsWith('categories/')?{instruments:[{epic:'KNOWN.EUR',instrumentName:'EUR/USD',instrumentType:'CURRENCIES'},{epic:'UNCLASSIFIED',instrumentName:'Okänd valuta',instrumentType:'CURRENCIES'}],metadata:{pageNumber:0,pageSize:150}}:{markets:[{epic:'FOUND.GBP',instrumentName:'GBP/USD',instrumentType:'CURRENCIES'}]}});
+ const r=await w.catalogue('live','forex');assert.equal(r.complete,false);assert.ok(r.markets.some(m=>m.epic==='KNOWN.EUR'));assert.ok(r.markets.some(m=>m.epic==='FOUND.GBP'));assert.equal(r.unclassifiedInstruments,1);
+}
+console.log('PASS: tom IG-kategori använder progressiv sökreserv, aktier utesluts, faktisk sidstorlek pagineras och klassificeringsbortfall döljs inte');
+
+{
+ let categoryReads=0;const w=createIgWorkspace({directory:mkdtempSync(path.join(os.tmpdir(),'ig-page-mismatch-')),now:()=>now,status:status as any,call:async(_mode,route)=>{if(route==='categories')return {categories:[{code:'CURRENCIES'}]};if(route.startsWith('categories/')){categoryReads++;return {instruments:[],metadata:{pageNumber:99,pageSize:150}};}return {markets:[{epic:'SAFE.EUR',instrumentName:'EUR/USD',instrumentType:'CURRENCIES'}]};}});
+ const r=await w.catalogue('live','forex');assert.equal(r.source,'IG kontosökning');assert.ok(r.markets.some(m=>m.epic==='SAFE.EUR'));await w.catalogue('live','crypto');assert.equal(categoryReads,1,'Felaktig sidmetadata ger ingen upprepad kategoriloop');
+}

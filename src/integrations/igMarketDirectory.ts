@@ -11,7 +11,7 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
  async function catalogue(mode:IgEnvironment,category:unknown){if(category!=='forex'&&category!=='crypto')throw Error('Välj Forex eller Kryptovalutor');const binding=identity(mode),key=`${mode}:${binding}:${category}`,old=cache.get(key);if(old&&now()-old.at<60000)return structuredClone(old.value);if(pending.has(key))return structuredClone(await pending.get(key));
  // En enda hämtare äger pagination och läskvot. Parallella kategorier delar dess framsteg.
  const job=(async()=>{const markets=new Map<string,any>();let unclassified=0;
- const result=await fallback(mode,category);if(identity(mode)!==binding)throw Error('IG-kontoanslutningen ändrades');
+ const result=await fallback(mode,category);unclassified=Number.isInteger(result.unclassifiedInstruments)&&result.unclassifiedInstruments>=0?result.unclassifiedInstruments:0;if(identity(mode)!==binding)throw Error('IG-kontoanslutningen ändrades');
  for(const raw of result.markets){const m={...raw,name:raw.name??raw.instrumentName,type:raw.type??raw.instrumentType};const classified=igMarketCategory(m);if(!classified){unclassified++;continue;}if(typeof m.epic==='string'&&classified===category)markets.set(m.epic,enrichIgDirectoryMarket({...m,category}));}
  const complete=result.complete===true&&unclassified===0,source=result.source??'IG kontosökning',note=result.note;
  const remainingSearches=Number.isInteger(result.remainingSearches)&&result.remainingSearches>=0?result.remainingSearches:null;

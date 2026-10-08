@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 target="${1:?Ange granskad målcommit}"
-expected='8e339b57d761f1af9a6e30fd74a51412fc8b1e7b'
+expected='0b0169b182ee81f1f943d41ca48abb7ca39bef10'
 label='com.aiupscale.trading-os'
 plist="$HOME/Library/LaunchAgents/$label.plist"
 [ -f "$plist" ] || { echo 'Avbrutet: befintlig tjänst saknas.' >&2; exit 1; }
