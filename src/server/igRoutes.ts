@@ -1,3 +1,4 @@
+import {igResearch} from '../integrations/igResearch.js';
 import {igAnalysisMemory} from '../integrations/igAnalysisMemory.js';
 import {listIgImportedSignals,saveIgImportedSignal,deleteIgImportedSignal} from '../integrations/igImportedSignals.js';
 import {listIgStrategies} from '../integrations/igStrategies.js';
@@ -82,6 +83,9 @@ export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMess
           "/api/ig/close":["environment","dealId","connectionGeneration"],
           "/api/ig/rollover":["environment","dealId","minutes","connectionGeneration"],
         };
+        tradingFields['/api/ig/research']=['environment','connectionGeneration','revision','action','name','kind','url','content','specification','baselineId','sourceIds'];
+        tradingFields['/api/ig/research/chat']=['environment','connectionGeneration','revision','message','page','epic'];
+        tradingFields['/api/ig/research/test']=['environment','connectionGeneration','revision','id','epic'];
         tradingFields['/api/ig/imported-signals']=['environment','id','epic','sourceText','direction','entryLevel','stopLevel','targetLevel','validUntil'];
         tradingFields['/api/ig/preferences']=['environment','favorites','revision'];
         tradingFields['/api/ig/schedules']=['environment','id','name','epics','timeframe','percent','horizonMinutes','durationMinutes','intervalMinutes','maxPositions','localTime','recurrence','date','weekdays','enabled','timezone'];
@@ -93,6 +97,10 @@ export async function handleIgRoutes(url:URL,method:string,req:http.IncomingMess
           else if(url.pathname==='/api/ig/imported-signals'&&method==='GET') json(res,{signals:listIgImportedSignals(environment)});
           else if(url.pathname==='/api/ig/imported-signals'&&method==='POST'){const signal=saveIgImportedSignal(environment,body as any);json(res,{signal,signals:listIgImportedSignals(environment)});igChanged(environment);}
           else if(url.pathname==='/api/ig/imported-signals'&&method==='DELETE'){deleteIgImportedSignal(environment,String(body.id??''));json(res,{signals:listIgImportedSignals(environment)});igChanged(environment);}
+          else if(url.pathname==='/api/ig/research'&&method==='GET') json(res,igResearch.view(environment));
+          else if(url.pathname==='/api/ig/research'&&method==='POST') json(res,igResearch.mutate(environment,body));
+          else if(url.pathname==='/api/ig/research/chat'&&method==='POST') json(res,await igResearch.chat(environment,body));
+          else if(url.pathname==='/api/ig/research/test'&&method==='POST') json(res,await igResearch.test(environment,body));
           else if(url.pathname==='/api/ig/memory'&&method==='GET') json(res,igAnalysisMemory.list(environment));
           else if(url.pathname==='/api/ig/strategies'&&method==='GET') json(res,{strategies:listIgStrategies()});
           else if(url.pathname==='/api/ig/directory'&&method==='GET') json(res,await getIgMarketDirectory(environment,url.searchParams.get('category')));

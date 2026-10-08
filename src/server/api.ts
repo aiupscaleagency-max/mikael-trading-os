@@ -163,6 +163,7 @@ export function startServer(port:number):http.Server{
       const workspaceFiles:Record<string,[string,string]>={
         "/workspace/style.css":["style.css","text/css"],
         "/workspace/app.mjs":["app.mjs","text/javascript"],
+        "/workspace/research.mjs":["research.mjs","text/javascript"],
         "/workspace/model.mjs":["model.mjs","text/javascript"],
         "/workspace/marketViews.mjs":["marketViews.mjs","text/javascript"],
         "/workspace/instrumentIcons.mjs":["instrumentIcons.mjs","text/javascript"],
