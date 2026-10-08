@@ -1,7 +1,7 @@
 import {instrumentIcon} from '/workspace/instrumentIcons.mjs';
 import {createMultiCharts,chartSubscriptions} from '/workspace/multiCharts.mjs';
 import {mergeStreamCandle} from '/workspace/streamCandles.mjs';
-import {frames,quoteIsFresh,scenario,sizeForCapitalRisk,increaseDraft,extendDeadline,normalizeSignal,marketMetric,rankMarkets} from '/workspace/model.mjs';
+import {frames,quoteIsFresh,mergeWorkspaceMarket,nextCatalogCategory,scenario,sizeForCapitalRisk,increaseDraft,extendDeadline,normalizeSignal,marketMetric,rankMarkets} from '/workspace/model.mjs';
 import {accountMarketActivity,accountMarketProfits,marketViewRows,marketTradeLabel,marketMetricLabel} from '/workspace/marketViews.mjs';
 // Ett gemensamt tillstånd driver diagram, order, instrument, signaler och session.
 const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -173,13 +173,13 @@ async function loadCatalog(category,{force=false}={}){
   if(catalogRequests.has(key))return catalogRequests.get(key);
   if(!force&&S.catalogState[category]?.status==='ready'&&S.catalogState[category]?.complete)return;
   if(S.connection?.status!=='connected'){S.catalogState[category]={status:'error',error:'IG är inte anslutet'};renderCatalog();return;}
-  catalogResumeAt=Date.now();S.catalogState[category]={...S.catalogState[category],status:'loading'};renderCatalog();renderInstruments();
+  catalogResumeAt=Date.now();S.catalogState[category]={...S.catalogState[category],status:'loading',lastAttemptAt:Date.now()};renderCatalog();renderInstruments();
   const job=catalogChain.catch(()=>{}).then(async()=>{
     if(generation!==S.generation)return;
     try{
       const result=await api(ig('directory',{category}));if(generation!==S.generation)return;
       const found=(result.markets??[]).filter(m=>kind(m)===category);
-      mergeMarkets(found);if(result.complete===true){const epics=new Set(found.map(m=>m.epic));S.catalog=S.catalog.filter(m=>kind(m)!==category||epics.has(m.epic));}S.catalogState[category]={status:result.status==='ready'&&result.complete===true?'ready':'partial',complete:result.complete===true,error:result.error,updatedAt:result.updatedAt,remainingSearches:result.remainingSearches,note:result.note};
+      mergeMarkets(found);if(result.complete===true){const epics=new Set(found.map(m=>m.epic));S.catalog=S.catalog.filter(m=>kind(m)!==category||epics.has(m.epic));}S.catalogState[category]={status:result.status==='ready'&&result.complete===true?'ready':'partial',complete:result.complete===true,error:result.error,updatedAt:result.updatedAt,remainingSearches:result.remainingSearches,note:result.note,lastAttemptAt:Date.now()};
     }catch(e){if(generation===S.generation)S.catalogState[category]={status:'error',complete:false,error:e.message};}
     finally{if(generation===S.generation){renderInstruments();renderCatalog();}}
   });catalogChain=job;catalogRequests.set(key,job);try{await job;}finally{catalogRequests.delete(key);}
@@ -199,6 +199,7 @@ async function discoverTerm(term,source){
 }
 async function changeCategory(category){S.instrumentRevision++;S.category=category;S.catalogView=category;$('search').value='';$('catalog-search').value='';S.searchStatus='';S.catalogSearchStatus='';renderInstruments();renderCatalog();await loadCatalog(category);}
 
+const marketBinding=()=>JSON.stringify([S.mode,S.generation,S.connection?.connectionGeneration??null]);
 function initializeChart(){
   if(!window.LightweightCharts)return;
   chart=window.LightweightCharts.createChart($('chart'),{layout:{background:{color:'#000000'},textColor:'#8493a8',fontFamily:'Inter, sans-serif',fontSize:10},grid:{vertLines:{color:'#1b2432'},horzLines:{color:'#1b2432'}},rightPriceScale:{borderColor:'#253143'},timeScale:{borderColor:'#253143',timeVisible:true,secondsVisible:false},crosshair:{mode:0},handleScroll:true,handleScale:true});
@@ -316,9 +317,9 @@ async function startWorkspace(){
 
 
 async function chooseInstrument(epic,{reset=true}={}){
-  const generation=S.generation;S.instrumentRevision++;S.current=epic;subscribeRealtime();S.market=null;S.candles=[];if(reset){$('stop').value='';$('target').value='';$('limit').value='';}renderInstruments();renderChart();
+  const generation=S.generation,binding=marketBinding(),revision=++S.instrumentRevision;S.current=epic;subscribeRealtime();S.market=null;S.candles=[];if(reset){$('stop').value='';$('target').value='';$('limit').value='';}renderInstruments();renderChart();
   if(S.simulation){const item=S.catalog.find(m=>m.epic===epic);if(!item)return;S.category=kind(item);S.market=simulationMarket(item);S.candles=simulationCandles(item);renderInstruments();renderChart(true);return;}
-  try{const frame=S.chartFrame;const [m,c]=await Promise.all([api(ig('market',{epic})),api(ig('candles',{epic,timeframe:frame,limit:100}))]);if(generation!==S.generation||S.current!==epic||S.chartFrame!==frame)return;S.market={...m,category:m.category??S.catalog.find(x=>x.epic===epic)?.category};S.candles=c.candles??[];S.lastCandleRefresh=Date.now();try{localStorage.setItem(`trading-chart-${S.mode}`,JSON.stringify({epic}));}catch{/* Diagrammet fungerar även utan lokal lagring. */}S.category=kind(S.market)??S.category;if(!S.catalog.some(x=>x.epic===epic))S.catalog.push({...S.market,bid:m.quote?.bid,offer:m.quote?.offer});renderInstruments();renderChart(true);}catch(e){if(generation===S.generation&&S.current===epic){S.market=null;S.candles=[];renderChart();toast(e.message);}}
+  try{const frame=S.chartFrame;const [m,c]=await Promise.all([api(ig('market',{epic})),api(ig('candles',{epic,timeframe:frame,limit:100}))]);if(generation!==S.generation||revision!==S.instrumentRevision||binding!==marketBinding()||S.current!==epic||S.chartFrame!==frame)return;S.market={...m,workspaceBinding:binding,category:m.category??S.catalog.find(x=>x.epic===epic)?.category};S.candles=c.candles??[];S.lastCandleRefresh=Date.now();try{localStorage.setItem(`trading-chart-${S.mode}`,JSON.stringify({epic}));}catch{/* Diagrammet fungerar även utan lokal lagring. */}S.category=kind(S.market)??S.category;if(!S.catalog.some(x=>x.epic===epic))S.catalog.push({...S.market,bid:m.quote?.bid,offer:m.quote?.offer});renderInstruments();renderChart(true);}catch(e){if(generation===S.generation&&revision===S.instrumentRevision&&binding===marketBinding()&&S.current===epic){S.market=null;S.candles=[];renderChart();toast(e.message);}}
 }
 async function copySignal(epic){const s=S.signals.find(s=>s.epic===epic);if(!s||!s.copyable||Date.now()>=s.validUntil){toast('Signalen är Avvakta, ofullständig eller utgången.');return;}await chooseInstrument(epic);if(!S.market||!quoteIsFresh(S.market)){toast('Signalen kopierades inte: verifierad färsk kvot saknas.');return;}S.direction=s.action;S.orderType='MARKET';$('limit').value=s.entryLevel;$('stop').value=s.stopLevel;$('target').value=s.targetLevel;$('holding').value=s.horizonMinutes;recalculate();toast('Signal kopierad till orderutkast. Ingen order skickad.');}
 async function refresh(snapshot=null){
@@ -331,7 +332,7 @@ async function refresh(snapshot=null){
     if(!S.selectionRevision||(snapshot&&Date.now()-(S.selectionSavedAt??0)>2000)){S.selected=new Set(w.selection?.epics??[]);S.analysisFrame=w.selection?.timeframe??S.analysisFrame;$('analysis-frame').value=S.analysisFrame;}
     mergeMarkets((w.markets??[]).filter(m=>m.name).map(m=>({...m,bid:m.quote?.bid,offer:m.quote?.offer})));
     renderHeader();
-    if(S.current){const epic=S.current,m=w.markets?.find(m=>m.epic===epic)??(snapshot?S.market:await api(ig('market',{epic})));if(generation!==S.generation)return;if(epic===S.current&&m){const quote=S.market?.quote&&S.market.quote.observedAt>(m.quote?.observedAt??0)?S.market.quote:m.quote;S.market={...m,quote,category:m.category??S.catalog.find(x=>x.epic===epic)?.category};}}
+    if(S.current){const epic=S.current,revision=S.instrumentRevision,binding=marketBinding(),m=w.markets?.find(m=>m.epic===epic)??(snapshot?(S.market?.workspaceBinding===binding?S.market:null):await api(ig('market',{epic})));if(generation!==S.generation)return;if(epic===S.current&&revision===S.instrumentRevision&&binding===marketBinding()){S.market=mergeWorkspaceMarket(S.market,m,binding);if(S.market)S.market.category=m?.category??S.catalog.find(x=>x.epic===epic)?.category;}}
     $('connection-details').textContent=S.connection?.error??`IG ${S.mode.toUpperCase()} · ${S.connection?.status??'ej ansluten'} · konto ${S.account?.accountId??'—'}`;renderTransport();
     if(S.current&&Date.now()-S.lastCandleRefresh>=60000&&(S.lastCandleRefresh===0||!realtimeHealthy()||!streamScale())){
       const epic=S.current,frame=S.chartFrame,c=await api(ig('candles',{epic,timeframe:frame,limit:100}));
@@ -485,7 +486,7 @@ document.addEventListener('click',safe(async e=>{const b=e.target.closest('butto
 }));
 document.addEventListener('change',safe(async e=>{const epic=e.target.dataset.select;if(!epic)return;if(e.target.checked&&!S.selected.has(epic)&&S.selected.size>=10){e.target.checked=false;throw Error('Max 10 instrument per analys. Avmarkera ett instrument först.');}e.target.checked?S.selected.add(epic):S.selected.delete(epic);renderInstruments();renderCatalog();await syncSelection();}));
 setInterval(safe(async()=>{
-  if(!S.simulation){if(document.hidden)return;renderChart();if(!realtimeHealthy())await refresh();else{renderHeader();recalculate();renderSignals();renderSession();}if(Date.now()-catalogResumeAt>=60000){const categories=$('catalog-dialog').open&&!['favorites','all'].includes(S.catalogView)?[S.catalogView]:[S.category,S.category==='crypto'?'forex':'crypto'];const next=categories.find(c=>S.catalogState[c]?.status==='partial'&&S.catalogState[c]?.remainingSearches>0);if(next)await loadCatalog(next);}return;}
+  if(!S.simulation){if(document.hidden)return;renderChart();if(!realtimeHealthy())await refresh();else{renderHeader();recalculate();renderSignals();renderSession();}if(Date.now()-catalogResumeAt>=60000){const categories=$('catalog-dialog').open&&!['favorites','all'].includes(S.catalogView)?[S.catalogView]:[S.category,S.category==='crypto'?'forex':'crypto'];const next=nextCatalogCategory(S.catalogState,categories);if(next)await loadCatalog(next);}return;}
   if(S.market&&S.quoteState!=='stale'&&S.quoteState!=='disconnected')S.market.quote.receivedAt=Date.now();
   if(S.session?.status==='running'){if(Date.now()>=S.session.endsAt){S.session.status='completed';}else if(Date.now()>=S.session.nextRunAt&&S.quoteState==='ready'){S.session.nextRunAt=Date.now()+S.session.intervalMinutes*60000;simulateAnalysis();}}
   // Avslut simuleras först efter kvotkontroll; ett fel lämnar positionen öppen.

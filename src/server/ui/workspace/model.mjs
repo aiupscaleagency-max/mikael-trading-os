@@ -59,3 +59,15 @@ export function rankMarkets(rows, ranking='name') {
     return String(a.name??a.epic).localeCompare(String(b.name??b.epic),'sv');
   });
 }
+
+// Ofullständiga kvotsvar får inte radera samma kontos instrumentmetadata eller förnya priset.
+export function mergeWorkspaceMarket(previous,incoming,binding){
+ if(!incoming)return previous?.workspaceBinding===binding?previous:null;
+ const same=previous?.workspaceBinding===binding&&previous.epic===incoming.epic;
+ const old=same?previous.quote:null,candidate=incoming.quote;
+ const quote=old&&(!candidate||old.observedAt>(candidate.observedAt??0))?old:candidate;
+ return {...(same?previous:{}),...incoming,quote,workspaceBinding:binding};
+}
+export function nextCatalogCategory(states,categories){
+ return categories.filter(c=>states[c]?.status==='partial'&&states[c]?.remainingSearches>0).sort((a,b)=>(states[a].lastAttemptAt??0)-(states[b].lastAttemptAt??0))[0];
+}

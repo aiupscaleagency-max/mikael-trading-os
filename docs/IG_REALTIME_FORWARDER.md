@@ -60,3 +60,9 @@ Efter installation av 0b0169b returnerade IG:s kategoriväg en färdig tom kateg
 Pagination är nollbaserad och använder metadata.pageSize, samt totalPages när detta finns. Källa: https://labs.ig.com/reference/categories-category-id-instruments.html. Fel sidnummer ger sökreserv i stället för obegränsad upprepning. Klassificeringsbortfall exponeras vidare av directory.
 
 Regressioner täcker tom kategori med sökträffar, aktiefilter, mindre svarssidor än begärt, bevarade kända rader, oklassificerade valutainstrument och avvikande sidmetadata. Hela workspace-sviten, forwarder, typkontroll och riktade eftertester passerar. Uppdateraren utgår från installerad 0b0169b. Inga order eller nyckeländringar.
+
+### Bevarad instrumentmetadata och jämn katalogfortsättning
+
+Driftkontrollen av 3dc2c46 hittade Forex på Demo och Live samt kryptoinstrument på Live. Ett senare kvotbegränsat workspace-svar kunde däremot ersätta huvuddiagrammets fullständiga instrument med ett felsvar och radera dess namn. Klienten bevarar nu metadata och det nyaste ursprungliga priset endast inom samma miljö, kontogeneration och instrument. Prisets tidsstämplar och verifiering förnyas aldrig av sammanslagningen. Instrumentrevision skyddar även sena A→B→A-svar.
+
+Automatisk katalogfortsättning väljer den partiella kategorin som väntat längst, så att Forex och krypto delar befintlig läsbudget. Öppet kategorifilter styr fortsatt vilken kategori som laddas. Regressioner täcker metadata vid kvotfel, konto-/instrumentbyte, utgånget pris, kategorifördelning och ett verkligt WebSocket-snapshotfel i webbläsarfixturen. Workspace-sviten, TypeScript och forwarder passerar; separat granskning utan blockerande fynd. Uppdateraren utgår från installerad 3dc2c46.

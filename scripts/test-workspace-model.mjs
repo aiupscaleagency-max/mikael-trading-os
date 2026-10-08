@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {quoteIsFresh,scenario,sizeForCapitalRisk,increaseDraft,extendDeadline,normalizeSignal} from '../src/server/ui/workspace/model.mjs';
+import {quoteIsFresh,mergeWorkspaceMarket,nextCatalogCategory,scenario,sizeForCapitalRisk,increaseDraft,extendDeadline,normalizeSignal} from '../src/server/ui/workspace/model.mjs';
 const now=1000000,q={quote:{bid:100,offer:101,receivedAt:now,observedAt:now,delayTime:0,marketStatus:'TRADEABLE'}};
 assert.equal(quoteIsFresh(q,now),true);
 for(const patch of [{receivedAt:now-60001},{receivedAt:NaN},{receivedAt:now+1},{observedAt:now-60001},{observedAt:null},{delayTime:1},{offer:99},{bid:-1},{marketStatus:'CLOSED'}])assert.equal(quoteIsFresh({quote:{...q.quote,...patch}},now),false);
@@ -44,3 +44,12 @@ assert.equal(shouldRefreshChart(extra,now,true),false,'Frisk WS med nytt ljus sk
 assert.equal(shouldRefreshChart(extra,now,false),true,'Laddat extradiagram måste ha REST-reserv efter WS-avbrott');
 assert.equal(shouldRefreshChart({...extra,lastLoad:now},now,false),false,'Reservläge respekterar 60s-budget');
 assert.equal(shouldRefreshChart({...extra,bars:[{receivedAt:now-60000}]},now,true),true,'Öppen transport utan färska candles kräver avstämning');
+
+const retainedMarket={epic:'EUR',name:'EUR/USD',instrument:{unit:'CFD'},calculationRules:{verified:true},quote:q.quote,workspaceBinding:'same-account'};
+const unavailable=mergeWorkspaceMarket(retainedMarket,{epic:'EUR',status:'unavailable',error:'Minutkvot'},'same-account');
+assert.equal(unavailable.name,'EUR/USD');assert.deepEqual(unavailable.instrument,retainedMarket.instrument);assert.equal(unavailable.quote,retainedMarket.quote);assert.equal(unavailable.quote.observedAt,now);assert.equal(quoteIsFresh(unavailable,now+60001),false,'Bevarad identitet förnyar inte gammalt pris');
+assert.equal(mergeWorkspaceMarket(retainedMarket,{epic:'EUR',status:'unavailable'},'another-account').name,undefined,'Metadata får inte återanvändas över kontoanslutningar');
+assert.equal(mergeWorkspaceMarket(retainedMarket,{epic:'GBP',status:'unavailable'},'same-account').name,undefined,'Metadata får inte läcka över instrument');
+assert.equal(mergeWorkspaceMarket(retainedMarket,{epic:'EUR',quote:{...q.quote,observedAt:now-1}},'same-account').quote,retainedMarket.quote,'Äldre kvot ersätter inte streampris');
+const catalogStates={forex:{status:'partial',remainingSearches:20,lastAttemptAt:200},crypto:{status:'partial',remainingSearches:29,lastAttemptAt:100}};
+assert.equal(nextCatalogCategory(catalogStates,['forex','crypto']),'crypto','Krypto svälts inte av Forex');catalogStates.crypto.lastAttemptAt=300;assert.equal(nextCatalogCategory(catalogStates,['forex','crypto']),'forex');catalogStates.forex.remainingSearches=0;assert.equal(nextCatalogCategory(catalogStates,['forex','crypto']),'crypto');
