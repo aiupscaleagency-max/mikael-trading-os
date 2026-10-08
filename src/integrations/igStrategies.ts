@@ -1,3 +1,4 @@
+import {strategyFactoryCandidates} from './igStrategyFactory.js';
 import {sma} from '../indicators/ta.js';
 import {computeSeries,evalAll,type Rule,type IndicatorKey} from '../strategies/ruleEngine.js';
 import type {IgCandle} from './igWorkspace.js';
@@ -15,7 +16,7 @@ const registry=[{
  source:{json:'projects/ptqa-trading/day-1-recording-work/strategy.json',document:'projects/ptqa-trading/day-1-recording-work/STRATEGY.md',created:'2026-09-29',historyStart:'2014-01-01',dataSource:'Tiingo',session:'24h'},
  notes:['Kontrollerad specifikation; ännu inte backtestad. EMA följer kursens adjust=False med första close som seed; ATR är enkel rullande TR-medel.','Tiingo-dagsljus och IG:s dagsljus kan ha olika session/prisgrund. Reglernas utvärdering på IG är ingen verifierad strategiöverföring.','ETH/USDT 1h/VWAP-regeln är parkerad och ingår inte i denna strategi.','Stoppen är entryFill − 2×ATR(14), inte senaste stängningspris minus ATR. Nästa öppningspris är ännu okänt. Live-utvärderingen använder endast signalbarens kända ATR; kursens historiska simulator läser nästa entry-bars ATR, vilket är en separat lookahead-risk.']
 }] as const;
-export function listIgStrategies(){return structuredClone([...registry,...legacyRegistry]);}
+export function listIgStrategies(){return structuredClone([...registry,...legacyRegistry,...strategyFactoryCandidates]);}
 export interface IgStrategyInput {candles:IgCandle[];epic:string;name:string|null;timeframe:string;now:number;instrumentCurrency?:string|null;category?:'forex'|'crypto'|null;instrumentType?:string|null}
 export function evaluateIgStrategy(input:IgStrategyInput){
  const strategy=registry[0];
@@ -47,7 +48,7 @@ const legacyDefinitions:LegacyDefinition[]=[
 ];
 const legacyRegistry=legacyDefinitions.map(d=>({id:d.id,name:d.name,version:1,status:'notBacktested',checked:false,enabled:false,instrument:'IG Forex/Krypto',scope:['forex','crypto'],timeframe:d.timeframe,direction:'long_only',warmupBars:d.warmupBars,adapted:true,source:{file:'git:2eb62828d82406a87ab6519cdb327dd9ec0c72cf:src/strategies/library.ts',originalCoins:d.originalCoins},entry:{conditions:d.entry,combine:'all',fill:'source_same_bar_close_analysis_only',maxOpenPositions:1},exit:{conditions:d.exit,combine:'all',fill:'source_same_bar_close_analysis_only',targetAtr:d.targetAtr},stop:{type:'atr_multiple',multiple:d.stopAtr,atrPeriod:14,trailing:false,intrabar:true},sizing:null,costs:null,requiresVolume:!!d.requiresVolume,availability:d.requiresVolume?'blocked_missing_verified_volume':'analysis_only',notes:['Regelparametrar återanvända från tidigare spotbibliotek. Anpassad IG-v1; ingen verifierad CFD-backtest eller lönsamhet.','EMA har SMA-seed; RSI/ATR Wilder; Bollinger populationsstandardavvikelse enligt källmotorn.','Long-only: exitCondition avser stängning av long och får inte tolkas som ny short.','Belopp, mäklarkostnader och faktisk exekvering från spotbiblioteket har inte överförts.']}));
 const duration:Record<string,number>={'1m':60000,'3m':180000,'5m':300000,'15m':900000,'30m':1800000,'1h':3600000,'4h':14400000,'1d':86400000};
-export function getIgStrategyRequirements(timeframe:string){const rows=listIgStrategies().filter(s=>s.timeframe===timeframe);return {timeframe,requiredCandles:Math.max(0,...rows.map(s=>s.warmupBars)),strategies:rows.map(s=>s.id),closedOnly:true};}
+export function getIgStrategyRequirements(timeframe:string){const rows=listIgStrategies().filter(s=>!('kind' in s&&s.kind==='research_candidate')&&s.timeframe===timeframe);return {timeframe,requiredCandles:Math.max(0,...rows.map(s=>s.warmupBars??0)),strategies:rows.map(s=>s.id),closedOnly:true};}
 function legacyScope(input:IgStrategyInput){if(input.instrumentType&&input.instrumentType!=='CURRENCIES')return false;if(input.category==='forex'||input.category==='crypto')return true;const name=input.name??'';return /\b(?:Bitcoin|Ethereum|Ether|Solana|Litecoin|Cardano|Ripple|Dogecoin|BTC|ETH)\b/i.test(name)||/\b(?:USD|EUR|GBP|JPY|AUD|CAD|CHF|NZD|NOK|SEK|DKK|SGD|HKD|ZAR|TRY|PLN|MXN|CNH)\s*\/\s*(?:USD|EUR|GBP|JPY|AUD|CAD|CHF|NZD|NOK|SEK|DKK|SGD|HKD|ZAR|TRY|PLN|MXN|CNH)\b/.test(name);}
 function evaluateLegacy(input:IgStrategyInput,d:LegacyDefinition){
  const metadata=legacyRegistry.find(s=>s.id===d.id)!;

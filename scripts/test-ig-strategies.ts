@@ -25,13 +25,13 @@ const weightedEma=(period:number)=>{const k=2/(period+1),values=varied.map(b=>b.
 assert.ok(Math.abs(course.indicators!.ema12-weightedEma(12))<1e-10);assert.ok(Math.abs(course.indicators!.ema21-weightedEma(21))<1e-10);
 const trueRanges=varied.map((b,i)=>i?Math.max(b.high-b.low,Math.abs(b.high-varied[i-1]!.close),Math.abs(b.low-varied[i-1]!.close)):b.high-b.low),expectedAtr=trueRanges.slice(-14).reduce((sum,v)=>sum+v,0)/14;
 assert.equal(course.indicators!.atr14,expectedAtr);assert.ok(Math.abs(course.indicators!.atr14-legacyAtr(varied.map(b=>b.high),varied.map(b=>b.low),varied.map(b=>b.close),14)!)>0.01);assert.ok(Math.abs(course.indicators!.ema12-legacyEma(varied.map(b=>b.close),12)!)>1e-8);
-assert.equal(listIgStrategies().length,7);assert.equal(getIgStrategyRequirements('15m').requiredCandles,200);assert.equal(getIgStrategyRequirements('4h').requiredCandles,200);
+assert.equal(listIgStrategies().length,12);assert.equal(getIgStrategyRequirements('15m').requiredCandles,200);assert.equal(getIgStrategyRequirements('4h').requiredCandles,200);
 for(const timeframe of ['5m','15m','1h','4h']){
  const ms={'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}[timeframe]!;
  const candles=Array.from({length:220},(_,i)=>{const close=100+i/5+Math.sin(i/4)*10;return {open:close,high:close+2,low:close-2,close,openTime:now-(220-i)*ms,closeTime:now-(219-i)*ms,volume:null};});
  const comparisons=evaluateIgStrategies({...input,candles,timeframe,name:'EUR/USD',category:'forex',instrumentType:'CURRENCIES'});
  assert.equal(comparisons.length,7);const sourceSeries=computeSeries(candles.map(b=>({...b,volume:Number.NaN})));
- for(const metadata of listIgStrategies().filter(s=>s.timeframe===timeframe)){
+ for(const metadata of listIgStrategies().filter(s=>!('kind' in s)&&s.timeframe===timeframe)){
   const comparison=comparisons.find(s=>s.strategyId===metadata.id)!;
   assert.equal(comparison.enabled,false);assert.equal(comparison.validationStatus,'notBacktested');
   if(metadata.id==='ig-volume-breakout-1h'){assert.equal(comparison.status,'blocked_missing_verified_volume');assert.equal(comparison.entrySignal,null);continue;}
@@ -42,3 +42,5 @@ for(const timeframe of ['5m','15m','1h','4h']){
 }
 assert.ok(evaluateIgStrategies({...input,timeframe:'15m',name:'Bitcoin ETF',instrumentType:'SHARES',category:'crypto'}).every(s=>s.status==='not_applicable'));
 console.log('IG multi-strategy: 7 versions, legacy rule parity, course EMA/rollingATR parity, warmup200, blocked volume och no orders PASS');
+
+const candidates=listIgStrategies().filter(s=>'kind' in s&&s.kind==='research_candidate');assert.equal(candidates.length,5);assert.ok(candidates.every(s=>s.enabled===false&&s.executable===false&&s.availability==='blocked_missing_source'));assert.ok(!getIgStrategyRequirements('1h').strategies.some(id=>id.startsWith('strategyfactory-')));assert.ok(!evaluateIgStrategies({...input,timeframe:'1h'}).some(s=>s.strategyId.startsWith('strategyfactory-')));

@@ -128,3 +128,13 @@ Forex och Krypto visas som två sektioner på samma sida med centrerade, lika br
 Browserregression verifierar 12→24→36 kort, bevarat första instrument, lika kolumnbredd och återställning efter sökning. Typkontroll, workspace-svit och forwarder passerar. Reviewer har granskat ändringen. Inga order- eller backendändringar.
 
 Läsbar driftkontroll före uppdateringen: Demo anslutet, 196 Forex-instrument och två kryptoinstrument i directory-svaren. Den ofullständiga kryptoupptäckten löses inte av denna layoutändring. Uppdateraren utgår från senast bekräftat installerade 69954d9.
+
+## Strategy Library och kompletta urval – 2026-10-08
+
+Båda IG-vyerna använder samma kontoavgränsade `/api/ig/research`. StrategyFactory-underlaget finns i `reference/strategyfactory/tradingstrategier-granskning.md`. CASC–STX, TTF–MNT, VQZLA–ENA, DONB–DOGE och PLBK är separata forskningskandidater med egna ID:n. Extern rapporterad prestation är märkt och är inte IG-backtest. Kandidaterna skickas inte till befintliga strategimotorer och kan inte regeltestas förrän originalreglerna har verifierats.
+
+Efter uppdatering av dator 1: `node --import tsx scripts/import-strategyfactory-library.ts --connect --apply`. Skriptet återansluter befintliga miljöer, verifierar registret i Demo och Live före import och lägger additivt in källfil och fem egna utkast per konto. Befintliga biblioteksposter bevaras. Utan `--apply` körs endast förhandskontroll; `--connect` behövs bara för återanslutning. Inga agentanalyser eller order startas.
+
+En direkt IG-analys tillåter upp till tio instrument. Större val (högst 500) hålls i gränssnittets kontobundna sessionsurval och skickas komplett till agentsessionens befintliga batchkö. Snapshot från serverns tiourval ersätter inte den större poolen. Kontobyte nollställer den. Regionfiltren klassificerar valutakoder lokalt; de påstår inte att detta är IG:s officiella handelsplatser eller ett komplett marknadsutbud.
+
+Claude TRADE visar kontosaldo/tillgängligt kapital och marginalbudget i kontots valuta, separat från kontraktsantal. Storleksberäkning kräver verifierade kontraktsregler, färsk kvot och samma punktvaluta som kontot; annars används ingen antagen valutakurs. Serverns förhandsgranskning visar marginal och separat stopprisk. Ingen ordergrind aktiveras av ändringen.

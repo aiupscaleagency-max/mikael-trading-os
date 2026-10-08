@@ -168,6 +168,7 @@ export function startServer(port:number):http.Server{
         "/workspace/app.mjs":["app.mjs","text/javascript"],
         "/workspace/research.mjs":["research.mjs","text/javascript"],
         "/workspace/model.mjs":["model.mjs","text/javascript"],
+        "/workspace/regions.mjs":["regions.mjs","text/javascript"],
         "/workspace/marketViews.mjs":["marketViews.mjs","text/javascript"],
         "/workspace/instrumentIcons.mjs":["instrumentIcons.mjs","text/javascript"],
         "/workspace/multiCharts.mjs":["multiCharts.mjs","text/javascript"],
