@@ -18,6 +18,7 @@ import { igMarketData } from "./igMarketData.js";
 import { handleIgRoutes } from "./igRoutes.js";
 import { getIgTimes, setIgTimes, ANALYSIS_INTERVALS, SESSION_MINUTES } from "./igTimes.js";
 import { type createIgSessions, DIRECT_ANALYSIS_MAX } from "./igSessions.js";
+import { listIgImportedSignals, reviewIgImportedSignal } from "../integrations/igImportedSignals.js";
 import { igOrderExecutionEnabled } from "../integrations/igConnection.js";
 import { currentStake } from "../risk/stakeLadder.js";
 import { igAccountLimits } from "../integrations/igRiskLimits.js";
@@ -37,7 +38,7 @@ import { getResultsCached, recordLiveFill } from "./results.js";
 import { CATEGORIES, getCategory, type Category } from "./movers.js";
 import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
 import { addTimedExit, cancelTimedExit, cancelTimedExitForDeal, getHorizonMin, HORIZON_CHOICES, listTimedExits, listConfirmedExits, rollOverTimedExit, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
-import { adjustLiveSpend, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
+import { adjustLiveSpend, addOrderGateBlock, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
@@ -944,6 +945,41 @@ export function setApiKey(key: string): void {
 export function setRunAgentCallback(cb: (instruction?: string, opts?: { symbols?: string[] }) => Promise<void>): void {
   runAgentCallback = cb;
 }
+/**
+ * C6: agentteamet granskar en inklistrad (overifierad) IG-signal. Under granskningen spärras nya
+ * ordrar (granskning ≠ order). Resultatet sparas på utkastet; "Kopiera till Trade" i dashboarden
+ * fyller bara orderpanelen (utkast) för rätt konto/instrument.
+ */
+export async function startImportedSignalReview(env: "demo" | "live", id: string, deps: { run?: (instruction: string, symbols: string[]) => Promise<void>; store?: { list: typeof listIgImportedSignals; review: typeof reviewIgImportedSignal } } = {}): Promise<{ ok: true; started: true; done: Promise<void> } | { ok: false; error: string; status?: number }> {
+  const store = deps.store ?? { list: listIgImportedSignals, review: reviewIgImportedSignal };
+  let sig;
+  try { sig = store.list(env).find((x) => x.id === id); } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+  if (!sig) return { ok: false, status: 404, error: "Signalen finns inte i den här miljön" };
+  if (sig.stale) return { ok: false, error: "Signalen sparades under en annan IG-inloggning — klistra in den igen" };
+  if (sig.expired) return { ok: false, error: "Signalen har gått ut" };
+  if (getAnalysis()?.status === "running") return { ok: false, status: 409, error: "En analys pågår redan. Försök igen om en stund." };
+  const run = deps.run ?? (runAgentCallback ? (ins: string, symbols: string[]) => runAgentCallback!(ins, { symbols }) : null);
+  if (!run) return { ok: false, status: 503, error: "Agent-callback ej konfigurerad" };
+  const name = igMarketData.nameOf(sig.epic, env) ?? sig.epic;
+  const instruction = `Granska en INKLISTRAD, OVERIFIERAD IG-signal (Mike klistrade in den; källan är inte kontrollerad): `
+    + `${sig.direction === "BUY" ? "köp (lång)" : "sälj (kort)"} ${name} (${sig.epic}), entry ${sig.entryLevel}, stop-loss ${sig.stopLevel}, mål ${sig.targetLevel}, giltig till ${new Date(sig.validUntil).toISOString()}. `
+    + `Originaltext: "${sig.sourceText.replace(/\s+/g, " ").slice(0, 600)}". Bedöm signalen mot stängda IG-ljus och svara köp, sälj eller avstå med motivering. Lägg INGA ordrar — detta är bara en granskning.`;
+  store.review(env, id, { at: Date.now(), status: "running", verdict: null, summary: null });
+  const unblock = addOrderGateBlock(() => "Agentteamet granskar en inklistrad signal — granskningen lägger inga ordrar.");
+  analysisStart("manuell", instruction);
+  userAction(`bad agentteamet granska IG-signalen ${sig.direction} ${name}`, { to: "orchestrator", coin: sig.epic });
+  const done = run(instruction, [sig.epic]).then(() => {
+    const a = getAnalysis();
+    if (a?.status === "running") analysisEnd({ status: "stopped", reason: "Granskningen kördes inte (kill switch, JEV eller ingen mäklare)." });
+    const done = getAnalysis();
+    const pick = done?.picks.find((p) => p.symbol === sig!.epic);
+    store.review(env, id, { at: Date.now(), status: done?.status === "done" ? "done" : "failed", verdict: pick ? pick.action : done?.status === "done" ? "avstå" : null, summary: pick?.reasoning ?? done?.reason ?? done?.summary ?? null });
+  }).catch((e) => {
+    store.review(env, id, { at: Date.now(), status: "failed", verdict: null, summary: e instanceof Error ? e.message : String(e) });
+  }).finally(() => { unblock(); broadcastEvent("ig-imported-signal", { id }); });
+  return { ok: true, started: true, done };
+}
+
 /** Agentsessioner + schema (krav E). Skapas i run.ts med orkestreringen som omgångskörare. */
 export function setIgSessions(s: ReturnType<typeof createIgSessions>): void { igSessions = s; }
 
@@ -1579,6 +1615,16 @@ export function startServer(
       }
 
       // ── Tidshorisont (1/5/15/30 min) + automatiska stängningar ──
+      // ── Inklistrad IG-signal → agentteamet granskar (JEV → teknisk analytiker → Hanna). Ingen order. ──
+      {
+        const m = url.pathname.match(/^\/api\/ig\/imported-signals\/([a-zA-Z0-9-]{1,100})\/review$/);
+        if (m && method === "POST") {
+          const env = igMarketData.getActiveEnv();
+          const r = await startImportedSignalReview(env, m[1]!);
+          if (r.ok) json(res, { ok: true, started: true }); else jsonStatus(res, r.status ?? 400, r);
+          return;
+        }
+      }
       // ── Urval, agentsessioner och schema (krav E) ──
       if (url.pathname.startsWith("/api/ig/session") || url.pathname === "/api/ig/selection" || url.pathname === "/api/ig/schedule") {
         if (!igSessions) { jsonStatus(res, 503, { ok: false, error: "Agentsessioner är inte igång" }); return; }

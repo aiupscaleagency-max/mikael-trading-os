@@ -279,6 +279,80 @@ const mkBroker = (positions: any[], env: "demo" | "live" = "demo") => new IgBrok
   assert.ok(html.includes("MK.all().forEach(m=>MK.sel.add(m.epic))"), "Markera alla tar hela katalogen, även utanför filter/Visa mer");
   ok("E1–E5 urval på servern, direktanalys ≤10, session ≤500 i omgångar om 5/min med fryst lista/konto/strategi/intervall, köstatus, JEV-stopp, avstå, max 5 orderförsök, stopp, schema med kapacitet 300 som tvingar Godkänn");
 }
+
+// ══ C. UI / marknadssida ══
+{
+  // C3: sidomenyn — varje post leder till en sida, inga dubbletter
+  const side = html.slice(html.indexOf('<aside class="sidebar">'), html.indexOf("</aside>"));
+  const items = [...side.matchAll(/data-page="([a-z]+)"[^>]*>[\s\S]*?<span>([^<]+)<\/span>/g)].map((m) => [m[1]!, m[2]!.trim()] as const);
+  const labels = items.map((x) => x[1]);
+  for (const want of ["Trade", "Trades", "Cost", "Valutapar", "Alla par", "Strategier", "Signaler", "Sessioner", "Agentchatt", "Marknader", "Verktyg", "Inställningar"]) assert.ok(labels.includes(want), `menyn saknar ${want}`);
+  for (const [page] of items) assert.ok(html.includes(`id="page-${page}"`), `sidan page-${page} saknas`);
+  assert.equal(new Set(items.map((x) => x[0])).size, items.length, "dubbla sidor i menyn");
+  // C1: svart bakgrund, grön upp/köp, röd ned/sälj
+  assert.match(html, /--bg:#000000/); assert.ok(/\.up\{color:#3fb950\}/.test(html) && /\.down\{color:#f85149\}/.test(html));
+  // C2: 1–4 diagram, valbar länkning, märkning
+  for (const l of ['data-mc="1"', 'data-mc="2"', 'data-mc="3"', 'data-mc="4"', 'id="mcLink"', 'id="mcSyncIv"']) assert.ok(html.includes(l), l);
+  assert.ok(html.includes('IG.st.env === "live" ? "LIVE" : "DEMO"'), "varje diagram märkt DEMO/LIVE");
+  // C4/C5: kort och filter
+  for (const id of ["mkf-cat", "mkf-fav", "mkf-q", "mkf-region", "mkf-status", "mkf-dir", "mkf-trend", "mkf-sort"]) assert.ok(html.includes(`id="${id}"`), id);
+  for (const k of ["data-mk-fav", "data-mk-enrich", 'data-act="chart"', 'data-act="analyze"', "data-more", "kvot saknas", "förändring saknas"]) assert.ok(html.includes(k), k);
+  assert.ok(!/mest vinster"|Mest vinster</.test(html.replace(/&quot;mest vinster&quot;-prognos/g, "")), "ingen 'mest vinster' som prognos");
+  assert.ok(html.includes("inte IG:s handelsplats") && html.includes("sentiment ≠ volym/vinst"));
+  // C7: Trades åtskilda, Cost utan påhittade siffror
+  assert.ok(html.includes('id="trades-pending-card"') && html.includes("Öppna positioner") && html.includes("Avslutade affärer"));
+  assert.ok(!html.includes("// Demo-data") && !html.includes('textContent = "$0.32"'), "Cost visar inga påhittade siffror");
+  assert.ok(html.includes("Detta är inte trading-resultat"));
+  ok("C1–C5, C7: svart/grönt/rött, 1–4 diagram med länkning och DEMO/LIVE-märkning, sidomenyn utan dubbletter, Valutapar-kort och filter, Trades/Cost åtskilda utan påhittade data");
+}
+{
+  // C6: inklistrad IG-signal → agentteamet granskar (inga ordrar) → Kopiera till Trade (utkast)
+  const { createIgImportedSignals } = await import("../src/integrations/igImportedSignals.js");
+  const { createIgPreferences } = await import("../src/integrations/igPreferences.js");
+  let gen = "demo-g1";
+  const st = () => ({ environments: { demo: { status: "connected", connectionGeneration: gen }, live: { status: "disconnected" } } }) as never;
+  const sig = createIgImportedSignals({ status: st, now: () => NOW, directory: path.join(tmp, "sig") });
+  const input = { epic: EPIC, sourceText: "IG: köp EUR/USD", direction: "BUY" as const, entryLevel: 1.1, stopLevel: 1.09, targetLevel: 1.12, validUntil: NOW + 3600_000 };
+  assert.throws(() => sig.save("demo", { ...input, stopLevel: 1.2 }), /fel sida/);
+  assert.throws(() => sig.save("live", input), /anslutet/);
+  const saved = sig.save("demo", input);
+  assert.equal(saved.executable, false); assert.equal(saved.status, "unverified_draft");
+  sig.review("demo", saved.id, { at: NOW, status: "done", verdict: "hold", summary: "svag" });
+  assert.equal(sig.list("demo")[0]!.review!.verdict, "hold");
+  gen = "demo-g2"; assert.equal(sig.list("demo")[0]!.stale, true, "annan inloggning → inaktuell");
+  const prefs = createIgPreferences(path.join(tmp, "prefs"));
+  const p1 = prefs.set("demo", { favorites: [EPIC], revision: 0 });
+  assert.throws(() => prefs.set("demo", { favorites: [], revision: 0 }), /annan vy/);
+  assert.deepEqual(prefs.get("live").favorites, [], "favoriter per miljö");
+  assert.equal(p1.revision, 1);
+
+  // Granskningen via den riktiga vägen (api.startImportedSignalReview) med mockad agentkörning
+  const { startImportedSignalReview } = await import("../src/server/api.js");
+  const { checkOrderGate, listPendingOrders } = await import("../src/server/orderGate.js");
+  const { analysisEnd } = await import("../src/server/agentActivity.js");
+  gen = "demo-g1";
+  const fresh = sig.save("demo", { ...input, direction: "SELL", stopLevel: 1.11, targetLevel: 1.08 });
+  const before = (await listPendingOrders()).length;
+  let duringReview: { ok: boolean } | null = null, seen: { ins: string; symbols: string[] } | null = null;
+  assert.equal((await startImportedSignalReview("demo", "nope", { run: async () => {}, store: sig }) as any).status, 404);
+  const rv: any = await startImportedSignalReview("demo", fresh.id, { store: sig, run: async (ins, symbols) => {
+    seen = { ins, symbols };
+    duringReview = await checkOrderGate({ live: false, side: "SELL", unitsOrder: true, opening: true, source: "agent" });
+    analysisEnd({ status: "done", picks: [{ symbol: EPIC, action: "hold", sizeUsd: 0, confidence: "low", reasoning: "Ingen bekräftelse i stängda ljus" }] });
+  } });
+  assert.equal(rv.ok, true); assert.equal(sig.list("demo").find((x) => x.id === fresh.id)!.review!.status, "running");
+  await rv.done;
+  assert.deepEqual(seen!.symbols, [EPIC], "rätt instrument"); assert.match(seen!.ins, /OVERIFIERAD/); assert.match(seen!.ins, /INGA ordrar/);
+  assert.equal(duringReview!.ok, false, "nya ordrar spärras under granskningen");
+  const reviewed = sig.list("demo").find((x) => x.id === fresh.id)!.review!;
+  assert.equal(reviewed.status, "done"); assert.equal(reviewed.verdict, "hold"); assert.match(reviewed.summary!, /bekräftelse/);
+  assert.equal((await checkOrderGate({ live: false, side: "BUY", unitsOrder: true, opening: true, source: "agent" })).ok, true, "spärren släpps efter granskningen");
+  assert.equal((await listPendingOrders()).length, before, "granskning skapar inga ordrar");
+  gen = "demo-g2";
+  assert.match((await startImportedSignalReview("demo", fresh.id, { run: async () => {}, store: sig }) as any).error, /annan IG-inloggning/);
+  for (const k of ["sg-save", "data-sg-review", "data-sg-copy", "Kopiera till Trade", "Inget är skickat"]) assert.ok(html.includes(k), k);
+  ok("C6 inklistrad IG-signal sparas som overifierat utkast per konto, agentteamet granskar utan ordrar, Kopiera till Trade fyller bara orderpanelen");
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("Kravlistan: alla tester godkända (endast mocks, inga nätverksanrop)");
 process.exit(0);

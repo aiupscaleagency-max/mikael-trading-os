@@ -10,6 +10,8 @@ import { getIgOrderState, resolveIgUnknown } from "../integrations/igOrders.js";
 import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
 import { currentStake } from "../risk/stakeLadder.js";
 import { igOrderMoneyView } from "../integrations/igRiskLimits.js";
+import { listIgImportedSignals, saveIgImportedSignal, deleteIgImportedSignal } from "../integrations/igImportedSignals.js";
+import { igPreferences } from "../integrations/igPreferences.js";
 import { cancelTimedExitForDeal, listTimedExits } from "./tradeHorizon.js";
 import { checkOrderGate } from "./orderGate.js";
 import { userAction } from "./agentActivity.js";
@@ -192,6 +194,34 @@ export async function handleIgRoutes(
     if (p === "/api/ig/orders" && method === "GET") {
       send(res, 200, { env, ...getIgOrderState(env), timedExits: listTimedExits().filter((x) => x.dealId) });
       return true;
+    }
+
+    // ── Favoriter per miljö (servern, Codex igPreferences) ──
+    if (p === "/api/ig/preferences" && method === "GET") { send(res, 200, { env, ...igPreferences.get(env) }); return true; }
+    if (p === "/api/ig/preferences" && method === "POST") {
+      try { send(res, 200, { ok: true, env, ...igPreferences.set(env, await body(req, readBody)) }); } catch (e) { send(res, 409, { ok: false, env, error: e instanceof Error ? e.message : String(e), ...igPreferences.get(env) }); }
+      return true;
+    }
+    // ── Inklistrade IG-signaler (overifierade utkast; ingen order) ──
+    if (p === "/api/ig/imported-signals" && method === "GET") {
+      try { send(res, 200, { ok: true, env, signals: listIgImportedSignals(env) }); } catch (e) { send(res, 200, { ok: false, env, signals: [], error: e instanceof Error ? e.message : String(e) }); }
+      return true;
+    }
+    if (p === "/api/ig/imported-signals" && method === "POST") {
+      try {
+        const b = await body(req, readBody);
+        const signal = saveIgImportedSignal(env, { epic: String(b.epic ?? ""), sourceText: String(b.sourceText ?? ""), direction: b.direction, entryLevel: Number(b.entryLevel), stopLevel: Number(b.stopLevel), targetLevel: Number(b.targetLevel), validUntil: Number(b.validUntil) });
+        userAction(`klistrade in IG-signal ${signal.direction} ${signal.epic} (overifierad)`);
+        send(res, 200, { ok: true, env, signal, signals: listIgImportedSignals(env) });
+      } catch (e) { send(res, 400, { ok: false, env, error: e instanceof Error ? e.message : String(e) }); }
+      return true;
+    }
+    {
+      const m = p.match(/^\/api\/ig\/imported-signals\/([a-zA-Z0-9-]{1,100})$/);
+      if (m && method === "DELETE") {
+        try { deleteIgImportedSignal(env, m[1]!); send(res, 200, { ok: true, env, signals: listIgImportedSignals(env) }); } catch (e) { send(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) }); }
+        return true;
+      }
     }
 
     // ── Marknad ──

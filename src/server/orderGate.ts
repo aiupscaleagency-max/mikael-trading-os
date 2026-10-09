@@ -108,6 +108,9 @@ export type GateResult = { ok: true } | { ok: false; error: string };
 // omgångar tvingar alltid fram Godkänn. Sätts av run.ts; null = ingen session-logik.
 let sessionHook: ((input: GateInput) => string | null) | null = null;
 let approvalOverride: (() => boolean) | null = null;
+// Tillfälliga spärrar (t.ex. medan agentteamet granskar en inklistrad signal: granskning ≠ order).
+const blocks = new Set<(input: GateInput) => string | null>();
+export function addOrderGateBlock(fn: (input: GateInput) => string | null): () => void { blocks.add(fn); return () => { blocks.delete(fn); }; }
 export function setOrderGateSessionHook(hook: ((input: GateInput) => string | null) | null, forceApproval: (() => boolean) | null = null): void {
   sessionHook = hook; approvalOverride = forceApproval;
 }
@@ -125,6 +128,9 @@ export async function checkOrderGate(input: GateInput): Promise<GateResult> {
     }
   }
 
+  if ((input.side === "BUY" || input.opening) && !input.source.startsWith("godkänd:")) {
+    for (const b of blocks) { const why = b(input); if (why) return deny(why); }
+  }
   if (sessionHook) {
     const why = sessionHook(input);
     if (why) return deny(why);

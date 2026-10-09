@@ -244,6 +244,7 @@ aside.sidebar button{display:flex;flex-direction:column;align-items:center;justi
 aside.sidebar button:hover{background:var(--card2);color:#fff}
 aside.sidebar button.active{background:var(--card2);color:var(--cyan);border-color:var(--cyan);font-weight:800}
 aside.sidebar button .ico{font-size:18px}
+aside.sidebar button span:not(.ico):not(.live-dot){max-width:100%;overflow-wrap:anywhere;text-align:center;line-height:1.15}
 aside.sidebar .spacer{flex:1}
 aside.sidebar .live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 1.5s infinite;margin-top:6px}
 
@@ -1015,7 +1016,8 @@ body.app-state-onboard .fc-panel{display:none !important}
   /* Sidomeny → bottom-nav */
   .app-shell{grid-template-columns:1fr;min-height:auto}
   aside.sidebar{position:fixed;bottom:0;left:0;right:0;width:100%;height:60px;flex-direction:row;border-right:none;border-top:1px solid var(--border);padding:4px;gap:0;top:auto;z-index:100;justify-content:space-around;background:var(--card)}
-  aside.sidebar button{flex:1;padding:4px;font-size:8px;border-radius:4px;gap:1px;min-width:0}
+  aside.sidebar button{flex:0 0 auto;padding:4px 6px;font-size:8px;border-radius:4px;gap:1px;min-width:62px;white-space:nowrap}
+  aside.sidebar{overflow-x:auto;overflow-y:hidden;justify-content:flex-start;-webkit-overflow-scrolling:touch}
   aside.sidebar button .ico{font-size:18px}
   aside.sidebar .spacer{display:none}
   aside.sidebar .live-dot{position:absolute;top:2px;right:14px;margin:0;width:5px;height:5px}
@@ -1406,7 +1408,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   <button class="run-btn" id="run-btn">▶ Kör analys</button>
   <button class="paper-balance" id="paper-balance" title="TEST-saldo (klicka för Trades-sidan)">📊 TEST <b id="pb-equity">—</b> <span id="pb-pnl">TEST</span></button>
   <button class="paper-balance" id="live-balance" style="background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(16,185,129,.08));border-color:rgba(34,197,94,.5)" title="Saldo på IG Live (riktiga pengar)">💚 LIVE <b id="lb-equity" style="color:var(--green)">—</b></button>
-  <button class="cost-mini" id="cost-mini" title="Klicka för detaljerad kostnadsvy">💰 <b id="cost-today">$0.00</b> idag</button>
+  <button class="cost-mini" id="cost-mini" title="AI-/API-kostnad idag (USD) — inte trading-resultat. Klicka för detaljer.">💰 <b id="cost-today">$0.00</b> idag</button>
   <div class="user-wrap">
     <button class="user-chip" id="user-chip" title="Konto-meny">
       <span class="uc-avatar" id="uc-avatar">M</span>
@@ -1424,39 +1426,48 @@ body.app-state-onboard .fc-panel{display:none !important}
 
 <div class="app-shell">
 <aside class="sidebar">
-  <button class="active" data-page="trade" title="Trade — chart + bet + team">
+  <button class="active" data-page="trade" title="Trade — diagram, order, agenternas analys">
     <span class="ico">📊</span><span>Trade</span>
+  </button>
+  <button data-page="trades" title="Trades — öppna positioner, väntande ordrar, avslutade affärer">
+    <span class="ico">📈</span><span>Trades</span>
+  </button>
+  <button data-page="cost" title="Cost — agenternas/API-kostnader och budget (skilt från trading-P/L)">
+    <span class="ico">💰</span><span>Cost</span>
   </button>
   <button data-page="markets" title="Valutapar — IG-katalogen för kontot (Forex + Krypto)">
     <span class="ico">💱</span><span>Valutapar</span>
   </button>
-  <button data-page="pairs" title="Alla par — en kolumn per par, CALL/PUT och analys under varje">
+  <button data-page="pairs" title="Alla par — en kolumn per bevakat instrument, KÖP/SÄLJ och analys under varje">
     <span class="ico">🧮</span><span>Alla par</span>
   </button>
-  <button data-page="team" title="AI-Team — alla agenter">
-    <span class="ico">🤖</span><span>Team</span>
+  <button data-page="strategies" title="Strategier — live-lampor, IG-saldo, strategikörning">
+    <span class="ico">🧠</span><span>Strategier</span>
   </button>
-  <button data-page="chat" title="Chatta med teamet — instruera trades">
-    <span class="ico">💬</span><span>Chat</span>
+  <button data-page="signals" title="Signaler — agenternas signaler + inklistrade IG-signaler">
+    <span class="ico">📡</span><span>Signaler</span>
   </button>
-  <button data-page="live" title="Live aktivitet — rullande par">
-    <span class="ico">⚡</span><span>Live</span>
+  <button data-page="sessions" title="Agentsessioner — sessioner, kö per instrument, schema">
+    <span class="ico">🤖</span><span>Sessioner</span>
+  </button>
+  <button data-page="chat" title="Agentchatt — prata med agentteamet">
+    <span class="ico">💬</span><span>Agentchatt</span>
+  </button>
+  <button data-page="live" title="Alla marknader — rullande rader för alla IG-instrument">
+    <span class="ico">⚡</span><span>Marknader</span>
     <span class="live-dot"></span>
   </button>
-  <button data-page="strategies" title="Strategier — bibliotek, live-lampor, IG-saldo">
-    <span class="ico">🧠</span><span>Strategi</span>
+  <button data-page="team" title="AI-team — alla agenter">
+    <span class="ico">👥</span><span>Team</span>
   </button>
   <button data-page="tree" title="Arbetsträd — vem jobbar, var i processen">
     <span class="ico">🌳</span><span>Träd</span>
   </button>
-  <button data-page="trades" title="Trades — positioner + beslut">
-    <span class="ico">📈</span><span>Trades</span>
+  <button data-page="tools" title="Verktyg — datakällor, export, externa verktyg">
+    <span class="ico">🧰</span><span>Verktyg</span>
   </button>
-  <button data-page="cost" title="Cost — spend tracking">
-    <span class="ico">💰</span><span>Cost</span>
-  </button>
-  <button data-page="settings" title="Settings — backend, mode, risk">
-    <span class="ico">⚙️</span><span>Settings</span>
+  <button data-page="settings" title="Inställningar och datakällor (IG-inloggning, nycklar, läge)">
+    <span class="ico">⚙️</span><span>Inställningar</span>
   </button>
   <div class="spacer"></div>
   <button id="kill-sidebar" title="Kill switch">
@@ -1777,7 +1788,8 @@ body.app-state-onboard .fc-panel{display:none !important}
       <button type="button" data-mc="4">4 (2×2)</button>
       <label style="font-size:11px;margin-left:10px;display:flex;gap:4px;align-items:center"><input type="checkbox" id="mcSyncIv" /> Samma intervall i alla</label>
       <label style="font-size:11px;display:flex;gap:4px;align-items:center"><input type="checkbox" id="mcSyncXh" /> Synka hårkors</label>
-      <span style="font-size:11px;color:var(--dim);margin-left:auto">Klicka på ett diagram för att handla det paret (orderbok + Köp/Sälj ovan)</span>
+      <label style="font-size:11px;display:flex;gap:4px;align-items:center" title="Diagram 1 följer huvuddiagrammets instrument och intervall"><input type="checkbox" id="mcLink" /> Länka diagram 1 till huvuddiagrammet</label>
+      <span style="font-size:11px;color:var(--dim);margin-left:auto">Klicka på ett diagram så blir det huvuddiagram och styr orderpanelen (Köp/Sälj)</span>
     </div>
     <div class="mc-grid" id="mcGrid"></div>
   </div>
@@ -2885,9 +2897,87 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 </section>
 
+<style>
+.xp-wrap{max-width:1180px;margin:0 auto;padding:0 16px 24px}
+.xp-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:0 0 12px}
+.xp-card h3{font-size:13px;font-weight:800;color:#fff;margin:0 0 8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.xp-note{font-size:11px;color:var(--dim);line-height:1.5}
+.xp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}
+.xp-form{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;font-size:11px;color:var(--dim)}
+.xp-form label{display:flex;flex-direction:column;gap:3px}
+.xp-form input,.xp-form select,.xp-form textarea{width:100%}
+.xp-form textarea{background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-family:inherit;font-size:12px}
+.xp-btn{padding:6px 12px;border:1px solid var(--border);background:var(--card2);color:var(--text);border-radius:6px;font-weight:700;font-size:12px;cursor:pointer}
+.xp-btn:disabled{opacity:.45;cursor:not-allowed}
+.xp-go{border-color:#3fb950;color:#3fb950}
+.xp-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #1e2430;font-size:12px}
+.xp-up{color:#3fb950;font-weight:800}.xp-down{color:#f85149;font-weight:800}.xp-flat{color:#8b95a7;font-weight:800}
+.xp-lamp{display:flex;gap:6px;align-items:flex-start;font-size:12px;padding:6px 8px;border:1px solid var(--border);border-radius:6px}
+@media (max-width:640px){ .xp-form{grid-template-columns:1fr} }
+</style>
+<!-- ═══ SIGNALER — agenternas signaler + inklistrad IG-signal → agentteamet granskar → Kopiera till Trade (utkast, aldrig order) -->
+<section class="page" id="page-signals">
+  <div class="page-header"><span class="ph-ico">📡</span>Signaler<span class="ph-sub">— agenternas signaler och inklistrade IG-signaler</span></div>
+  <div class="xp-wrap">
+    <div class="xp-card">
+      <h3>Agenternas signaler <span data-ig-env class="tag" style="font-size:10px"></span></h3>
+      <div class="xp-note">Indikatorer på <b>stängda</b> IG-ljus (signalmotorn) och agenternas senaste förslag. Inget här är en order.</div>
+      <div id="sg-list" style="margin-top:6px;font-size:12px;color:var(--dim)">Laddar…</div>
+    </div>
+    <div class="xp-card">
+      <h3>Klistra in extern IG-signal <span class="tag" style="font-size:10px;color:#f0b90b">OVERIFIERAD</span></h3>
+      <div class="xp-note">Signalen sparas som ett overifierat utkast för det här kontot. Agentteamet (JEV → teknisk analytiker → Hanna) kan granska den. <b>Kopiera till Trade</b> fyller bara orderpanelen — inget skickas, och du godkänner som vanligt.</div>
+      <div class="xp-form" style="margin-top:8px">
+        <label>Källa (text från IG)<textarea id="sg-src" rows="3" maxlength="12000" placeholder="Klistra in signaltexten"></textarea></label>
+        <label>Instrument (IG-EPIC)<input id="sg-epic" list="sg-epics" placeholder="t.ex. CS.D.EURUSD.MINI.IP"><datalist id="sg-epics"></datalist></label>
+        <label>Riktning<select id="sg-dir"><option value="BUY">KÖP (lång)</option><option value="SELL">SÄLJ (kort)</option></select></label>
+        <label>Entry<input id="sg-entry" type="number" step="any" min="0"></label>
+        <label>Stop-loss<input id="sg-sl" type="number" step="any" min="0"></label>
+        <label>Mål (TP)<input id="sg-tp" type="number" step="any" min="0"></label>
+        <label>Signaltid<input id="sg-time" type="datetime-local"></label>
+        <label>Giltig till (högst 24 h)<input id="sg-valid" type="datetime-local"></label>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center"><button type="button" class="xp-btn xp-go" id="sg-save">Spara utkast</button><span id="sg-msg" class="xp-note"></span></div>
+      <div id="sg-imported" style="margin-top:8px"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ AGENTSESSIONER — pågående session, kö per instrument, schema, historik -->
+<section class="page" id="page-sessions">
+  <div class="page-header"><span class="ph-ico">🤖</span>Agentsessioner<span class="ph-sub">— sessioner över valda instrument, 5 per minut · schema</span></div>
+  <div class="xp-wrap">
+    <div class="xp-card">
+      <h3>Session <span data-ig-env class="tag" style="font-size:10px"></span>
+        <button type="button" data-igs-start-saved class="xp-btn" style="margin-left:auto;border-color:#fbbf24;color:#fbbf24">▶ Starta agentsession</button></h3>
+      <div class="xp-note">Instrumenten väljs på <a href="#markets" style="color:var(--cyan)">Valutapar</a> (sparas på servern). Agenterna analyserar: JEV-förkontroll → teknisk analytiker → Hanna. Sessionen får avstå. Högst 5 nya orderförsök; allt kräver Godkänn.</div>
+      <div data-igs-session style="margin-top:8px;font-size:12px"></div>
+    </div>
+    <div class="xp-card"><h3>Schema</h3><div data-igs-schedule></div></div>
+    <div class="xp-card"><h3>Tidigare sessioner</h3><div id="ses-history" class="xp-note"></div></div>
+  </div>
+</section>
+
+<!-- ═══ VERKTYG — datakällor, export, externa verktyg -->
+<section class="page" id="page-tools">
+  <div class="page-header"><span class="ph-ico">🧰</span>Verktyg<span class="ph-sub">— datakällor, export och externa verktyg</span></div>
+  <div class="xp-wrap">
+    <div class="xp-card">
+      <h3>Datakällor <span id="tl-time" class="xp-note" style="margin-left:auto"></span></h3>
+      <div id="tl-lamps" class="xp-grid"></div>
+      <div id="tl-budget" class="xp-note" style="margin-top:6px"></div>
+    </div>
+    <div class="xp-card" id="tl-export">
+      <h3>Exportera ljus (CSV)</h3>
+      <div class="xp-note">Stängda IG-ljus för aktuellt instrument och intervall i huvuddiagrammet (aktiv miljö). Pågående ljus tas inte med.</div>
+      <div style="margin-top:6px"><button type="button" class="xp-btn" id="tl-csv">⬇ Ladda ner CSV</button> <span id="tl-csv-msg" class="xp-note"></span></div>
+    </div>
+  </div>
+</section>
+
 <!-- ═══ LIVE-SIDA — 4 rullande rader (en per kategori) ═══ -->
 <section class="page live-section" id="page-live">
-  <div class="page-header"><span class="ph-ico">⚡</span>Live aktivitet<span class="ph-sub">— 4 rullande rader, realtid</span></div>
+  <div class="page-header"><span class="ph-ico">⚡</span>Alla marknader<span class="ph-sub">— 4 rullande rader med IG-kvoter i realtid</span></div>
   <div style="margin:0 10px;display:flex;flex-direction:column;gap:6px">
     <div class="live-strip-row" data-speed="40">
       <div class="lsr-label"><span class="lsr-pulse"></span>KRYPTO (IG)</div>
@@ -3075,7 +3165,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 <!-- ═══ CHAT-SIDA — instruera teamet i naturligt språk ═══ -->
 <section class="page chat-page" id="page-chat">
   <div class="page-header">
-    <span class="ph-ico">💬</span>Chatta med teamet
+    <span class="ph-ico">💬</span>Agentchatt
     <span class="ph-sub">— skriv instruktioner i klartext, Hanna kör</span>
     <span class="ph-spacer"></span>
     <button class="ph-action" id="chat-clear-btn">↻ Rensa</button>
@@ -3181,8 +3271,14 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
     <div class="card">
-      <h3>🟢 Aktiva positioner <span id="trades-mode-tag" class="tag" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px">🧪 TEST</span> <span id="pos-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span> <span id="pos-refresh-tag" class="tag" style="font-size:9px;color:var(--label);font-weight:500">⏱ var 3s</span></h3>
+      <h3>🟢 Öppna positioner <span id="trades-mode-tag" class="tag" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px">🧪 TEST</span> <span id="pos-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span> <span id="pos-refresh-tag" class="tag" style="font-size:9px;color:var(--label);font-weight:500">⏱ var 3s</span></h3>
       <div id="trade-positions-table"></div>
+    </div>
+
+    <div class="card" id="trades-pending-card">
+      <h3>⏳ Väntande ordrar <span id="tp-count" class="tag" style="margin-left:auto;color:#fbbf24">0</span></h3>
+      <div style="font-size:11px;color:var(--dim);margin-bottom:6px">Förslag och ordrar som väntar på ditt Godkänn (godkänns på Trade-sidan). Inget här är en öppen position.</div>
+      <div id="trades-pending"></div>
     </div>
 
     <div class="card">
@@ -3203,7 +3299,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
     <div class="card">
-      <h3>📊 Stängda trades <span class="tag" style="margin-left:auto;font-size:9px;color:var(--label);font-weight:500">FIFO realized PnL · auto-uppdateras</span></h3>
+      <h3>📊 Avslutade affärer <span class="tag" style="margin-left:auto;font-size:9px;color:var(--label);font-weight:500">IG:s stängda affärer i kontovalutan · auto-uppdateras</span></h3>
       <div id="trade-history-table"></div>
     </div>
 
@@ -3215,18 +3311,64 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 </section>
 
+<script>
+(function(){
+  const el = document.getElementById("trades-pending"); if(!el) return;
+  async function load(){
+    if(!document.getElementById("page-trades").classList.contains("active")) return;
+    try{
+      const d = await (await fetch("/api/pending-orders")).json();
+      const list = (d.orders || []).filter(o=>o.status === "pending");
+      document.getElementById("tp-count").textContent = list.length;
+      el.innerHTML = list.length ? list.map(o=>`<div style="display:flex;gap:10px;flex-wrap:wrap;padding:5px 0;border-top:1px solid #222834;font-size:12px">
+        <b style="color:${o.closeDealId ? "#8b95a7" : o.side === "BUY" ? "#3fb950" : "#f85149"}">${o.closeDealId ? "STÄNG" : o.side === "BUY" ? "KÖP" : "SÄLJ"}</b>
+        <b style="color:#e6e6e6">${IG.esc(o.name || IG.label(o.symbol))}</b>
+        <span>${o.stakeAmount ? IG.money(o.stakeAmount, o.currency) : o.quantity != null ? IG.esc(o.quantity) + " st" : ""}</span>
+        <span style="color:${o.live ? "#22c55e" : "#f0b90b"}">${o.live ? "IG Live" : "IG Demo"}</span>
+        <span style="color:var(--dim)">${IG.esc(o.source || "")} · ${new Date(o.createdAt).toLocaleTimeString("sv-SE").slice(0,5)}</span>
+      </div>`).join("") : '<div style="font-size:12px;color:var(--dim)">Inga väntande ordrar.</div>';
+    }catch(_){}
+  }
+  document.addEventListener("page-shown", (e)=>{ if(e.detail === "trades") load(); });
+  setInterval(load, 5000);
+})();
+</script>
+
 <!-- ═══ COST-SIDA ═══ -->
 <section class="page" id="page-cost">
   <div class="page-header"><span class="ph-ico">💰</span>Cost<span class="ph-sub">— spend tracking, cap, breakdown</span></div>
   <div class="card" style="margin:0 10px">
-    <p style="font-size:12px;color:var(--dim);line-height:1.5">Cost-tracker loggar varje Claude-anrop i realtid. Daily cap (MAX_DAILY_SPEND_USD) stoppar automatiskt sessions vid överskridande.</p>
+    <p style="font-size:12px;color:var(--dim);line-height:1.5">Faktiska kostnader för agenternas AI-/API-anrop (USD, från kostnadsloggen) och budgetstatus. <b>Detta är inte trading-resultat</b> — P/L för IG-affärer finns under Trades (i kontovalutan).</p>
+    <div id="costLive" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-top:10px;font-size:12px">Laddar…</div>
+    <div id="costByAgent" style="margin-top:8px;font-size:11px;color:var(--dim)"></div>
     <button class="run-btn" onclick="openCostModal()" style="margin-top:10px">Öppna detaljerad kostnadsöversikt</button>
   </div>
 </section>
 
+<script>
+(function(){
+  const box = document.getElementById("costLive"); if(!box) return;
+  const f = (v)=> v == null || isNaN(v) ? "–" : "$" + Number(v).toFixed(v < 1 ? 3 : 2);
+  async function load(){
+    if(!document.getElementById("page-cost").classList.contains("active")) return;
+    try{
+      const r = await fetch("/api/cost"); if(!r.ok){ box.textContent = "Kostnaderna kunde inte läsas (HTTP " + r.status + ")"; return; }
+      const c = await r.json();
+      const st = { ok:["#3fb950","inom budget"], warning:["#fbbf24","nära taket"], exceeded:["#f85149","taket nått — agenterna pausar"] }[c.capStatus] || ["#8b95a7", c.capStatus || "–"];
+      const tile = (l, v, sub)=>`<div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px"><div style="color:var(--dim);font-size:11px">${l}</div><div style="font-size:18px;font-weight:800">${v}</div>${sub ? `<div style="font-size:11px;color:var(--dim)">${sub}</div>` : ""}</div>`;
+      box.innerHTML = tile("Idag", f(c.todayUsd), "tak " + f(c.dailyCap)) + tile("Veckan", f(c.weekUsd), "tak " + f(c.weeklyCap)) + tile("Månaden", f(c.monthUsd)) + tile("Budgetstatus", `<span style="color:${st[0]}">${IG.esc(st[1])}</span>`);
+      const by = Object.entries(c.byAgent || {}).sort((a,b)=>b[1].costUsd - a[1].costUsd);
+      document.getElementById("costByAgent").innerHTML = by.length ? "Per agent idag: " + by.map(([k,v])=>`${IG.esc(k)} ${f(v.costUsd)} (${v.calls} anrop)`).join(" · ") : "";
+    }catch(e){ box.textContent = "Boten är inte ansluten — inga kostnader att visa."; }
+  }
+  document.addEventListener("page-shown", (e)=>{ if(e.detail === "cost") load(); });
+  setInterval(load, 15000); setTimeout(load, 500);
+})();
+</script>
+
 <!-- ═══ SETTINGS-SIDA ═══ -->
 <section class="page settings-page" id="page-settings">
-  <div class="page-header"><span class="ph-ico">⚙️</span>Settings<span class="ph-sub">— backend, API-nycklar, mode</span></div>
+  <div class="page-header"><span class="ph-ico">⚙️</span>Inställningar<span class="ph-sub">— datakällor (IG), nycklar, läge</span></div>
   <div class="card" style="margin:0 10px">
     <h4>Backend-anslutning</h4>
     <div class="grid">
@@ -4892,12 +5034,10 @@ function renderHistory(){
 }
 
 function updatePnL(){
-  // IG: rubrikens resultat sätts av refreshBinanceSync i kontovalutan (inte $)
+  // IG: rubrikens resultat sätts av refreshBinanceSync i kontovalutan (aldrig $ från webbläsarens simulering)
   if(STATE.igPnlSet) return;
-  const realized = STATE.history.reduce((s,h)=>s+h.profit,0);
   const el = document.getElementById("pnl");
-  el.textContent = (realized>=0?"+":"")+"$"+realized.toFixed(2);
-  el.className = "pnl "+(realized>=0?"up":"down");
+  if(el){ el.textContent = "—"; el.title = "Resultat från IG i kontovalutan visas när kontot är anslutet"; }
 }
 
 /* ======================================================================
@@ -7816,7 +7956,7 @@ function wireTeamChat(){
 /* ======================================================================
    SPA NAVIGATION — varje sidebar-knapp = egen sida
    ====================================================================== */
-const PAGES = ["trade","markets","pairs","team","chat","live","strategies","tree","trades","cost","settings"];
+const PAGES = ["trade","markets","pairs","signals","sessions","tools","team","chat","live","strategies","tree","trades","cost","settings"];
 
 function switchPage(name){
   if(!PAGES.includes(name)) name = "trade";
@@ -7837,6 +7977,7 @@ function switchPage(name){
   // Re-rendera Team om vi går in på Team-sidan (för att visa dubbletter av agent-grid)
   if(name === "team") renderAgents();
   if(name === "trades") renderTradesPage();
+  try{ document.dispatchEvent(new CustomEvent("page-shown", { detail: name })); }catch(_){}
 }
 
 function wireSidebar(){
@@ -7931,8 +8072,8 @@ const AGENT_DISPLAY_NAMES = {
 
 async function refreshCost(){
   if(CFG.mode !== "live"){
-    // Demo-läge: fejka data
-    document.getElementById("cost-today").textContent = "$0.32";
+    // Boten är inte ansluten: inga påhittade siffror
+    document.getElementById("cost-today").textContent = "–";
     return;
   }
   try{
@@ -7954,17 +8095,9 @@ async function openCostModal(){
       return;
     }
   } else {
-    // Demo-data
-    c = {
-      todayUsd:0.32, weekUsd:1.05, monthUsd:3.40,
-      dailyCap:2, weeklyCap:10, capStatus:"ok",
-      byAgent:{research:{calls:2,costUsd:0.01},macro:{calls:2,costUsd:0.005},advisor:{calls:2,costUsd:0.21},head:{calls:2,costUsd:0.04}},
-      byModel:{"claude-haiku-4-5-20251001":{calls:14,costUsd:0.04},"claude-opus-4-7":{calls:2,costUsd:0.21},"claude-sonnet-4-6":{calls:2,costUsd:0.04},"perplexity-sonar-pro":{calls:2,costUsd:0.01}},
-      recentCalls:[
-        {timestamp:Date.now()-300000,agent:"head",model:"claude-sonnet-4-6",inputTokens:3200,outputTokens:850,costUsd:0.022},
-        {timestamp:Date.now()-360000,agent:"advisor",model:"claude-opus-4-7",inputTokens:2800,outputTokens:780,costUsd:0.101},
-      ]
-    };
+    // Boten är inte ansluten: visa ingenting påhittat
+    document.getElementById("c-today").textContent = "Boten är inte ansluten — inga kostnader att visa";
+    return;
   }
   document.getElementById("c-today").textContent = "$"+c.todayUsd.toFixed(3);
   document.getElementById("c-week").textContent = "$"+c.weekUsd.toFixed(2);
@@ -10414,7 +10547,7 @@ document.addEventListener("DOMContentLoaded", boot);
   function label(pane){
     const pc = pane.pc;
     pane.el.querySelector(".mc-lbl").innerHTML = IG.isEpic(pc.e)
-      ? `<b>${esc(IG.label(pc.e))}</b> <span style="color:var(--dim)">${esc(pc.e)} · ${esc(pc.iv)} · ${esc(IG.envLabel())}</span>`
+      ? `<b>${esc(IG.label(pc.e))}</b> <span style="color:var(--dim)">${esc(pc.e)} · ${esc(pc.iv)}</span> <b style="color:${IG.st.env === "live" ? "#22c55e" : "#f0b90b"}">${IG.st.env === "live" ? "LIVE" : "DEMO"}</b>${pane === panes[0] && cfg.link ? ' <span style="color:var(--cyan)" title="Följer huvuddiagrammet">🔗</span>' : ""}`
       : '<span style="color:var(--dim)">Välj instrument</span>';
   }
 
@@ -10522,6 +10655,15 @@ document.addEventListener("DOMContentLoaded", boot);
   loadCfg();
   if(syncEl){ syncEl.checked = !!cfg.sync; syncEl.addEventListener("change", () => { cfg.sync = syncEl.checked; save(); }); }
   if(xhEl){ xhEl.checked = cfg.xh !== false; xhEl.addEventListener("change", () => { cfg.xh = xhEl.checked; save(); }); }
+  // Valbar länkning: diagram 1 följer huvuddiagrammets instrument och intervall
+  const linkEl = document.getElementById("mcLink");
+  if(linkEl){ linkEl.checked = !!cfg.link; linkEl.addEventListener("change", () => { cfg.link = linkEl.checked; save(); if(panes[0]) label(panes[0]); }); }
+  setInterval(() => {
+    if(!cfg || !cfg.link || !panes[0] || typeof STATE === "undefined") return;
+    const p = panes[0], e = STATE.symbol, iv = IVS.includes(STATE.tf) ? STATE.tf : p.pc.iv;
+    if(!IG.isEpic(e) || (p.pc.e === e && p.pc.iv === iv)) return;
+    p.pc.e = e; p.pc.iv = iv; fillSel(p); p.el.querySelector(".mc-iv").value = iv; save(); load(p); streamWant();
+  }, 1000);
   IG.refresh().then(build).catch(build);
 })();
 </script>
@@ -10678,7 +10820,7 @@ window.MK = (function(){
     btn.disabled = false;
   }
   IG.on("env", ()=>{ data.forex = null; data.crypto = null; sel.clear(); render(); if(active()) load(); });
-  document.querySelector('aside.sidebar button[data-page="markets"]')?.addEventListener("click", ()=>setTimeout(load, 0));
+  document.addEventListener("page-shown", (e)=>{ if(e.detail === "markets") setTimeout(load, 0); });
   timer = setInterval(tick, 60000);
   setTimeout(()=>{ if(active()) load(); }, 300);
   return { data, sel, hooks, render, load, visible, setFilter(f){ filterFn = f || (()=>true); render(); }, setSort(f){ sortFn = f; render(); }, all(){ return CATS.flatMap(c=>(data[c] && data[c].markets) || []); } };
@@ -10772,7 +10914,7 @@ window.IGS = (function(){
     <button type="button" id="mk-session" style="border-color:#fbbf24;color:#fbbf24" title="Upp till 500 instrument, 5 per minut">▶ Starta agentsession med valda (0)</button>`);
   const wrap = document.querySelector("#page-markets .mk-wrap");
   wrap.insertAdjacentHTML("afterbegin", `<div id="mk-sel-list" style="font-size:11px;color:var(--dim);margin:0 0 8px"></div>`);
-  wrap.insertAdjacentHTML("beforeend", `<div class="mk-sec"><h3>🤖 Agentsession</h3><div data-igs-session style="font-size:12px"></div></div><div class="mk-sec"><h3>🗓 Schema</h3><div data-igs-schedule></div></div>`);
+  wrap.insertAdjacentHTML("afterbegin", `<div class="xp-note" style="margin-bottom:6px">Agentsessionen och schemat följer du under <a href="#sessions" style="color:var(--cyan)">Agentsessioner</a>.</div>`);
   const $ = (id)=>document.getElementById(id);
   function sync(){
     const n = MK.sel.size;
@@ -10799,6 +10941,230 @@ window.IGS = (function(){
   $("mk-analyze").addEventListener("click", ()=>MK.analyze([...MK.sel]));
   $("mk-session").addEventListener("click", ()=>IGS.startSession([...MK.sel]));
   sync();
+})();
+</script>
+
+<script>
+/* Signaler, Agentsessioner och Verktyg (krav C3/C6). */
+(function(){
+  const $ = (id)=>document.getElementById(id);
+  const esc = IG.esc;
+  const active = (p)=>{ const el = $("page-" + p); return el && el.classList.contains("active"); };
+  // ── Signaler: agenternas ──
+  async function loadSignals(){
+    if(!active("signals")) return;
+    try{
+      const [s, a] = await Promise.all([fetch("/api/signals").then(r=>r.json()), fetch("/api/live/analysis").then(r=>r.json())]);
+      const list = (s.signals || []).filter(x=>IG.isEpic(x.symbol));
+      const D = { LONG:["▲ LÅNG","xp-up"], SHORT:["▼ KORT","xp-down"], NEUTRAL:["— AVVAKTA","xp-flat"] };
+      let html = list.length ? list.map(x=>{ const [t,c] = D[x.direction] || D.NEUTRAL; return `<div class="xp-row"><b style="min-width:150px;color:#fff" title="${esc(x.symbol)}">${esc(IG.label(x.symbol))}</b><span class="${c}">${t}</span><span>score ${esc(x.score)}</span><span>${esc(x.interval || "")}</span><span class="xp-note">stängt ljus ${x.candleCloseTime ? new Date(x.candleCloseTime).toLocaleTimeString("sv-SE").slice(0,5) : "–"}</span><button type="button" class="xp-btn" data-sg-chart="${esc(x.symbol)}" style="margin-left:auto">Diagram</button></div>`; }).join("") : '<div class="xp-note">Inga signaler än (väntar på stängda IG-ljus för bevakningslistan).</div>';
+      const an = a.analysis;
+      if(an && (an.picks || []).length) html += `<div style="margin-top:8px;font-size:11px;text-transform:uppercase;color:var(--dim)">Agenternas senaste förslag (${an.endedAt ? new Date(an.endedAt).toLocaleTimeString("sv-SE").slice(0,5) : "pågår"})</div>` + an.picks.map(p=>`<div class="xp-row"><b style="min-width:150px;color:#fff">${esc(IG.label(p.symbol))}</b><span class="${p.action === "buy" ? "xp-up" : p.action === "sell" ? "xp-down" : "xp-flat"}">${esc({buy:"KÖP",sell:"SÄLJ",hold:"AVSTÅ"}[p.action] || p.action)}</span><span class="xp-note">${esc(String(p.reasoning || "").slice(0,200))}</span></div>`).join("");
+      $("sg-list").innerHTML = html;
+    }catch(e){ $("sg-list").textContent = "Kunde inte läsa signaler: " + e.message; }
+  }
+  document.addEventListener("click", (ev)=>{ const b = ev.target.closest("[data-sg-chart]"); if(b) openChartFor(b.dataset.sgChart); });
+
+  // ── Signaler: inklistrade ──
+  function fillEpics(){
+    const dl = $("sg-epics"); if(!dl) return;
+    const set = new Set([...(IG.st.watchlist || []), ...((window.MK && MK.all().map(m=>m.epic)) || [])]);
+    dl.innerHTML = [...set].slice(0, 600).map(e=>`<option value="${esc(e)}">${esc(IG.label(e))}</option>`).join("");
+  }
+  const pad = (n)=>String(n).padStart(2,"0");
+  const localDt = (t)=>{ const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  function defaults(){ if(!$("sg-time").value) $("sg-time").value = localDt(Date.now()); if(!$("sg-valid").value) $("sg-valid").value = localDt(Date.now() + 4*3600e3); }
+  async function loadImported(){
+    if(!active("signals")) return;
+    try{
+      const d = await (await fetch("/api/ig/imported-signals")).json();
+      const rows = (d.signals || []).slice().reverse();
+      $("sg-imported").innerHTML = rows.length ? rows.map(s=>{
+        const rv = s.review;
+        const dead = s.stale || s.expired;
+        return `<div class="xp-row" style="align-items:flex-start">
+          <div style="min-width:220px"><b style="color:#fff">${esc(IG.label(s.epic))}</b> <span class="${s.direction === "BUY" ? "xp-up" : "xp-down"}">${s.direction === "BUY" ? "KÖP" : "SÄLJ"}</span><br><span class="xp-note">${esc(s.epic)} · entry ${esc(s.entryLevel)} · SL ${esc(s.stopLevel)} · TP ${esc(s.targetLevel)} · giltig till ${new Date(s.validUntil).toLocaleString("sv-SE").slice(0,16)}${s.stale ? " · <b style='color:#f85149'>annan IG-inloggning</b>" : ""}${s.expired ? " · <b style='color:#f85149'>utgången</b>" : ""}</span>
+          <div class="xp-note" style="white-space:pre-wrap;max-height:60px;overflow:auto">${esc(s.sourceText.slice(0, 400))}</div></div>
+          <div style="flex:1;min-width:200px">${rv ? `<b>Agentteamet:</b> ${rv.status === "running" ? '<span style="color:#fbbf24">granskar…</span>' : `<span class="${rv.verdict === "buy" ? "xp-up" : rv.verdict === "sell" ? "xp-down" : "xp-flat"}">${esc({buy:"KÖP",sell:"SÄLJ",hold:"AVSTÅ","avstå":"AVSTÅ"}[rv.verdict] || rv.verdict || (rv.status === "failed" ? "misslyckades" : "–"))}</span>`}<div class="xp-note">${esc(rv.summary || "")}</div>` : '<span class="xp-note">Inte granskad</span>'}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button type="button" class="xp-btn" data-sg-review="${esc(s.id)}" ${dead || (rv && rv.status === "running") ? "disabled" : ""} title="Agentteamet granskar (ingen order)">Låt agenterna granska</button>
+            <button type="button" class="xp-btn xp-go" data-sg-copy="${esc(s.id)}" ${dead ? "disabled" : ""} title="Fyller orderpanelen på Trade (utkast) — skickar inget">Kopiera till Trade</button>
+            <button type="button" class="xp-btn" data-sg-del="${esc(s.id)}">Ta bort</button>
+          </div></div>`;
+      }).join("") : '<div class="xp-note">Inga inklistrade signaler i den här miljön.</div>';
+      window._sgRows = rows;
+    }catch(e){ $("sg-imported").textContent = e.message; }
+  }
+  $("sg-save").addEventListener("click", async ()=>{
+    const when = $("sg-time").value ? new Date($("sg-time").value) : null;
+    const body = { epic: $("sg-epic").value.trim(), direction: $("sg-dir").value, entryLevel: Number($("sg-entry").value), stopLevel: Number($("sg-sl").value), targetLevel: Number($("sg-tp").value),
+      validUntil: $("sg-valid").value ? new Date($("sg-valid").value).getTime() : 0,
+      sourceText: (when ? `[Signaltid ${when.toLocaleString("sv-SE").slice(0,16)}] ` : "") + $("sg-src").value.trim() };
+    const r = await fetch("/api/ig/imported-signals", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
+    const d = await r.json().catch(()=>({}));
+    $("sg-msg").textContent = d.ok ? "Sparat som overifierat utkast." : (d.error || ("HTTP " + r.status));
+    $("sg-msg").style.color = d.ok ? "#3fb950" : "#f85149";
+    if(d.ok){ $("sg-src").value = ""; loadImported(); }
+  });
+  document.addEventListener("click", async (ev)=>{
+    const rv = ev.target.closest("[data-sg-review]"), cp = ev.target.closest("[data-sg-copy]"), del = ev.target.closest("[data-sg-del]");
+    if(rv){ const r = await fetch(`/api/ig/imported-signals/${encodeURIComponent(rv.dataset.sgReview)}/review`, { method:"POST" }); const d = await r.json().catch(()=>({})); if(!d.ok) alert(d.error || ("HTTP " + r.status)); loadImported(); }
+    if(del){ if(!confirm("Ta bort utkastet?")) return; await fetch(`/api/ig/imported-signals/${encodeURIComponent(del.dataset.sgDel)}`, { method:"DELETE" }); loadImported(); }
+    if(cp){
+      const s = (window._sgRows || []).find(x=>x.id === cp.dataset.sgCopy); if(!s) return;
+      // Utkast i orderpanelen: rätt konto (signalen är bunden till aktiv miljö) och rätt instrument. Ingen order.
+      openChartFor(s.epic);
+      const set = (id, v)=>{ const el = $(id); if(el){ el.value = v; el.dispatchEvent(new Event("input")); } };
+      const tpsl = $("ot-tpsl"); if(tpsl && !tpsl.checked){ tpsl.checked = true; tpsl.dispatchEvent(new Event("change")); }
+      set("ot-tp", s.targetLevel); set("ot-sl", s.stopLevel);
+      document.querySelector('.ot-type[data-ot="LIMIT"]')?.click(); set("ot-price", s.entryLevel);
+      const side = $(s.direction === "BUY" ? "ot-buy" : "ot-sell");
+      if(side){ side.style.outline = "3px solid #fbbf24"; setTimeout(()=>{ side.style.outline = ""; }, 8000); side.scrollIntoView({ block:"center" }); }
+      if(typeof pushInAppAlert === "function") pushInAppAlert(`📋 Utkast i orderpanelen: ${s.direction === "BUY" ? "KÖP" : "SÄLJ"} ${IG.label(s.epic)} · limit ${s.entryLevel} · SL ${s.stopLevel} · TP ${s.targetLevel} (${IG.envLabel()}). Inget är skickat — tryck ${s.direction === "BUY" ? "Köp" : "Sälj"} och sedan Godkänn om du vill.`, 9000);
+    }
+  });
+
+  // ── Agentsessioner: historik ──
+  function history(){
+    const el = $("ses-history"); if(!el || !window.IGS) return;
+    const st = IGS.state(); if(!st) return;
+    el.innerHTML = (st.history || []).length ? st.history.map(h=>`<div class="xp-row"><span>${new Date(h.startedAt).toLocaleString("sv-SE").slice(0,16)}</span><span>${h.trigger === "schema" ? "schema" : "manuell"}${h.slot ? " · " + esc(h.slot) : ""}</span><b>${esc({completed:"klar",stopped:"stoppad",interrupted:"avbruten",running:"pågår"}[h.status] || h.status)}</b><span>${h.analysed}/${h.total} analyserade</span><span>orderförsök ${h.orderAttempts}</span><span class="xp-note">${esc(h.reason || "")}</span></div>`).join("") : "Inga avslutade sessioner än.";
+  }
+
+  // ── Verktyg ──
+  async function loadTools(){
+    if(!active("tools")) return;
+    try{
+      const s = await (await fetch("/api/live/status")).json();
+      const L = s.lamps || {};
+      const NAMES = { igDemo:"IG Demo", igLive:"IG Live", igStream:"IG Lightstreamer", igCandles:"IG-ljus", jev:"JEV", ai:"AI-modeller", strategies:"Strategier" };
+      $("tl-lamps").innerHTML = Object.keys(L).map(k=>`<div class="xp-lamp"><span style="color:${L[k].connected ? "#3fb950" : "#f85149"}">●</span><div><b>${esc(NAMES[k] || k)}</b><div class="xp-note">${esc(L[k].detail || "")}</div></div></div>`).join("");
+      $("tl-time").textContent = "uppdaterad " + new Date().toLocaleTimeString("sv-SE");
+      const g = await (await fetch("/api/ig/status")).json();
+      const e = g.environments && g.environments[g.activeEnv];
+      $("tl-budget").textContent = e && e.readBudget ? `IG läsbudget (${g.label}): ${JSON.stringify(e.readBudget)}` : "";
+    }catch(e){ $("tl-lamps").textContent = e.message; }
+  }
+  $("tl-csv").addEventListener("click", async ()=>{
+    const sym = (typeof STATE !== "undefined" && STATE.symbol) || "", tf = (typeof STATE !== "undefined" && STATE.tf) || "1m";
+    if(!IG.isEpic(sym)){ $("tl-csv-msg").textContent = "Välj ett IG-instrument på Trade först."; return; }
+    const d = await IG.klines(sym, tf, 500);
+    const rows = (d.klines || []).map(k=>[new Date(k.time*1000).toISOString(), k.open, k.high, k.low, k.close].join(","));
+    if(!rows.length){ $("tl-csv-msg").textContent = d.historyError || "Inga stängda ljus."; return; }
+    const blob = new Blob([`# ${IG.label(sym)} (${sym}) ${tf} ${d.label || IG.envLabel()} · stängda mid-ljus\ntime,open,high,low,close\n` + rows.join("\n")], { type:"text/csv" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${sym}_${tf}_${IG.st.env}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+    $("tl-csv-msg").textContent = `${rows.length} ljus.`;
+  });
+
+  IG.on("env", ()=>{ loadSignals(); loadImported(); });
+  document.addEventListener("page-shown", ()=>setTimeout(()=>{ loadSignals(); loadImported(); loadTools(); fillEpics(); defaults(); history(); }, 0));
+  setInterval(()=>{ loadSignals(); loadImported(); history(); }, 5000);
+  setInterval(loadTools, 15000);
+  setTimeout(()=>{ loadSignals(); loadImported(); loadTools(); fillEpics(); defaults(); }, 600);
+})();
+</script>
+
+<script>
+/* Valutapar: favoriter (servern), filter, signal/agentbedömning, trend och IG-kundsentiment (krav C4/C5). */
+(function(){
+  if(!window.MK) return;
+  const $ = (id)=>document.getElementById(id);
+  const esc = IG.esc;
+  const fav = { list: new Set(), revision: 0 };
+  const enr = {};          // EPIC → { trendScore, sentimentLongPercent, reasons }
+  let signals = {}, picks = {};
+  // Vår regionklassning av valutor (inte IG:s handelsplats)
+  const REGION = { EUR:"Europa", GBP:"Europa", CHF:"Europa", SEK:"Europa", NOK:"Europa", DKK:"Europa", PLN:"Europa", HUF:"Europa", CZK:"Europa", TRY:"Europa", RUB:"Europa",
+    USD:"Nordamerika", CAD:"Nordamerika", MXN:"Nordamerika", JPY:"Asien/Stillahavet", AUD:"Asien/Stillahavet", NZD:"Asien/Stillahavet", SGD:"Asien/Stillahavet", HKD:"Asien/Stillahavet", CNH:"Asien/Stillahavet", INR:"Asien/Stillahavet", KRW:"Asien/Stillahavet", THB:"Asien/Stillahavet",
+    ZAR:"Afrika", ILS:"Mellanöstern", AED:"Mellanöstern", SAR:"Mellanöstern", BRL:"Sydamerika", CLP:"Sydamerika" };
+  function regions(m){
+    if(m.category === "crypto") return ["Krypto (global)"];
+    const codes = String(m.name || m.epic).toUpperCase().match(/[A-Z]{3}/g) || [];
+    const r = [...new Set(codes.map(c=>REGION[c]).filter(Boolean))];
+    return r.length ? r : ["Övriga"];
+  }
+  const bar = $("mk-bar");
+  bar.insertAdjacentHTML("afterend", `<div id="mk-filters" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px;font-size:11px;color:var(--dim)">
+    <select id="mkf-cat" title="Forex eller krypto"><option value="">Forex + Krypto</option><option value="forex">Forex</option><option value="crypto">Krypto</option></select>
+    <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="mkf-fav"> ★ Favoriter</label>
+    <input id="mkf-q" placeholder="Sök namn eller EPIC" style="width:170px">
+    <select id="mkf-region" title="Vår klassning efter valutornas region — inte IG:s handelsplats"><option value="">Region (vår klassning)</option><option>Europa</option><option>Nordamerika</option><option>Asien/Stillahavet</option><option>Mellanöstern</option><option>Afrika</option><option>Sydamerika</option><option>Krypto (global)</option><option>Övriga</option></select>
+    <select id="mkf-status" title="IG:s marknadsstatus"><option value="">Marknadsstatus</option><option value="open">Öppen</option><option value="closed">Stängd/ej handelsbar</option></select>
+    <select id="mkf-dir" title="Förändring idag enligt IG"><option value="">Upp + ned</option><option value="up">▲ Upp</option><option value="down">▼ Ned</option></select>
+    <select id="mkf-trend" title="Trend kräver att du hämtat trend för instrumentet"><option value="">Trend: alla</option><option value="up">Trend upp (hämtade)</option><option value="down">Trend ned (hämtade)</option></select>
+    <select id="mkf-sort"><option value="">Sortera: namn</option><option value="move">Störst rörelse</option><option value="up">Mest upp</option><option value="down">Mest ned</option><option value="trend">Trend (hämtade)</option><option value="sent">IG-kundsentiment långa % (hämtade)</option></select>
+    <span title="IG-kundsentiment = andel IG-kunder med långa positioner. Det är inte volym, inte ditt kontos aktivitet och inte vinst. Det finns ingen &quot;mest vinster&quot;-prognos.">ⓘ sentiment ≠ volym/vinst</span>
+  </div>`);
+  const F = ()=>({ cat:$("mkf-cat").value, fav:$("mkf-fav").checked, q:$("mkf-q").value.trim().toLowerCase(), region:$("mkf-region").value, status:$("mkf-status").value, dir:$("mkf-dir").value, trend:$("mkf-trend").value, sort:$("mkf-sort").value });
+  function apply(){
+    const f = F();
+    document.querySelectorAll("#page-markets .mk-sec[data-cat]").forEach(sec=>{ sec.style.display = !f.cat || sec.dataset.cat === f.cat ? "" : "none"; });
+    MK.setFilter((m)=>{
+      if(f.fav && !fav.list.has(m.epic)) return false;
+      if(f.q && !(String(m.name || "").toLowerCase().includes(f.q) || m.epic.toLowerCase().includes(f.q))) return false;
+      if(f.region && !regions(m).includes(f.region)) return false;
+      if(f.status === "open" && m.marketStatus !== "TRADEABLE") return false;
+      if(f.status === "closed" && (m.marketStatus === "TRADEABLE" || !m.marketStatus)) return false;
+      if(f.dir === "up" && !(m.changePercent > 0)) return false;
+      if(f.dir === "down" && !(m.changePercent < 0)) return false;
+      const e = enr[m.epic];
+      if(f.trend === "up" && !(e && e.trendScore > 0)) return false;
+      if(f.trend === "down" && !(e && e.trendScore < 0)) return false;
+      return true;
+    });
+    const num = (v)=> v == null || isNaN(v) ? null : Number(v);
+    const by = (get, desc)=> (a,b)=>{ const x = get(a), y = get(b); if(x == null && y == null) return 0; if(x == null) return 1; if(y == null) return -1; return desc ? y - x : x - y; };
+    MK.setSort({ move: by(m=>num(m.movementPercent ?? (m.changePercent != null ? Math.abs(m.changePercent) : null)), true), up: by(m=>num(m.changePercent), true), down: by(m=>num(m.changePercent), false),
+      trend: by(m=>enr[m.epic] ? num(enr[m.epic].trendScore) : null, true), sent: by(m=>enr[m.epic] ? num(enr[m.epic].sentimentLongPercent) : null, true) }[f.sort] || null);
+  }
+  ["mkf-cat","mkf-fav","mkf-region","mkf-status","mkf-dir","mkf-trend","mkf-sort"].forEach(id=>$(id).addEventListener("change", apply));
+  $("mkf-q").addEventListener("input", apply);
+
+  // Kortets extra rader: live-kvot (om strömmad), signal, agentbedömning, trend/sentiment, favorit
+  MK.hooks.card.push((m)=>{
+    const q = IG.quote(m.epic), s = signals[m.epic], p = picks[m.epic], e = enr[m.epic];
+    const sig = s ? `<span class="${s.direction === "LONG" ? "up" : s.direction === "SHORT" ? "down" : ""}">${s.direction === "LONG" ? "▲ lång" : s.direction === "SHORT" ? "▼ kort" : "— avvakta"} ${esc(s.score)}</span>` : '<span class="mk-missing">signal saknas</span>';
+    const ag = p ? `<span class="${p.action === "buy" ? "up" : p.action === "sell" ? "down" : ""}">${esc({buy:"KÖP",sell:"SÄLJ",hold:"AVSTÅ","avstå":"AVSTÅ"}[p.action] || p.action)}</span>` : '<span class="mk-missing">ej analyserad</span>';
+    const tr = e ? `${e.trendScore == null ? '<span class="mk-missing">trend saknas</span>' : `<span class="${e.trendScore >= 0 ? "up" : "down"}">trend ${e.trendScore >= 0 ? "+" : ""}${Number(e.trendScore).toFixed(2)} %</span>`} · ${e.sentimentLongPercent == null ? '<span class="mk-missing">sentiment saknas</span>' : `IG-kunder långa ${Number(e.sentimentLongPercent).toFixed(0)} %`}` : `<button type="button" data-mk-enrich="${esc(m.epic)}" style="padding:1px 6px;font-size:10px;border:1px solid var(--border);background:transparent;color:var(--dim);border-radius:4px;cursor:pointer" title="Hämtar trend (SMA20/SMA50 på stängda 1h-ljus) och IG-kundsentiment. Använder IG:s läskvot.">Hämta trend & sentiment</button>`;
+    return `${q && q.mid != null ? `<div class="mk-row" style="font-size:11px"><span>Live ${IG.px(q.mid)}</span>${IG.badge(q)}</div>` : ""}
+      <div class="mk-row" style="font-size:11px"><span>Signal: ${sig}</span><span>Agenter: ${ag}</span></div>
+      <div class="mk-row" style="font-size:11px">${tr}</div>
+      <button type="button" data-mk-fav="${esc(m.epic)}" title="Favorit (sparas på servern för ${esc(IG.envLabel())})" style="position:absolute;top:8px;right:10px;background:none;border:none;font-size:15px;cursor:pointer;color:${fav.list.has(m.epic) ? "#fbbf24" : "#4b5563"}">${fav.list.has(m.epic) ? "★" : "☆"}</button>`;
+  });
+  const css = document.createElement("style"); css.textContent = "#page-markets .mk-card{position:relative}#page-markets .mk-top{padding-right:22px}"; document.head.appendChild(css);
+
+  async function loadFav(){ try{ const d = await (await fetch("/api/ig/preferences")).json(); fav.list = new Set(d.favorites || []); fav.revision = d.revision || 0; MK.render(); }catch(_){} }
+  async function toggleFav(epic){
+    const next = new Set(fav.list); if(next.has(epic)) next.delete(epic); else next.add(epic);
+    const r = await fetch("/api/ig/preferences", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ favorites: [...next], revision: fav.revision }) });
+    const d = await r.json().catch(()=>({}));
+    if(d.ok){ fav.list = new Set(d.favorites); fav.revision = d.revision; } else { await loadFav(); if(d.error) alert(d.error); }
+    MK.render();
+  }
+  async function enrich(epic, btn){
+    btn.disabled = true; btn.textContent = "hämtar…";
+    try{ const d = await (await fetch("/api/market/enrichment?epic=" + encodeURIComponent(epic))).json(); if(d.error){ btn.textContent = "gick inte"; btn.title = d.error; btn.disabled = false; return; } enr[epic] = d; MK.render(); }
+    catch(e){ btn.textContent = "gick inte"; btn.disabled = false; }
+  }
+  document.addEventListener("click", (ev)=>{
+    const f = ev.target.closest("[data-mk-fav]"); if(f){ ev.preventDefault(); toggleFav(f.dataset.mkFav); return; }
+    const e = ev.target.closest("[data-mk-enrich]"); if(e){ enrich(e.dataset.mkEnrich, e); }
+  });
+  async function loadSig(){
+    if(!document.getElementById("page-markets").classList.contains("active")) return;
+    try{
+      const [s, a] = await Promise.all([fetch("/api/signals").then(r=>r.json()), fetch("/api/live/analysis").then(r=>r.json())]);
+      signals = {}; (s.signals || []).forEach(x=>{ signals[x.symbol] = x; });
+      picks = {}; ((a.analysis && a.analysis.picks) || []).forEach(p=>{ picks[p.symbol] = p; });
+      const ses = window.IGS && IGS.state() && IGS.state().session;
+      if(ses) ses.items.forEach(i=>{ if(i.action && !picks[i.epic]) picks[i.epic] = { action: i.action, reasoning: i.result }; });
+      MK.render();
+    }catch(_){}
+  }
+  IG.on("env", ()=>{ Object.keys(enr).forEach(k=>delete enr[k]); loadFav(); });
+  document.addEventListener("page-shown", (e)=>{ if(e.detail === "markets"){ loadFav(); loadSig(); } });
+  setInterval(loadSig, 10000);
+  loadFav(); apply();
 })();
 </script>
 
