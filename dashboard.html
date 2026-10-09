@@ -1427,6 +1427,9 @@ body.app-state-onboard .fc-panel{display:none !important}
   <button class="active" data-page="trade" title="Trade — chart + bet + team">
     <span class="ico">📊</span><span>Trade</span>
   </button>
+  <button data-page="markets" title="Valutapar — IG-katalogen för kontot (Forex + Krypto)">
+    <span class="ico">💱</span><span>Valutapar</span>
+  </button>
   <button data-page="pairs" title="Alla par — en kolumn per par, CALL/PUT och analys under varje">
     <span class="ico">🧮</span><span>Alla par</span>
   </button>
@@ -2770,6 +2773,58 @@ body.app-state-onboard .fc-panel{display:none !important}
     <div id="pp-status" class="pp-status"></div>
   </div>
   <div id="pp-grid" class="pp-grid"><div style="padding:20px;color:var(--dim)">Laddar par…</div></div>
+</section>
+
+<style>
+#page-markets .mk-wrap{max-width:1180px;margin:0 auto;padding:0 16px 24px}
+#page-markets .mk-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 12px;font-size:12px;color:var(--dim)}
+#page-markets .mk-chip{font-size:11px;font-weight:800;padding:4px 10px;border-radius:4px;border:1px solid var(--border)}
+#page-markets .mk-sec{margin:14px 0 22px}
+#page-markets .mk-sec h3{font-size:14px;font-weight:800;color:#fff;margin:0 0 6px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+#page-markets .mk-progress{font-size:11px;font-weight:600;color:var(--dim)}
+#page-markets .mk-progress.err{color:#f85149}
+#page-markets .mk-progress.part{color:#f0b90b}
+#page-markets .mk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+#page-markets .mk-card{background:#0b0e13;border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;min-width:0}
+#page-markets .mk-card.mk-sel{border-color:var(--cyan)}
+#page-markets .mk-card.mk-ref{opacity:.6;border-style:dashed}
+#page-markets .mk-top{display:flex;gap:8px;align-items:center;min-width:0}
+#page-markets .mk-ico{font-size:16px;flex-shrink:0}
+#page-markets .mk-name{font-weight:800;color:#fff;font-size:13px;overflow-wrap:anywhere}
+#page-markets .mk-epic{font-size:10px;color:var(--dim);font-family:'SF Mono',monospace;overflow-wrap:anywhere}
+#page-markets .mk-row{display:flex;justify-content:space-between;gap:8px;font-size:12px;flex-wrap:wrap}
+#page-markets .mk-px{font-family:'SF Mono',monospace;font-weight:700}
+#page-markets .up{color:#3fb950} #page-markets .down{color:#f85149}
+#page-markets .mk-btns{display:flex;gap:6px;flex-wrap:wrap}
+#page-markets .mk-btns button,#page-markets .mk-bar button{padding:5px 10px;border:1px solid var(--border);background:var(--card2);color:var(--text);border-radius:5px;font-weight:700;font-size:11px;cursor:pointer}
+#page-markets .mk-btns button:disabled{opacity:.4;cursor:not-allowed}
+#page-markets .mk-more{margin-top:8px}
+#page-markets .mk-reflbl{font-size:10px;font-weight:800;color:#f0b90b}
+#page-markets .mk-missing{color:var(--dim);font-style:italic}
+@media (max-width:640px){ #page-markets .mk-grid{grid-template-columns:1fr} }
+</style>
+<!-- ═══ VALUTAPAR — IG-katalogen för aktiv miljö (Forex + Krypto). Live-EPICs som saknas på Demo
+     visas som katalogreferens ("ej tillgänglig på Demo") utan Live-priser. Katalogframsteg syns. -->
+<section class="page" id="page-markets">
+  <div class="page-header"><span class="ph-ico">💱</span>Valutapar<span class="ph-sub">— IG-katalogen för kontot: Forex och Krypto</span></div>
+  <div class="mk-wrap">
+    <div class="mk-bar" id="mk-bar">
+      <span data-ig-env class="mk-chip">–</span>
+      <span id="mk-total"></span>
+    </div>
+    <div class="mk-sec" data-cat="forex">
+      <h3>🌍 Forex <span class="mk-progress" id="mk-prog-forex">hämtar…</span></h3>
+      <div class="mk-grid" id="mk-grid-forex"></div>
+      <div class="mk-more"><button type="button" data-more="forex">Visa mer</button></div>
+      <div class="mk-refs" id="mk-refs-forex"></div>
+    </div>
+    <div class="mk-sec" data-cat="crypto">
+      <h3>🪙 Krypto <span class="mk-progress" id="mk-prog-crypto">hämtar…</span></h3>
+      <div class="mk-grid" id="mk-grid-crypto"></div>
+      <div class="mk-more"><button type="button" data-more="crypto">Visa mer</button></div>
+      <div class="mk-refs" id="mk-refs-crypto"></div>
+    </div>
+  </div>
 </section>
 
 <!-- ═══ LIVE-SIDA — 4 rullande rader (en per kategori) ═══ -->
@@ -7703,7 +7758,7 @@ function wireTeamChat(){
 /* ======================================================================
    SPA NAVIGATION — varje sidebar-knapp = egen sida
    ====================================================================== */
-const PAGES = ["trade","pairs","team","chat","live","strategies","tree","trades","cost","settings"];
+const PAGES = ["trade","markets","pairs","team","chat","live","strategies","tree","trades","cost","settings"];
 
 function switchPage(name){
   if(!PAGES.includes(name)) name = "trade";
@@ -10410,5 +10465,122 @@ document.addEventListener("DOMContentLoaded", boot);
   document.addEventListener("keydown", e=>{ if(e.key === "Escape") closeMax(); });
 })();
 </script>
+<script>
+/* Valutapar (IG-katalogen). Hämtar /api/market/directory per kategori för aktiv miljö.
+   Uppdateras var 60:e s (servern har singleflight + ~60 s återförsök) utan att tappa urval/filter.
+   Kvoterna i katalogen är IG:s ögonblicksbild från sökningen; åldern visas. Saknade värden visas som saknade. */
+window.MK = (function(){
+  const $ = (id)=>document.getElementById(id);
+  const esc = IG.esc;
+  const CATS = ["forex","crypto"];
+  const data = { forex:null, crypto:null };
+  const shown = { forex:24, crypto:24 };
+  const sel = new Set();
+  const hooks = { card:[], after:[] };
+  let timer = null;
+  const FLAG = { EUR:"🇪🇺", USD:"🇺🇸", GBP:"🇬🇧", JPY:"🇯🇵", CHF:"🇨🇭", AUD:"🇦🇺", NZD:"🇳🇿", CAD:"🇨🇦", SEK:"🇸🇪", NOK:"🇳🇴", DKK:"🇩🇰", PLN:"🇵🇱", HUF:"🇭🇺", CZK:"🇨🇿", TRY:"🇹🇷", ZAR:"🇿🇦", MXN:"🇲🇽", SGD:"🇸🇬", HKD:"🇭🇰", CNH:"🇨🇳", INR:"🇮🇳", ILS:"🇮🇱" };
+  function icon(m){
+    if(m.category === "crypto") return "🪙";
+    const n = String(m.name || m.epic).toUpperCase(); const c = Object.keys(FLAG).find(k=>n.startsWith(k)) || Object.keys(FLAG).find(k=>n.includes(k));
+    return c ? FLAG[c] : "🌍";
+  }
+  function progText(c){
+    if(!c) return { t:"hämtar…", cls:"part" };
+    return { t: c.text + (c.updatedAt ? ` · uppdaterad ${new Date(c.updatedAt).toLocaleTimeString("sv-SE").slice(0,5)}` : ""), cls: c.state === "fel" ? "err" : c.complete ? "" : "part" };
+  }
+  function cardHtml(m){
+    const mid = m.bid != null && m.offer != null ? (m.bid + m.offer)/2 : null;
+    const chg = m.changePercent;
+    const extra = hooks.card.map(f=>{ try{ return f(m) || ""; }catch(_){ return ""; } }).join("");
+    return `<div class="mk-card${sel.has(m.epic)?" mk-sel":""}" data-epic="${esc(m.epic)}">
+      <div class="mk-top"><input type="checkbox" class="mk-chk" ${sel.has(m.epic)?"checked":""} title="Markera"><span class="mk-ico">${icon(m)}</span>
+        <div style="min-width:0"><div class="mk-name">${esc(m.name || "namn saknas")}</div><div class="mk-epic">${esc(m.epic)}${m.type ? " · " + esc(m.type) : ""}</div></div></div>
+      <div class="mk-row"><span class="mk-px">${mid != null ? IG.px(mid) : '<span class="mk-missing">kvot saknas</span>'}</span>
+        <span class="${chg == null ? "mk-missing" : chg >= 0 ? "up" : "down"}">${chg == null ? "förändring saknas" : (chg >= 0 ? "▲ +" : "▼ ") + Number(chg).toFixed(2) + " %"}</span></div>
+      <div class="mk-row" style="font-size:10px;color:var(--dim)"><span>${m.marketStatus ? esc(m.marketStatus === "TRADEABLE" ? "öppen" : m.marketStatus) : "status saknas"}</span><span>${data[m.category] && data[m.category].updatedAt ? "katalog " + IG.age(Date.now() - data[m.category].updatedAt) + " sedan" : ""}</span></div>
+      ${extra}
+      <div class="mk-btns"><button type="button" data-act="chart">Diagram</button><button type="button" data-act="watch">+ Bevaka</button><button type="button" data-act="analyze">Analysera</button></div>
+    </div>`;
+  }
+  function refHtml(r){
+    return `<div class="mk-card mk-ref" data-ref="${esc(r.epic)}" title="Finns i IG Live-katalogen men inte på ditt Demo-konto. Bara referens — inga Live-priser visas här.">
+      <div class="mk-top"><span class="mk-ico">${icon(r)}</span><div style="min-width:0"><div class="mk-name">${esc(r.name || "namn saknas")}</div><div class="mk-epic">${esc(r.epic)}</div></div></div>
+      <div class="mk-reflbl">ej tillgänglig på Demo</div>
+    </div>`;
+  }
+  let filterFn = (m)=>true, sortFn = null;
+  function visible(cat){
+    const d = data[cat]; if(!d) return [];
+    let list = (d.markets || []).filter(m=>filterFn(m));
+    if(sortFn) list = list.slice().sort(sortFn);
+    return list;
+  }
+  function render(){
+    CATS.forEach(cat=>{
+      const d = data[cat];
+      const p = progText(d && d.catalogue);
+      const pe = $("mk-prog-" + cat); if(pe){ pe.textContent = p.t; pe.className = "mk-progress " + p.cls; }
+      const g = $("mk-grid-" + cat); if(!g) return;
+      const list = visible(cat);
+      g.innerHTML = list.length ? list.slice(0, shown[cat]).map(cardHtml).join("") : `<div class="mk-missing" style="padding:8px">${d ? (d.error ? esc(d.error) : "Inga instrument matchar") : "Hämtar katalogen…"}</div>`;
+      const more = document.querySelector(`#page-markets [data-more="${cat}"]`);
+      if(more){ more.style.display = list.length > 24 ? "" : "none"; more.textContent = shown[cat] >= list.length ? "Visa färre" : `Visa mer (${list.length - shown[cat]} till)`; }
+      const refs = (d && d.liveReferences) || [];
+      const re = $("mk-refs-" + cat);
+      if(re) re.innerHTML = refs.length ? `<div style="font-size:11px;color:var(--dim);margin:10px 0 6px">Finns på IG Live men inte på Demo (${refs.length}) — katalogreferens, inga Live-priser:</div><div class="mk-grid">${refs.slice(0, 48).map(refHtml).join("")}</div>${refs.length > 48 ? `<div class="mk-missing">+ ${refs.length - 48} till</div>` : ""}` : "";
+    });
+    const tot = $("mk-total");
+    if(tot) tot.textContent = CATS.map(c=>`${c === "forex" ? "Forex" : "Krypto"}: ${data[c] ? (data[c].markets || []).length : "–"}`).join(" · ") + ` · markerade: ${sel.size}`;
+    hooks.after.forEach(f=>{ try{ f(); }catch(_){} });
+  }
+  async function load(){
+    for(const cat of CATS){
+      try{
+        const d = await (await fetch("/api/market/directory?category=" + cat)).json();
+        if(d.env && d.env !== IG.st.env){ IG.refresh(); continue; }
+        IG.remember(d.markets); IG.remember(d.liveReferences);
+        data[cat] = d;
+      }catch(e){ data[cat] = Object.assign({}, data[cat] || { markets: [] }, { error: e.message }); }
+    }
+    render();
+  }
+  function active(){ const el = $("page-markets"); return el && el.classList.contains("active"); }
+  function tick(){ if(active()) load(); }
+  document.addEventListener("click", (ev)=>{
+    const page = ev.target.closest("#page-markets"); if(!page) return;
+    const more = ev.target.closest("[data-more]");
+    if(more){ const c = more.dataset.more, n = visible(c).length; shown[c] = shown[c] >= n ? 24 : shown[c] + 48; render(); return; }
+    const btn = ev.target.closest("[data-act]"); if(!btn) return;
+    const card = btn.closest(".mk-card"); const epic = card && card.dataset.epic; if(!epic) return;
+    if(btn.dataset.act === "chart") openChartFor(epic);
+    else if(btn.dataset.act === "watch") addWatch(epic, btn);
+    else if(btn.dataset.act === "analyze" && typeof MK.analyze === "function") MK.analyze([epic]);
+  });
+  document.addEventListener("change", (ev)=>{
+    if(!ev.target.classList.contains("mk-chk")) return;
+    const card = ev.target.closest(".mk-card"); if(!card) return;
+    if(ev.target.checked) sel.add(card.dataset.epic); else sel.delete(card.dataset.epic);
+    card.classList.toggle("mk-sel", ev.target.checked);
+    MK.onSelect && MK.onSelect();
+    const tot = $("mk-total"); if(tot) render();
+  });
+  async function addWatch(epic, btn){
+    btn.disabled = true;
+    try{
+      const d = await (await fetch("/api/market/watchlist", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ epic }) })).json();
+      btn.textContent = d.ok ? "✓ Bevakas" : "Gick inte";
+      if(!d.ok) alert(d.error || "Kunde inte lägga till");
+      IG.refresh();
+    }catch(e){ alert(e.message); }
+    btn.disabled = false;
+  }
+  IG.on("env", ()=>{ data.forex = null; data.crypto = null; sel.clear(); render(); if(active()) load(); });
+  document.querySelector('aside.sidebar button[data-page="markets"]')?.addEventListener("click", ()=>setTimeout(load, 0));
+  timer = setInterval(tick, 60000);
+  setTimeout(()=>{ if(active()) load(); }, 300);
+  return { data, sel, hooks, render, load, visible, setFilter(f){ filterFn = f || (()=>true); render(); }, setSort(f){ sortFn = f; render(); }, all(){ return CATS.flatMap(c=>(data[c] && data[c].markets) || []); } };
+})();
+</script>
+
 </body>
 </html>

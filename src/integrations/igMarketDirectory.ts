@@ -7,6 +7,8 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
  const call=deps.call??callIgAuthenticated,status=deps.status??getIgStatus,budget=deps.budget??getIgReadBudget,fallback=deps.fallback??getIgCatalogue,now=deps.now??Date.now;
  const candles=deps.candles??getIgCandles;
  const cache=new Map<string,{at:number;value:any}>(),pending=new Map<string,Promise<any>>();
+ // Senaste katalogen per miljö/kategori (oavsett inloggning) — bara för katalogreferenser, aldrig priser.
+ const latest=new Map<string,{binding:string;value:any}>();
  function identity(mode:IgEnvironment){if(mode!=='demo'&&mode!=='live')throw Error('Ogiltig IG-miljö');const c=status().environments[mode];if(c.status!=='connected'||!c.connectionGeneration)throw Error('IG är inte anslutet');return c.connectionGeneration;}
  async function catalogue(mode:IgEnvironment,category:unknown){if(category!=='forex'&&category!=='crypto')throw Error('Välj Forex eller Kryptovalutor');const binding=identity(mode),key=`${mode}:${binding}:${category}`,old=cache.get(key);if(old&&now()-old.at<60000)return structuredClone(old.value);if(pending.has(key))return structuredClone(await pending.get(key));
  // En enda hämtare äger pagination och läskvot. Parallella kategorier delar dess framsteg.
@@ -17,7 +19,9 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
  const remainingSearches=Number.isInteger(result.remainingSearches)&&result.remainingSearches>=0?result.remainingSearches:null;
  const rows=[...markets.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name),'sv'));const hasChanges=rows.some(m=>m.changePercent!==null),hasSpread=rows.some(m=>m.spread!==null);
  const rankings=structuredClone(igDirectoryRankings);rankings.gainers.available=hasChanges;rankings.losers.available=hasChanges;rankings.movers.available=hasChanges;rankings.spread.available=hasSpread;
- const value={environment:mode,category,markets:rows,complete,status:complete?'ready':'partial',source,note,error:result.error??result.categoryError??null,progress:result.progress??null,updatedAt:now(),remainingSearches,unclassifiedInstruments:unclassified,rankings};cache.set(key,{at:now(),value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}}
+ const value={environment:mode,category,markets:rows,complete,status:complete?'ready':'partial',source,note,error:result.error??result.categoryError??null,progress:result.progress??null,updatedAt:now(),remainingSearches,unclassifiedInstruments:unclassified,rankings};cache.set(key,{at:now(),value});latest.set(`${mode}:${category}`,{binding,value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}}
+ /** Senast hämtade katalog utan IG-anrop (null om ingen finns eller om miljön inte längre är ansluten med samma inloggning). */
+ function peek(mode:IgEnvironment,category:'forex'|'crypto'){const l=latest.get(`${mode}:${category}`);if(!l)return null;const c=status().environments[mode];if(c.status!=='connected'||c.connectionGeneration!==l.binding)return null;return structuredClone(l.value);}
  async function enrich(mode:IgEnvironment,epic:string){
  if(typeof epic!=='string'||!/^[A-Za-z0-9._-]{1,100}$/.test(epic))throw Error('Ogiltigt IG-instrument');
  const binding=identity(mode),key=`enrich:${mode}:${binding}:${epic}`,cached=cache.get(key);if(cached&&now()-cached.at<60000)return structuredClone(cached.value);if(pending.has(key))return structuredClone(await pending.get(key));
@@ -46,6 +50,15 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
    }
   }}finally{scanning=false;}
  }
- return {catalogue,enrich,tickCatalogues};
+ return {catalogue,enrich,tickCatalogues,peek};
 }
-const directory=createIgMarketDirectory();export const getIgMarketDirectory=directory.catalogue,getIgDirectoryEnrichment=directory.enrich,tickIgCatalogues=directory.tickCatalogues;
+const directory=createIgMarketDirectory();export const getIgMarketDirectory=directory.catalogue,getIgDirectoryEnrichment=directory.enrich,tickIgCatalogues=directory.tickCatalogues,peekIgMarketDirectory=directory.peek;
+
+/**
+ * Live-EPICs som saknas i Demo-katalogen: bara katalogreferens (namn/EPIC/typ), märkt
+ * "ej tillgänglig på Demo". Inga Live-priser, -saldon eller -ändringar följer med.
+ */
+export function igLiveOnlyReferences(demoMarkets:{epic:string}[],liveMarkets:Record<string,any>[]|null|undefined){
+ const have=new Set(demoMarkets.map(m=>m.epic));
+ return (liveMarkets??[]).filter(m=>typeof m.epic==='string'&&!have.has(m.epic)).map(m=>({epic:m.epic as string,name:(m.name??null) as string|null,category:(m.category??null) as string|null,type:(m.type??null) as string|null,availableHere:false,reference:true,label:'ej tillgänglig på Demo'}));
+}

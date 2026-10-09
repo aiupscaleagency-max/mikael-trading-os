@@ -5,7 +5,7 @@ import { getIgStatus, testIgConnection, getIgReadBudget, withIgPriority, type Ig
 import { localIgCredentialRequest, saveIgCredentials } from "../integrations/igCredentialStore.js";
 import { igChanged } from "../integrations/igEvents.js";
 import { getIgMarket, getIgHistory, searchIgMarkets } from "../integrations/igMarkets.js";
-import { getIgMarketDirectory, getIgDirectoryEnrichment } from "../integrations/igMarketDirectory.js";
+import { getIgMarketDirectory, getIgDirectoryEnrichment, peekIgMarketDirectory, igLiveOnlyReferences } from "../integrations/igMarketDirectory.js";
 import { getIgOrderState, resolveIgUnknown } from "../integrations/igOrders.js";
 import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
 import { currentStake } from "../risk/stakeLadder.js";
@@ -55,6 +55,17 @@ function quoteView(q: IgQuote | null, epic: string, env: IgEnvironment = igMarke
   const ds = igMarketData.dataState(epic, env);
   return q ? { epic, name: igMarketData.nameOf(epic, env), bid: q.bid, offer: q.offer, mid: q.mid, changePct: q.changePct, high: q.high, low: q.low, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, source: q.source, state: ds.state, ageMs: ds.ageMs }
     : { epic, name: igMarketData.nameOf(epic, env), state: ds.state, ageMs: null };
+}
+/** Katalogframsteg i klartext: antal, komplett/delvis, fel och nästa försök (~60 s, singleflight i katalogen). */
+export function catalogueProgress(d: { markets?: unknown[]; status?: string; complete?: boolean; error?: string | null; note?: string; updatedAt?: number; progress?: any; remainingSearches?: number | null }) {
+  const count = Array.isArray(d.markets) ? d.markets.length : 0;
+  const complete = d.complete === true;
+  const retryAt = Number(d.progress?.retryAt ?? d.progress?.category?.retryAt) || null;
+  const state = d.status === "unavailable" ? "fel" : complete ? "fullständig" : "delvis";
+  const text = state === "fel" ? `Katalogen kunde inte hämtas: ${d.error ?? "okänt fel"}. Nytt försök inom ~60 s.`
+    : complete ? `${count} instrument · fullständig`
+    : `${count} instrument hittills · delvis${d.remainingSearches ? ` · ${d.remainingSearches} sökningar kvar` : ""}${d.error ? ` · ${d.error}` : ""} · fortsätter automatiskt inom IG:s läskvot`;
+  return { count, complete, state, error: d.error ?? null, note: d.note ?? null, updatedAt: d.updatedAt ?? null, retryAt, remainingSearches: d.remainingSearches ?? null, text };
 }
 const chartBar = (c: Candle) => ({ time: Math.floor(c.openTime / 1000), open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume, closed: c.closed });
 
@@ -203,8 +214,22 @@ export async function handleIgRoutes(
       try {
         const d = await getIgMarketDirectory(env, category);
         for (const m of d.markets) igMarketData.rememberName(env, m.epic, m.name, m.category);
-        send(res, 200, { env, label: envLabel(env), ...d });
-      } catch (e) { send(res, 200, { env, label: envLabel(env), category, markets: [], status: "unavailable", error: e instanceof Error ? e.message : String(e) }); }
+        // Demo: Live-EPICs som saknas här visas som katalogreferens ("ej tillgänglig på Demo"), utan Live-priser
+        const liveReferences = env === "demo" ? igLiveOnlyReferences(d.markets, peekIgMarketDirectory("live", category)?.markets) : [];
+        send(res, 200, { env, label: envLabel(env), ...d, liveReferences, catalogue: catalogueProgress(d) });
+      } catch (e) {
+        // Fel: visa senast kända katalog för samma inloggning (urvalet tappas inte) + felet
+        const last = peekIgMarketDirectory(env, category);
+        const error = e instanceof Error ? e.message : String(e);
+        if (last) send(res, 200, { env, label: envLabel(env), ...last, status: "partial", error, liveReferences: [], catalogue: catalogueProgress({ ...last, status: "partial", error }) });
+        else send(res, 200, { env, label: envLabel(env), category, markets: [], liveReferences: [], status: "unavailable", error, catalogue: catalogueProgress({ markets: [], status: "unavailable", error }) });
+      }
+      return true;
+    }
+    if (p === "/api/market/catalogue-status" && method === "GET") {
+      const out: Record<string, unknown> = {};
+      for (const c of ["forex", "crypto"] as const) { const d = peekIgMarketDirectory(env, c); out[c] = d ? catalogueProgress(d) : { count: 0, state: "väntar", text: "Katalogen har inte hämtats än", complete: false }; }
+      send(res, 200, { env, label: envLabel(env), ...out, readBudget: getIgReadBudget(env) });
       return true;
     }
     if (p === "/api/market/enrichment" && method === "GET") {
