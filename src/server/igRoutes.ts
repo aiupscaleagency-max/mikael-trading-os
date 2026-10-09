@@ -67,6 +67,8 @@ function wireSse(): void {
   };
   igMarketData.events.on("quote", (env: IgEnvironment, q: IgQuote) => { if (env === igMarketData.getActiveEnv()) write(q.epic, "quote", { env, ...quoteView(q, q.epic, env) }); });
   igMarketData.events.on("candle", (env: IgEnvironment, epic: string, iv: string, c: Candle) => { if (env === igMarketData.getActiveEnv()) write(epic, "candle", { env, epic, interval: iv, bar: chartBar(c) }); });
+  // Stängda ljus som kom via REST (serier utan IG-diagramplats) når också webbläsaren
+  igMarketData.events.on("closed", (env: IgEnvironment, epic: string, iv: string, c: Candle) => { if (env === igMarketData.getActiveEnv() && !igMarketData.streamedSeries(env).includes(`${epic}|${iv}`)) write(epic, "candle", { env, epic, interval: iv, bar: chartBar(c) }); });
   igMarketData.events.on("stream-status", (env: IgEnvironment, s: unknown) => { if (env === igMarketData.getActiveEnv()) write(null, "stream-status", { env, ...(s as object) }); });
   igMarketData.events.on("env", (env: IgEnvironment) => write(null, "env", { env, label: envLabel(env) }));
   const hb = setInterval(() => write(null, "heartbeat", { at: Date.now(), env: igMarketData.getActiveEnv(), stream: igMarketData.streamStatus() }), 15_000);
