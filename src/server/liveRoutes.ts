@@ -1,14 +1,12 @@
+import { dataDir, dataPath } from "../dataDir.js";
 import type http from "node:http";
 import { analysisModeInfo } from "./analysisMode.js";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { BrokerAdapter } from "../brokers/adapter.js";
-import { BybitBroker } from "../brokers/bybit.js";
+import { IgBroker } from "../brokers/ig.js";
+import { igMarketData } from "./igMarketData.js";
+import { getIgStatus } from "../integrations/igConnection.js";
 import { log } from "../logger.js";
-import {
-  startBybitPublicStream, startBybitPrivateStream, setBybitWalletFromRest, getBybitWallet,
-  subscribeBybitWallet, subscribeBybitOrders, getBybitStreamStatus, fetchBybitCandles,
-  getBybitTickers, watchBybitTicker, fetchBybitHistory, getBybitTicker, BYBIT_INTERVAL,
-} from "./bybitStream.js";
 import { scoreboard, READY_RULES } from "./paperLedger.js";
 import { trainStrategy, type TrainResult, type HistBar } from "../strategies/trainer.js";
 import fs from "node:fs/promises";
@@ -32,68 +30,40 @@ import { INDICATORS, OPERATORS } from "../strategies/ruleEngine.js";
 import { createLlmClient, extractJson, hasLlmCredentials, modelFor, toDirectModel, usingGateway } from "../llm/gateway.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Live-lagret: Bybit-saldo, live-lampor och strategibiblioteket
+//  Live-lagret: IG-saldo, live-lampor och strategibiblioteket
 //
 //  Egen fil så att api.ts bara behöver två rader: initLiveLayer() vid start
 //  och handleLiveRoutes() i routningen.
 //
-//    GET  /api/live/status                     → lampor för alla strömmar
-//    GET  /api/bybit/balance                   → Unified + Funding (riktiga pengar)
-//    GET  /api/bybit/pairs                     → alla spot-par i USDC på Bybit EU
+//    GET  /api/live/status                     → lampor (IG Demo/Live, IG-ström, JEV, AI, strategier)
+//    GET  /api/bybit/*                         → 410: plattformen är IG (se /api/ig/* och /api/market/*)
 //    GET  /api/strategies                      → biblioteket + vad som går att välja
 //    POST /api/strategies                      → ny strategi
 //    POST /api/strategies/parse                → "beskriv med egna ord" → regler (AI)
-//    POST /api/strategies/backtest             → backtest av en strategi (sparad eller utkast)
+//    POST /api/strategies/backtest             → backtest på IG-historik (högst 500 stängda ljus)
 //    POST /api/strategies/:id                  → uppdatera
 //    POST /api/strategies/:id/delete           → ta bort
 //    POST /api/strategies/:id/test             → vilka regler stämmer just nu
 //    POST /api/strategies/:id/reset            → nollställ strategins läge (inne/ute)
 //    GET  /api/strategies/signals              → senaste signaler med JEV/AI-bedömning
 //    GET  /api/strategies/scoreboard           → poängtavla från TEST-körningen + senaste träning
-//    POST /api/strategies/:id/train            → träna (prova varianter, kontroll på osedd data)
+//    POST /api/strategies/:id/train            → avstängt med IG (för lite historik), ärligt besked
 //    POST /api/strategies/:id/apply-training   → använd träningens förslag (det gamla sparas)
 //    POST /api/strategies/signals/:id/queue    → lägg som väntande order
 //    GET  /api/live/agent-tree                 → arbetsträdet: vem jobbar, var i processen
 // ═══════════════════════════════════════════════════════════════════════════
 
 let brokersRef: Record<string, BrokerAdapter> = {};
-let walletRefreshedAt = 0;
-let pairsCache: { at: number; pairs: string[] } | null = null;
 let parseClient: Anthropic | null = null;
-
-function bybit(): BybitBroker | null {
-  const b = brokersRef.bybit;
-  return b instanceof BybitBroker ? b : null;
-}
-
-async function refreshWalletRest(): Promise<void> {
-  const b = bybit();
-  if (!b) return;
-  try {
-    const raw = await b.getWalletRaw();
-    if (raw) setBybitWalletFromRest(raw);
-    walletRefreshedAt = Date.now();
-  } catch (err) {
-    log.warn(`[bybit] saldo via REST misslyckades: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
 
 export function initLiveLayer(
   brokers: Record<string, BrokerAdapter>,
   broadcast: (event: string, data: unknown) => void,
 ): void {
   brokersRef = brokers;
-  startBybitPublicStream();
-  // Priser för de vanligaste paren, så att live-lampan och tickern visar
-  // något även innan en strategi slagits på.
-  for (const c of ["BTC", "ETH", "SOL"]) watchBybitTicker(pairOf(c));
-
-  if (bybit()) {
-    startBybitPrivateStream();
-    void refreshWalletRest();
-  }
-  subscribeBybitWallet((w) => broadcast("bybit-wallet", w));
-  subscribeBybitOrders((o) => broadcast("bybit-order", o));
+  // IG-kontohändelser (Lightstreamer ACCOUNT/TRADE) vidare till sidan.
+  igMarketData.events.on("account", (env: string, a: unknown) => broadcast("ig-account", { env, account: a }));
+  igMarketData.events.on("trade", (env: string, t: unknown) => broadcast("ig-trade", { env, trade: t }));
   void startStrategyRunner(brokers, broadcast).catch((err) =>
     log.warn(`[strategi] start misslyckades: ${err instanceof Error ? err.message : String(err)}`));
 }
@@ -129,17 +99,24 @@ function lamp(connected: boolean, agoMs: number | null, detail: string) {
 function liveStatus() {
   const m = getMarketStreamStatus();
   const k = getKlineStreamStatus();
-  const by = getBybitStreamStatus();
+  const ig = getIgStatus();
+  const env = igMarketData.getActiveEnv();
+  const st = igMarketData.streamStatus(env);
   const jev = getJevStatus();
   const runner = getRunnerStatus();
-  const w = getBybitWallet();
+  const envLamp = (e: "demo" | "live") => {
+    const x = ig.environments[e];
+    return lamp(x.status === "connected", null, `${e === "live" ? "IG Live" : "IG Demo"} · ${x.status === "connected" ? `${x.account?.currency ?? ""} ansluten` : x.credentialsComplete ? (x.error ?? x.status) : "inloggningsuppgifter saknas"}`);
+  };
   return {
     time: Date.now(),
+    platform: "IG",
+    env,
     lamps: {
-      binancePrices: lamp(m.connected, m.lastFrameMs, `Binance priser · ${m.cachedSymbols} par`),
-      binanceCandles: lamp(k.connected, k.lastFrameMs, `Binance ljus · ${k.symbols.length} par @ ${k.interval}`),
-      bybitMarket: lamp(by.public.connected, by.public.lastMessageAgoMs, `Bybit priser + ljus · ${by.public.detail}`),
-      bybitAccount: lamp(by.private.connected, by.private.lastMessageAgoMs, `Bybit konto · ${by.private.detail}`),
+      igDemo: envLamp("demo"),
+      igLive: envLamp("live"),
+      igStream: lamp(st.status === "CONNECTED:WS-STREAMING", m.lastFrameMs, `IG Lightstreamer (${env === "live" ? "Live" : "Demo"}) · ${st.status} · ${m.cachedSymbols} kvoter`),
+      igCandles: lamp(k.connected, k.lastFrameMs, `IG ljus · ${k.symbols.length} instrument @ ${k.interval} · bara stängda ljus till signaler`),
       jev: {
         connected: jev.route !== "rules_only" && !jev.circuitOpen,
         lastMessageAgoMs: null,
@@ -153,55 +130,22 @@ function liveStatus() {
       strategies: {
         connected: runner.started,
         lastMessageAgoMs: runner.lastEvalAt ? Date.now() - runner.lastEvalAt : null,
-        detail: `${runner.streams.length} par/intervall · ${runner.evaluations} körningar`,
+        detail: `${runner.streams.length} instrument/intervall · ${runner.evaluations} körningar`,
       },
     },
-    wallet: w,
+    wallet: null,
   };
 }
 
-// ─── Saldo ────────────────────────────────────────────────────────────────
-
-async function balance(refresh: boolean) {
-  const b = bybit();
-  if (!b) return { connected: false, error: "Bybit är inte kopplat (BYBIT_API_KEY saknas i .env)" };
-  const w0 = getBybitWallet();
-  if (refresh || !w0 || (w0.source === "rest" && Date.now() - walletRefreshedAt > 60_000)) await refreshWalletRest();
-  const unified = getBybitWallet();
-  let funding: { coins: Array<{ coin: string; balance: number; usdValue: number }>; totalUsd: number } | null = null;
-  let fundingError: string | null = null;
-  try {
-    const coins = await b.getFundingBalances();
-    funding = { coins, totalUsd: coins.reduce((a, c) => a + c.usdValue, 0) };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    fundingError = /permission|10005|denied|not.*auth/i.test(msg)
-      ? "Nyckeln saknar läsrätt för Funding. Bocka i Assets → Wallet (Read) på nyckeln hos Bybit."
-      : msg.slice(0, 200);
-  }
-  return {
-    connected: true,
-    quote: (process.env.BYBIT_QUOTE || "USDC").toUpperCase(),
-    unified,
-    funding,
-    fundingError,
-    totalUsd: (unified?.totalEquityUsd ?? 0) + (funding?.totalUsd ?? 0),
-    tradableUsd: unified?.totalEquityUsd ?? 0,
-  };
-}
-
-async function bybitPairs(): Promise<string[]> {
-  if (pairsCache && Date.now() - pairsCache.at < 3_600_000) return pairsCache.pairs;
-  const quote = (process.env.BYBIT_QUOTE || "USDC").toUpperCase();
-  const base = process.env.BYBIT_BASE_URL || "https://api.bybit.eu";
-  const res = await fetch(`${base}/v5/market/instruments-info?category=spot&limit=1000`);
-  const body = (await res.json()) as { result?: { list?: Array<{ baseCoin: string; quoteCoin: string; status: string }> } };
-  const pairs = (body.result?.list ?? [])
-    .filter((x) => x.quoteCoin === quote && x.status === "Trading")
-    .map((x) => x.baseCoin)
-    .sort();
-  pairsCache = { at: Date.now(), pairs };
-  return pairs;
+/** Stängda IG-ljus för en strategis "coin" (EPIC). Högst 500 (bufferten); inga påhittade ljus. */
+async function igBars(coin: string, interval: string) {
+  const epic = pairOf(coin);
+  if (!epic) throw new Error(`${coin} finns inte som IG-EPIC i bevakningslistan`);
+  const env = igMarketData.getActiveEnv();
+  await igMarketData.ensureSeries(env, epic, interval);
+  const bars = igMarketData.closed(epic, interval, env);
+  if (!bars.length) throw new Error(igMarketData.historyError(epic, interval, env) ?? "historik saknas");
+  return bars;
 }
 
 // ─── AI: "beskriv med egna ord" → regler ──────────────────────────────────
@@ -212,12 +156,12 @@ async function parseStrategyText(text: string): Promise<Record<string, unknown>>
   const model = modelFor("specialist", "claude-haiku-4-5-20251001");
   const system = [
     "Du översätter en trading-strategi som Mike beskriver på svenska till JSON-regler för en regelmotor.",
-    "Spot-handel: bara köp (entry) och sälj (exit). Ingen blankning.",
+    "IG CFD: strategin köper (entry) och säljer/stänger (exit).",
     `Tillåtna indikatorer (nycklar): ${Object.entries(INDICATORS).map(([k, v]) => `${k} = ${v}`).join("; ")}.`,
     `Tillåtna operatorer: ${Object.keys(OPERATORS).join(", ")}.`,
     "En regel: {\"left\": indikator, \"op\": operator, \"right\": tal eller indikator, \"factor\": valfri multiplikator när right är en indikator}.",
     "Alla regler i entry måste stämma samtidigt för köp; samma för exit.",
-    `interval är ett av: ${INTERVALS.join(", ")}. coins är bas-coins som BTC, ETH, SOL.`,
+    `interval är ett av: ${INTERVALS.join(", ")}. coins är IG-EPICs från bevakningslistan: ${igMarketData.watchlistDetailed().map((w) => `${w.epic} (${w.name ?? "?"})`).join(", ") || "tom"}.`,
     "stopAtr och targetAtr är avstånd i ATR (standard 1.5 och 3). stakeUsd standard 5.",
     "Hittar du inte på en regel som passar, välj den närmaste och förklara i description.",
     "Svara ENDAST med JSON: {\"name\",\"description\",\"coins\",\"interval\",\"entry\",\"exit\",\"stopAtr\",\"targetAtr\",\"stakeUsd\"}",
@@ -238,8 +182,8 @@ async function parseStrategyText(text: string): Promise<Record<string, unknown>>
 // ─── Träningsresultat (senaste per strategi) ─────────────────────────────
 
 type StoredTraining = TrainResult & { errors?: Record<string, string>; appliedAt?: string; previous?: unknown };
-const TRAIN_FILE = path.resolve(process.cwd(), "data", "strategy-training.json");
-const training = new Set<string>();
+const TRAIN_FILE = dataPath("strategy-training.json");
+const HISTORY_UNUSED: { t?: TrainResult; b?: HistBar; f?: typeof trainStrategy; a?: typeof agentStart; d?: typeof agentDone; e?: typeof agentFail } = {};
 
 async function readTrainings(): Promise<Record<string, StoredTraining>> {
   try { return JSON.parse(await fs.readFile(TRAIN_FILE, "utf8")) as Record<string, StoredTraining>; } catch { return {}; }
@@ -292,69 +236,9 @@ export async function handleLiveRoutes(
       return true;
     }
 
-    if (p === "/api/bybit/balance" && method === "GET") {
-      send(res, 200, await balance(url.searchParams.get("refresh") === "1"));
-      return true;
-    }
-
-    if (p === "/api/bybit/pairs" && method === "GET") {
-      try { send(res, 200, { pairs: await bybitPairs() }); }
-      catch (err) { send(res, 200, { pairs: [], error: err instanceof Error ? err.message : String(err) }); }
-      return true;
-    }
-
-    // Senaste pris per par från Bybit (serverns WebSocket-cache, REST som reserv).
-    // Ersätter /api/binance/prices på sidan: Bybit överallt.
-    if (p === "/api/bybit/prices" && method === "GET") {
-      const symbols = (url.searchParams.get("symbols") || config.crypto.symbols.join(","))
-        .split(",").map((x) => x.trim().toUpperCase().replace(/[^A-Z0-9]/g, "")).filter(Boolean).slice(0, 50);
-      const prices: Record<string, number> = {};
-      const missing: string[] = [];
-      for (const s of symbols) { const px = getCachedPrice(s); if (px) prices[s] = px; else missing.push(s); }
-      if (missing.length) {
-        for (const base of ["https://api.bybit.com", process.env.BYBIT_BASE_URL || "https://api.bybit.eu"]) {
-          try {
-            const r = await fetch(`${base}/v5/market/tickers?category=spot`);
-            const body = (await r.json()) as { retCode: number; result?: { list?: Array<{ symbol: string; lastPrice: string }> } };
-            if (!r.ok || body.retCode !== 0 || !body.result?.list) continue;
-            const bySym = new Map(body.result.list.map((t) => [t.symbol, Number(t.lastPrice)]));
-            for (const s of missing) { const px = bySym.get(s); if (px && px > 0) prices[s] = px; }
-            break;
-          } catch { /* prova nästa adress */ }
-        }
-      }
-      send(res, 200, { prices, source: "bybit", at: Date.now() });
-      return true;
-    }
-
-    if (p === "/api/bybit/tickers" && method === "GET") { send(res, 200, { tickers: getBybitTickers() }); return true; }
-
-    // Diagrammets ljus från Bybit (samma som TradingView med Bybit valt). Bara publik
-    // marknadsdata, ingen nyckel. Det pågående ljuset är med; sidan håller det
-    // levande via Bybits WebSocket.
-    if (p === "/api/bybit/klines" && method === "GET") {
-      const symbol = (url.searchParams.get("symbol") || "BTCUSDT").toUpperCase().replace(/[^A-Z0-9]/g, "");
-      const iv = BYBIT_INTERVAL[url.searchParams.get("interval") || "1m"];
-      const limit = Math.min(1000, Math.max(10, Number(url.searchParams.get("limit")) || 300));
-      if (!iv) { send(res, 400, { error: "okänt intervall", klines: [] }); return true; }
-      let lastErr = "";
-      // USDC-par = samma marknad som på bybit.eu: fråga Bybit EU först
-      const euBase = process.env.BYBIT_BASE_URL || "https://api.bybit.eu";
-      const bases = symbol.endsWith("USDC") ? [euBase, "https://api.bybit.com"] : ["https://api.bybit.com", euBase];
-      for (const base of bases) {
-        try {
-          const r = await fetch(`${base}/v5/market/kline?category=spot&symbol=${symbol}&interval=${iv}&limit=${limit}`);
-          const body = (await r.json()) as { retCode: number; retMsg: string; result?: { list?: string[][] } };
-          if (!r.ok || body.retCode !== 0 || !body.result?.list?.length) { lastErr = `${base}: ${body.retMsg || r.status}`; continue; }
-          const klines = body.result.list.slice().reverse().map((k) => ({
-            time: Math.floor(Number(k[0]) / 1000),
-            open: Number(k[1]), high: Number(k[2]), low: Number(k[3]), close: Number(k[4]), volume: Number(k[5]),
-          }));
-          send(res, 200, { symbol, klines, source: base.includes(".eu") ? "bybit-eu" : "bybit", at: Date.now() });
-          return true;
-        } catch (err) { lastErr = `${base}: ${err instanceof Error ? err.message : String(err)}`; }
-      }
-      send(res, 200, { symbol, klines: [], error: lastErr });
+    // Plattformen är IG: Bybit-adresserna finns kvar men svarar 410 så att inget tyst läser Bybit.
+    if (p.startsWith("/api/bybit/")) {
+      send(res, 410, { error: "Plattformen är IG. Använd /api/ig/balance, /api/market/watchlist, /api/market/klines och /api/market/stream." });
       return true;
     }
 
@@ -366,7 +250,9 @@ export async function handleLiveRoutes(
         operators: OPERATORS,
         intervals: INTERVALS,
         models: REVIEW_MODELS,
-        quote: (process.env.BYBIT_QUOTE || "USDC").toUpperCase(),
+        quote: null,
+        platform: "IG",
+        watchlist: igMarketData.watchlistDetailed(),
         runner: getRunnerStatus(),
       });
       return true;
@@ -405,11 +291,10 @@ export async function handleLiveRoutes(
         s = r.strategy;
       }
       if (!s) { send(res, 404, { ok: false, error: "Strategin finns inte" }); return true; }
-      const limit = Math.min(1000, Math.max(100, Number(b.limit) || 1000));
       const results = await Promise.all(s.coins.map(async (coin) => {
         try {
-          const bars = await fetchBybitCandles(pairOf(coin), s!.interval, limit);
-          return { coin, ...backtest(s!, bars) };
+          const bars = await igBars(coin, s!.interval);
+          return { coin, epic: pairOf(coin), bars: bars.length, source: "IG-historik (högst 500 stängda ljus)", ...backtest(s!, bars) };
         } catch (err) {
           return { coin, error: err instanceof Error ? err.message : String(err) };
         }
@@ -422,8 +307,9 @@ export async function handleLiveRoutes(
       const lib = await loadLibrary();
       const trained = await readTrainings();
       const priceOf = (coin: string) => {
-        const t = getBybitTicker(pairOf(coin));
-        if (t?.price) return t.price;
+        const epic = pairOf(coin);
+        const q = epic ? igMarketData.quote(epic) : null;
+        if (q?.mid) return q.mid;
         const c = lib.map((s) => getRunnerCandles(coin, s.interval)).find((x) => x.length);
         return c?.[c.length - 1]?.close ?? null;
       };
@@ -456,36 +342,10 @@ export async function handleLiveRoutes(
           return true;
         }
         if (action === "train" && method === "POST") {
-          if (training.has(id)) { send(res, 409, { ok: false, error: "Strategin tränas redan, vänta en stund." }); return true; }
-          training.add(id);
-          userAction(`tränar strategin ${s.name}`, { to: `strategy:${id}` });
-          try {
-            const b = await bodyJson(req);
-            const candles = Math.min(5000, Math.max(500, Number(b.candles) || 3000));
-            const history: Record<string, HistBar[]> = {};
-            const errors: Record<string, string> = {};
-            await Promise.all(s.coins.map(async (coin) => {
-              try { history[coin] = await fetchBybitHistory(pairOf(coin), s.interval, candles); }
-              catch (err) { errors[coin] = err instanceof Error ? err.message : String(err); }
-            }));
-            // Mikes krav 2026-10-01: minst 10 affärer per dag. Kan ändras i dashboarden eller med TRAIN_MIN_TRADES_PER_DAY.
-            const perDayRaw = b.minTradesPerDay ?? process.env.TRAIN_MIN_TRADES_PER_DAY ?? 10;
-            const minTradesPerDay = Math.min(500, Math.max(0, Number(perDayRaw) || 0));
-            // Träningen syns i arbetsträdet: strategins ruta (och dess agent) jobbar tills den är klar.
-            const variants = Math.min(600, Math.max(20, Number(b.variants) || 300));
-            agentStart(`strategy:${id}`, `tränar ${variants} varianter på ${Object.keys(history).length} coins`, { from: s.agent ?? undefined });
-            let result: TrainResult;
-            try { result = trainStrategy(s, history, { maxVariants: variants, minTradesPerDay }); }
-            catch (err) { agentFail(`strategy:${id}`, `träningen misslyckades: ${err instanceof Error ? err.message : String(err)}`); throw err; }
-            agentDone(`strategy:${id}`, `träning klar: ${result.verdict} (${result.variantsTested} varianter)`);
-            const all = await readTrainings();
-            all[id] = { ...result, errors };
-            await writeTrainings(all);
-            log.info(`[träning] ${s.name}: ${result.variantsTested} varianter på ${result.ms} ms — ${result.verdict}`);
-            send(res, 200, { ...result, errors });
-          } finally {
-            training.delete(id);
-          }
+          // IG: träningen behöver tusentals ljus; IG:s historikkvot (REST prices) räcker inte till det
+          // utan att äta upp kvoten för diagram och signaler. Därför avstängd, med ärligt besked.
+          void HISTORY_UNUSED;
+          send(res, 409, { ok: false, error: "Träning är inte tillgänglig med IG: den kräver 500–5000 historiska ljus per instrument och IG:s historikkvot räcker inte. Använd backtest (högst 500 stängda IG-ljus)." });
           return true;
         }
         if (action === "apply-training" && method === "POST") {
@@ -547,7 +407,7 @@ export async function handleLiveRoutes(
           const results = await Promise.all(s.coins.map(async (coin) => {
             let bars = getRunnerCandles(coin, s.interval);
             if (bars.length < 50) {
-              try { bars = await fetchBybitCandles(pairOf(coin), s.interval, 500); } catch (err) {
+              try { bars = await igBars(coin, s.interval); } catch (err) {
                 return { coin, error: err instanceof Error ? err.message : String(err) };
               }
             }

@@ -45,15 +45,17 @@ const headTraderModel = () => modelFor("head", "claude-sonnet-4-6");
 import type { AllReports } from "./orchestrator.js";
 import { currentStake } from "../risk/stakeLadder.js";
 
-/** Insats-principen (Mike 2026-10-03): 1 % per trade, sedan stegvis upp mot 3–5 %. */
+/** Insats-principen (Mike 2026-10-03), på IG: en andel av IG-saldot som marginal, 1 % → högst 3 %. */
 function stakeBlock(): string {
   const s = currentStake();
   if (!s) return "";
-  return `INSATS (TEST-kontot $${Math.round(s.equityUsd)}): satsa ${s.pct} % av kontot = $${s.usd} per trade.
-  • Princip: börja på 1 % per trade. Insatsen höjs stegvis (2 → 3 → 4 → 5 %) först när
-    avslutade trades visar vinst och träffsäkerhet. Förlustsvit → tillbaka till 1 %.
-  • Nu: ${s.reason} (${s.closed} avslutade, träff ${Math.round(s.winRate * 100)} %, resultat $${s.totalPnl.toFixed(2)}).
-  • Använd $${s.usd} som storlek i TEST (risk-managern tar inte större). LIVE har egna, lägre tak.
+  const cur = s.currency ?? "kontovaluta";
+  return `PLATTFORM: IG (CFD). Symbolerna är IG-EPICs. KÖP = lång, SÄLJ utan position = KORT (blankning är tillåten).
+INSATS: ${s.pct} % av IG-saldot som marginal = ca ${s.amount.toFixed(2)} ${cur} per trade. Servern räknar fram antal kontrakt
+  från IG:s regler (minsta storlek, marginal, punktvärde). Ange ALLTID take_profit och stop_loss (för SÄLJ: målpris under, stop över priset).
+  • Princip: börja på 1 %. Höjs till 2 → 3 % först när avslutade IG Demo-affärer visar vinst och träffsäkerhet. Förlustsvit → 1 %.
+  • Nu: ${s.reason} (${s.closed} avslutade, träff ${Math.round(s.winRate * 100)} %, resultat ${s.totalPnl.toFixed(2)} ${cur}).
+  • quote_qty i USD används inte på IG; låt den vara.
 `;
 }
 export type { AllReports };

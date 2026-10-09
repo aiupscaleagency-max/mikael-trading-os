@@ -1,3 +1,4 @@
+import { dataDir, dataPath } from "../dataDir.js";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
@@ -10,7 +11,7 @@ import { log } from "../logger.js";
 // och laddas in i config.crypto.symbols vid start (se config.ts).
 // ═══════════════════════════════════════════════════════════════════════════
 
-const FILE = path.resolve("data/custom-symbols.json");
+const FILE = dataPath("custom-symbols.json");
 const EU = "https://api.bybit.eu";
 const GLOBAL = "https://api.bybit.com";
 

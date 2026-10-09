@@ -1,72 +1,61 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Resultatfönstret: alla affärer med vinst/förlust (grönt/rött), öppna
-// innehav med vinst/förlust just nu, och summor.
-//   TEST: TEST-kontots egna affärer (data/bybit-paper.json, exakt P/L).
-//   LIVE: en logg över LIVE-affärer som boten lagt (data/live-journal.jsonl),
-//         P/L räknas mot snittpriset för köpen.
+// Resultatfönstret: affärer med vinst/förlust (grönt/rött), öppna positioner
+// med vinst/förlust just nu, och summor — nu från IG.
+//   TEST = IG Demo, LIVE = IG Live. Varje läge läser BARA sin egen miljö
+//   (egen IG-session, egna transaktioner); de blandas aldrig.
+//   Avslutade affärer: IG:s transaktionshistorik (DEAL, 30 dagar, P/L i kontovalutan).
+//   Öppna: IG-positioner, P/L räknad från IG-kvot och IG:s punktvärde (brutto).
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { BrokerAdapter } from "../brokers/adapter.js";
-import { getCachedPrice } from "./marketStream.js";
-
-const LIVE_JOURNAL = path.resolve("data/live-journal.jsonl");
-const LIVE_FEE = Number(process.env.PAPER_FEE ?? 0.0025) || 0.0025;
+import { dataPath } from "../dataDir.js";
+import { getIgHistory } from "../integrations/igMarkets.js";
+import type { IgEnvironment } from "../integrations/igConnection.js";
+import { setStakeHistory } from "../risk/stakeLadder.js";
+import { listTimedExits } from "./tradeHorizon.js";
 
 export interface ResultTrade {
-  at: number;
-  coin: string;
-  side: "BUY" | "SELL";
-  qty: number;
-  price: number;
-  usd: number;
-  kind: string;
-  /** Bara på sälj: vinst/förlust efter avgifter */
-  pnl?: number;
-  pnlPct?: number;
+  at: number; coin: string; side: "BUY" | "SELL"; qty: number; price: number; usd: number; kind: string;
+  /** Vinst/förlust i kontovalutan (IG profitAndLoss) */
+  pnl?: number; pnlPct?: number; openLevel?: number | null; closeLevel?: number | null; reference?: string | null;
 }
 export interface ResultOpen {
-  coin: string;
-  qty: number;
-  avg: number;
-  price: number | null;
-  value: number | null;
-  upnl: number | null;
-  upnlPct: number | null;
-  tp?: number;
-  sl?: number;
+  coin: string; qty: number; avg: number; price: number | null; value: number | null; upnl: number | null; upnlPct: number | null;
+  tp?: number; sl?: number; epic?: string; dealId?: string; direction?: "BUY" | "SELL"; closeAt?: number | null;
 }
 export interface Results {
   mode: "TEST" | "LIVE";
+  env?: IgEnvironment; label?: string; currency?: string | null;
   trades: ResultTrade[];
   open: ResultOpen[];
   totals: { realized: number; unrealized: number; wins: number; losses: number; trades: number; today: number };
+  error?: string | null; partial?: boolean;
 }
 
-const baseOf = (s: string) => s.toUpperCase().replace(/[/-]/g, "").replace(/(USDT|USDC|USD|BUSD|FDUSD)$/, "");
-const priceOf = (coin: string) => getCachedPrice(`${coin}USDT`) ?? getCachedPrice(`${coin}USDC`);
 const startOfDay = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
 
-/** Logga en LIVE-affär (anropas när en LIVE-order fyllts). */
-export function recordLiveFill(f: { symbol: string; side: "BUY" | "SELL"; qty: number; price: number; usd?: number; kind: string }): void {
-  if (!(f.qty > 0) || !(f.price > 0)) return;
-  try {
-    mkdirSync(path.dirname(LIVE_JOURNAL), { recursive: true });
-    appendFileSync(LIVE_JOURNAL, JSON.stringify({ at: Date.now(), coin: baseOf(f.symbol), side: f.side, qty: f.qty, price: f.price, usd: f.usd ?? f.qty * f.price, kind: f.kind }) + "\n");
-  } catch { /* loggen är bara för visning */ }
+/** Behålls för gamla anropsvägar; IG-resultat läses från IG:s egen historik. */
+export function recordLiveFill(_f: { symbol: string; side: "BUY" | "SELL"; qty: number; price: number; usd?: number; kind: string }): void { /* IG: historiken finns hos IG */ }
+
+/** "SEK 12.50", "-kr3,20", "£15.00" → tal i kontovalutan, annars null. */
+export function parseIgMoney(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v !== "string") return null;
+  const t = v.replace(/\s/g, "").replace(/^(?:[A-Z]{3}|kr|\$|£|€)/i, "").replace(/^(-?)(?:[A-Z]{3}|kr|\$|£|€)/i, "$1").replace(",", ".");
+  return /^[+-]?\d+(?:\.\d+)?$/.test(t) ? Number(t) : null;
 }
 
-function summarize(mode: "TEST" | "LIVE", trades: ResultTrade[], open: ResultOpen[]): Results {
-  const sells = trades.filter((t) => t.side === "SELL" && t.pnl !== undefined);
+function summarize(base: Omit<Results, "totals">): Results {
+  const sells = base.trades.filter((t) => t.pnl !== undefined);
   const dayStart = startOfDay();
   return {
-    mode,
-    trades: [...trades].sort((a, b) => b.at - a.at).slice(0, 200),
-    open,
+    ...base,
+    trades: [...base.trades].sort((a, b) => b.at - a.at).slice(0, 200),
     totals: {
       realized: sells.reduce((s, t) => s + (t.pnl ?? 0), 0),
-      unrealized: open.reduce((s, o) => s + (o.upnl ?? 0), 0),
+      unrealized: base.open.reduce((s, o) => s + (o.upnl ?? 0), 0),
       wins: sells.filter((t) => (t.pnl ?? 0) > 0).length,
       losses: sells.filter((t) => (t.pnl ?? 0) <= 0).length,
       trades: sells.length,
@@ -75,78 +64,67 @@ function summarize(mode: "TEST" | "LIVE", trades: ResultTrade[], open: ResultOpe
   };
 }
 
-function testResults(paper: BrokerAdapter): Results {
-  const snap = (paper as unknown as { snapshot?: () => ReturnType<import("../brokers/bybitPaper.js").BybitPaperBroker["snapshot"]> }).snapshot?.();
-  if (!snap) return summarize("TEST", [], []);
-  const trades: ResultTrade[] = snap.fills.map((f) => {
-    const usd = f.qty * f.price;
-    // Vinst i % av vad köpet kostade (P/L / (sålt värde − P/L))
-    const cost = f.pnl !== undefined ? usd - f.fee - f.pnl : 0;
-    return {
-      at: f.at, coin: f.base, side: f.side === "SELL" ? "SELL" : "BUY", qty: f.qty, price: f.price, usd, kind: f.kind,
-      ...(f.side === "SELL" && f.pnl !== undefined ? { pnl: f.pnl, pnlPct: cost > 0 ? (f.pnl / cost) * 100 : undefined } : {}),
-    };
-  });
-  const open: ResultOpen[] = Object.entries(snap.holdings)
-    .filter(([, h]) => h.qty > 0)
-    .map(([coin, h]) => {
-      const price = priceOf(coin);
-      // Värde efter säljavgift, mot snittpriset (köpavgiften ingår redan i snittet)
-      const value = price ? h.qty * price : null;
-      const upnl = price ? h.qty * price * (1 - LIVE_FEE) - h.qty * h.avg : null;
-      const tp = snap.open.find((o) => o.base === coin && o.kind === "TP")?.price;
-      const sl = snap.open.find((o) => o.base === coin && o.kind === "SL")?.price;
-      return { coin, qty: h.qty, avg: h.avg, price, value, upnl, upnlPct: upnl !== null ? (upnl / (h.qty * h.avg)) * 100 : null, tp, sl };
-    });
-  return summarize("TEST", trades, open);
-}
-
-async function liveResults(live: BrokerAdapter, tpsl: Array<{ symbol: string; takeProfit?: number; stopLoss?: number }>): Promise<Results> {
-  let rows: Array<{ at: number; coin: string; side: "BUY" | "SELL"; qty: number; price: number; usd: number; kind: string }> = [];
-  try {
-    rows = readFileSync(LIVE_JOURNAL, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
-  } catch { /* inga LIVE-affärer än */ }
-  // Snittpris per mynt (köpavgiften räknas in), P/L på varje sälj
-  const pos = new Map<string, { qty: number; cost: number }>();
-  const trades: ResultTrade[] = [];
-  for (const r of rows.sort((a, b) => a.at - b.at)) {
-    const p = pos.get(r.coin) ?? { qty: 0, cost: 0 };
-    if (r.side === "BUY") {
-      p.qty += r.qty; p.cost += r.usd * (1 + LIVE_FEE);
-      trades.push({ ...r });
-    } else {
-      const avg = p.qty > 0 ? p.cost / p.qty : r.price;
-      const q = Math.min(r.qty, p.qty || r.qty);
-      const cost = q * avg;
-      const pnl = r.usd * (1 - LIVE_FEE) - cost;
-      p.qty = Math.max(0, p.qty - q); p.cost = p.qty > 0 ? p.qty * avg : 0;
-      trades.push({ ...r, pnl, pnlPct: cost > 0 ? (pnl / cost) * 100 : undefined });
-    }
-    pos.set(r.coin, p);
-  }
-  // Öppna innehav: det som faktiskt ligger på Bybit, P/L mot bottens snittpris
-  const open: ResultOpen[] = [];
-  const positions = await live.getPositions().catch(() => []);
-  for (const ps of positions) {
-    const coin = ps.baseAsset;
-    const j = pos.get(coin);
-    const avg = j && j.qty > 0 ? j.cost / j.qty : 0;
-    const price = priceOf(coin) ?? (ps.currentPrice || null);
-    const value = price ? ps.quantity * price : null;
-    if (value !== null && value < 0.5) continue; // damm under $0,50 visas inte
-    const upnl = price && avg > 0 ? ps.quantity * price * (1 - LIVE_FEE) - ps.quantity * avg : null;
-    const w = tpsl.find((t) => baseOf(t.symbol) === coin);
-    open.push({ coin, qty: ps.quantity, avg, price, value, upnl, upnlPct: upnl !== null && avg > 0 ? (upnl / (ps.quantity * avg)) * 100 : null, tp: w?.takeProfit, sl: w?.stopLoss });
-  }
-  return summarize("LIVE", trades, open);
-}
-
 export async function getResults(
   brokers: Record<string, BrokerAdapter>,
   mode: "TEST" | "LIVE",
-  liveTpSl: Array<{ symbol: string; takeProfit?: number; stopLoss?: number }>,
+  _liveTpSl: Array<{ symbol: string; takeProfit?: number; stopLoss?: number }> = [],
+  deps: { history?: typeof getIgHistory } = {},
 ): Promise<Results> {
-  if (mode === "LIVE") return brokers.bybit ? liveResults(brokers.bybit, liveTpSl) : summarize("LIVE", [], []);
-  const paper = brokers["bybit-paper"];
-  return paper ? testResults(paper) : summarize("TEST", [], []);
+  const env: IgEnvironment = mode === "LIVE" ? "live" : "demo";
+  const broker = brokers[env === "live" ? "ig" : "ig-demo"];
+  const label = env === "live" ? "IG Live" : "IG Demo";
+  if (!broker) return summarize({ mode, env, label, currency: null, trades: [], open: [], error: `${label} är inte kopplat` });
+  const errors: string[] = [];
+  let currency: string | null = null, balance: number | null = null;
+  try { const a = await broker.getAccount(); currency = a.currency ?? null; balance = a.balance ?? null; }
+  catch (e) { errors.push(e instanceof Error ? e.message : String(e)); }
+
+  const trades: ResultTrade[] = [];
+  let partial = false;
+  if (!errors.length) {
+    try {
+      const h = await (deps.history ?? getIgHistory)(env);
+      partial = h.status === "partial";
+      for (const t of h.transactions as any[]) {
+        if (t.cashTransaction === true || t.type !== "DEAL") continue;
+        const pnl = parseIgMoney(t.profitAndLoss);
+        const at = Date.parse(String(t.date ?? "").replace(" ", "T") + (String(t.date ?? "").endsWith("Z") ? "" : "Z"));
+        const size = Number(String(t.size ?? "").replace(",", "."));
+        const open = Number(t.openLevel), close = Number(t.closeLevel);
+        trades.push({
+          at: Number.isFinite(at) ? at : 0, coin: t.instrumentName ?? "?", side: size < 0 ? "SELL" : "BUY", qty: Math.abs(size) || 0,
+          price: Number.isFinite(close) ? close : 0, usd: 0, kind: "IG",
+          ...(pnl !== null ? { pnl } : {}), openLevel: Number.isFinite(open) ? open : null, closeLevel: Number.isFinite(close) ? close : null, reference: t.reference ?? null,
+        });
+      }
+    } catch (e) { errors.push(`historik: ${e instanceof Error ? e.message : String(e)}`); }
+  }
+
+  const open: ResultOpen[] = [];
+  if (!errors.length || errors.every((e) => e.startsWith("historik"))) {
+    try {
+      const exits = listTimedExits();
+      for (const p of await broker.getPositions()) {
+        const exposure = p.avgEntryPrice * p.quantity;
+        open.push({
+          coin: p.name ?? p.symbol, epic: p.symbol, dealId: p.dealId, direction: p.direction, qty: p.quantity, avg: p.avgEntryPrice,
+          price: p.currentPrice || null, value: null, upnl: p.pnlVerified ? p.unrealizedPnlUsdt : null,
+          upnlPct: p.pnlVerified && exposure > 0 ? ((p.direction === "SELL" ? -1 : 1) * (p.currentPrice - p.avgEntryPrice) / p.avgEntryPrice) * 100 : null,
+          tp: p.limitLevel ?? undefined, sl: p.stopLevel ?? undefined,
+          closeAt: exits.find((x) => x.dealId === p.dealId)?.exitAt ?? null,
+        });
+      }
+    } catch (e) { errors.push(`positioner: ${e instanceof Error ? e.message : String(e)}`); }
+  }
+
+  // Bara när IG-historiken faktiskt lästes: ett IG-avbrott får aldrig nollställa trappan/minnet.
+  if (env === "demo" && !errors.length) {
+    const pnls = trades.filter((t) => t.pnl !== undefined).sort((a, b) => a.at - b.at).map((t) => t.pnl!);
+    setStakeHistory(pnls, balance, currency);
+    try {
+      mkdirSync(path.dirname(dataPath("ig-closed-demo.json")), { recursive: true });
+      writeFileSync(dataPath("ig-closed-demo.json"), JSON.stringify(trades.filter((t) => t.pnl !== undefined).map((t) => ({ base: t.coin, side: "SELL", qty: t.qty, price: t.price, at: t.at, kind: "IG Demo", pnl: t.pnl }))));
+    } catch { /* bara för tradingminnet */ }
+  }
+  return summarize({ mode, env, label, currency, trades, open, error: errors.length ? errors.join(" · ") : null, partial });
 }

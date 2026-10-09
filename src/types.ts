@@ -34,6 +34,11 @@ export interface Account {
   // Totalt estimerat värde i USDT (quote-valuta)
   totalValueUsdt: number;
   updatedAt: number;
+  /** IG: kontovaluta (t.ex. SEK). Saknas = USD/USDT som tidigare. */
+  currency?: string;
+  balance?: number | null;
+  available?: number | null;
+  profitLoss?: number | null;
 }
 
 export interface Position {
@@ -45,6 +50,15 @@ export interface Position {
   currentPrice: number;
   unrealizedPnlUsdt: number;
   openedAt: number;
+  /** IG: positionens id (används för stängning), riktning och visningsnamn */
+  dealId?: string;
+  direction?: "BUY" | "SELL";
+  name?: string;
+  /** Valuta för unrealizedPnlUsdt (IG: kontovalutan). null P/L = kunde inte verifieras. */
+  pnlCurrency?: string | null;
+  pnlVerified?: boolean;
+  stopLevel?: number | null;
+  limitLevel?: number | null;
 }
 
 export interface OrderRequest {
@@ -60,6 +74,10 @@ export interface OrderRequest {
   // Valfritt: sälj automatiskt vid vinst (takeProfit) eller förlust (stopLoss), som pris i quote-valutan.
   takeProfit?: number;
   stopLoss?: number;
+  /** IG: stäng denna position (DELETE /positions/otc) i stället för att öppna en ny */
+  closeDealId?: string;
+  /** IG: insats (marginal) i kontovalutan; storleken räknas fram från IG:s regler */
+  stakeAmount?: number;
 }
 
 export interface OrderResult {
@@ -72,6 +90,10 @@ export interface OrderResult {
   cummulativeQuoteQty: number;
   avgFillPrice: number;
   timestamp: number;
+  /** IG */
+  dealId?: string;
+  dealReference?: string;
+  error?: string;
 }
 
 export interface DecisionRecord {

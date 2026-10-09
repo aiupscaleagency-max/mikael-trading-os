@@ -1,3 +1,4 @@
+import { dataDir, dataPath } from "../dataDir.js";
 import http from "node:http";
 import { userAction, agentDone, agentFail, analysisStart, analysisEnd, getAnalysis } from "./agentActivity.js";
 import fs from "node:fs/promises";
@@ -12,6 +13,11 @@ import { log } from "../logger.js";
 import { autoAllowed, saveExecutionMode, setExecutionMode } from "./executionModeStore.js";
 import { config } from "../config.js";
 import { getCostSummary } from "../cost/tracker.js";
+import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
+import { igMarketData } from "./igMarketData.js";
+import { handleIgRoutes } from "./igRoutes.js";
+import { igOrderExecutionEnabled } from "../integrations/igConnection.js";
+import { currentStake } from "../risk/stakeLadder.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
 import { detectAllPatterns, type Candle } from "./patternDetection.js";
@@ -27,7 +33,7 @@ import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klin
 import { getResults, recordLiveFill } from "./results.js";
 import { CATEGORIES, getCategory, type Category } from "./movers.js";
 import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
-import { addTimedExit, cancelTimedExit, getHorizonMin, HORIZON_CHOICES, listTimedExits, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
+import { addTimedExit, cancelTimedExit, cancelTimedExitForDeal, getHorizonMin, HORIZON_CHOICES, listTimedExits, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
 import { adjustLiveSpend, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
@@ -155,16 +161,15 @@ function initIntegrationsFromEnv(): void {
     log.ok(`Oanda auto-init (mode: ${op ? "PRACTICE" : "LIVE"})`);
   }
 }
-initIntegrationsFromEnv();
+// IG är plattformen: Binance-/Oanda-nycklar läses inte längre in (inga Binance/Oanda-anrop i körvägen).
+void initIntegrationsFromEnv;
+log.info(`IG: TEST = IG Demo, LIVE = IG Live. Orderläge Demo ${igOrderExecutionEnabled("demo") ? "PÅ" : "AV"} · Live ${igOrderExecutionEnabled("live") ? "PÅ" : "AV"}`);
 
 // Starta autonom Position Monitor — ladda lärdomar + entries från disk FÖRST
 // så agenten kommer ihåg över restarts
-initLessonsFromDisk()
-  .then(() => startPositionMonitor(binanceTestnetCreds, binanceLiveCreds))
-  .catch(err => {
-    log.warn(`[lessons] init fail: ${err instanceof Error ? err.message : String(err)}`);
-    startPositionMonitor(binanceTestnetCreds, binanceLiveCreds);
-  });
+// Binance-positionsmonitorn startas inte längre (IG-positioner stängs med tidshorisont/Sälj nu).
+initLessonsFromDisk().catch(err => log.warn(`[lessons] init fail: ${err instanceof Error ? err.message : String(err)}`));
+void startPositionMonitor;
 
 // ─── Portfolio-stats cache (60s TTL för att inte spam:a Binance API) ───
 type PortfolioStats = Awaited<ReturnType<BinanceClient["getPortfolioTradeStats"]>>;
@@ -200,7 +205,10 @@ async function executeApprovedOrder(
     }
     if (px) quoteUsd = Math.round(Number(p.quantity) * px * 100) / 100;
   }
-  const gate = await checkOrderGate({ live: p.live, side: p.side, quoteUsd, source: `godkänd:${p.source}` });
+  const isIg = p.venue.startsWith("broker:") && brokers[p.venue.slice("broker:".length)] instanceof IgBroker;
+  const gate = await checkOrderGate(isIg
+    ? { live: p.live, side: p.side, unitsOrder: true, opening: !p.closeDealId, source: `godkänd:${p.source}` }
+    : { live: p.live, side: p.side, quoteUsd, source: `godkänd:${p.source}` });
   // Spärrad just nu (t.ex. kill switch) → ordern får ligga kvar och kan godkännas senare
   if (!gate.ok) return { ok: false, error: gate.error, keepPending: true };
   try {
@@ -214,6 +222,9 @@ async function executeApprovedOrder(
       if (p.live && p.side === "BUY") recordLiveSpend(parseFloat(order.cummulativeQuoteQty) || p.quoteUsd || 0);
       log.trade(`[GODKÄND] ${p.side} ${p.symbol} via Binance ${p.live ? "LIVE" : "TEST"}`);
       return { ok: true, result: order };
+    }
+    if (p.venue.startsWith("broker:") && brokers[p.venue.slice("broker:".length)] instanceof IgBroker) {
+      return executeIgOrder(p, brokers[p.venue.slice("broker:".length)] as IgBroker);
     }
     if (p.venue.startsWith("broker:")) {
       const name = p.venue.slice("broker:".length);
@@ -300,6 +311,85 @@ async function executeApprovedOrder(
     return { ok: false, error: `Okänd order-väg: ${p.venue}` };
   } catch (err) {
     return { ok: false, error: (err instanceof Error ? err.message : String(err)).slice(0, 300) };
+  }
+}
+
+// ─── IG: nytt förslag i Väntande ordrar (från dashboarden, popupen eller strategier) ───
+// Insatsen är en andel (%) av IG-saldot i kontovalutan = marginalen ordern får använda.
+export async function createIgPendingOrder(b: Record<string, unknown>, broker: IgBroker): Promise<
+  { ok: true; pendingOrder: PendingOrder; quote: unknown } | { ok: false; error: string; status?: number; quote?: unknown }> {
+  const symbol = String(b.symbol ?? "").trim();
+  const side = b.side === "SELL" ? "SELL" : b.side === "BUY" ? "BUY" : null;
+  if (!/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$/.test(symbol) || !side) return { ok: false, error: "Välj ett IG-instrument (EPIC) och KÖP/SÄLJ" };
+  const num = (v: unknown) => (v === undefined || v === null || v === "" ? undefined : Number(v));
+  const orderType = b.orderType === "LIMIT" ? "LIMIT" as const : "MARKET" as const;
+  const limitPrice = orderType === "LIMIT" ? num(b.limitPrice) : undefined;
+  let takeProfit = num(b.takeProfit), stopLoss = num(b.stopLoss);
+  for (const [label, v] of [["Limitpris", limitPrice], ["Målpris", takeProfit], ["Stop-loss", stopLoss]] as const) {
+    if (v !== undefined && !(Number.isFinite(v) && v > 0)) return { ok: false, error: `${label} måste vara ett pris över 0` };
+  }
+  if (orderType === "LIMIT" && limitPrice === undefined) return { ok: false, error: "Limit-order kräver ett pris" };
+  let account, ticker;
+  try { [account, ticker] = await Promise.all([broker.getAccount(), broker.getTicker(symbol)]); }
+  catch (err) { return { ok: false, status: 409, error: err instanceof Error ? err.message : String(err) }; }
+  if (takeProfit === undefined || stopLoss === undefined) {
+    const lv = await broker.defaultLevels(symbol, side).catch(() => null);
+    if (lv) { takeProfit ??= lv.takeProfit; stopLoss ??= lv.stopLoss; }
+  }
+  const ref = limitPrice ?? ticker.price;
+  const sign = side === "BUY" ? 1 : -1;
+  if (takeProfit !== undefined && sign * (takeProfit - ref) <= 0) return { ok: false, error: side === "BUY" ? `Målpris ska vara över priset (${ref})` : `Vid SÄLJ (kort) ska målpriset vara under priset (${ref})` };
+  if (stopLoss !== undefined && sign * (ref - stopLoss) <= 0) return { ok: false, error: side === "BUY" ? `Stop-loss ska vara under priset (${ref})` : `Vid SÄLJ (kort) ska stop-loss vara över priset (${ref})` };
+  const pct = Math.min(3, Math.max(0.1, Number(b.stakePct) || currentStake()?.pct || 1));
+  const quantity = num(b.quantity);
+  const stakeAmount = Math.round(((account.balance ?? 0) * pct / 100) * 100) / 100;
+  const q = await broker.stakeQuote({ epic: symbol, direction: side, stake: stakeAmount, stopLoss, takeProfit }).catch((e) => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }) as { ok: boolean; reason?: string });
+  if (!q.ok && quantity === undefined) return { ok: false, error: q.reason ?? "Storleken kunde inte räknas fram", quote: q };
+  const gate = await checkOrderGate({ live: broker.mode === "live", side, unitsOrder: true, opening: true, source: String(b.source || "dashboard") });
+  if (!gate.ok) return { ok: false, error: gate.error };
+  const hz = Number(b.horizonSec);
+  const horizonSec = Number.isFinite(hz) && hz > 0 ? Math.round(Math.min(hz, 30 * 86400)) : undefined;
+  const p = await addPendingOrder({
+    source: String(b.source || "dashboard").slice(0, 60), venue: `broker:${broker.name}`, live: broker.mode === "live",
+    symbol, side, name: igMarketData.nameOf(symbol) ?? undefined, stakePct: pct, stakeAmount, currency: account.currency,
+    ...(quantity !== undefined ? { quantity } : {}),
+    ...(orderType === "LIMIT" ? { orderType, limitPrice } : {}),
+    ...(takeProfit !== undefined ? { takeProfit } : {}), ...(stopLoss !== undefined ? { stopLoss } : {}),
+    refPrice: ref, reason: b.reason ? String(b.reason).slice(0, 200) : undefined,
+    ...(horizonSec ? { horizonSec } : {}),
+  });
+  return { ok: true, pendingOrder: p, quote: q };
+}
+
+// ─── IG: godkänd order → IG (granskning + bekräftelse i Codex igOrders) ───
+// Orderläget AV (standard): inget skickas, ordern ligger kvar med ett tydligt besked.
+// Okänt utfall: markeras som misslyckad och skickas ALDRIG om automatiskt.
+async function executeIgOrder(p: PendingOrder, broker: IgBroker): Promise<{ ok: true; result: unknown } | { ok: false; error: string; keepPending?: boolean }> {
+  if (!broker.executionEnabled()) {
+    return { ok: false, keepPending: true, error: `${IG_EXECUTION_OFF} (IG ${broker.env === "live" ? "Live" : "Demo"}). Inget skickades till IG.` };
+  }
+  if ((broker.mode === "live") !== p.live) return { ok: false, error: "Miljön (Demo/Live) har ändrats sedan ordern skapades. Lägg den igen." };
+  try {
+    if (p.closeDealId) {
+      const r = await broker.closePosition(p.closeDealId, p.symbol);
+      cancelTimedExitForDeal(p.closeDealId);
+      log.trade(`[GODKÄND] stäng ${p.symbol} (${p.closeDealId}) via ${broker.name}`);
+      return { ok: true, result: r };
+    }
+    const order = await broker.placeOrder({
+      symbol: p.symbol, side: p.side, type: p.orderType === "LIMIT" ? "LIMIT" : "MARKET",
+      price: p.orderType === "LIMIT" ? p.limitPrice : undefined,
+      quantity: p.quantity, stakeAmount: p.stakeAmount,
+      takeProfit: p.takeProfit, stopLoss: p.stopLoss,
+    });
+    if (order.dealId && p.orderType !== "LIMIT" && p.horizonSec && p.horizonSec <= MAX_AUTO_EXIT_SEC) {
+      addTimedExit({ broker: broker.name, symbol: p.symbol, qty: order.executedQty, live: p.live, horizonSec: p.horizonSec, baseline: 0, dealId: order.dealId });
+    }
+    log.trade(`[GODKÄND] ${p.side} ${p.symbol} via ${broker.name} · ${order.status}${order.dealId ? ` · deal ${order.dealId}` : ""}`);
+    return { ok: true, result: order };
+  } catch (err) {
+    const msg = (err instanceof Error ? err.message : String(err)).slice(0, 400);
+    return { ok: false, error: msg, keepPending: msg.startsWith(IG_EXECUTION_OFF) };
   }
 }
 
@@ -602,7 +692,6 @@ function broadcastUserStream(event: string, payload: unknown): void {
 
 // ─── Binance WebSocket User Data Stream — pushar order-fills + balans-uppdateringar i realtid ───
 import WebSocket from "ws";
-import { addCustomSymbol, removeCustomSymbol, listCustomSymbols } from "./customSymbols.js";
 import { addKlineSymbol, removeKlineSymbol } from "./klineStream.js";
 import { addTickerBase } from "./marketStream.js";
 interface UserStream { ws: WebSocket; listenKey: string; keepAlive: NodeJS.Timeout; client: BinanceClient }
@@ -669,17 +758,12 @@ async function startUserDataStream(mode: "testnet" | "live"): Promise<void> {
 //  - Bättre felmeddelande som diagnoserar 410 → 'API-key permission saknas'
 //  - Exponential backoff vid återanslutning (5s, 30s, 120s)
 //  - Polling fortsätter parallellt som fallback om WS misslyckas
-setTimeout(() => {
-  // Bybit överallt: Binance spärrar API-handel i Sverige, så strömmarna startas bara med BYBIT_ONLY=false
-  if (process.env.BYBIT_ONLY !== "false") return;
-  if (binanceLiveCreds) startUserDataStream("live");
-  if (binanceTestnetCreds) startUserDataStream("testnet");
-}, 3000);
+void startUserDataStream; // Binance-användarströmmen används inte med IG
 
 // ─── PUBLIC MARKET STREAM (price-cache i realtid) ───
 // Eliminerar REST-polling för pris-data. Alla services kan läsa O(1) från memory.
 // Källa: wss://stream.binance.com:9443/ws/!miniTicker@arr (mainnet, publik, ingen auth).
-startMarketStream();
+startMarketStream(); // IG-kvoter (src/server/igMarketData.ts)
 
 // Reset daily-loss-counter vid midnatt
 setInterval(() => {
@@ -721,6 +805,11 @@ export function getActiveBrokerName(): string | null {
 
 export function setActiveBrokerName(name: string | null): void {
   activeBrokerName = name;
+  igMarketData.setActiveEnv(name === "ig" ? "live" : "demo");
+}
+/** Aktiv mäklare: IG Live bara när den uttryckligen valts, annars IG Demo. */
+function activeName(brokers: Record<string, BrokerAdapter>): string | undefined {
+  return activeBrokerName && brokers[activeBrokerName] ? activeBrokerName : brokers["ig-demo"] ? "ig-demo" : Object.keys(brokers)[0];
 }
 
 export function broadcastEvent(event: string, data: unknown): void {
@@ -802,12 +891,13 @@ export function startServer(
   initLiveLayer(brokers, broadcastEvent);
   // Startad i LIVE (MODE=live + LIVE_TRADING_CONFIRMED) → Bybit LIVE är aktiv
   // mäklare direkt, så att en LIVE-order aldrig tyst blir TEST efter omstart.
-  if (liveAllowedByServer() && brokers.bybit && !activeBrokerName) {
-    activeBrokerName = "bybit";
-    log.warn("LIVE: aktiv mäklare = Bybit EU (riktiga pengar, varje order väntar på Godkänn)");
-  }
-  // TP/SL för LIVE-marknadsköp (src/server/liveTpSl.ts)
-  startLiveTpSl(brokers, broadcastEvent);
+  if (liveAllowedByServer() && brokers.ig && !activeBrokerName) {
+    setActiveBrokerName("ig");
+    log.warn("LIVE: aktiv mäklare = IG Live (riktiga pengar, varje order väntar på Godkänn)");
+  } else if (!activeBrokerName && brokers["ig-demo"]) setActiveBrokerName("ig-demo");
+  // IG sätter TP/SL (limit/stop) direkt på positionen hos IG, så botens egen
+  // TP/SL-bevakning (src/server/liveTpSl.ts, för Bybit-marknadsköp) startas inte.
+  void startLiveTpSl;
   startTradeHorizon(brokers, broadcastEvent);
 
   const server = http.createServer(async (req, res) => {
@@ -858,6 +948,15 @@ export function startServer(
 
       // ── Live-lagret: /api/live/*, /api/bybit/*, /api/strategies* ──
       if (await handleLiveRoutes(url, method, req, res)) return;
+
+      // ── IG: status/anslutning, saldo, pengar för en order, marknadsdata (src/server/igRoutes.ts) ──
+      if (await handleIgRoutes(url, method, req, res, readBody, brokers, () => activeName(brokers), broadcastEvent, (o) => addPendingOrder(o as never))) return;
+
+      // Binance/Oanda är inte längre plattformar: inga anrop dit från körvägen.
+      if (url.pathname.startsWith("/api/binance/") || url.pathname.startsWith("/api/oanda/")) {
+        jsonStatus(res, 410, { ok: false, error: "Borttagen: plattformen är IG (TEST = IG Demo, LIVE = IG Live)." });
+        return;
+      }
 
       // ── Login: sätter sessionen som httpOnly-cookie ──
       if (url.pathname === "/api/auth/login" && method === "POST") {
@@ -1008,11 +1107,20 @@ export function startServer(
 
       // ── Lista brokers ──
       if (url.pathname === "/api/brokers" && method === "GET") {
-        const list = Object.entries(brokers).map(([name, broker]) => ({
-          name,
-          mode: broker.mode,
-          active: (activeBrokerName ?? Object.keys(brokers)[0]) === name,
-        }));
+        const list = Object.entries(brokers).map(([name, broker]) => {
+          const ig = broker instanceof IgBroker ? broker : null;
+          const st = ig?.status();
+          return {
+            name,
+            mode: broker.mode,
+            label: ig ? (ig.env === "live" ? "IG Live" : "IG Demo") : name,
+            env: ig?.env ?? null,
+            connected: st?.status === "connected",
+            connection: st ? { status: st.status, error: st.error, currency: st.account?.currency ?? null, accountType: st.account?.accountType ?? null } : null,
+            executionEnabled: ig ? ig.executionEnabled() : false,
+            active: (activeBrokerName ?? Object.keys(brokers)[0]) === name,
+          };
+        });
         json(res, { brokers: list, activeBroker: activeBrokerName ?? Object.keys(brokers)[0] ?? null });
         return;
       }
@@ -1025,8 +1133,12 @@ export function startServer(
           jsonStatus(res, 400, { error: `Broker '${name}' finns inte. Tillgängliga: ${Object.keys(brokers).join(", ")}` });
           return;
         }
-        activeBrokerName = name;
-        broadcastEvent("broker-changed", { activeBroker: name });
+        if (brokers[name]!.mode === "live" && !liveAllowedByServer()) {
+          jsonStatus(res, 409, { error: "IG Live är låst. Riktiga pengar slås bara på i .env (MODE=live, LIVE_TRADING_CONFIRMED=true) och omstart." });
+          return;
+        }
+        setActiveBrokerName(name);
+        broadcastEvent("broker-changed", { activeBroker: name, env: igMarketData.getActiveEnv() });
         log.info(`Aktiv broker bytt till: ${name}`);
         json(res, { ok: true, activeBroker: name });
         return;
@@ -1092,12 +1204,14 @@ export function startServer(
           executionMode: config.executionMode,
           // Härled UI-läge från kombination
           uiMode: config.mode === "paper" ? "paper" :
-                  liveAllowedByServer() && activeBrokerName === "bybit" ? "live" :
+                  liveAllowedByServer() && activeBrokerName === "ig" ? "live" :
                   config.executionMode === "approve" ? "propose" : "live",
           activeBroker: activeBrokerName,
           // Ärligt svar till UI:t: kan LIVE över huvud taget användas just nu?
           liveAllowed: liveAllowedByServer(),
-          liveKeys: { binance: !!binanceLiveCreds, oanda: !!oandaCreds && !oandaCreds.practice, alpaca: Object.values(brokers).some((b) => b.name === "alpaca" && b.mode === "live"), kraken: !!brokers.kraken, bybit: !!brokers.bybit },
+          liveKeys: { ig: !!brokers.ig && (brokers.ig as IgBroker).status().credentialsComplete },
+          platform: "IG", env: igMarketData.getActiveEnv(),
+          execution: { demo: igOrderExecutionEnabled("demo"), live: igOrderExecutionEnabled("live") },
           limits: { maxLiveStakeUsd: MAX_LIVE_STAKE_USD, maxTestStakeUsd: testStakeCapUsd(), maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD, liveSpentTodayUsd: getLiveSpentTodayUsd() },
         });
         return;
@@ -1122,7 +1236,7 @@ export function startServer(
             return;
           }
           log.warn("Dashboard bad om LIVE-vy (servern är redan startad i LIVE)");
-          if (brokers.bybit) activeBrokerName = "bybit";
+          if (brokers.ig) setActiveBrokerName("ig");
           broadcastEvent("mode-changed", { uiMode: "live", mode: config.mode, executionMode: config.executionMode });
           json(res, { ok: true, uiMode: "live", mode: config.mode, executionMode: config.executionMode });
           return;
@@ -1137,8 +1251,7 @@ export function startServer(
           return;
         }
         // TEST-knappen byter tillbaka till TEST-mäklaren (låtsaskontot)
-        const testBroker = brokers["bybit-paper"] ? "bybit-paper" : brokers["bybit-demo"] ? "bybit-demo" : null;
-        if (testBroker && activeBrokerName === "bybit") activeBrokerName = testBroker;
+        if (activeBrokerName === "ig" || !activeBrokerName) setActiveBrokerName("ig-demo");
         broadcastEvent("mode-changed", { uiMode, mode: config.mode, executionMode: config.executionMode });
         json(res, { ok: true, uiMode, mode: config.mode, executionMode: config.executionMode, activeBroker: activeBrokerName });
         return;
@@ -1147,7 +1260,7 @@ export function startServer(
       // Resultatfönstret: affärer + öppna innehav med vinst/förlust (?mode=TEST|LIVE)
       if (url.pathname === "/api/results" && method === "GET") {
         const q = url.searchParams.get("mode");
-        const mode = q === "LIVE" || q === "TEST" ? q : (activeBrokerName === "bybit" ? "LIVE" : "TEST");
+        const mode = q === "LIVE" || q === "TEST" ? q : (activeBrokerName === "ig" ? "LIVE" : "TEST");
         json(res, await getResults(brokers, mode, listLiveTpSl()));
         return;
       }
@@ -1201,39 +1314,35 @@ export function startServer(
           const iv = Number(url.searchParams.get("interval")) || getHorizonMin();
           const c = url.searchParams.get("cat") || "move";
           const cat = (c in CATEGORIES ? c : "move") as Category;
-          json(res, { ok: true, interval: iv, cat, categories: CATEGORIES, feePct: 0.5, movers: await getCategory(cat, iv, 10) });
+          const movers = await getCategory(cat, iv, 10);
+          json(res, { ok: true, interval: iv, cat, categories: CATEGORIES, feePct: null, source: `IG ${igMarketData.getActiveEnv() === "live" ? "Live" : "Demo"}`, note: movers.note ?? null, movers: [...movers] });
         } catch (err) {
           jsonStatus(res, 502, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }
         return;
       }
+      // Egna instrument = IG-bevakningslistan (EPICs verifierade mot kontot). Bybit-uppslaget används inte.
       if (url.pathname === "/api/custom-symbols" && method === "GET") {
-        json(res, { symbols: listCustomSymbols(), all: config.crypto.symbols });
+        const w = igMarketData.watchlistDetailed();
+        json(res, { symbols: w.map((x) => ({ symbol: x.epic, base: x.name ?? x.epic, epic: x.epic, name: x.name, category: x.category })), all: w.map((x) => x.epic) });
         return;
       }
       if (url.pathname === "/api/custom-symbols" && method === "POST") {
         try {
-          const b = JSON.parse((await readBody(req)) || "{}") as { symbol?: string; note?: string };
-          const c = await addCustomSymbol(String(b.symbol ?? ""), b.note);
-          void addKlineSymbol(c.symbol).catch((err) => log.warn(`[egna mynt] kline: ${err instanceof Error ? err.message : String(err)}`));
-          addTickerBase(c.base, c.usdc);
-          userAction(`lade till ${c.base}`, { coin: c.symbol });
-          json(res, { ok: true, symbol: c, all: config.crypto.symbols });
+          const b = JSON.parse((await readBody(req)) || "{}") as { symbol?: string; epic?: string };
+          const added = await igMarketData.addWatch(String(b.epic ?? b.symbol ?? "").trim());
+          userAction(`lade till ${added.name ?? added.epic}`, { coin: added.epic });
+          json(res, { ok: true, symbol: { symbol: added.epic, base: added.name ?? added.epic, epic: added.epic, name: added.name }, all: igMarketData.watchlist() });
         } catch (err) {
           jsonStatus(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }
         return;
       }
       {
-        const m = url.pathname.match(/^\/api\/custom-symbols\/([A-Za-z0-9]{2,20})$/);
+        const m = url.pathname.match(/^\/api\/custom-symbols\/([A-Za-z0-9._-]{2,100})$/);
         if (m && method === "DELETE") {
-          try {
-            const c = removeCustomSymbol(m[1]!);
-            removeKlineSymbol(c.symbol);
-            json(res, { ok: true, removed: c.base, all: config.crypto.symbols });
-          } catch (err) {
-            jsonStatus(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
-          }
+          igMarketData.removeWatch(m[1]!);
+          json(res, { ok: true, removed: m[1], all: igMarketData.watchlist() });
           return;
         }
       }
@@ -1248,6 +1357,19 @@ export function startServer(
       // body: { symbol, side, quoteUsd, source?, broker? }  (broker saknas = aktiv broker)
       if (url.pathname === "/api/pending-orders" && method === "POST") {
         const b = JSON.parse(await readBody(req)) as { symbol?: string; side?: string; quoteUsd?: number; source?: string; broker?: string; reason?: string; orderType?: string; limitPrice?: number; takeProfit?: number; stopLoss?: number; sellAll?: boolean };
+        {
+          const igName = b.broker || activeName(brokers);
+          const igb = igName ? brokers[igName] : undefined;
+          if (igb instanceof IgBroker) {
+            const r = await createIgPendingOrder(b as Record<string, unknown>, igb);
+            if (r.ok) {
+              broadcastEvent("pending-orders", { id: r.pendingOrder.id });
+              userAction(`la ${r.pendingOrder.side} ${r.pendingOrder.name ?? r.pendingOrder.symbol} i kön (${igb.env === "live" ? "IG Live" : "IG Demo"})`, { to: "orders", coin: r.pendingOrder.symbol });
+              json(res, r);
+            } else jsonStatus(res, r.status ?? 400, r);
+            return;
+          }
+        }
         const symbol = String(b.symbol || "").toUpperCase();
         const side = b.side === "SELL" ? "SELL" : b.side === "BUY" ? "BUY" : null;
         const quoteUsd = Number(b.quoteUsd);
@@ -1551,7 +1673,7 @@ export function startServer(
             return;
           }
           const clientId = String(parsed.clientId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
-          const dir = path.resolve(process.cwd(), "data", "sync");
+          const dir = dataPath("sync");
           await fs.mkdir(dir, { recursive: true });
           const file = path.join(dir, `${clientId}.json`);
           await fs.writeFile(file, JSON.stringify({ updatedAt: Date.now(), state: parsed.state }), "utf8");
@@ -1570,7 +1692,7 @@ export function startServer(
           return;
         }
         try {
-          const file = path.resolve(process.cwd(), "data", "sync", `${clientId}.json`);
+          const file = dataPath("sync", `${clientId}.json`);
           const data = await fs.readFile(file, "utf8");
           json(res, JSON.parse(data));
         } catch (err) {
@@ -1614,7 +1736,7 @@ export function startServer(
                 const snap = await getMarketSnapshot();
                 if (snap) {
                   const marketBlock = formatSnapshotForPrompt(snap);
-                  systemPrompt = `${profile.system}\n\n---\n\n${marketBlock}\n\n**VIKTIGT:** Använd alltid datan ovan när du svarar — det är riktiga live-priser från Binance just nu. Hänvisa till specifika nivåer, RSI-värden, trender. Du HAR realtidsdata. Vägra inte ge konkreta rekommendationer.`;
+                  systemPrompt = `${profile.system}\n\n---\n\n${marketBlock}\n\n**VIKTIGT:** Använd alltid datan ovan när du svarar — det är IG-data (se datastatus per instrument: live/fördröjt/inaktuellt). Hänvisa till specifika nivåer, RSI-värden, trender. Du HAR realtidsdata. Vägra inte ge konkreta rekommendationer.`;
                 }
               } catch (err) {
                 log.warn(`Market snapshot misslyckades: ${err instanceof Error ? err.message : String(err)}`);

@@ -1,3 +1,4 @@
+import { IgBroker } from "../brokers/ig.js";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import type { RiskManager } from "../risk/riskManager.js";
@@ -117,7 +118,7 @@ export const TOOLS: Record<string, ToolDef> = {
       input_schema: {
         type: "object",
         properties: {
-          symbol: { type: "string", description: "Binance spot-symbol, t.ex. BTCUSDT" },
+          symbol: { type: "string", description: "IG-EPIC från bevakningslistan, t.ex. CS.D.EURUSD.MINI.IP" },
         },
         required: ["symbol"],
       },
@@ -135,7 +136,7 @@ export const TOOLS: Record<string, ToolDef> = {
       input_schema: {
         type: "object",
         properties: {
-          symbol: { type: "string", description: "Binance spot-symbol, t.ex. BTCUSDT" },
+          symbol: { type: "string", description: "IG-EPIC från bevakningslistan, t.ex. CS.D.EURUSD.MINI.IP" },
           interval: {
             type: "string",
             enum: ["1m", "5m", "15m", "1h", "4h", "1d"],
@@ -181,7 +182,7 @@ export const TOOLS: Record<string, ToolDef> = {
       input_schema: {
         type: "object",
         properties: {
-          symbol: { type: "string", description: "Binance spot-symbol, t.ex. BTCUSDT" },
+          symbol: { type: "string", description: "IG-EPIC från bevakningslistan, t.ex. CS.D.EURUSD.MINI.IP" },
           side: { type: "string", enum: ["BUY", "SELL"] },
           type: { type: "string", enum: ["MARKET", "LIMIT"], description: "Orderstyp. MARKET för omedelbart." },
           quote_qty: {
@@ -222,6 +223,25 @@ export const TOOLS: Record<string, ToolDef> = {
       const limitPrice = optNum(input, "limit_price");
       let takeProfit = optNum(input, "take_profit");
       let stopLoss = optNum(input, "stop_loss");
+
+      // ── IG (CFD): servern räknar storlek från insats-% och IG:s regler; Codex igOrders gör riskkontrollen ──
+      if (ctx.broker instanceof IgBroker) {
+        const { getHorizonMin } = await import("../server/tradeHorizon.js");
+        const { createIgPendingOrder } = await import("../server/api.js");
+        if (ctx.config.executionMode === "approve" || !ctx.broker.executionEnabled()) {
+          const r = await createIgPendingOrder({
+            symbol, side, source: "agent", orderType: type, limitPrice, takeProfit, stopLoss,
+            reason: String(reasoning ?? "").slice(0, 200), horizonSec: getHorizonMin() * 60,
+          }, ctx.broker);
+          if (!r.ok) return { accepted: false, reason: r.error };
+          return {
+            accepted: true, executed: false,
+            reason: ctx.broker.executionEnabled() ? "Väntar på Mikes GODKÄNN." : "Väntar på Mikes GODKÄNN. Orderläget är avstängt, så inget skickas till IG ens efter godkännande.",
+            proposedOrder: { symbol, side, stakePct: r.pendingOrder.stakePct, stakeAmount: r.pendingOrder.stakeAmount, currency: r.pendingOrder.currency, takeProfit: r.pendingOrder.takeProfit, stopLoss: r.pendingOrder.stopLoss },
+          };
+        }
+        return { accepted: false, reason: "AUTO-läge skickar inte IG-ordrar direkt; varje IG-order kräver GODKÄNN." };
+      }
 
       const orderReq: OrderRequest = {
         symbol,

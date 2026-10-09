@@ -1,12 +1,7 @@
 import { config } from "./config.js";
 import type { BrokerAdapter } from "./brokers/adapter.js";
-import { BinanceBroker } from "./brokers/binance.js";
-import { AlpacaBroker } from "./brokers/alpaca.js";
-import { BybitPaperBroker } from "./brokers/bybitPaper.js";
-import { KrakenBroker } from "./brokers/kraken.js";
-import { BybitBroker } from "./brokers/bybit.js";
-import { BlofinBroker } from "./brokers/blofin.js";
-import { OandaBroker } from "./brokers/oanda.js";
+import { IgBroker } from "./brokers/ig.js";
+import { igMarketData } from "./server/igMarketData.js";
 import { RiskManager } from "./risk/riskManager.js";
 import { runAgentTurn } from "./agent/claudeAgent.js";
 import {
@@ -44,115 +39,17 @@ import { CryptoMomentumEngine } from "./strategies/cryptoMomentum.js";
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── Setup: brokers ──
-
+// Plattformen är IG (Mike 2026-10-09): TEST = IG Demo (virtuella pengar på IG:s
+// demokonto), LIVE = IG Live. Bybit, Binance, Alpaca, Kraken, Oanda och Blofin
+// skapas inte längre (filerna finns kvar i git men används inte).
 function createBrokers(): Record<string, BrokerAdapter> {
-  const brokers: Record<string, BrokerAdapter> = {};
+  return { "ig-demo": new IgBroker("demo"), ig: new IgBroker("live") };
+}
 
-  if (config.alpaca.enabled) {
-    brokers.alpaca = new AlpacaBroker({
-      keyId: config.alpaca.keyId,
-      secretKey: config.alpaca.secretKey,
-      baseUrl: config.alpaca.baseUrl,
-      dataUrl: config.alpaca.dataUrl,
-      // Läget bestäms av vilket konto nycklarna pekar på, inte av MODE,
-      // så att ett paper-konto aldrig visas som LIVE och tvärtom.
-      mode: config.alpaca.baseUrl.includes("paper-api") ? "paper" : "live",
-    });
-  }
-
-  // Alpacas riktiga konto (egna nycklar). Ligger bredvid paper-kontot så att
-  // TEST och LIVE finns samtidigt. Order-grinden släpper bara igenom LIVE-ordrar
-  // när MODE=live och LIVE_TRADING_CONFIRMED=true.
-  // Kraken: riktiga pengar (ingen sandbox). Ordrar släpps bara igenom av
-  // order-grinden när MODE=live och LIVE_TRADING_CONFIRMED=true.
-  // Bybit EU: riktiga pengar. Samma order-grind som Kraken.
-  if (config.bybit.enabled) {
-    brokers.bybit = new BybitBroker({
-      apiKey: config.bybit.apiKey,
-      apiSecret: config.bybit.apiSecret,
-      quote: config.bybit.quote,
-      baseUrl: config.bybit.baseUrl,
-    });
-  }
-
-  // TEST = låtsaspengar i boten, fyllda mot Bybit EU:s riktiga orderbok (Mike 2026-10-03:
-  // ingen Alpaca, inga riktiga pengar i TEST; Bybit EU har ingen demo-API). BYBIT_PAPER=false stänger av.
-  if (process.env.BYBIT_PAPER !== "false") {
-    brokers["bybit-paper"] = new BybitPaperBroker({ quote: config.bybit.quote, baseUrl: config.bybit.baseUrl });
-  }
-
-  // Bybit Demo Trading: TEST på exakt samma börs, par, priser och USDC som LIVE.
-  // Finns den väljs den före Alpaca paper som TEST-mäklare.
-  if (config.bybitDemo.enabled) {
-    brokers["bybit-demo"] = new BybitBroker({
-      apiKey: config.bybitDemo.apiKey,
-      apiSecret: config.bybitDemo.apiSecret,
-      quote: config.bybitDemo.quote,
-      baseUrl: config.bybitDemo.baseUrl,
-      demo: true,
-    });
-  }
-
-  if (config.kraken.enabled) {
-    brokers.kraken = new KrakenBroker({
-      apiKey: config.kraken.apiKey,
-      apiSecret: config.kraken.apiSecret,
-      quote: config.kraken.quote,
-    });
-  }
-
-  if (config.alpacaLive.enabled) {
-    brokers["alpaca-live"] = new AlpacaBroker({
-      keyId: config.alpacaLive.keyId,
-      secretKey: config.alpacaLive.secretKey,
-      baseUrl: config.alpacaLive.baseUrl,
-      dataUrl: config.alpacaLive.dataUrl,
-      mode: "live",
-    });
-  }
-
-  if (config.blofin.enabled) {
-    brokers.blofin = new BlofinBroker({
-      apiKey: config.blofin.apiKey,
-      apiSecret: config.blofin.apiSecret,
-      passphrase: config.blofin.passphrase,
-      baseUrl: config.blofin.baseUrl,
-      mode: config.mode,
-    });
-  }
-
-  // Bybit överallt: Binance registreras bara med BYBIT_ONLY=false (spärrar API-handel i Sverige)
-  if (config.binance.enabled && process.env.BYBIT_ONLY === "false") {
-    brokers.binance = new BinanceBroker({
-      apiKey: config.binance.apiKey,
-      apiSecret: config.binance.apiSecret,
-      baseUrl: config.binance.baseUrl,
-      mode: config.mode,
-    });
-  }
-
-  if (config.oanda.enabled) {
-    brokers.oanda = new OandaBroker({
-      apiKey: config.oanda.apiKey,
-      accountId: config.oanda.accountId,
-      baseUrl: config.oanda.baseUrl,
-    });
-  }
-
-  // Bybit överallt (Mike 2026-10-03): finns Bybit demo (TEST) körs bara Bybit,
-  // demo först så att den blir aktiv mäklare. Övriga nycklar ligger kvar i .env
-  // men används inte. BYBIT_ONLY=false i .env tar tillbaka dem.
-  // TEST-mäklaren först (den blir aktiv som standard): låtsaskontot, annars demo.
-  const testName = brokers["bybit-paper"] ? "bybit-paper" : brokers["bybit-demo"] ? "bybit-demo" : null;
-  if (testName && process.env.BYBIT_ONLY !== "false") {
-    const only: Record<string, BrokerAdapter> = { [testName]: brokers[testName]! };
-    if (brokers.bybit) only.bybit = brokers.bybit;
-    const dropped = Object.keys(brokers).filter((n) => !(n in only));
-    if (dropped.length) log.info(`Bybit överallt: använder inte ${dropped.join(", ")}`);
-    return only;
-  }
-
-  return brokers;
+/** Agenternas och signalmotorns par = IG-bevakningslistan (EPICs) för aktiv miljö. */
+function syncWatchlistToConfig(): void {
+  const list = igMarketData.watchlist();
+  config.crypto.symbols.splice(0, config.crypto.symbols.length, ...list);
 }
 
 // ── Setup: strategi-motorer ──
@@ -171,21 +68,21 @@ function createEngines(brokers: Record<string, BrokerAdapter>): StrategyEngine[]
         break;
 
       case "wheel_strategy":
-        if (brokers.alpaca && brokers.alpaca instanceof AlpacaBroker) {
+        if (false) {
           engines.push(
-            new WheelEngine(brokers.alpaca, {
+            new WheelEngine(brokers.alpaca as never, {
               underlyings: config.wheel.underlyings,
               putDelta: config.wheel.putDelta,
               profitTargetPct: config.wheel.profitTargetPct,
             }),
           );
         } else {
-          log.warn("Motor B (Wheel) kräver Alpaca. Skippar.");
+          log.warn("Motor B (Wheel) kräver Alpaca, som inte används med IG. Skippar.");
         }
         break;
 
       case "crypto_momentum": {
-        const cryptoBroker = brokers.blofin ?? brokers.binance;
+        const cryptoBroker: BrokerAdapter | undefined = undefined; // Blofin/Binance används inte med IG
         if (cryptoBroker) {
           engines.push(
             new CryptoMomentumEngine(cryptoBroker, {
@@ -275,7 +172,7 @@ async function runOnce(
   const activeName = getActiveBrokerName();
   const primaryBroker = activeName
     ? brokers[activeName]
-    : (brokers["bybit-paper"] ?? brokers["bybit-demo"] ?? brokers.alpaca ?? brokers.blofin ?? brokers.binance);
+    : brokers["ig-demo"];
   if (!primaryBroker) {
     log.error("Ingen broker tillgänglig.");
     return;
@@ -488,6 +385,11 @@ async function main(): Promise<void> {
   // /api/signals även innan strömmen hunnit fylla på, och panelen visar då
   // att den väntar istället för att endpointen saknas.
   // Alla par agenterna följer (Bybit klarar alla på en anslutning)
+  // IG: bevakningslistan (EPICs) är både agenternas och signalmotorns par.
+  config.stocks.symbols.splice(0, config.stocks.symbols.length); // inga Alpaca-aktier
+  syncWatchlistToConfig();
+  igMarketData.events.on("watchlist", () => syncWatchlistToConfig());
+  igMarketData.events.on("env", () => syncWatchlistToConfig());
   const streamSymbols = config.crypto.symbols;
   const streamInterval = process.env.SIGNAL_INTERVAL ?? "1m";
   startSignalEngine();

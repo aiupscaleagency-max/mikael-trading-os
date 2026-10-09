@@ -1,0 +1,264 @@
+import type http from "node:http";
+import type { BrokerAdapter } from "../brokers/adapter.js";
+import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
+import { getIgStatus, testIgConnection, getIgReadBudget, type IgEnvironment } from "../integrations/igConnection.js";
+import { localIgCredentialRequest, saveIgCredentials } from "../integrations/igCredentialStore.js";
+import { igChanged } from "../integrations/igEvents.js";
+import { getIgMarket, getIgHistory, searchIgMarkets } from "../integrations/igMarkets.js";
+import { getIgMarketDirectory, getIgDirectoryEnrichment } from "../integrations/igMarketDirectory.js";
+import { getIgOrderState } from "../integrations/igOrders.js";
+import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
+import { currentStake } from "../risk/stakeLadder.js";
+import { cancelTimedExitForDeal, listTimedExits } from "./tradeHorizon.js";
+import { checkOrderGate } from "./orderGate.js";
+import { userAction } from "./agentActivity.js";
+import { log } from "../logger.js";
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  IG-rutter (auth-grinden i api.ts körs före dessa)
+//
+//   GET  /api/ig/status                 → Demo + Live: ansluten?, kontovaluta, orderläge, läsbudget
+//   POST /api/ig/connect {environment}  → anslut (inloggning ligger lokalt i trading-ig.json)
+//   POST /api/ig/credentials            → spara inloggning, bara från localhost (Codex igCredentialStore)
+//   GET  /api/ig/balance                → saldo/tillgängligt/P-L i kontovaluta (aktiv miljö)
+//   POST /api/ig/stake-quote            → storlek, marginal, SL/TP i kontovaluta för en insats (skickar inget)
+//   POST /api/ig/positions/:dealId/close → "Sälj nu": lägger en stängning i Väntande ordrar (GODKÄNN krävs)
+//   GET  /api/ig/history                → IG-transaktioner/aktivitet 30 dagar (aktiv miljö)
+//   GET  /api/market/watchlist          → bevakade EPICs med namn
+//   POST /api/market/watchlist {epic}   → lägg till (verifieras mot IG)
+//   DELETE /api/market/watchlist/:epic  → ta bort
+//   GET  /api/market/directory?category=forex|crypto → IG-katalogen för aktiv miljö
+//   GET  /api/market/search?q=          → IG-sökning
+//   GET  /api/market/klines?symbol=EPIC&interval=1m&limit=300 → stängda IG-ljus + pågående + datatillstånd
+//   GET  /api/market/prices?symbols=a,b → kvoter med ålder/tillstånd
+//   GET  /api/market/stream?epics=a,b   → SSE: quote, candle, stream-status (IG Lightstreamer via servern)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const EPIC_RE = /^[A-Za-z0-9._-]{1,100}$/;
+const sse = new Set<{ res: http.ServerResponse; epics: Set<string> }>();
+let sseWired = false;
+
+function send(res: http.ServerResponse, code: number, data: unknown): void {
+  res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+  res.end(JSON.stringify(data));
+}
+async function body(req: http.IncomingMessage, readBody: (r: http.IncomingMessage) => Promise<string>): Promise<Record<string, any>> {
+  const raw = await readBody(req);
+  if (raw.length > 8192) throw new Error("För stor begäran");
+  if (!raw.trim()) return {};
+  const v = JSON.parse(raw);
+  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
+const envLabel = (e: IgEnvironment) => (e === "live" ? "IG Live" : "IG Demo");
+
+function quoteView(q: IgQuote | null, epic: string) {
+  const ds = igMarketData.dataState(epic);
+  return q ? { epic, name: igMarketData.nameOf(epic), bid: q.bid, offer: q.offer, mid: q.mid, changePct: q.changePct, high: q.high, low: q.low, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, source: q.source, state: ds.state, ageMs: ds.ageMs }
+    : { epic, name: igMarketData.nameOf(epic), state: ds.state, ageMs: null };
+}
+const chartBar = (c: Candle) => ({ time: Math.floor(c.openTime / 1000), open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume, closed: c.closed });
+
+function wireSse(): void {
+  if (sseWired) return;
+  sseWired = true;
+  const write = (epic: string | null, event: string, data: unknown) => {
+    const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const c of sse) if (!epic || c.epics.has(epic)) { try { c.res.write(msg); } catch { sse.delete(c); } }
+  };
+  igMarketData.events.on("quote", (env: IgEnvironment, q: IgQuote) => { if (env === igMarketData.getActiveEnv()) write(q.epic, "quote", { env, ...quoteView(q, q.epic) }); });
+  igMarketData.events.on("candle", (env: IgEnvironment, epic: string, iv: string, c: Candle) => { if (env === igMarketData.getActiveEnv()) write(epic, "candle", { env, epic, interval: iv, bar: chartBar(c) }); });
+  igMarketData.events.on("stream-status", (env: IgEnvironment, s: unknown) => { if (env === igMarketData.getActiveEnv()) write(null, "stream-status", { env, ...(s as object) }); });
+  igMarketData.events.on("env", (env: IgEnvironment) => write(null, "env", { env, label: envLabel(env) }));
+  const hb = setInterval(() => write(null, "heartbeat", { at: Date.now(), env: igMarketData.getActiveEnv(), stream: igMarketData.streamStatus() }), 15_000);
+  hb.unref?.();
+}
+
+export async function handleIgRoutes(
+  url: URL, method: string, req: http.IncomingMessage, res: http.ServerResponse,
+  readBody: (r: http.IncomingMessage) => Promise<string>,
+  brokers: Record<string, BrokerAdapter>,
+  activeBroker: () => string | undefined,
+  onEvent: (e: string, d: unknown) => void,
+  addPending: (o: Record<string, any>) => Promise<{ id: string }>,
+): Promise<boolean> {
+  const p = url.pathname;
+  if (!p.startsWith("/api/ig/") && !p.startsWith("/api/market/")) return false;
+  const env = igMarketData.getActiveEnv();
+  const activeIg = (): IgBroker | null => { const b = brokers[activeBroker() ?? ""]; return b instanceof IgBroker ? b : null; };
+  try {
+    if (p === "/api/ig/status" && method === "GET") {
+      const st = getIgStatus();
+      send(res, 200, {
+        activeEnv: env, label: envLabel(env),
+        environments: Object.fromEntries((["demo", "live"] as const).map((e) => [e, {
+          ...st.environments[e], connectionGeneration: undefined,
+          executionEnabled: (brokers[e === "live" ? "ig" : "ig-demo"] as IgBroker | undefined)?.executionEnabled() ?? false,
+          readBudget: getIgReadBudget(e), stream: igMarketData.streamStatus(e),
+        }])),
+      });
+      return true;
+    }
+    if (p === "/api/ig/connect" && method === "POST") {
+      const b = await body(req, readBody);
+      if (b.environment !== "demo" && b.environment !== "live") { send(res, 400, { error: "Välj demo eller live" }); return true; }
+      const r = await testIgConnection(b.environment);
+      igChanged(b.environment);
+      send(res, 200, { ...r, connectionGeneration: undefined });
+      return true;
+    }
+    if (p === "/api/ig/credentials" && method === "POST") {
+      if (!localIgCredentialRequest({ address: req.socket.remoteAddress, host: req.headers.host, origin: req.headers.origin, contentType: req.headers["content-type"], fetchSite: String(req.headers["sec-fetch-site"] ?? "") })) {
+        send(res, 403, { error: "IG-uppgifter kan bara sparas från localhost på denna dator" }); return true;
+      }
+      try {
+        const saved = saveIgCredentials(await body(req, readBody));
+        const r = await testIgConnection(saved.environment);
+        send(res, 200, { saved: true, environment: saved.environment, ok: r.status === "connected", error: r.error });
+      } catch (e) { send(res, 400, { error: e instanceof Error && e.message.startsWith("IG") ? e.message : "IG-uppgifterna kunde inte sparas säkert" }); }
+      return true;
+    }
+    if (p === "/api/ig/balance" && method === "GET") {
+      const b = activeIg();
+      if (!b) { send(res, 200, { connected: false, error: "Ingen IG-mäklare aktiv" }); return true; }
+      try {
+        const a = await b.getAccount();
+        send(res, 200, { connected: true, env: b.env, label: envLabel(b.env), currency: a.currency, balance: a.balance, available: a.available, profitLoss: a.profitLoss, stake: currentStake(), executionEnabled: b.executionEnabled() });
+      } catch (e) { send(res, 200, { connected: false, env: b.env, label: envLabel(b.env), error: e instanceof Error ? e.message : String(e) }); }
+      return true;
+    }
+    if (p === "/api/ig/stake-quote" && method === "POST") {
+      const b = activeIg();
+      const q = await body(req, readBody);
+      if (!b) { send(res, 409, { ok: false, error: "Ingen IG-mäklare aktiv" }); return true; }
+      if (!EPIC_RE.test(String(q.epic)) || (q.direction !== "BUY" && q.direction !== "SELL")) { send(res, 400, { ok: false, error: "epic och direction (BUY/SELL) krävs" }); return true; }
+      const acc = await b.getAccount();
+      const pct = Number(q.pct) > 0 ? Math.min(3, Number(q.pct)) : currentStake()?.pct ?? 1;
+      const stake = Number(q.stake) > 0 ? Number(q.stake) : (acc.balance ?? 0) * pct / 100;
+      const out = await b.stakeQuote({ epic: q.epic, direction: q.direction, stake, stopLoss: Number(q.stopLoss) || undefined, takeProfit: Number(q.takeProfit) || undefined });
+      send(res, 200, { ...out, pct, account: { currency: acc.currency, balance: acc.balance, available: acc.available, profitLoss: acc.profitLoss }, env: b.env, label: envLabel(b.env), executionEnabled: b.executionEnabled() });
+      return true;
+    }
+    {
+      const m = p.match(/^\/api\/ig\/positions\/([A-Za-z0-9_-]{1,100})\/close$/);
+      if (m && method === "POST") {
+        const b = activeIg();
+        if (!b) { send(res, 409, { ok: false, error: "Ingen IG-mäklare aktiv" }); return true; }
+        const dealId = m[1]!;
+        const pos = (await b.getPositions()).find((x) => x.dealId === dealId);
+        if (!pos) { send(res, 404, { ok: false, error: "Positionen finns inte (längre) i IG" }); return true; }
+        const gate = await checkOrderGate({ live: b.mode === "live", side: pos.direction === "SELL" ? "BUY" : "SELL", unitsOrder: true, opening: false, source: "Sälj nu" });
+        if (!gate.ok) { send(res, 200, { ok: false, error: gate.error }); return true; }
+        const pend = await addPending({ source: "Sälj nu", venue: `broker:${b.name}`, live: b.mode === "live", symbol: pos.symbol, name: pos.name, side: pos.direction === "SELL" ? "BUY" : "SELL", quantity: pos.quantity, closeDealId: dealId, refPrice: pos.currentPrice, reason: `Stäng ${pos.name ?? pos.symbol} (${pos.direction === "SELL" ? "kort" : "lång"} ${pos.quantity})` });
+        userAction(`Sälj nu: stäng ${pos.name ?? pos.symbol}`, { to: "orders", coin: pos.symbol });
+        onEvent("pending-orders", { id: pend.id });
+        send(res, 200, { ok: true, pendingOrder: pend, executionEnabled: b.executionEnabled(), note: b.executionEnabled() ? "Väntar på GODKÄNN" : `${IG_EXECUTION_OFF}: stängningen skickas inte förrän orderläget slås på.` });
+        return true;
+      }
+    }
+    if (p === "/api/ig/history" && method === "GET") {
+      const e = url.searchParams.get("env") === "live" ? "live" : url.searchParams.get("env") === "demo" ? "demo" : env;
+      try { send(res, 200, { env: e, ...(await getIgHistory(e)) }); } catch (err) { send(res, 200, { env: e, status: "unavailable", error: err instanceof Error ? err.message : String(err) }); }
+      return true;
+    }
+    if (p === "/api/ig/orders" && method === "GET") {
+      send(res, 200, { env, ...getIgOrderState(env), timedExits: listTimedExits().filter((x) => x.dealId) });
+      return true;
+    }
+
+    // ── Marknad ──
+    if (p === "/api/market/watchlist" && method === "GET") {
+      send(res, 200, { env, label: envLabel(env), watchlist: igMarketData.watchlistDetailed(), max: 10 });
+      return true;
+    }
+    if (p === "/api/market/watchlist" && method === "POST") {
+      const b = await body(req, readBody);
+      try {
+        const r = await igMarketData.addWatch(String(b.epic ?? ""));
+        userAction(`följer ${r.name ?? r.epic}`, { coin: r.epic });
+        send(res, 200, { ok: true, ...r, watchlist: igMarketData.watchlistDetailed() });
+      } catch (e) { send(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) }); }
+      return true;
+    }
+    {
+      const m = p.match(/^\/api\/market\/watchlist\/([A-Za-z0-9._-]{1,100})$/);
+      if (m && method === "DELETE") { igMarketData.removeWatch(m[1]!); send(res, 200, { ok: true, watchlist: igMarketData.watchlistDetailed() }); return true; }
+    }
+    if (p === "/api/market/directory" && method === "GET") {
+      const category = url.searchParams.get("category") === "crypto" ? "crypto" : "forex";
+      try {
+        const d = await getIgMarketDirectory(env, category);
+        for (const m of d.markets) igMarketData.rememberName(env, m.epic, m.name, m.category);
+        send(res, 200, { env, label: envLabel(env), ...d });
+      } catch (e) { send(res, 200, { env, label: envLabel(env), category, markets: [], status: "unavailable", error: e instanceof Error ? e.message : String(e) }); }
+      return true;
+    }
+    if (p === "/api/market/enrichment" && method === "GET") {
+      const epic = String(url.searchParams.get("epic") ?? "");
+      try { send(res, 200, await getIgDirectoryEnrichment(env, epic)); } catch (e) { send(res, 200, { epic, error: e instanceof Error ? e.message : String(e) }); }
+      return true;
+    }
+    if (p === "/api/market/search" && method === "GET") {
+      try {
+        const r = await searchIgMarkets(env, String(url.searchParams.get("q") ?? ""));
+        for (const m of r.markets) igMarketData.rememberName(env, m.epic, m.name, m.category);
+        send(res, 200, { env, markets: r.markets });
+      } catch (e) { send(res, 200, { env, markets: [], error: e instanceof Error ? e.message : String(e) }); }
+      return true;
+    }
+    if (p === "/api/market/klines" && method === "GET") {
+      const epic = String(url.searchParams.get("epic") ?? url.searchParams.get("symbol") ?? "");
+      const iv = url.searchParams.get("interval") || "1m";
+      const limit = Math.min(500, Math.max(10, Number(url.searchParams.get("limit")) || 300));
+      if (!EPIC_RE.test(epic)) { send(res, 400, { error: "Välj ett IG-instrument (EPIC)", klines: [] }); return true; }
+      let meta: Record<string, unknown> = {};
+      try { const m = await getIgMarket(env, epic); igMarketData.rememberName(env, epic, m.name, m.category); igMarketData.setRestQuote(env, epic, m.quote); meta = { name: m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
+      catch (e) { meta = { metaError: e instanceof Error ? e.message : String(e) }; }
+      try { await igMarketData.ensureSeries(env, epic, iv); } catch { /* historyError visas nedan */ }
+      igMarketData.requestStream([epic]);
+      const closed = igMarketData.closed(epic, iv).slice(-limit);
+      const forming = igMarketData.forming(epic, iv);
+      send(res, 200, {
+        env, label: envLabel(env), symbol: epic, epic, interval: iv, ...meta, name: (meta.name as string) ?? igMarketData.nameOf(epic),
+        klines: closed.map(chartBar), forming: forming ? chartBar(forming) : null,
+        historyError: igMarketData.historyError(epic, iv), quote: quoteView(igMarketData.quote(epic), epic),
+        source: `${envLabel(env)} · REST-historik (stängda mid-ljus) + Lightstreamer`, at: Date.now(),
+      });
+      return true;
+    }
+    if (p === "/api/market/prices" && method === "GET") {
+      const symbols = (url.searchParams.get("symbols") || igMarketData.watchlist().join(",")).split(",").map((x) => x.trim()).filter((x) => EPIC_RE.test(x)).slice(0, 30);
+      igMarketData.requestStream(symbols);
+      const prices: Record<string, number> = {};
+      const quotes: Record<string, unknown> = {};
+      for (const s of symbols) {
+        let q = igMarketData.quote(s);
+        if (!q || q.observedAt === null || Date.now() - q.observedAt > 60_000) {
+          try { const m = await getIgMarket(env, s); igMarketData.setRestQuote(env, s, m.quote); igMarketData.rememberName(env, s, m.name, m.category); q = igMarketData.quote(s); } catch { /* visas som saknad */ }
+        }
+        quotes[s] = quoteView(q, s);
+        if (q) prices[s] = q.mid;
+      }
+      send(res, 200, { env, prices, quotes, source: envLabel(env), at: Date.now() });
+      return true;
+    }
+    if (p === "/api/market/stream" && method === "GET") {
+      wireSse();
+      const epics = new Set((url.searchParams.get("epics") || "").split(",").map((x) => x.trim()).filter((x) => EPIC_RE.test(x)).slice(0, 30));
+      igMarketData.requestStream([...epics]);
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+      const client = { res, epics };
+      sse.add(client);
+      res.write(`event: hello\ndata: ${JSON.stringify({ env, label: envLabel(env), stream: igMarketData.streamStatus() })}\n\n`);
+      for (const e of epics) { const q = igMarketData.quote(e); if (q) res.write(`event: quote\ndata: ${JSON.stringify({ env, ...quoteView(q, e) })}\n\n`); }
+      const keep = setInterval(() => igMarketData.requestStream([...epics]), 60_000);
+      req.on("close", () => { sse.delete(client); clearInterval(keep); });
+      return true;
+    }
+    return false;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`[ig-api] ${method} ${p}: ${msg}`);
+    send(res, 500, { ok: false, error: msg.slice(0, 300) });
+    return true;
+  }
+}

@@ -8,6 +8,7 @@
 // den fungerar bara medan boten är igång.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { dataDir, dataPath } from "../dataDir.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { BrokerAdapter } from "../brokers/adapter.js";
@@ -15,7 +16,7 @@ import { log } from "../logger.js";
 import { getCachedPrice } from "./marketStream.js";
 import { recordLiveFill } from "./results.js";
 
-const FILE = path.resolve("data/live-tpsl.json");
+const FILE = dataPath("live-tpsl.json");
 
 export interface LiveTpSl {
   id: string;

@@ -1,3 +1,4 @@
+import { dataDir, dataPath } from "../dataDir.js";
 import fs from "node:fs/promises";
 import { agentStart, agentDone, agentFail, agentSkip, agentScan, registerStrategies } from "./agentActivity.js";
 import path from "node:path";
@@ -8,9 +9,7 @@ import { log } from "../logger.js";
 import { loadLibrary, type Strategy } from "../strategies/library.js";
 import { computeSeries, evalAll, type RuleResult } from "../strategies/ruleEngine.js";
 import { askJev, type JevVerdict } from "./jevClient.js";
-import {
-  subscribeBybitClosedCandles, watchBybitKlines, getBybitClosedCandles,
-} from "./bybitStream.js";
+import { igMarketData } from "./igMarketData.js";
 import type { Candle } from "./klineStream.js";
 import {
   addPendingOrder, checkOrderGate, MAX_LIVE_STAKE_USD, testStakeCapUsd,
@@ -22,7 +21,7 @@ import { createLlmClient, extractJson, hasLlmCredentials, toDirectModel, usingGa
 // ═══════════════════════════════════════════════════════════════════════════
 //  Strategi-löparen — kör alla påslagna strategier i biblioteket live
 //
-//  Varje gång Bybit stänger ett ljus (websocket) körs de strategier som
+//  Varje gång IG stänger ett ljus (Lightstreamer CONS_END=1 eller REST-historik) körs de strategier som
 //  bevakar det paret och intervallet. Alla strategier och par körs
 //  parallellt, så en långsam AI-granskning håller aldrig upp de andra.
 //
@@ -40,9 +39,8 @@ import { createLlmClient, extractJson, hasLlmCredentials, toDirectModel, usingGa
 //  position ska aldrig kunna blockeras av ett AI-lager.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const quote = () => (process.env.BYBIT_QUOTE || "USDC").toUpperCase();
-const SIGNALS_FILE = path.resolve(process.cwd(), "data", "strategy-signals.json");
-const STATE_FILE = path.resolve(process.cwd(), "data", "strategy-state.json");
+const SIGNALS_FILE = dataPath("strategy-signals.json");
+const STATE_FILE = dataPath("strategy-state.json");
 const MAX_SIGNALS = 300;
 const AI_TIMEOUT_MS = 20_000;
 
@@ -93,7 +91,25 @@ let llm: Anthropic | null = null;
 const stats = { evaluations: 0, lastEvalAt: 0, lastSignalAt: 0 };
 
 const posKey = (strategyId: string, coin: string) => `${strategyId}:${coin}`;
-export const pairOf = (coin: string) => `${coin}${quote()}`;
+/**
+ * IG: strategins "coin" är en IG-EPIC (t.ex. CS.D.BITCOIN.CFD.IP) eller ett kortnamn.
+ * Kortnamn översätts BARA till en EPIC som redan finns i bevakningslistan för aktiv
+ * miljö (verifierad mot kontot); annars null och strategin bevakar inte paret.
+ */
+const COIN_NAME: Record<string, RegExp> = {
+  BTC: /bitcoin/i, ETH: /ether(eum)?\b/i, SOL: /solana/i, XRP: /ripple|xrp/i, ADA: /cardano/i, DOGE: /dogecoin/i, LTC: /litecoin/i,
+  BCH: /bitcoin cash/i, DOT: /polkadot/i, LINK: /chainlink/i,
+};
+export function pairOf(coin: string): string | null {
+  if (/^[A-Z]{2}\.[A-Z0-9._-]+$/i.test(coin)) return coin;
+  const c = coin.toUpperCase().replace(/(USDT|USDC|USD)$/, "");
+  const list = igMarketData.watchlistDetailed();
+  const fx = /^[A-Z]{6}$/.test(coin.toUpperCase()) ? new RegExp(`^${coin.slice(0, 3)}\\s*/\\s*${coin.slice(3, 6)}`, "i") : null;
+  const want = fx ?? COIN_NAME[c];
+  if (!want) return null;
+  const hit = list.filter((m) => m.name && want.test(m.name) && !(c === "BTC" && /cash/i.test(m.name)))[0];
+  return hit?.epic ?? null;
+}
 
 async function readJson<T>(file: string, fallback: T): Promise<T> {
   try { return JSON.parse(await fs.readFile(file, "utf8")) as T; } catch { return fallback; }
@@ -282,7 +298,7 @@ async function evaluate(s: Strategy, coin: string, history: Candle[]): Promise<v
     strategyId: s.id,
     strategyName: s.name,
     coin,
-    pair: pairOf(coin),
+    pair: pairOf(coin) ?? coin,
     interval: s.interval,
     side,
     why,
@@ -351,46 +367,40 @@ export async function queueSignal(signalId: string, venueOverride?: "test" | "li
   };
 
   let brokerName: string | undefined;
-  if (venue === "live") brokerName = brokersRef.bybit ? "bybit" : Object.keys(brokersRef).find((n) => brokersRef[n]!.mode === "live");
-  else brokerName = brokersRef["bybit-paper"] ? "bybit-paper" : brokersRef["bybit-demo"] ? "bybit-demo" : Object.keys(brokersRef).find((n) => brokersRef[n]!.mode === "paper");
-  const broker = brokerName ? brokersRef[brokerName] : undefined;
-  if (!broker || !brokerName) return fail(venue === "live" ? "Ingen LIVE-mäklare (Bybit) är kopplad" : "Ingen TEST-mäklare (Bybit TEST) är kopplad");
+  brokerName = venue === "live" ? "ig" : "ig-demo";
+  const broker = brokersRef[brokerName];
+  if (!broker) return fail(venue === "live" ? "IG Live är inte kopplat" : "IG Demo är inte kopplat");
   const live = broker.mode === "live";
 
-  const symbol = `${sig.coin}USDT`; // mäklarna mappar själva (Bybit → USDC, Alpaca → BTC/USD)
-  let quoteUsd: number | undefined;
-  let quantity: number | undefined;
-  let note = "";
-  if (sig.side === "BUY") {
-    const cap = live ? MAX_LIVE_STAKE_USD : testStakeCapUsd();
-    quoteUsd = Math.min(strategy?.stakeUsd ?? 5, cap);
-    if ((strategy?.stakeUsd ?? 0) > cap) note = ` (sänkt till taket $${cap})`;
+  // IG: signalen blir en väntande IG-order (EPIC, insats i % av IG-saldot, TP/SL).
+  // SÄLJ-signal stänger strategins öppna KÖP-position (dealId hos IG), öppnar aldrig kort här.
+  const epic = sig.pair && sig.pair.includes(".") ? sig.pair : pairOf(sig.coin);
+  if (!epic) return fail(`${sig.coin} finns inte som IG-EPIC i bevakningslistan`);
+  const { createIgPendingOrder } = await import("./api.js");
+  let p: { id: string };
+  if (sig.side === "SELL") {
+    let held;
+    try { held = (await broker.getPositions()).find((x) => x.symbol === epic && x.direction !== "SELL"); }
+    catch (err) { return fail(`Kunde inte läsa positioner hos ${brokerName}: ${err instanceof Error ? err.message : String(err)}`); }
+    if (!held?.dealId) return fail(`Ingen öppen KÖP-position i ${sig.coin} hos ${live ? "IG Live" : "IG Demo"}`);
+    const gate = await checkOrderGate({ live, side: "SELL", unitsOrder: true, opening: false, source: `strategi:${sig.strategyName}` });
+    if (!gate.ok) return fail(gate.error);
+    p = await addPendingOrder({
+      source: `strategi:${sig.strategyName}`.slice(0, 60), venue: `broker:${brokerName}`, live, symbol: epic, name: held.name,
+      side: "SELL", quantity: held.quantity, closeDealId: held.dealId, refPrice: held.currentPrice,
+      reason: `${sig.strategyName}: ${sig.why} (stänger position)`.slice(0, 200),
+    });
   } else {
-    try {
-      const held = (await broker.getPositions()).find((p) => p.baseAsset.toUpperCase() === sig.coin);
-      if (!held || !(held.quantity > 0)) return fail(`Inget ${sig.coin} att sälja hos ${brokerName}`);
-      quantity = held.quantity;
-    } catch (err) {
-      return fail(`Kunde inte läsa innehav hos ${brokerName}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    const r = await createIgPendingOrder({
+      symbol: epic, side: "BUY", source: `strategi:${sig.strategyName}`.slice(0, 60), reason: `${sig.strategyName}: ${sig.why}`.slice(0, 200),
+      ...(sig.stopLoss ? { stopLoss: sig.stopLoss } : {}), ...(sig.target ? { takeProfit: sig.target } : {}),
+    }, broker as import("../brokers/ig.js").IgBroker);
+    if (!r.ok) return fail(r.error);
+    p = r.pendingOrder;
   }
-
-  const gate = await checkOrderGate({ live, side: sig.side, quoteUsd, source: `strategi:${sig.strategyName}` });
-  if (!gate.ok) return fail(gate.error);
-
-  const p = await addPendingOrder({
-    source: `strategi:${sig.strategyName}`.slice(0, 60),
-    venue: `broker:${brokerName}`,
-    live,
-    symbol,
-    side: sig.side,
-    quoteUsd,
-    quantity,
-    reason: `${sig.strategyName}: ${sig.why}${note}`.slice(0, 200),
-  });
   sig.queued = { pendingId: p.id, at: new Date().toISOString() };
   agentStart("orders", `${sig.side} ${sig.coin}`, { from: "paper", coin: sig.coin });
-  agentDone("orders", `${sig.side} ${sig.coin} väntar på ditt OK (${venue.toUpperCase()})`);
+  agentDone("orders", `${sig.side} ${sig.coin} väntar på ditt OK (${live ? "IG Live" : "IG Demo"})`);
   scheduleSave();
   broadcast("pending-orders", { id: p.id });
   broadcast("strategy-signal", sig);
@@ -406,10 +416,13 @@ export async function syncStrategies(): Promise<void> {
   const jobs: Promise<void>[] = [];
   for (const s of lib.filter((x) => x.enabled)) {
     for (const coin of s.coins) {
-      const key = `${pairOf(coin)}:${s.interval}`;
+      const epic = pairOf(coin);
+      if (!epic) { log.warn(`[strategi] ${s.name}: ${coin} finns inte som IG-EPIC i bevakningslistan, bevakas inte`); continue; }
+      const key = `${epic}:${s.interval}`;
       if (watched.has(key)) continue;
       watched.add(key);
-      jobs.push(watchBybitKlines(pairOf(coin), s.interval).catch((err) => {
+      const env = igMarketData.getActiveEnv();
+      jobs.push(igMarketData.ensureSeries(env, epic, s.interval).then(() => undefined).catch((err) => {
         watched.delete(key);
         log.warn(`[strategi] kan inte bevaka ${key}: ${err instanceof Error ? err.message : String(err)}`);
       }));
@@ -430,7 +443,9 @@ export async function startStrategyRunner(
   positions = await readJson<Record<string, OpenPos>>(STATE_FILE, {});
   await loadPaperLedger();
 
-  subscribeBybitClosedCandles((pair, interval, _c, history) => {
+  // Bara STÄNGDA ljus från aktiv IG-miljö (Demo eller Live, aldrig blandat).
+  igMarketData.events.on("closed", (env: string, pair: string, interval: string, _c: Candle, history: Candle[]) => {
+    if (env !== igMarketData.getActiveEnv()) return;
     void (async () => {
       const lib = await loadLibrary();
       const jobs = lib
@@ -444,6 +459,9 @@ export async function startStrategyRunner(
     })();
   });
 
+  const resync = () => { watched.clear(); void syncStrategies().catch(() => {}); };
+  igMarketData.events.on("env", resync);
+  igMarketData.events.on("watchlist", resync);
   await syncStrategies();
   const lib = await loadLibrary();
   log.ok(`[strategi] biblioteket igång — ${lib.filter((s) => s.enabled).length} av ${lib.length} strategier påslagna, ${watched.size} par/intervall strömmar`);
@@ -472,5 +490,6 @@ export function getRunnerStatus(): { started: boolean; streams: string[]; evalua
 }
 
 export function getRunnerCandles(coin: string, interval: string): Candle[] {
-  return getBybitClosedCandles(pairOf(coin), interval);
+  const epic = pairOf(coin);
+  return epic ? igMarketData.closed(epic, interval) : [];
 }

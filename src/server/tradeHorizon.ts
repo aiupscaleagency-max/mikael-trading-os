@@ -9,6 +9,7 @@
 //    TP/SL inte redan sålt det. Sparas i data/timed-exits.json (överlever omstart).
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { dataDir, dataPath } from "../dataDir.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { BrokerAdapter } from "../brokers/adapter.js";
@@ -23,8 +24,8 @@ export const MAX_AUTO_EXIT_SEC = 30 * 60;
 /** Ett förslag gäller minst så här länge, även för 1-minuters trades */
 const MIN_VALID_SEC = 120;
 
-const HORIZON_FILE = path.resolve("data/trade-horizon.json");
-const EXITS_FILE = path.resolve("data/timed-exits.json");
+const HORIZON_FILE = dataPath("trade-horizon.json");
+const EXITS_FILE = dataPath("timed-exits.json");
 
 function readJson<T>(file: string, fallback: T): T {
   try { return JSON.parse(readFileSync(file, "utf8")) as T; } catch { return fallback; }
@@ -99,6 +100,8 @@ export interface TimedExit {
   tpslId?: string;
   /** TEST: köpets order-id (dess TP/SL-grupp i bybit-paper) */
   paperGroup?: string;
+  /** IG: positionen som stängs (DELETE /positions/otc) när tiden är slut */
+  dealId?: string;
   attempts?: number;
 }
 
@@ -118,7 +121,7 @@ export function addTimedExit(e: Omit<TimedExit, "id" | "openedAt" | "exitAt" | "
     id: `exit-${now}-${Math.random().toString(36).slice(2, 7)}`,
     broker: e.broker, symbol: e.symbol, qty: e.qty, live: e.live,
     openedAt: now, exitAt: now + e.horizonSec * 1000,
-    baseline: e.baseline, tpslId: e.tpslId, paperGroup: e.paperGroup, attempts: 0,
+    baseline: e.baseline, tpslId: e.tpslId, paperGroup: e.paperGroup, dealId: e.dealId, attempts: 0,
   };
   exits.push(entry);
   writeJson(EXITS_FILE, exits);
@@ -135,6 +138,28 @@ export function cancelTimedExit(id: string): boolean {
   const before = exits.length;
   removeExit(id);
   return exits.length !== before;
+}
+
+/** IG: tidsgränsen behövs inte när positionen redan stängts (t.ex. Sälj nu). */
+export function cancelTimedExitForDeal(dealId: string): void {
+  for (const x of exits.filter((y) => y.dealId === dealId)) removeExit(x.id);
+}
+
+/** IG: stäng en position när tiden är slut. Orderläge AV → inget kan vara öppnat av oss, inget görs. */
+export async function closeIgAtExpiry(x: TimedExit, broker: BrokerAdapter, onEvent?: (e: string, d: unknown) => void): Promise<void> {
+  const ig = broker as BrokerAdapter & { executionEnabled?: () => boolean; closePosition?: (id: string, s?: string) => Promise<unknown> };
+  if (!ig.closePosition || !x.dealId) { removeExit(x.id); return; }
+  if (ig.executionEnabled && !ig.executionEnabled()) {
+    removeExit(x.id);
+    log.warn(`[horisont] ${x.symbol}: orderläget är avstängt, ingen IG-stängning skickas (stäng själv i IG om positionen finns).`);
+    return;
+  }
+  const open = (await broker.getPositions()).some((p) => p.dealId === x.dealId);
+  if (!open) { removeExit(x.id); log.info(`[horisont] ${x.symbol}: positionen är redan stängd i IG`); return; }
+  await ig.closePosition(x.dealId, x.symbol);
+  removeExit(x.id);
+  log.trade(`[horisont] tiden ute: stängde IG-positionen ${x.dealId} (${x.symbol}, ${x.live ? "LIVE" : "TEST"})`);
+  onEvent?.("timed-exit", { symbol: x.symbol, dealId: x.dealId });
 }
 
 const baseOf = (s: string) => s.toUpperCase().replace("/", "").replace(/(USDT|USDC|USD|EUR)$/, "");
@@ -162,6 +187,7 @@ export function startTradeHorizon(brokers: Record<string, BrokerAdapter>, onEven
       selling.add(x.id);
       void (async () => {
         try {
+          if (x.dealId) { await closeIgAtExpiry(x, broker, onEvent); return; }
           // Köpets egen TP/SL tas bort FÖRST, så att den inte säljer samtidigt
           if (x.tpslId) removeLiveTpSl(x.tpslId);
           if (x.paperGroup) await broker.cancelOrder(x.symbol, x.paperGroup).catch(() => {});

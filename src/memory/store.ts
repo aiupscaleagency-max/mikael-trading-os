@@ -1,3 +1,4 @@
+import { dataDir, dataPath } from "../dataDir.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -7,7 +8,7 @@ import type { DecisionRecord } from "../types.js";
 // kan läsa filerna själv. Om du senare vill flytta detta till Supabase/Postgres
 // räcker det att byta ut denna modul.
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
+const DATA_DIR = dataDir();
 const DECISIONS_FILE = path.join(DATA_DIR, "decisions.jsonl");
 const STATE_FILE = path.join(DATA_DIR, "state.json");
 

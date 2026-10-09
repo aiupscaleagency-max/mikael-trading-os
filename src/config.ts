@@ -184,14 +184,10 @@ const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 // Tidigare avbröts starten här. Det gjorde att man inte kunde titta på
 // systemet utan att först koppla ett riktigt konto — och att koppla ett
 // konto bara för att se ett diagram är fel ordning.
-const viewOnly = !hasAlpaca && !hasAlpacaLive && !hasKraken && !hasBybit && !hasBybitDemo && !hasBlofin && !hasBinance && !hasOanda;
-if (viewOnly) {
-  console.warn(
-    "⚠️  Ingen broker konfigurerad — startar i VY-LÄGE.\n" +
-    "   Marknadsdata, diagram och signaler fungerar. Inga ordrar kan läggas.\n" +
-    "   Fyll i Alpaca-, Blofin- eller Binance-nycklar i .env för att handla.",
-  );
-}
+// IG är plattformen (Demo + Live). Inloggning ligger i ~/.config/aiupscale/trading-ig.json
+// (IG_CREDENTIALS_FILE), inte i .env. Utan den visas IG som ej anslutet i dashboarden.
+const viewOnly = false;
+void hasAlpaca; void hasAlpacaLive; void hasKraken; void hasBybit; void hasBybitDemo; void hasBlofin; void hasBinance; void hasOanda;
 
 export const config = {
   anthropicApiKey: env.ANTHROPIC_API_KEY,
@@ -293,7 +289,8 @@ export const config = {
 
   crypto: {
     // MATIC heter POL sedan 2024 (Bybit har inget MATIC-par), så en gammal .env byts ut här
-    symbols: env.CRYPTO_SYMBOLS.map((x: string) => x.replace(/^MATIC/, "POL")),
+    // IG: fylls från IG-bevakningslistan (EPICs) vid start, se run.ts. CRYPTO_SYMBOLS används inte.
+    symbols: [] as string[],
     leverage: env.CRYPTO_LEVERAGE,
     trailingStopPct: env.CRYPTO_TRAILING_STOP_PCT,
     takeProfitSteps: env.CRYPTO_TP_STEPS,
@@ -316,13 +313,4 @@ export const config = {
 
 export type Config = typeof config;
 
-// Egna mynt (Mike 2026-10-04): tips från grupper läggs till i dashboarden och
-// sparas i data/custom-symbols.json. De läses in här, innan strömmarna startar,
-// så att signalmotorn, JEV och agenterna följer dem precis som de 15 vanliga.
-try {
-  const extra = JSON.parse(readFileSync(resolvePath("data/custom-symbols.json"), "utf8")) as { symbols?: Array<{ symbol: string }> };
-  for (const c of extra.symbols ?? []) {
-    const sym = String(c.symbol || "").toUpperCase();
-    if (/^[A-Z0-9]{2,20}USDT$/.test(sym) && !config.crypto.symbols.includes(sym)) config.crypto.symbols.push(sym);
-  }
-} catch { /* inga egna mynt ännu */ }
+// Egna mynt/par: med IG ligger de i IG-bevakningslistan (data/ig-watchlist-<miljö>.json, src/server/igMarketData.ts).

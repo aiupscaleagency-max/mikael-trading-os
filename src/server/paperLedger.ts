@@ -1,3 +1,4 @@
+import { dataDir, dataPath } from "../dataDir.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -12,7 +13,7 @@ import { log } from "../logger.js";
 //  Sparas i data/strategy-paper.json så att historiken överlever omstarter.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const FILE = path.resolve(process.cwd(), "data", "strategy-paper.json");
+const FILE = dataPath("strategy-paper.json");
 const FEE = 0.001;
 const MAX_TRADES = 5000;
 

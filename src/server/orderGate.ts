@@ -1,3 +1,4 @@
+import { dataDir, dataPath } from "../dataDir.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -39,7 +40,7 @@ export const MAX_LIVE_DAILY_SPEND_USD = parseFloat(
 
 // Dagens LIVE-köp sparas i data/live-spend.json så att $-taket per dag
 // gäller även efter en omstart.
-const LIVE_SPEND_FILE = path.resolve("data/live-spend.json");
+const LIVE_SPEND_FILE = dataPath("live-spend.json");
 let liveSpentTodayUsd = 0;
 let liveSpendDay = new Date().toISOString().slice(0, 10);
 try {
@@ -94,8 +95,10 @@ export interface GateInput {
   side: "BUY" | "SELL";
   /** USD-belopp för köp (quoteOrderQty/notional). Okänt för sälj per antal. */
   quoteUsd?: number;
-  /** Sant för ordrar i antal enheter (t.ex. Oanda) där USD-belopp inte är känt. */
+  /** Sant för ordrar i antal enheter (t.ex. IG-kontrakt) där USD-belopp inte är känt. */
   unitsOrder?: boolean;
+  /** IG/CFD: ordern öppnar en ny position (även SÄLJ = kort). Kill switch stoppar då även sälj. */
+  opening?: boolean;
   source: string;
 }
 
@@ -107,10 +110,10 @@ export async function checkOrderGate(input: GateInput): Promise<GateResult> {
     return { ok: false, error };
   };
 
-  if (input.side === "BUY") {
+  if (input.side === "BUY" || input.opening) {
     const state = await loadState().catch(() => null);
     if (state?.killSwitchActive) {
-      return deny("Kill switch är på. Inga nya köp förrän du stänger av den.");
+      return deny("Kill switch är på. Inga nya positioner förrän du stänger av den.");
     }
   }
 
@@ -169,6 +172,12 @@ export interface PendingOrder {
   reason?: string;
   /** Tidshorisont i sekunder (1–30 min säljs automatiskt när tiden är slut) */
   horizonSec?: number;
+  /** IG: instrumentets namn, insats i kontovalutan, stängning av befintlig position */
+  name?: string;
+  stakePct?: number;
+  stakeAmount?: number;
+  currency?: string;
+  closeDealId?: string;
   /** Förslaget försvinner (status "expired") efter den här tiden */
   expiresAt?: string;
   status: "pending" | "done" | "rejected" | "failed" | "expired";
@@ -177,7 +186,7 @@ export interface PendingOrder {
   error?: string;
 }
 
-const PENDING_FILE = path.resolve(process.cwd(), "data", "pending-orders.json");
+const PENDING_FILE = dataPath("pending-orders.json");
 let pending: PendingOrder[] | null = null;
 
 async function load(): Promise<PendingOrder[]> {

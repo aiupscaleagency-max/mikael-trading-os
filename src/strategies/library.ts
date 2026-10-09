@@ -1,3 +1,4 @@
+import { dataDir, dataPath } from "../dataDir.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -63,7 +64,7 @@ export interface Strategy {
   updatedAt: string;
 }
 
-const FILE = path.resolve(process.cwd(), "data", "strategies.json");
+const FILE = dataPath("strategies.json");
 let cache: Strategy[] | null = null;
 
 const now = () => new Date().toISOString();
