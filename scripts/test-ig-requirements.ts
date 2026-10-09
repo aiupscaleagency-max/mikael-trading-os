@@ -480,6 +480,11 @@ const mkBroker = (positions: any[], env: "demo" | "live" = "demo") => new IgBrok
   fetchImpl = () => ({ ok: true, json: async () => ({ epic: B, env: "demo", name: "Bitcoin", klines: [{ t: 1 }] }) });
   const late = await IG.klines(A, "1m", 50);
   assert.equal(late.rejected, true); assert.equal(late.klines.length, 0); assert.notEqual(IG.label(A), "Bitcoin", "fel instruments namn sparas inte");
+  // Namn från katalogen tappas inte av ett klines-svar utan namn
+  IG.remember([{ epic: A, name: "EUR/USD Mini", category: "forex" }]);
+  fetchImpl = () => ({ ok: true, json: async () => ({ epic: A, env: "demo", klines: [], historyError: "historik saknas: 400" }) });
+  await IG.klines(A, "1m", 50);
+  assert.equal(IG.label(A), "EUR/USD Mini", "katalogens namn finns kvar");
   fetchImpl = () => ({ ok: true, json: async () => ({ epic: A, env: "live", klines: [{ t: 1 }] }) });
   assert.equal((await IG.klines(A, "1m", 50)).rejected, true, "svar från fel konto kastas");
   fetchImpl = () => ({ ok: true, json: async () => ({ env: "demo", quotes: { [A]: q0, [B]: { ...q0, epic: B } } }) });
