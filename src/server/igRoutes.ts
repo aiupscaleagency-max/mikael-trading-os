@@ -92,6 +92,23 @@ function wireSse(): void {
   hb.unref?.();
 }
 
+/** IG:s egen sida där ProRealTime öppnas efter inloggning hos IG. Endast https på ig.com, inga query-parametrar (ingen sessionstoken). */
+export const PRT_DEFAULT_URL = "https://www.ig.com/se";
+export function prtLink(configured?: string) {
+  let url = PRT_DEFAULT_URL;
+  if (configured) {
+    try {
+      const u = new URL(configured);
+      if (u.protocol === "https:" && (u.hostname === "ig.com" || u.hostname.endsWith(".ig.com")) && !u.search && !u.hash && !u.username && !u.password) url = u.toString();
+    } catch { /* ogiltig adress → standard */ }
+  }
+  return {
+    url,
+    api: false as const,
+    note: "ProRealTime har inget API i vårt system. Knappen öppnar IG:s egen sida i ett nytt fönster; logga in där och starta ProRealTime från IG-plattformen. Inget delas mellan PRT och dashboarden.",
+  };
+}
+
 export async function handleIgRoutes(
   url: URL, method: string, req: http.IncomingMessage, res: http.ServerResponse,
   readBody: (r: http.IncomingMessage) => Promise<string>,
@@ -260,6 +277,11 @@ export async function handleIgRoutes(
         if (last) send(res, 200, { env, label: envLabel(env), ...last, status: "partial", error, liveReferences: [], catalogue: catalogueProgress({ ...last, status: "partial", error }) });
         else send(res, 200, { env, label: envLabel(env), category, markets: [], liveReferences: [], status: "unavailable", error, catalogue: catalogueProgress({ markets: [], status: "unavailable", error }) });
       }
+      return true;
+    }
+    // Krav G: ProRealTime. Ingen inbäddning, ingen sessionslänk, inget API – bara IG:s egen sida i nytt fönster.
+    if (p === "/api/tools/prt" && method === "GET") {
+      send(res, 200, prtLink(process.env.IG_PRT_URL));
       return true;
     }
     // Krav F1–F3: Strategy Library (definitioner gemensamma, resultat per miljö)

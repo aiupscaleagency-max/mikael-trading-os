@@ -427,6 +427,17 @@ const mkBroker = (positions: any[], env: "demo" | "live" = "demo") => new IgBrok
   for (const k of ["65", "43,1 %", "3,98", "12,8 %", "Historiskt kursresultat", "validerar <b>inte</b> 1–5 minuters", "Spread", "Slippage", "Avgifter", "Finansiering", "Sizing", "Expectancy", "Out-of-sample", 'data-page="library"', 'data-page="course"']) assert.ok(html.includes(k), k);
   ok("F5 Backtest & kurs: Day 4-kursresultat märkt historiskt, körning spärrad utan Python/Tiingo, inga påhittade mått, rapportkrav listade");
 }
+
+// ══ G. ProRealTime ══
+{
+  const { prtLink, PRT_DEFAULT_URL } = await import("../src/server/igRoutes.js");
+  assert.equal(prtLink().url, PRT_DEFAULT_URL); assert.equal(prtLink().api, false); assert.match(prtLink().note, /inget API/);
+  for (const bad of ["http://www.ig.com/se", "https://evil.com/ig.com", "https://www.ig.com/se?session=abc", "https://www.ig.com/x#t", "https://u:p@www.ig.com/"]) assert.equal(prtLink(bad).url, PRT_DEFAULT_URL, bad);
+  assert.equal(prtLink("https://www.ig.com/se/prorealtime").url, "https://www.ig.com/se/prorealtime");
+  assert.ok(html.includes("Öppna ProRealTime (IG)") && html.includes('"_blank"'));
+  assert.ok(!/<iframe[^>]*(prorealtime|ig\.com)/i.test(html), "ingen inbäddning");
+  ok("G PRT-knapp öppnar IG:s egen sida i nytt fönster; inget API, ingen inbäddning, ingen sessionslänk");
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("Kravlistan: alla tester godkända (endast mocks, inga nätverksanrop)");
 process.exit(0);

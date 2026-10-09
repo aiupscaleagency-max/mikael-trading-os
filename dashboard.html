@@ -2991,6 +2991,11 @@ body.app-state-onboard .fc-panel{display:none !important}
       <div id="tl-lamps" class="xp-grid"></div>
       <div id="tl-budget" class="xp-note" style="margin-top:6px"></div>
     </div>
+    <div class="xp-card" id="tl-prt">
+      <h3>ProRealTime (IG)</h3>
+      <div class="xp-note" id="tl-prt-note">ProRealTime har inget API i vårt system. Knappen öppnar IG:s egen sida i ett nytt fönster där du loggar in och startar ProRealTime. Ingen inbäddning, inga data delas.</div>
+      <div style="margin-top:6px"><button type="button" class="xp-btn" id="tl-prt-open">↗ Öppna ProRealTime (IG)</button></div>
+    </div>
     <div class="xp-card" id="tl-export">
       <h3>Exportera ljus (CSV)</h3>
       <div class="xp-note">Stängda IG-ljus för aktuellt instrument och intervall i huvuddiagrammet (aktiv miljö). Pågående ljus tas inte med.</div>
@@ -11403,5 +11408,21 @@ window.IGS = (function(){
 })();
 </script>
 
+<script>
+/* ProRealTime-knappen (krav G): öppnar IG:s egen sida i nytt fönster. Inget API, ingen inbäddning. */
+(function(){
+  const btn = document.getElementById("tl-prt-open"); if(!btn) return;
+  btn.addEventListener("click", async ()=>{
+    // Fönstret öppnas direkt i klicket (popup-blockerare), adressen sätts när servern svarat.
+    const w = window.open("about:blank", "_blank");
+    try{
+      const r = await fetch("/api/tools/prt", { cache:"no-store" }); const d = await r.json();
+      if(d && d.note) document.getElementById("tl-prt-note").textContent = d.note;
+      if(w && d && /^https:\/\/([a-z0-9-]+\.)*ig\.com\//i.test(d.url)){ try{ w.opener = null; }catch(_){} w.location.href = d.url; }
+      else if(w) w.close();
+    }catch(e){ if(w) w.close(); document.getElementById("tl-prt-note").textContent = "Kunde inte läsa PRT-adressen: " + e.message; }
+  });
+})();
+</script>
 </body>
 </html>
