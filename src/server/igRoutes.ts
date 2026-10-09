@@ -9,6 +9,7 @@ import { getIgMarketDirectory, getIgDirectoryEnrichment, peekIgMarketDirectory, 
 import { getIgOrderState, resolveIgUnknown } from "../integrations/igOrders.js";
 import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
 import { currentStake } from "../risk/stakeLadder.js";
+import { igOrderMoneyView } from "../integrations/igRiskLimits.js";
 import { cancelTimedExitForDeal, listTimedExits } from "./tradeHorizon.js";
 import { checkOrderGate } from "./orderGate.js";
 import { userAction } from "./agentActivity.js";
@@ -147,8 +148,10 @@ export async function handleIgRoutes(
       const acc = await b.getAccount();
       const pct = Number(q.pct) > 0 ? Math.min(3, Number(q.pct)) : currentStake()?.pct ?? 1;
       const stake = Number(q.stake) > 0 ? Number(q.stake) : (acc.balance ?? 0) * pct / 100;
-      const out = await b.stakeQuote({ epic: q.epic, direction: q.direction, stake, stopLoss: Number(q.stopLoss) || undefined, takeProfit: Number(q.takeProfit) || undefined });
-      send(res, 200, { ...out, pct, account: { currency: acc.currency, balance: acc.balance, available: acc.available, profitLoss: acc.profitLoss }, env: b.env, label: envLabel(b.env), executionEnabled: b.executionEnabled() });
+      const out = await b.stakeQuote({ epic: q.epic, direction: q.direction, stake, stopLoss: Number(q.stopLoss) || undefined, takeProfit: Number(q.takeProfit) || undefined, ...(Number(q.size) > 0 ? { size: Number(q.size) } : {}) });
+      const portfolio = await b.portfolioMargin().catch(() => null);
+      const money = igOrderMoneyView({ currency: acc.currency ?? null, balance: acc.balance ?? null, available: acc.available ?? null, profitLoss: acc.profitLoss ?? null, pct, stake, quote: out, portfolio });
+      send(res, 200, { ...out, pct, money, account: { currency: acc.currency, balance: acc.balance, available: acc.available, profitLoss: acc.profitLoss }, env: b.env, label: envLabel(b.env), executionEnabled: b.executionEnabled() });
       return true;
     }
     {

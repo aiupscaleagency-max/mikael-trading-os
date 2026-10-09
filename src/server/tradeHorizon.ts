@@ -19,14 +19,16 @@ import { recordLiveFill } from "./results.js";
 import { isLiveTpSlSelling, onLiveTpSlSold, removeLiveTpSl } from "./liveTpSl.js";
 import { withIgPriority, isIgTemporaryRateError } from "../integrations/igConnection.js";
 
-export const HORIZON_CHOICES = [1, 5, 15, 30] as const;
+export const HORIZON_CHOICES = [1, 2, 3, 4, 5, 15, 30] as const;
 /** Längsta horisont som säljs automatiskt (Mike: högst 30 min i början) */
 export const MAX_AUTO_EXIT_SEC = 30 * 60;
 /** Ett förslag gäller minst så här länge, även för 1-minuters trades */
 const MIN_VALID_SEC = 120;
 
+import { getIgTimes } from "./igTimes.js";
 const HORIZON_FILE = dataPath("trade-horizon.json");
 const EXITS_FILE = dataPath("timed-exits.json");
+const DONE_FILE = dataPath("timed-exits-done.json");
 
 function readJson<T>(file: string, fallback: T): T {
   try { return JSON.parse(readFileSync(file, "utf8")) as T; } catch { return fallback; }
@@ -81,7 +83,10 @@ export function horizonPrompt(): string {
 
 /** Tidsramar som passar horisonten (används för Hannas indikatorpaket) */
 export function shortIntervals(): string[] {
-  return horizonMin <= 5 ? ["1m", "5m", "15m"] : ["5m", "15m", "1h"];
+  // Analysintervallet (eget val, D3) styr; innehavstiden styr inte längre vilka ljus som analyseras.
+  const ladder: Record<string, string[]> = { "1m": ["1m", "5m", "15m"], "5m": ["5m", "15m", "1h"], "15m": ["15m", "1h", "4h"], "1h": ["1h", "4h", "1d"] };
+  const iv = getIgTimes().updatedAt ? getIgTimes().analysisInterval : (horizonMin <= 5 ? "1m" : "5m");
+  return ladder[iv] ?? ["1m", "5m", "15m"];
 }
 
 // ─── Automatisk försäljning när tiden är slut ────────────────────────────
@@ -107,7 +112,14 @@ export interface TimedExit {
   /** IG: väntar | orderläget av | försöker igen | kräver åtgärd (visas i dashboarden, tas aldrig bort tyst) */
   igState?: "waiting" | "execution-off" | "retrying" | "needs-attention";
   lastError?: string;
+  /** Den tid användaren begärt (ändras bara av Roll-Over). exitAt kan flyttas av återförsök. */
+  requestedExitAt?: number;
+  /** Roll-Over-historik: gammal → ny tid, när servern bekräftade */
+  rollOvers?: Array<{ from: number; to: number; at: number }>;
 }
+
+/** Bekräftade tidsstängningar (IG har bekräftat att positionen är borta). Senaste 50. */
+export interface ConfirmedExit { dealId: string; symbol: string; live: boolean; requestedExitAt: number; confirmedAt: number; how: "closed" | "already-closed" }
 
 let exits: TimedExit[] = (() => {
   const v = readJson<TimedExit[]>(EXITS_FILE, []);
@@ -116,7 +128,35 @@ let exits: TimedExit[] = (() => {
 const selling = new Set<string>();
 let timer: NodeJS.Timeout | null = null;
 
-export function listTimedExits(): TimedExit[] { return [...exits]; }
+export function listTimedExits(): TimedExit[] { return exits.map((x) => ({ ...x, requestedExitAt: x.requestedExitAt ?? x.exitAt })); }
+
+let done: ConfirmedExit[] = (() => { const v = readJson<ConfirmedExit[]>(DONE_FILE, []); return Array.isArray(v) ? v : []; })();
+export function listConfirmedExits(): ConfirmedExit[] { return [...done]; }
+function confirmExit(x: TimedExit, how: ConfirmedExit["how"]): void {
+  if (!x.dealId) return;
+  done = [{ dealId: x.dealId, symbol: x.symbol, live: x.live, requestedExitAt: x.requestedExitAt ?? x.exitAt, confirmedAt: Date.now(), how }, ...done.filter((d) => d.dealId !== x.dealId)].slice(0, 50);
+  writeJson(DONE_FILE, done);
+}
+
+/**
+ * Roll-Over (D5): förläng systemets tidsstängning för en IG-position. Inte en binär option och inte
+ * terminsrullning — bara en senare tid för när servern stänger positionen. Max 30 min fram från nu.
+ */
+export function rollOverTimedExit(dealId: string, addSec: number, now = Date.now()): { ok: true; from: number; to: number; symbol: string } | { ok: false; error: string } {
+  const x = exits.find((y) => y.dealId === dealId);
+  if (!x) return { ok: false, error: "Positionen har ingen tidsstängning att förlänga" };
+  if (!(Number.isFinite(addSec) && addSec >= 60)) return { ok: false, error: "Förläng med minst 1 min" };
+  if (x.igState === "needs-attention") return { ok: false, error: "Tidsstängningen kräver åtgärd (IG-stängningen misslyckades). Stäng i IG först." };
+  const from = x.requestedExitAt ?? x.exitAt;
+  const to = Math.max(from, now) + Math.round(addSec) * 1000;
+  if (to - now > MAX_AUTO_EXIT_SEC * 1000) return { ok: false, error: `Högst ${MAX_AUTO_EXIT_SEC / 60} min fram från nu` };
+  x.requestedExitAt = to; x.exitAt = to;
+  x.rollOvers = [...(x.rollOvers ?? []), { from, to, at: now }].slice(-10);
+  if (x.igState === "execution-off") { x.igState = undefined; x.lastError = undefined; }
+  writeJson(EXITS_FILE, exits);
+  log.trade(`[horisont] Roll-Over ${x.symbol}: ${new Date(from).toISOString()} → ${new Date(to).toISOString()}`);
+  return { ok: true, from, to, symbol: x.symbol };
+}
 
 export function addTimedExit(e: Omit<TimedExit, "id" | "openedAt" | "exitAt" | "attempts"> & { horizonSec: number }): void {
   if (!(e.qty > 0) || !(e.horizonSec > 0) || e.horizonSec > MAX_AUTO_EXIT_SEC || !(e.baseline >= 0)) return;
@@ -126,6 +166,7 @@ export function addTimedExit(e: Omit<TimedExit, "id" | "openedAt" | "exitAt" | "
     broker: e.broker, symbol: e.symbol, qty: e.qty, live: e.live,
     openedAt: now, exitAt: now + e.horizonSec * 1000,
     baseline: e.baseline, tpslId: e.tpslId, paperGroup: e.paperGroup, dealId: e.dealId, attempts: 0,
+    requestedExitAt: now + e.horizonSec * 1000,
   };
   exits.push(entry);
   writeJson(EXITS_FILE, exits);
@@ -174,7 +215,7 @@ export async function closeIgAtExpiry(x: TimedExit, broker: BrokerAdapter, onEve
   if (ig.executionEnabled && !ig.executionEnabled()) {
     // Positionen redan stängd (t.ex. i IG eller av stop-loss)? Då behövs tidsgränsen inte längre.
     const list = await ig.getPositions().catch(() => null);
-    if (list && !list.some((p) => p.dealId === x.dealId)) { removeExit(x.id); log.info(`[horisont] ${x.symbol}: positionen finns inte längre i IG`); return; }
+    if (list && !list.some((p) => p.dealId === x.dealId)) { confirmExit(x, "already-closed"); removeExit(x.id); log.info(`[horisont] ${x.symbol}: positionen finns inte längre i IG`); return; }
     if (x.igState !== "execution-off") log.warn(`[horisont] ${x.symbol}: tiden är ute men orderläget är avstängt. Ligger kvar som "väntar – orderläget av" (stäng själv i IG).`);
     setExitState(x.id, { igState: "execution-off", lastError: "Orderläget är avstängt – inget skickas till IG", exitAt: Date.now() + 60_000 });
     onEvent?.("timed-exit", { symbol: x.symbol, dealId: x.dealId, state: "execution-off" });
@@ -183,11 +224,12 @@ export async function closeIgAtExpiry(x: TimedExit, broker: BrokerAdapter, onEve
   try {
     await withIgPriority(async () => {
       const open = (await ig.getPositions({ fresh: true })).some((p) => p.dealId === x.dealId);
-      if (!open) { removeExit(x.id); log.info(`[horisont] ${x.symbol}: positionen är redan stängd i IG`); onEvent?.("timed-exit", { symbol: x.symbol, dealId: x.dealId, state: "closed" }); return; }
+      if (!open) { confirmExit(x, "already-closed"); removeExit(x.id); log.info(`[horisont] ${x.symbol}: positionen är redan stängd i IG`); onEvent?.("timed-exit", { symbol: x.symbol, dealId: x.dealId, state: "closed" }); return; }
       await ig.closePosition!(x.dealId!, x.symbol);
       // Bekräftelse: positionen ska vara borta i en färsk läsning
       const still = (await ig.getPositions({ fresh: true }).catch(() => null))?.some((p) => p.dealId === x.dealId);
       if (still) throw new Error("IG bekräftade inte stängningen (positionen syns fortfarande)");
+      confirmExit(x, "closed");
       removeExit(x.id);
       log.trade(`[horisont] tiden ute: stängde IG-positionen ${x.dealId} (${x.symbol}, ${x.live ? "LIVE" : "TEST"})`);
       onEvent?.("timed-exit", { symbol: x.symbol, dealId: x.dealId, state: "closed" });

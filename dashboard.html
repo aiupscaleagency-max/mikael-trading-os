@@ -1791,9 +1791,12 @@ body.app-state-onboard .fc-panel{display:none !important}
       </span>
     </div>
     <div id="hzRow" style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px;color:#8b95a7">
-      <span>Tidshorisont för trades:</span>
-      <button type="button" class="hz-btn" data-hz="1">1 min</button>
-      <button type="button" class="hz-btn" data-hz="5">5 min</button>
+      <span title="Innehavstid: hur länge positionen hålls innan servern stänger den. Skilt från diagram-, analysintervall och sessionslängd.">Innehavstid för trades:</span>
+      <button type="button" class="hz-btn" data-hz="1" title="Innehavstid 1 min">1 min</button>
+      <button type="button" class="hz-btn" data-hz="2" title="Innehavstid 2 min">2</button>
+      <button type="button" class="hz-btn" data-hz="3" title="Innehavstid 3 min">3</button>
+      <button type="button" class="hz-btn" data-hz="4" title="Innehavstid 4 min">4</button>
+      <button type="button" class="hz-btn" data-hz="5" title="Innehavstid 5 min">5 min</button>
       <button type="button" class="hz-btn" data-hz="15">15 min</button>
       <button type="button" class="hz-btn" data-hz="30">30 min</button>
       <span id="hzHint" style="flex-basis:100%"></span>
@@ -2148,6 +2151,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     <div id="resTotals" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:10px"></div>
     <div style="margin-top:12px;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Öppna innehav, just nu</div>
     <div id="resOpen" style="margin-top:4px;font-size:13px;color:#8b95a7">Laddar…</div>
+    <div id="resConfirmed" style="margin-top:4px;font-size:11px;color:#3fb950"></div>
     <div style="margin-top:12px;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Händelser (senaste först)</div>
     <div id="resTrades" style="margin-top:4px;font-size:13px;color:#8b95a7;max-height:320px;overflow-y:auto">Laddar…</div>
     <div id="resErr" style="margin-top:6px;font-size:12px;color:#fbbf24"></div>
@@ -2179,6 +2183,37 @@ body.app-state-onboard .fc-panel{display:none !important}
         alert("Stängning av " + name + " ligger nu i Väntande ordrar. Tryck Godkänn där." + (window.IG && !IG.execOn() ? "\n\nObs: Orderläget är avstängt — inget skickas till IG." : ""));
       } catch (e) { alert("Fel: " + e.message); }
     }
+    function hm(t) { return new Date(t).toLocaleTimeString("sv-SE").slice(0, 5); }
+    async function doubleUp(dealId, name) {
+      if (!confirm("Double Up " + name + " (" + label + "): ett NYTT utkast i samma riktning och storlek läggs i Väntande ordrar. Det granskas som alla ordrar och skickas först när du trycker Godkänn. Fortsätta?")) return;
+      try {
+        var r = await fetch("/api/ig/positions/" + encodeURIComponent(dealId) + "/double-up", { method: "POST" });
+        var d = await r.json().catch(function () { return {}; });
+        if (!d.ok) { alert("Double Up lades inte i kön.\n\n" + (d.error || ("HTTP " + r.status))); return; }
+        var c = d.combined || {}, m = function (v) { return v == null ? "–" : IG.money(v, c.currency); };
+        alert("Double Up " + name + " ligger i Väntande ordrar.\n\nSammanlagt efter godkännande:\n• marginal " + m(c.existingMargin) + " + " + m(c.newMargin) + " = " + m(c.totalMargin) + "\n• förlust vid stop-loss " + m(c.totalSlRisk) + "\n\n" + (c.basis || "") + (d.executionEnabled ? "" : "\n\nOrderläget är avstängt — inget skickas till IG."));
+      } catch (e) { alert("Fel: " + e.message); }
+    }
+    async function rollOver(dealId, name, at) {
+      var min = prompt("Roll-Over " + name + ": förläng tidsstängningen med hur många minuter? (nu " + hm(at) + ", högst 30 min fram från nu)", "5");
+      if (min == null) return;
+      try {
+        var r = await fetch("/api/ig/positions/" + encodeURIComponent(dealId) + "/roll-over", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes: Number(min) }) });
+        var d = await r.json().catch(function () { return {}; });
+        if (!d.ok) { alert("Roll-Over gick inte.\n\n" + (d.error || ("HTTP " + r.status))); return; }
+        alert("Servern bekräftade Roll-Over för " + name + ":\n" + hm(d.from) + " → " + hm(d.to));
+        load();
+      } catch (e) { alert("Fel: " + e.message); }
+    }
+    async function loadConfirmed() {
+      try {
+        var d = await (await fetch("/api/timed-exits")).json();
+        var el = document.getElementById("resConfirmed"); if (!el) return;
+        var list = (d.confirmed || []).filter(function (x) { return !!x.live === (label === "IG Live"); }).slice(0, 5);
+        el.innerHTML = list.length ? "Bekräftade tidsstängningar: " + list.map(function (x) { return esc((window.IG && IG.names[x.symbol]) || x.symbol) + " begärd " + hm(x.requestedExitAt) + " · " + (x.how === "closed" ? "stängd" : "redan stängd") + " " + hm(x.confirmedAt) + " ✓"; }).join(" · ") : "";
+      } catch (_) {}
+    }
+    setInterval(loadConfirmed, 15000); setTimeout(loadConfirmed, 800);
     async function load() {
       try {
         var r = await fetch("/api/results"); if (!r.ok) return;
@@ -2204,12 +2239,16 @@ body.app-state-onboard .fc-panel{display:none !important}
             + (o.tp ? '<span style="font-size:12px;color:' + GREEN + '">TP ' + esc(px(o.tp)) + '</span>' : "")
             + (o.sl ? '<span style="font-size:12px;color:' + RED + '">SL ' + esc(px(o.sl)) + '</span>' : "")
             + (o.exitState && o.exitState !== "waiting" ? '<span style="font-size:12px;color:' + (o.exitState === "needs-attention" ? RED : "#fbbf24") + '" title="' + esc(o.exitError || "") + '">⏱ ' + esc({ "execution-off": "väntar – orderläget av", retrying: "försöker stänga igen", "needs-attention": "tidsstängning kräver åtgärd" }[o.exitState] || o.exitState) + '</span>'
-              : left != null ? '<span style="font-size:12px;color:#fbbf24">stängs om ' + left + ' min</span>' : "")
+              : left != null ? '<span style="font-size:12px;color:#fbbf24" title="Begärd tidsstängning (servern stänger IG-positionen då)">⏱ stängs ' + esc(new Date(o.closeAt).toLocaleTimeString("sv-SE").slice(0, 5)) + ' (om ' + left + ' min)</span>' : "")
+            + (o.closeAt && o.exitState !== "needs-attention" ? '<button type="button" data-rollover="' + esc(o.dealId) + '" data-name="' + esc(o.coin) + '" data-at="' + esc(o.closeAt) + '" title="Roll-Over: flytta systemets tidsstängning senare (inte en option, inte terminsrullning)" style="padding:3px 8px;border:1px solid #fbbf24;background:transparent;color:#fbbf24;border-radius:6px;cursor:pointer">⏩ Roll-Over</button>' : "")
+            + (o.dealId ? '<button type="button" data-doubleup="' + esc(o.dealId) + '" data-name="' + esc(o.coin) + '" title="Double Up: nytt granskat utkast i samma riktning och storlek (Väntande ordrar + Godkänn)" style="padding:3px 8px;border:1px solid #2a3140;background:transparent;color:#c9d1d9;border-radius:6px;cursor:pointer">✕2 Double Up</button>' : "")
             + (o.epic ? '<button type="button" data-reschart="' + esc(o.epic) + '" style="margin-left:auto;padding:3px 10px;border:1px solid #2a3140;background:transparent;color:#c9d1d9;border-radius:6px;cursor:pointer">📈 Diagram</button>' : "")
             + (o.dealId ? '<button type="button" data-sellnow="' + esc(o.dealId) + '" data-name="' + esc(o.coin) + '" style="padding:3px 10px;border:1px solid ' + RED + ';background:#2a1215;color:' + RED + ';border-radius:6px;font-weight:700;cursor:pointer">Sälj nu</button>' : "")
             + '</div>';
         }).join("") : "Inga öppna positioner.";
         document.querySelectorAll("#resOpen [data-sellnow]").forEach(function (b) { b.addEventListener("click", function () { sellNow(b.getAttribute("data-sellnow"), b.getAttribute("data-name")); }); });
+        document.querySelectorAll("#resOpen [data-doubleup]").forEach(function (b) { b.addEventListener("click", function () { doubleUp(b.getAttribute("data-doubleup"), b.getAttribute("data-name")); }); });
+        document.querySelectorAll("#resOpen [data-rollover]").forEach(function (b) { b.addEventListener("click", function () { rollOver(b.getAttribute("data-rollover"), b.getAttribute("data-name"), Number(b.getAttribute("data-at"))); }); });
         document.querySelectorAll("#resOpen [data-reschart]").forEach(function (b) { b.addEventListener("click", function () { if (typeof openChartFor === "function") openChartFor(b.getAttribute("data-reschart")); }); });
         document.getElementById("resTrades").innerHTML = d.trades.length ? d.trades.map(function (x) {
           var when = new Date(x.at).toLocaleString("sv-SE", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -2657,6 +2696,9 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
     <div class="card" id="orderCard">
       <h3>Köp / Sälj <span class="tag" id="ot-venue">–</span></h3>
+      <div id="ot-kill" style="font-size:11px;margin-bottom:6px"></div>
+      <label style="font-size:10px;color:var(--dim)">Instrument (snabbval ur bevakningslistan)</label>
+      <div id="ot-instr" style="display:flex;gap:4px;flex-wrap:wrap;margin:2px 0 8px"></div>
       <div style="display:flex;gap:6px;margin-bottom:8px">
         <button type="button" class="ot-type active" data-ot="LIMIT">Limit</button>
         <button type="button" class="ot-type" data-ot="MARKET">Market</button>
@@ -2665,9 +2707,9 @@ body.app-state-onboard .fc-panel{display:none !important}
       <input type="number" id="ot-price" step="any" min="0" style="width:100%;margin-bottom:6px" />
       <label style="font-size:10px;color:var(--dim)">Insats = marginal i kontovalutan (<span id="ot-pct-val">1</span> % av IG-saldot)</label>
       <div style="display:flex;gap:6px;margin-bottom:4px">
-        <button type="button" class="ot-pctq" data-pct="1" style="flex:1">1 %</button>
-        <button type="button" class="ot-pctq" data-pct="2" style="flex:1">2 %</button>
-        <button type="button" class="ot-pctq" data-pct="3" style="flex:1">3 %</button>
+        <button type="button" class="ot-pctq" data-pct="1" style="flex:1" title="1 % av saldot binds som marginal (inte maxförlust)">1 %</button>
+        <button type="button" class="ot-pctq" data-pct="2" style="flex:1" title="2 % av saldot binds som marginal (inte maxförlust)">2 %</button>
+        <button type="button" class="ot-pctq" data-pct="3" style="flex:1" title="3 % av saldot binds som marginal — högsta tillåtna per position">3 %</button>
       </div>
       <input type="range" id="ot-pct" min="0.1" max="3" step="0.1" value="1" list="ot-pct-stops" style="width:100%;margin:2px 0 0" />
       <datalist id="ot-pct-stops"><option value="1"></option><option value="2"></option><option value="3"></option></datalist>
@@ -2678,11 +2720,14 @@ body.app-state-onboard .fc-panel{display:none !important}
         <div><label style="font-size:10px;color:#3fb950">TP-pris (vinst)</label><input type="number" id="ot-tp" step="any" min="0" style="width:100%" /></div>
         <div><label style="font-size:10px;color:#f85149">SL-pris (förlust)</label><input type="number" id="ot-sl" step="any" min="0" style="width:100%" /></div>
       </div>
-      <label style="font-size:10px;color:var(--dim)">Tidshorisont (hur länge du tänker hålla)</label>
+      <label style="font-size:10px;color:var(--dim)" title="Innehavstid: servern stänger IG-positionen när tiden gått (upp till 30 min). Skilt från diagramintervall, analysintervall och sessionslängd.">1 · Innehavstid (hur länge positionen hålls)</label>
       <div class="bet-tf" id="ot-tf" style="margin-bottom:4px">
-        <button type="button" data-tf="0" class="active">Ingen</button>
-        <button type="button" data-tf="60">1m</button>
-        <button type="button" data-tf="300">5m</button>
+        <button type="button" data-tf="0" class="active" title="Ingen tidsstängning">Ingen</button>
+        <button type="button" data-tf="60" title="Stäng efter 1 min">1m</button>
+        <button type="button" data-tf="120" title="Stäng efter 2 min">2m</button>
+        <button type="button" data-tf="180" title="Stäng efter 3 min">3m</button>
+        <button type="button" data-tf="240" title="Stäng efter 4 min">4m</button>
+        <button type="button" data-tf="300" title="Stäng efter 5 min">5m</button>
         <button type="button" data-tf="900">15m</button>
         <button type="button" data-tf="3600">1h</button>
         <button type="button" data-tf="14400">4h</button>
@@ -2691,6 +2736,11 @@ body.app-state-onboard .fc-panel{display:none !important}
       <div style="display:grid;grid-template-columns:1fr 64px;gap:6px;margin-bottom:6px">
         <input type="number" id="ot-tf-custom" min="1" step="1" placeholder="Egen tid" style="width:100%" />
         <select id="ot-tf-unit"><option value="60">min</option><option value="3600">tim</option><option value="86400">dagar</option></select>
+      </div>
+      <div id="ot-times" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:4px 0 8px;font-size:10px;color:var(--dim)">
+        <label title="Vilket intervall huvuddiagrammet visar. Påverkar inte ordern eller analysen.">2 · Diagramintervall<select id="ot-chart-iv" style="width:100%"><option>1m</option><option>5m</option><option>15m</option><option>30m</option><option>1h</option><option>4h</option><option>1d</option></select></label>
+        <label title="Vilka stängda ljus agenterna analyserar.">3 · Analysintervall<select id="ot-ana-iv" style="width:100%"><option>1m</option><option>5m</option><option>15m</option><option>1h</option></select></label>
+        <label title="Hur länge en agentsession pågår.">4 · Sessionslängd<select id="ot-sess-min" style="width:100%"><option value="15">15 min</option><option value="30">30 min</option><option value="60">60 min</option><option value="120">120 min</option></select></label>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
         <button type="button" id="ot-buy" class="bet-call" style="margin:0">▲ Köp (lång)</button>
@@ -2766,7 +2816,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     <div class="pp-tools">
       <span id="pp-mode" class="pp-chip">–</span>
       <label>Insats (% av saldot) <input type="number" id="pp-amt" value="1" min="0.1" max="3" step="0.1"></label>
-      <label>Tidshorisont <select id="pp-tf"><option value="1">1 min</option><option value="5">5 min</option><option value="15">15 min</option><option value="30">30 min</option></select></label>
+      <label>Tidshorisont <select id="pp-tf"><option value="1">1 min</option><option value="2">2 min</option><option value="3">3 min</option><option value="4">4 min</option><option value="5">5 min</option><option value="15">15 min</option><option value="30">30 min</option></select></label>
       <button type="button" id="pp-all" class="pp-btn">Markera alla</button>
       <button type="button" id="pp-run" class="pp-btn pp-go">▶ Analysera valda (0)</button>
     </div>
@@ -9913,15 +9963,21 @@ document.addEventListener("DOMContentLoaded", boot);
     if(!q){ el.textContent = "Räknar…"; return; }
     if(q.error){ el.innerHTML = `<span style="color:#f85149">${esc(q.error)}</span>`; return; }
     const c = q.currency || IG.currency();
+    const M = q.money || {};
+    const mc = M.currency || c;
+    const pc = (v)=> v == null ? "–" : Number(v).toFixed(2).replace(".", ",") + " %";
     const lines = [];
-    lines.push(`<div><b>Insats (marginal)</b> ${IG.money(q.stake, c)} = ${esc(q.pct)} % av saldot</div>`);
-    if(!q.ok){ lines.push(`<div style="color:#f0b90b">⚠ ${esc(q.reason || "Storleken kunde inte räknas fram")}</div>`); }
+    lines.push(`<div><b>Saldo</b> ${IG.money(M.balance, mc)} · <b>tillgängligt</b> ${IG.money(M.available, mc)}${M.profitLoss != null ? ` · <b>P/L nu</b> <span style="color:${M.profitLoss >= 0 ? "#3fb950" : "#f85149"}">${IG.money(M.profitLoss, mc, true)}</span>` : ""}</div>`);
+    lines.push(`<div><b>Marginalbudget</b> ${esc(q.pct)} % = ${IG.money(q.stake, c)}${M.maxPositionMargin != null ? ` <span style="color:var(--dim)">(max ${esc(M.maxStakePct)} % = ${IG.money(M.maxPositionMargin, mc)} per position, ${IG.money(M.maxTotalMargin, mc)} totalt)</span>` : ""}</div>`);
+    if(!q.ok){ lines.push(`<div style="color:#f0b90b">⚠ ${esc(M.minContractNote || q.reason || "Storleken kunde inte räknas fram")}</div>`); }
     else {
-      lines.push(`<div><b>Storlek</b> ${esc(q.size)} ${esc((q.unit || "kontrakt").toLowerCase())}${q.contractSize ? ` · kontraktsstorlek ${esc(q.contractSize)}` : ""}${q.minSize != null ? ` · minst ${esc(q.minSize)}` : ""}</div>`);
-      lines.push(`<div><b>Krävd marginal</b> ${IG.money(q.margin, c)} · exponering ${IG.money(q.exposure, c)}</div>`);
-      if(q.moneyAtTp != null) lines.push(`<div style="color:#3fb950">Vid TP ${IG.px(q.takeProfit)}: +${IG.money(q.moneyAtTp, c)}</div>`);
-      if(q.moneyAtSl != null) lines.push(`<div style="color:#f85149">Vid SL ${IG.px(q.stopLoss)}: −${IG.money(q.moneyAtSl, c)}</div>`);
-      lines.push(`<div style="color:var(--dim)">Gäller KÖP (lång). SÄLJ (kort) räknas från bid. ${esc(q.basis || "")}</div>`);
+      lines.push(`<div><b>Beräknad marginal</b> ${IG.money(q.margin, c)} (${pc(M.marginPctOfBalance)} av saldot)</div>`);
+      lines.push(`<div><b>Kontraktsstorlek</b> ${esc(q.size)} ${esc((q.unit || "kontrakt").toLowerCase())}${q.contractSize ? ` · 1 kontrakt = ${esc(q.contractSize)}` : ""}${q.minSize != null ? ` · minst ${esc(q.minSize)}` : ""}</div>`);
+      lines.push(`<div><b>Exponering</b> denna order ${IG.money(q.exposure, c)}${M.totalExposureAfter != null ? ` · totalt efter ${IG.money(M.totalExposureAfter, mc)} (marginal totalt ${IG.money(M.totalMarginAfter, mc)})` : " · total exponering kunde inte verifieras"}</div>`);
+      lines.push(`<div style="color:#f85149"><b>Förlust vid SL</b> ${q.moneyAtSl != null ? `${IG.px(q.stopLoss)}: −${IG.money(q.moneyAtSl, c)} (${pc(M.lossAtSlPctOfBalance)} av saldot)` : "sätts av boten (standard-SL) vid ordern"}</div>`);
+      if(q.moneyAtTp != null) lines.push(`<div style="color:#3fb950"><b>Vinst vid TP</b> ${IG.px(q.takeProfit)}: +${IG.money(q.moneyAtTp, c)}</div>`);
+      lines.push(`<div><b>Kostnad</b> spread ${M.spreadCost != null ? IG.money(M.spreadCost, mc) : "–"} <span style="color:var(--dim)" title="${esc(M.costsNote || "")}">ⓘ</span></div>`);
+      lines.push(`<div style="color:var(--dim)">${esc(M.pctMeaning || "")} Gäller KÖP (lång); SÄLJ (kort) räknas från bid. ${esc(q.basis || "")}</div>`);
     }
     if(!q.executionEnabled) lines.push(`<div style="color:#f0b90b">Orderläget är avstängt för ${esc(IG.envLabel())}: GODKÄNN skickar inget till IG.</div>`);
     el.innerHTML = lines.join("");
@@ -10000,6 +10056,45 @@ document.addEventListener("DOMContentLoaded", boot);
       el.style.color = live ? "#22c55e" : "#f0b90b";
     }catch(_){}
   }
+
+  // ── D1: snabbval för instrument (bevakningslistan) ──
+  function renderInstr(){
+    const el = $("ot-instr"); if(!el) return;
+    const list = (IG.st.watchlist || []).filter(IG.isEpic).slice(0, 10);
+    el.innerHTML = list.length ? list.map(e=>`<button type="button" data-oti="${esc(e)}" title="${esc(e)} · ${esc(IG.envLabel())}" style="padding:3px 7px;font-size:10px;border:1px solid ${e === sym() ? "var(--cyan)" : "var(--border)"};background:var(--card2);color:${e === sym() ? "var(--cyan)" : "var(--text)"};border-radius:4px;cursor:pointer;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(IG.label(e))}</button>`).join("") : '<span style="font-size:10px;color:var(--dim)">Bevakningslistan är tom — lägg till under Valutapar.</span>';
+  }
+  $("ot-instr").addEventListener("click", (ev)=>{ const b = ev.target.closest("[data-oti]"); if(b){ openChartFor(b.dataset.oti); renderInstr(); } });
+  IG.on("watchlist", renderInstr); IG.on("env", renderInstr);
+  // ── D3: fyra separata tidsval ──
+  async function loadTimes(){
+    try{ const t = await (await fetch("/api/ig/times")).json(); if(t.analysisInterval) $("ot-ana-iv").value = t.analysisInterval; if(t.sessionMinutes) $("ot-sess-min").value = String(t.sessionMinutes); }catch(_){}
+    if(typeof STATE !== "undefined" && STATE.tf) $("ot-chart-iv").value = STATE.tf;
+  }
+  async function saveTimes(patch){
+    try{ const r = await fetch("/api/ig/times", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(patch) }); const d = await r.json(); if(!d.ok) alert(d.error || "Kunde inte spara"); }catch(e){ alert(e.message); }
+  }
+  $("ot-ana-iv").addEventListener("change", ()=>saveTimes({ analysisInterval: $("ot-ana-iv").value }));
+  $("ot-sess-min").addEventListener("change", ()=>saveTimes({ sessionMinutes: Number($("ot-sess-min").value) }));
+  $("ot-chart-iv").addEventListener("change", ()=>{
+    const iv = $("ot-chart-iv").value;
+    const btn = document.querySelector(`#tf-group button[data-tf="${iv}"]`);
+    if(btn) btn.click(); else if(typeof STATE !== "undefined"){ STATE.tf = iv; loadCandles(STATE.symbol, iv); }
+  });
+  // ── D6: kill switch-status + återställning ──
+  function renderKill(){
+    const el = $("ot-kill"); if(!el || typeof STATE === "undefined") return;
+    el.innerHTML = STATE.killActive
+      ? '<span style="color:#f85149;font-weight:800">⏻ Kill switch PÅ — inga nya positioner</span> <button type="button" id="ot-kill-reset" style="margin-left:6px;padding:2px 8px;border:1px solid #f85149;background:transparent;color:#f85149;border-radius:4px;cursor:pointer" title="Återställ kill switch (nya ordrar tillåts igen, fortfarande via Godkänn)">Återställ</button>'
+      : '<span style="color:#3fb950">Kill switch av</span> <span style="color:var(--dim)">· ordrar granskas och kräver Godkänn · ' + esc(IG.execOn() ? "orderläget PÅ" : "orderläget av") + ' (' + esc(IG.envLabel()) + ')</span>';
+  }
+  document.addEventListener("click", async (ev)=>{
+    if(!ev.target.closest("#ot-kill-reset")) return;
+    if(!confirm("Återställa kill switch? Nya ordrar tillåts igen (de kräver fortfarande Godkänn).")) return;
+    try{ await fetch("/api/kill-switch", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ active:false }) }); STATE.killActive = false; document.getElementById("kill-btn")?.classList.remove("active"); renderKill(); }catch(e){ alert(e.message); }
+  });
+  setInterval(()=>{ renderKill(); if(typeof STATE !== "undefined" && STATE.tf && document.activeElement !== $("ot-chart-iv")) $("ot-chart-iv").value = STATE.tf; }, 1000);
+  setInterval(renderInstr, 5000);
+  loadTimes(); renderInstr(); renderKill();
 
   document.querySelectorAll(".ot-type").forEach(b=>{ if(b.dataset.ot === "MARKET") b.classList.add("active"); else b.classList.remove("active"); });
   syncType(); syncAmt();

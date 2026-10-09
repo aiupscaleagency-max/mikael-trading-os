@@ -23,7 +23,7 @@ export interface ResultTrade {
 }
 export interface ResultOpen {
   coin: string; qty: number; avg: number; price: number | null; value: number | null; upnl: number | null; upnlPct: number | null;
-  tp?: number; sl?: number; epic?: string; dealId?: string; direction?: "BUY" | "SELL"; closeAt?: number | null;
+  tp?: number; sl?: number; epic?: string; dealId?: string; direction?: "BUY" | "SELL"; closeAt?: number | null; nextAttemptAt?: number | null;
   /** Tidsgränsens läge: waiting | execution-off ("väntar – orderläget av") | retrying | needs-attention */
   exitState?: string | null; exitError?: string | null;
 }
@@ -113,7 +113,8 @@ export async function getResults(
           price: p.currentPrice || null, value: null, upnl: p.pnlVerified ? p.unrealizedPnlUsdt : null,
           upnlPct: p.pnlVerified && exposure > 0 ? ((p.direction === "SELL" ? -1 : 1) * (p.currentPrice - p.avgEntryPrice) / p.avgEntryPrice) * 100 : null,
           tp: p.limitLevel ?? undefined, sl: p.stopLevel ?? undefined,
-          closeAt: exits.find((x) => x.dealId === p.dealId)?.exitAt ?? null,
+          closeAt: exits.find((x) => x.dealId === p.dealId)?.requestedExitAt ?? exits.find((x) => x.dealId === p.dealId)?.exitAt ?? null,
+          nextAttemptAt: exits.find((x) => x.dealId === p.dealId)?.exitAt ?? null,
           exitState: (() => { const x = exits.find((y) => y.dealId === p.dealId); return x ? x.igState ?? "waiting" : null; })(),
           exitError: exits.find((x) => x.dealId === p.dealId)?.lastError ?? null,
         });

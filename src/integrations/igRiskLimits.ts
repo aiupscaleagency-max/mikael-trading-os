@@ -56,3 +56,45 @@ export function igPositionLimitReason(i: { margin: number; risk: number | null; 
   if (i.risk !== null && i.risk > i.available * l.maxSlRiskShareOfAvailable) return `Förlusten vid stop-loss ${f(i.risk)} är mer än 5 % av tillgängligt (${f(i.available * 0.05)}).`;
   return null;
 }
+
+/**
+ * Pengar för en order i kontovalutan, som orderpanelen visar dem (D2).
+ * 1–3 % är MARGINALANDEL av saldot, inte maxförlust: förlusten vid stop-loss visas separat.
+ * Inga värden hittas på — saknas något blir det null och förklaras i `missing`.
+ */
+export function igOrderMoneyView(i: {
+  currency: string | null; balance: number | null; available: number | null; profitLoss: number | null;
+  pct: number; stake: number;
+  quote: { ok: boolean; size: number | null; unit: string | null; contractSize: number | null; minSize: number | null; minMargin: number | null; margin: number | null; exposure: number | null; moneyAtSl: number | null; moneyAtTp: number | null; bid: number | null; offer: number | null; pointValue: number | null; reason?: string };
+  portfolio: { margin: number; exposure: number; positions: number; verified: boolean } | null;
+}) {
+  const fin = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  const b = fin(i.balance) && i.balance > 0 ? i.balance : null;
+  const l = b !== null ? igAccountLimits(b) : null;
+  const q = i.quote;
+  const spreadCost = q.ok && fin(q.size) && fin(q.bid) && fin(q.offer) && fin(q.pointValue) ? (q.offer - q.bid) * q.size * q.pointValue : null;
+  const missing: string[] = [];
+  if (b === null) missing.push("IG-saldot");
+  if (!i.portfolio?.verified) missing.push("öppna positioners marginal");
+  if (spreadCost === null) missing.push("spreadkostnad");
+  return {
+    currency: i.currency,
+    balance: b, available: fin(i.available) ? i.available : null, profitLoss: fin(i.profitLoss) ? i.profitLoss : null,
+    budgetPct: i.pct, budgetAmount: i.stake,
+    maxStakePct: l?.maxStakePct ?? null, maxPositionMargin: l?.maxPositionMargin ?? null, maxTotalMargin: l?.maxTotalMargin ?? null, maxDailyLoss: l?.maxDailyLoss ?? null,
+    margin: q.margin, marginPctOfBalance: b !== null && fin(q.margin) ? q.margin / b * 100 : null,
+    exposure: q.exposure,
+    size: q.size, unit: q.unit, contractSize: q.contractSize, minSize: q.minSize, minMargin: q.minMargin,
+    lossAtSl: q.moneyAtSl, lossAtSlPctOfBalance: b !== null && fin(q.moneyAtSl) ? q.moneyAtSl / b * 100 : null,
+    gainAtTp: q.moneyAtTp,
+    spreadCost,
+    costsNote: "Kostnad = spread vid öppning. Finansiering över natten och eventuell garanterad stop tillkommer enligt IG och visas inte här.",
+    openMargin: i.portfolio?.verified ? i.portfolio.margin : null,
+    openExposure: i.portfolio?.verified ? i.portfolio.exposure : null,
+    totalMarginAfter: i.portfolio?.verified && fin(q.margin) ? i.portfolio.margin + q.margin : null,
+    totalExposureAfter: i.portfolio?.verified && fin(q.exposure) ? i.portfolio.exposure + q.exposure : null,
+    minContractNote: !q.ok && fin(q.minMargin) ? `Minsta IG-kontrakt (${q.minSize} ${q.unit ?? "kontrakt"}) kräver ca ${q.minMargin.toFixed(2)} ${i.currency ?? ""} i marginal, mer än budgeten ${i.stake.toFixed(2)} ${i.currency ?? ""}.` : null,
+    pctMeaning: "1–3 % = andel av saldot som binds som marginal, inte maxförlust. Förlust vid stop-loss visas separat.",
+    missing,
+  };
+}

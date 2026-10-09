@@ -16,6 +16,7 @@ import { getCostSummary } from "../cost/tracker.js";
 import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
 import { igMarketData } from "./igMarketData.js";
 import { handleIgRoutes } from "./igRoutes.js";
+import { getIgTimes, setIgTimes, ANALYSIS_INTERVALS, SESSION_MINUTES } from "./igTimes.js";
 import { igOrderExecutionEnabled } from "../integrations/igConnection.js";
 import { currentStake } from "../risk/stakeLadder.js";
 import { igAccountLimits } from "../integrations/igRiskLimits.js";
@@ -34,7 +35,7 @@ import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klin
 import { getResultsCached, recordLiveFill } from "./results.js";
 import { CATEGORIES, getCategory, type Category } from "./movers.js";
 import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
-import { addTimedExit, cancelTimedExit, cancelTimedExitForDeal, getHorizonMin, HORIZON_CHOICES, listTimedExits, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
+import { addTimedExit, cancelTimedExit, cancelTimedExitForDeal, getHorizonMin, HORIZON_CHOICES, listTimedExits, listConfirmedExits, rollOverTimedExit, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
 import { adjustLiveSpend, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
@@ -387,6 +388,38 @@ export async function createIgPendingOrder(b: Record<string, unknown>, broker: I
     ...(q.ok && "size" in q ? { quoteInfo: { size: q.size, unit: q.unit, contractSize: q.contractSize, margin: q.margin, exposure: q.exposure, moneyAtTp: q.moneyAtTp, moneyAtSl: q.moneyAtSl, minSize: q.minSize, basis: q.basis } } : {}),
   });
   return { ok: true, pendingOrder: p, quote: q };
+}
+
+/**
+ * Double Up (D4): nytt GRANSKAT utkast i samma riktning och storlek som en öppen IG-position.
+ * Går genom exakt samma väg som andra ordrar (createIgPendingOrder: budget, kill switch, LIVE-lås,
+ * Väntande ordrar + GODKÄNN). Visar sammanlagd marginal/risk vid nuvarande pris.
+ */
+export async function createIgDoubleUp(dealId: string, broker: IgBroker): Promise<
+  { ok: true; pendingOrder: PendingOrder; combined: { currency: string | null; existingMargin: number | null; newMargin: number | null; totalMargin: number | null; existingSlRisk: number | null; newSlRisk: number | null; totalSlRisk: number | null; basis: string } } | { ok: false; error: string; status?: number }> {
+  let pos;
+  try { pos = (await broker.getPositions({ fresh: true })).find((p) => p.dealId === dealId); }
+  catch (e) { return { ok: false, status: 409, error: `IG-positionerna kunde inte läsas: ${e instanceof Error ? e.message : String(e)}` }; }
+  if (!pos) return { ok: false, status: 404, error: "Positionen finns inte (längre) i IG" };
+  const side = pos.direction === "SELL" ? "SELL" : "BUY";
+  const sl = pos.stopLevel ?? undefined, tp = pos.limitLevel ?? undefined;
+  const r = await createIgPendingOrder({
+    symbol: pos.symbol, side, quantity: pos.quantity, forceOpen: true, source: "double-up",
+    ...(sl ? { stopLoss: sl } : {}), ...(tp ? { takeProfit: tp } : {}),
+    reason: `Double Up: ${side === "BUY" ? "köp (lång)" : "sälj (kort)"} ${pos.quantity} till i ${pos.name ?? pos.symbol} (samma riktning som ${dealId})`,
+  }, broker);
+  if (!r.ok) return { ok: false, status: r.status, error: r.error };
+  const q = r.quote as { margin?: number | null; moneyAtSl?: number | null; currency?: string | null };
+  const fin = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  // Samma storlek, samma instrument → befintlig positions marginal vid nuvarande pris = den nya
+  const existingMargin = fin(q.margin) ? q.margin : null, newMargin = existingMargin;
+  const existingSlRisk = fin(q.moneyAtSl) && sl ? q.moneyAtSl : null, newSlRisk = fin(q.moneyAtSl) ? q.moneyAtSl : null;
+  return { ok: true, pendingOrder: r.pendingOrder, combined: {
+    currency: q.currency ?? r.pendingOrder.currency ?? null,
+    existingMargin, newMargin, totalMargin: existingMargin !== null && newMargin !== null ? existingMargin + newMargin : null,
+    existingSlRisk, newSlRisk, totalSlRisk: existingSlRisk !== null && newSlRisk !== null ? existingSlRisk + newSlRisk : null,
+    basis: "Vid nuvarande IG-pris och samma stop-loss. Total marginal kontrolleras igen mot gränsen (15 % av saldot) vid GODKÄNN.",
+  } };
 }
 
 // ─── IG: godkänd order → IG (granskning + bekräftelse i Codex igOrders) ───
@@ -1532,6 +1565,16 @@ export function startServer(
       }
 
       // ── Tidshorisont (1/5/15/30 min) + automatiska stängningar ──
+      if (url.pathname === "/api/ig/times" && method === "GET") {
+        json(res, { ...getIgTimes(), holdingMinutes: getHorizonMin(), choices: { analysisInterval: ANALYSIS_INTERVALS, sessionMinutes: SESSION_MINUTES, holdingMinutes: HORIZON_CHOICES } });
+        return;
+      }
+      if (url.pathname === "/api/ig/times" && method === "POST") {
+        const r = setIgTimes(JSON.parse((await readBody(req)) || "{}"));
+        if (r.ok) { userAction(`analysintervall ${r.times.analysisInterval} · sessionslängd ${r.times.sessionMinutes} min`); broadcastEvent("ig-times", r.times); json(res, r); }
+        else jsonStatus(res, 400, r);
+        return;
+      }
       if (url.pathname === "/api/trade-horizon" && method === "GET") {
         json(res, { minutes: getHorizonMin(), choices: HORIZON_CHOICES });
         return;
@@ -1545,8 +1588,26 @@ export function startServer(
         json(res, { ok: true, minutes: m });
         return;
       }
+      {
+        const m = url.pathname.match(/^\/api\/ig\/positions\/([A-Za-z0-9_-]{1,100})\/(double-up|roll-over)$/);
+        if (m && method === "POST") {
+          const igb = brokers[activeName(brokers) ?? ""];
+          if (!(igb instanceof IgBroker)) { jsonStatus(res, 409, { ok: false, error: "Ingen IG-mäklare aktiv" }); return; }
+          if (m[2] === "double-up") {
+            const r = await createIgDoubleUp(m[1]!, igb);
+            if (r.ok) { broadcastEvent("pending-orders", { id: r.pendingOrder.id }); userAction(`Double Up ${r.pendingOrder.name ?? r.pendingOrder.symbol} i kön`, { to: "orders", coin: r.pendingOrder.symbol }); json(res, { ...r, executionEnabled: igb.executionEnabled() }); }
+            else jsonStatus(res, r.status ?? 400, r);
+          } else {
+            const b = JSON.parse((await readBody(req)) || "{}") as { minutes?: unknown };
+            const r = rollOverTimedExit(m[1]!, Number(b.minutes) * 60);
+            if (r.ok) { broadcastEvent("timed-exit", { dealId: m[1], state: "rolled-over", to: r.to }); userAction(`Roll-Over ${r.symbol}: stängs ${new Date(r.to).toLocaleTimeString("sv-SE")}`); }
+            (r.ok ? json : (x: http.ServerResponse, d: unknown) => jsonStatus(x, 400, d))(res, { ...r, env: igb.env });
+          }
+          return;
+        }
+      }
       if (url.pathname === "/api/timed-exits" && method === "GET") {
-        json(res, { exits: listTimedExits(), now: Date.now() });
+        json(res, { exits: listTimedExits(), confirmed: listConfirmedExits(), now: Date.now() });
         return;
       }
       {

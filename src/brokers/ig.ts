@@ -261,6 +261,23 @@ export class IgBroker implements BrokerAdapter {
     return { ...base, ok: true, minMargin, ...pr };
   }
 
+  /** Öppna positioners marginal och exponering i kontovalutan (positioner ur cachen, IG-regler per instrument).
+   *  verified=false om någon position inte kan räknas säkert (då visas inget påhittat). */
+  async portfolioMargin(): Promise<{ margin: number; exposure: number; positions: number; verified: boolean; currency: string | null }> {
+    const acc = await this.getAccount().catch(() => null);
+    const ps = await this.getPositions();
+    let margin = 0, exposure = 0, verified = !!acc?.currency;
+    for (const p of ps) {
+      try {
+        const m = await this.d.market(this.env, p.symbol), r = m.calculationRules;
+        if (!r?.verified || !finite(r.pointValue) || !finite(r.marginRate) || r.pointCurrency !== acc?.currency || !(p.quantity > 0) || !(p.avgEntryPrice > 0)) { verified = false; continue; }
+        const ex = p.avgEntryPrice * p.quantity * r.pointValue;
+        exposure += ex; margin += ex * r.marginRate;
+      } catch { verified = false; }
+    }
+    return { margin, exposure, positions: ps.length, verified, currency: acc?.currency ?? null };
+  }
+
   /** Standardnivåer om agenten inte gav SL/TP: procent från priset, minst IG:s minsta avstånd × 1,5. */
   async defaultLevels(epic: string, direction: "BUY" | "SELL"): Promise<{ stopLoss: number; takeProfit: number }> {
     const m = await this.d.market(this.env, this.epic(epic));
