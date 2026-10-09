@@ -20,6 +20,121 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Mikael Trading OS — Inference Dashboard</title>
 <script src="/vendor/lightweight-charts.js"></script>
+<script>
+/* ══════════════════════════════════════════════════════════════════════
+   IG-hjälpare för hela sidan (plattformen är IG: TEST = IG Demo, LIVE = IG Live)
+   - Instrument = IG-EPIC; visningsnamn från IG (aldrig påhittade).
+   - Marknadsdata kommer från servern: /api/market/* (REST-historik med stängda
+     ljus) och /api/market/stream (IG Lightstreamer vidare via servern, SSE).
+     Webbläsaren pratar aldrig direkt med IG, Bybit eller Binance.
+   - Datastatus: live · fördröjt · historiskt · inaktuellt · frånkopplat.
+   ══════════════════════════════════════════════════════════════════════ */
+window.IG = (function () {
+  var names = {}, cats = {}, quotes = {}, handlers = {}, owners = {};
+  var st = { env: "demo", label: "IG Demo", currency: null, balance: null, available: null, profitLoss: null, execution: { demo: false, live: false }, connected: false, error: null, watchlist: [] };
+  var es = null, esKey = "", reopenT = null, lastMsgAt = 0;
+  function esc(t) { return String(t == null ? "" : t).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function emit(ev, d) { (handlers[ev] || []).slice().forEach(function (f) { try { f(d); } catch (e) { console.warn("[IG]", ev, e); } }); }
+  function on(ev, f) { (handlers[ev] = handlers[ev] || []).push(f); return function () { handlers[ev] = (handlers[ev] || []).filter(function (x) { return x !== f; }); }; }
+  function remember(list) { (list || []).forEach(function (m) { if (m && m.epic) { if (m.name) names[m.epic] = m.name; if (m.category) cats[m.epic] = m.category; } }); }
+  function isEpic(s) { return /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$/.test(String(s || "")); }
+  function label(epic) { return names[epic] || epic || "–"; }
+  function envLabel(e) { return (e || st.env) === "live" ? "IG Live" : "IG Demo"; }
+  function cur() { return st.currency || ""; }
+  function money(v, c, signed) {
+    if (v == null || isNaN(v)) return "–";
+    var n = Number(v), s = Math.abs(n).toLocaleString("sv-SE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return (signed ? (n > 0 ? "+" : n < 0 ? "−" : "") : (n < 0 ? "−" : "")) + s + " " + (c || cur() || "");
+  }
+  function px(v) { if (v == null || isNaN(v)) return "–"; var n = Number(v); return n >= 1000 ? n.toFixed(2) : n >= 10 ? n.toFixed(3) : n >= 0.1 ? n.toFixed(5) : n.toPrecision(5); }
+  var STATE_COL = { live: "#3fb950", "fördröjt": "#f0b90b", historiskt: "#8b95a7", inaktuellt: "#f0b90b", "frånkopplat": "#f85149" };
+  function age(ms) { if (ms == null) return ""; var s = Math.round(ms / 1000); return s < 60 ? s + " s" : s < 3600 ? Math.round(s / 60) + " min" : Math.round(s / 3600) + " h"; }
+  function stateOf(q) {
+    if (!q) return { state: "frånkopplat", ageMs: null };
+    var a = q.observedAt ? Date.now() - q.observedAt : q.ageMs;
+    var s = q.state || "frånkopplat";
+    if (s === "live" && a != null && a > 60000) s = "inaktuellt";
+    if (!lastMsgAt || Date.now() - lastMsgAt > 45000) { if (s === "live") s = "inaktuellt"; }
+    return { state: s, ageMs: a };
+  }
+  function badge(q) {
+    var s = stateOf(q), col = STATE_COL[s.state] || "#8b95a7";
+    return '<span class="ig-state" title="Datastatus från IG (ålder = tid sedan IG:s senaste pris)" style="display:inline-flex;gap:4px;align-items:center;font-size:11px;font-weight:700;color:' + col + '">● ' + esc(s.state) + (s.ageMs != null ? ' <span style="font-weight:400;color:#8b95a7">' + age(s.ageMs) + '</span>' : "") + "</span>";
+  }
+  async function getJson(u, opt) { var r = await fetch(u, opt); var d = await r.json().catch(function () { return {}; }); if (!r.ok && !d.error) d.error = "HTTP " + r.status; return d; }
+  async function refresh() {
+    try {
+      var w = await getJson("/api/market/watchlist");
+      if (w.env && w.env !== st.env) { st.env = w.env; st.label = envLabel(w.env); emit("env", st.env); }
+      st.watchlist = (w.watchlist || []).map(function (x) { return x.epic; });
+      remember(w.watchlist);
+      emit("watchlist", w.watchlist || []);
+    } catch (_) {}
+    try {
+      var b = await getJson("/api/ig/balance");
+      st.connected = !!b.connected; st.error = b.error || null;
+      if (b.connected) { st.currency = b.currency; st.balance = b.balance; st.available = b.available; st.profitLoss = b.profitLoss; }
+      try { var m = await getJson("/api/mode"); if (m.execution) st.execution = m.execution; } catch (_) {}
+      emit("account", st);
+    } catch (_) {}
+    renderEnvChips();
+  }
+  function renderEnvChips() {
+    document.querySelectorAll("[data-ig-env]").forEach(function (el) {
+      var live = st.env === "live";
+      el.textContent = (live ? "LIVE · IG Live" : "TEST · IG Demo") + (st.currency ? " · " + st.currency : "");
+      el.style.color = live ? "#22c55e" : "#f0b90b"; el.style.borderColor = live ? "#22c55e" : "#f0b90b";
+    });
+    document.querySelectorAll("[data-ig-exec]").forEach(function (el) {
+      var on = !!(st.execution && st.execution[st.env]);
+      el.textContent = on ? "Orderläget PÅ (" + envLabel() + ")" : "Orderläget är avstängt (" + envLabel() + ")";
+      el.style.color = on ? "#3fb950" : "#f0b90b";
+      el.title = on ? "Godkända ordrar skickas till IG." : "Godkänn skickar inget till IG. Slås på i .env: IG_ORDER_EXECUTION_ENABLED_" + st.env.toUpperCase() + "=true + omstart.";
+    });
+  }
+  // ── Ström (en EventSource för alla som vill ha kvoter/ljus) ──
+  function wanted() { var s = {}; Object.keys(owners).forEach(function (o) { owners[o].forEach(function (e) { if (isEpic(e)) s[e] = 1; }); }); return Object.keys(s).sort().slice(0, 30); }
+  function want(owner, epics) { owners[owner] = (epics || []).filter(isEpic); clearTimeout(reopenT); reopenT = setTimeout(open, 250); }
+  function open() {
+    var list = wanted(), key = list.join(",");
+    if (es && key === esKey && es.readyState !== 2) return;
+    if (es) { try { es.close(); } catch (_) {} es = null; }
+    esKey = key;
+    if (!list.length) return;
+    try { es = new EventSource("/api/market/stream?epics=" + encodeURIComponent(key)); } catch (_) { return; }
+    var mine = es;
+    es.addEventListener("quote", function (e) { if (es !== mine) return; lastMsgAt = Date.now(); var q; try { q = JSON.parse(e.data); } catch (_) { return; } if (q.env && q.env !== st.env) return; quotes[q.epic] = q; if (q.name) names[q.epic] = q.name; emit("quote", q); });
+    es.addEventListener("candle", function (e) { if (es !== mine) return; lastMsgAt = Date.now(); var c; try { c = JSON.parse(e.data); } catch (_) { return; } if (c.env && c.env !== st.env) return; emit("candle", c); });
+    es.addEventListener("stream-status", function (e) { lastMsgAt = Date.now(); try { emit("stream-status", JSON.parse(e.data)); } catch (_) {} });
+    es.addEventListener("heartbeat", function (e) { lastMsgAt = Date.now(); try { var h = JSON.parse(e.data); if (h.env && h.env !== st.env) { refresh(); } emit("heartbeat", h); } catch (_) {} });
+    es.addEventListener("hello", function () { lastMsgAt = Date.now(); });
+    es.addEventListener("env", function (e) { try { var d = JSON.parse(e.data); quotes = {}; st.env = d.env; st.label = d.label; emit("env", d.env); refresh(); } catch (_) {} });
+    es.onerror = function () { emit("stream-status", { status: "frånkopplat (återansluter)" }); };
+  }
+  async function prices(epics) {
+    var list = (epics || []).filter(isEpic).slice(0, 30);
+    if (!list.length) return {};
+    var d = await getJson("/api/market/prices?symbols=" + encodeURIComponent(list.join(",")));
+    if (d.env && d.env !== st.env) return {};
+    Object.keys(d.quotes || {}).forEach(function (k) { var q = d.quotes[k]; if (q && q.bid != null) quotes[k] = q; if (q && q.name) names[k] = q.name; });
+    return d.quotes || {};
+  }
+  async function klines(epic, interval, limit) {
+    var d = await getJson("/api/market/klines?epic=" + encodeURIComponent(epic) + "&interval=" + encodeURIComponent(interval) + "&limit=" + (limit || 300));
+    if (d.name) names[epic] = d.name;
+    if (d.quote && d.quote.bid != null) quotes[epic] = d.quote;
+    return d;
+  }
+  setInterval(refresh, 20000);
+  setTimeout(refresh, 50);
+  return {
+    st: st, esc: esc, on: on, emit: emit, refresh: refresh, remember: remember, isEpic: isEpic, label: label, envLabel: envLabel,
+    money: money, px: px, badge: badge, stateOf: stateOf, age: age, want: want, prices: prices, klines: klines,
+    quote: function (e) { return quotes[e] || null; }, category: function (e) { return cats[e] || null; }, names: names,
+    currency: cur, execOn: function () { return !!(st.execution && st.execution[st.env]); },
+  };
+})();
+</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
 :root{
@@ -1273,23 +1388,24 @@ body.app-state-onboard .fc-panel{display:none !important}
   <span class="brand">MIKAEL TRADING OS</span>
   <span class="dot live" id="conn-dot" title="Connection"></span>
   <select id="broker-select">
-    <option value="bybit-paper">Bybit EU TEST (låtsaspengar, riktiga priser)</option>
-    <option value="bybit-demo">Bybit TEST (demo, låtsaspengar)</option>
-    <option value="bybit">Bybit LIVE (riktiga pengar)</option>
+    <option value="ig-demo">IG Demo (TEST)</option>
+    <option value="ig">IG Live (LIVE)</option>
   </select>
   <div class="mode-switcher" id="mode-switcher">
-    <button class="mode-btn paper active" data-mode="paper" title="TEST: Bybit demo (låtsaspengar, samma par som LIVE)">
-      <span>🧪 TEST</span><span class="mode-sub">Bybit demo</span>
+    <button class="mode-btn paper active" data-mode="paper" title="TEST: IG Demo (IG:s demokonto, virtuella pengar)">
+      <span>🧪 TEST</span><span class="mode-sub">IG Demo</span>
     </button>
-    <button class="mode-btn live" data-mode="live" title="LIVE: Bybit EU (RIKTIGA pengar, max $5/order)">
-      <span>💚 LIVE</span><span class="mode-sub">real money</span>
+    <button class="mode-btn live" data-mode="live" title="LIVE: IG Live (RIKTIGA pengar)">
+      <span>💚 LIVE</span><span class="mode-sub">IG Live</span>
     </button>
   </div>
+  <span data-ig-env style="font-size:11px;font-weight:800;padding:3px 8px;border:1px solid #f0b90b;border-radius:6px;color:#f0b90b;white-space:nowrap">TEST · IG Demo</span>
+  <span data-ig-exec style="font-size:11px;font-weight:700;white-space:nowrap;color:#f0b90b">Orderläget är avstängt</span>
   <button class="kill" id="kill-btn">⏻ KILL SWITCH</button>
   <span class="pnl up" id="pnl">+$0.00 (0.00%)</span>
   <button class="run-btn" id="run-btn">▶ Kör analys</button>
   <button class="paper-balance" id="paper-balance" title="TEST-saldo (klicka för Trades-sidan)">📊 TEST <b id="pb-equity">—</b> <span id="pb-pnl">TEST</span></button>
-  <button class="paper-balance" id="live-balance" style="background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(16,185,129,.08));border-color:rgba(34,197,94,.5)" title="LIVE-saldo på Bybit EU (riktiga pengar)">💚 LIVE <b id="lb-equity" style="color:var(--green)">—</b></button>
+  <button class="paper-balance" id="live-balance" style="background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(16,185,129,.08));border-color:rgba(34,197,94,.5)" title="Saldo på IG Live (riktiga pengar)">💚 LIVE <b id="lb-equity" style="color:var(--green)">—</b></button>
   <button class="cost-mini" id="cost-mini" title="Klicka för detaljerad kostnadsvy">💰 <b id="cost-today">$0.00</b> idag</button>
   <div class="user-wrap">
     <button class="user-chip" id="user-chip" title="Konto-meny">
@@ -1416,7 +1532,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 <section id="tradeInfo">
   <div class="ti-box"><div class="ti-h">Signaltabellen (sektion 5)</div><div id="ti-sig">Laddar…</div>
     <form id="cs-form" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap" autocomplete="off">
-      <input id="cs-input" placeholder="Lägg till mynt, t.ex. PEPE" maxlength="20" style="flex:1;min-width:120px;background:#0f141c;border:1px solid #2a3140;color:#e6e6e6;border-radius:6px;padding:4px 8px;font:inherit">
+      <input id="cs-input" placeholder="Sök i IG, t.ex. EUR/GBP eller Bitcoin" maxlength="80" style="flex:1;min-width:120px;background:#0f141c;border:1px solid #2a3140;color:#e6e6e6;border-radius:6px;padding:4px 8px;font:inherit">
       <button type="submit" style="background:#f0b90b;color:#111;border:0;border-radius:6px;padding:4px 10px;font-weight:700;cursor:pointer">+ Lägg till</button>
     </form>
     <div id="cs-msg" style="font-size:11px;margin-top:4px"></div>
@@ -1424,43 +1540,58 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
   <script>
   (function () {
-    // Egna mynt: tips från grupper. Kontrolleras mot Bybit EU innan de läggs till.
+    // Bevakningslistan (IG-EPICs). Sök i IG för aktiv miljö; bara instrument som IG
+    // själv returnerar kan läggs till (verifieras mot kontot på servern). Max 10.
     var form = document.getElementById("cs-form"); if (!form) return;
     var msg = document.getElementById("cs-msg"), list = document.getElementById("cs-list");
-    function esc2(t) { return String(t).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+    var esc2 = IG.esc;
     async function load() {
       try {
-        var d = await (await fetch("/api/custom-symbols")).json();
-        list.innerHTML = (d.symbols || []).map(function (c) {
-          return '<span style="border:1px solid #2a3140;border-radius:12px;padding:2px 8px;font-size:12px">' + esc2(c.base)
-            + (c.usdc ? "" : ' <span title="Bara USDT-par på Bybit EU" style="color:#8b95a7">(USDT)</span>')
-            + ' <button data-cs="' + esc2(c.base) + '" title="Ta bort" style="background:none;border:0;color:#f85149;cursor:pointer;padding:0 2px">×</button></span>';
-        }).join("");
+        var d = await (await fetch("/api/market/watchlist")).json();
+        IG.remember(d.watchlist);
+        list.innerHTML = (d.watchlist || []).map(function (c) {
+          return '<span title="' + esc2(c.epic) + '" style="border:1px solid #2a3140;border-radius:12px;padding:2px 8px;font-size:12px">' + esc2(c.name || c.epic)
+            + ' <button data-cs="' + esc2(c.epic) + '" title="Sluta följa" style="background:none;border:0;color:#f85149;cursor:pointer;padding:0 2px">×</button></span>';
+        }).join("") || '<span style="font-size:11px;color:#8b95a7">Inga instrument följs än (' + esc2(d.label || "IG") + ').</span>';
       } catch (_) {}
+    }
+    async function add(epic) {
+      msg.style.color = "#8b95a7"; msg.textContent = "Kontrollerar " + epic + " hos IG…";
+      var r = await fetch("/api/market/watchlist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ epic: epic }) });
+      var d = await r.json().catch(function () { return {}; });
+      if (d.ok) { msg.style.color = "#3fb950"; msg.textContent = (d.name || d.epic) + " tillagt. Agenterna analyserar det från nästa stängda ljus."; document.getElementById("cs-input").value = ""; if (typeof refreshIgSymbols === "function") refreshIgSymbols(true); }
+      else { msg.style.color = "#f85149"; msg.textContent = d.error || "Gick inte"; }
+      load();
     }
     form.addEventListener("submit", async function (e) {
       e.preventDefault();
       var v = document.getElementById("cs-input").value.trim(); if (!v) return;
-      msg.style.color = "#8b95a7"; msg.textContent = "Kollar " + v + " på Bybit EU…";
+      if (IG.isEpic(v)) { add(v); return; }
+      msg.style.color = "#8b95a7"; msg.textContent = "Söker \"" + v + "\" hos IG…";
       try {
-        var r = await fetch("/api/custom-symbols", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol: v }) });
-        var d = await r.json();
-        if (d.ok) { msg.style.color = "#3fb950"; msg.textContent = d.symbol.base + " tillagt. Agenterna analyserar det från nästa ljus."; document.getElementById("cs-input").value = ""; }
-        else { msg.style.color = "#f85149"; msg.textContent = d.error || "Gick inte"; }
+        var d = await (await fetch("/api/market/search?q=" + encodeURIComponent(v))).json();
+        var ms = (d.markets || []).filter(function (m) { return m.category === "forex" || m.category === "crypto"; }).slice(0, 8);
+        if (!ms.length) { msg.style.color = "#f85149"; msg.textContent = d.error || "IG hittade inget Forex- eller kryptoinstrument för \"" + v + "\"."; return; }
+        msg.style.color = "#8b95a7";
+        msg.innerHTML = "Välj (från IG, " + esc2(IG.envLabel()) + "): " + ms.map(function (m) {
+          return '<button type="button" data-csadd="' + esc2(m.epic) + '" title="' + esc2(m.epic) + '" style="margin:2px;background:#0f141c;border:1px solid #2a3140;color:#e6e6e6;border-radius:6px;padding:2px 8px;cursor:pointer">' + esc2(m.name) + (m.marketStatus && m.marketStatus !== "TRADEABLE" ? " (" + esc2(m.marketStatus) + ")" : "") + '</button>';
+        }).join("");
       } catch (err) { msg.style.color = "#f85149"; msg.textContent = "Fel: " + err.message; }
-      load();
     });
+    msg.addEventListener("click", function (e) { var b = e.target.closest("button[data-csadd]"); if (b) add(b.dataset.csadd); });
     list.addEventListener("click", async function (e) {
       var b = e.target.closest("button[data-cs]"); if (!b) return;
-      if (!confirm("Sluta följa " + b.dataset.cs + "?")) return;
-      try { await fetch("/api/custom-symbols/" + encodeURIComponent(b.dataset.cs), { method: "DELETE" }); } catch (_) {}
+      if (!confirm("Sluta följa " + IG.label(b.dataset.cs) + "?")) return;
+      try { await fetch("/api/market/watchlist/" + encodeURIComponent(b.dataset.cs), { method: "DELETE" }); } catch (_) {}
+      if (typeof refreshIgSymbols === "function") refreshIgSymbols(true);
       load();
     });
+    IG.on("env", load);
     load();
   })();
   </script>
   <div class="ti-box"><div class="ti-h">Agenterna (sektion 3)</div><div id="ti-agents">Laddar…</div></div>
-  <div class="ti-box"><div class="ti-h">Diagram och orderbok (sektion 1–2)</div><div id="ti-chart">Det par du väljer i diagrammet. Priserna kommer live från Bybit, samma som på bybit.eu. Orderboken visar samma mynt i USDC.</div></div>
+  <div class="ti-box"><div class="ti-h">Diagram och orderbok (sektion 1–2)</div><div id="ti-chart">Det IG-instrument du väljer i diagrammet. Priser och ljus kommer från IG (Lightstreamer via servern). Kvoten visar IG:s köp- och säljkurs.</div></div>
   <div class="ti-box"><div class="ti-h">Läge</div><div id="ti-mode">Laddar…</div></div>
 </section>
 <!-- ══════════════════════════════════════════════════════════════════════
@@ -1474,11 +1605,11 @@ body.app-state-onboard .fc-panel{display:none !important}
 
 <!-- ══════════════════════════════════════════════════════════════════════
      LIVE-DIAGRAM — TradingView Lightweight Charts (Apache 2.0, gratis)
-     Ritar VÅRA egna ljus från /api/candles — samma ström som är verifierad
-     från Bybits WebSocket. Det pågående ljuset ritas med avvikande färg och
+     Ritar VÅRA egna ljus från /api/candles — IG:s stängda ljus (REST-historik +
+     Lightstreamer CONS_END), samma som signalmotorn räknar på. Det pågående ljuset ritas med avvikande färg och
      är markerat i rubriken, så ett ofärdigt ljus aldrig läses som färdigt.
      ══════════════════════════════════════════════════════════════════════ -->
-<section id="liveChart" data-sec="6 · Signalmotorns diagram · stängda ljus från Bybit, det signaltabellen räknar på" style="
+<section id="liveChart" data-sec="6 · Signalmotorns diagram · stängda IG-ljus, det signaltabellen räknar på" style="
          font-family:system-ui,-apple-system,sans-serif;color:#e6e6e6">
   <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
     <h2 style="margin:0;font-size:17px;font-weight:600">Signaldiagram</h2>
@@ -1486,7 +1617,7 @@ body.app-state-onboard .fc-panel{display:none !important}
             border:1px solid #2a3140;border-radius:6px;font-size:12px"></select>
     <span id="chartForming" style="font-size:12px;color:#8b95a7"></span>
     <span style="margin-left:auto;font-size:11px;color:#5a6374">
-      Egen ström · Bybit WebSocket
+      <span id="chartSrc">IG · stängda ljus</span>
     </span>
   </div>
   <div id="chartBox" style="border:1px solid #2a3140;border-radius:10px;
@@ -1540,10 +1671,14 @@ body.app-state-onboard .fc-panel{display:none !important}
     if (!current) return;
     try {
       var iv = (document.getElementById("sigInterval") || {}).value || "1m";
-      var res = await fetch("/api/candles?symbol=" + current + "&interval=" + iv + "&limit=300");
+      var want = current;
+      var res = await fetch("/api/candles?symbol=" + encodeURIComponent(current) + "&interval=" + iv + "&limit=300");
       if (!res.ok) return;
       var d = await res.json();
+      if (want !== current) return; // bytt instrument under tiden
       series.setData((d.closed || []).map(toBar));
+      var src = document.getElementById("chartSrc");
+      if (src) src.innerHTML = IG.esc(IG.label(current)) + " · " + IG.esc(current) + " · " + iv + " · " + IG.envLabel() + " · " + IG.badge(IG.quote(current));
       if (d.forming) {
         forming.setData([toBar(d.forming)]);
         formingEl.textContent = "Sista ljuset byggs — ingen signal räknas på det";
@@ -1565,14 +1700,15 @@ body.app-state-onboard .fc-panel{display:none !important}
       if (!syms.length) return;
       if (symSel.options.length !== syms.length) {
         symSel.innerHTML = syms.map(function (s) {
-          return '<option value="' + s + '">' + s + "</option>";
+          return '<option value="' + IG.esc(s) + '">' + IG.esc(IG.label(s)) + "</option>";
         }).join("");
       }
       if (!current || syms.indexOf(current) < 0) { current = syms[0]; symSel.value = current; load(); }
     } catch (_) {}
   }
 
-  symSel.addEventListener("change", function () { current = symSel.value; load(); });
+  symSel.addEventListener("change", function () { current = symSel.value; series.setData([]); forming.setData([]); load(); });
+  IG.on("env", function () { current = null; symSel.innerHTML = ""; series.setData([]); forming.setData([]); syncSymbols(); });
   syncSymbols(); setInterval(syncSymbols, 10000);
   setInterval(load, 2000);
 })();
@@ -1584,7 +1720,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     <h2 style="margin:0;font-size:17px;font-weight:600">Signaler</h2>
     <span id="sigMode" style="font-size:11px;font-weight:700;letter-spacing:.6px;
           padding:3px 9px;border-radius:4px;background:#3a2f0b;color:#f0b90b;
-          border:1px solid #5c4a10">TEST — LÅTSASPENGAR · VARJE ORDER KRÄVER GODKÄNN</span>
+          border:1px solid #5c4a10">TEST — IG DEMO · VARJE ORDER KRÄVER GODKÄNN</span>
     <label style="font-size:12px;color:#8b95a7;margin-left:auto">
       Intervall
       <select id="sigInterval" style="margin-left:6px;padding:5px 8px;background:#0b0e14;
@@ -1602,7 +1738,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       <thead>
         <tr style="text-align:left;color:#8b95a7;font-size:11px;letter-spacing:.4px;
                    text-transform:uppercase;background:#11161f">
-          <th style="padding:11px 12px">Par</th>
+          <th style="padding:11px 12px">Instrument</th>
           <th style="padding:11px 12px">Riktning</th>
           <th style="padding:11px 12px;text-align:right">Score</th>
           <th style="padding:11px 12px;text-align:right">Entry</th>
@@ -1771,53 +1907,60 @@ body.app-state-onboard .fc-panel{display:none !important}
     document.getElementById("anaClose").addEventListener("click", closeModal);
     modal.addEventListener("click", function (e) { if (e.target === modal) closeModal(); });
     document.addEventListener("keydown", function (e) { if (e.key === "Escape" && modal.classList.contains("open")) closeModal(); });
-    function money(n) { return "$" + Number(n).toFixed(2); }
+    function money(n, cur) { return window.IG ? IG.money(n, cur || IG.st.currency) : Number(n).toFixed(2) + " " + (cur || ""); }
+    function nm(sym) { return (window.IG && IG.names[sym]) || sym; }
+    // Pengar vid målpris/stop-loss i kontovalutan (från IG:s uträkning när förslaget skapades)
     function outcome(o) {
-      var entry = Number(o.limitPrice || o.refPrice), stake = Number(o.quoteUsd) || (Number(o.quantity) * entry);
-      if (!(entry > 0) || !(stake > 0) || o.side !== "BUY") return "";
-      var f = function (px) { return ((Number(px) / entry) * 0.9975 * 0.9975 - 1) * 100; };
+      var q = o.quoteInfo, cur = o.currency;
+      if (o.closeDealId) return '<div style="margin-top:4px;color:#8b95a7">Stänger positionen ' + esc(o.closeDealId) + "</div>";
       var parts = [];
-      if (Number(o.takeProfit) > 0) { var p = f(o.takeProfit); parts.push('<span style="color:#3fb950">🟢 vinst +' + p.toFixed(1).replace(".", ",") + " % = " + money(stake * (1 + p / 100)) + "</span>"); }
-      if (Number(o.stopLoss) > 0) { var q = f(o.stopLoss); parts.push('<span style="color:#f85149">🔴 förlust ' + q.toFixed(1).replace(".", ",") + " % = " + money(stake * (1 + q / 100)) + "</span>"); }
-      return '<div style="margin-top:4px">Satsa ' + money(stake) + " → " + parts.join(" · ") + "</div>";
+      if (o.stakeAmount) parts.push("Insats " + esc(o.stakePct) + " % = <b>" + money(o.stakeAmount, cur) + "</b>");
+      if (q) {
+        if (q.size != null) parts.push("storlek " + esc(q.size) + " " + esc(q.unit || "") + (q.contractSize ? " (kontrakt " + esc(q.contractSize) + ")" : ""));
+        if (q.margin != null) parts.push("marginal " + money(q.margin, cur));
+      }
+      var h = parts.length ? '<div style="margin-top:4px">' + parts.join(" · ") + "</div>" : "";
+      if (q && (q.moneyAtTp != null || q.moneyAtSl != null)) {
+        h += '<div style="margin-top:2px">' + (q.moneyAtTp != null ? '<span style="color:#3fb950">🟢 vid målpris ' + money(q.moneyAtTp, cur) + "</span>" : "")
+          + (q.moneyAtTp != null && q.moneyAtSl != null ? " · " : "")
+          + (q.moneyAtSl != null ? '<span style="color:#f85149">🔴 vid stop-loss ' + money(q.moneyAtSl, cur) + "</span>" : "") + "</div>";
+      } else if (!o.closeDealId) h += '<div style="margin-top:2px;color:#8b95a7">Pengar vid målpris/stop-loss kunde inte räknas fram (IG-regler saknas).</div>';
+      return h;
     }
     function rowHtml(o) {
       var col = o.side === "BUY" ? "#3fb950" : "#f85149";
       var hz = o.horizonSec ? Math.round(o.horizonSec / 60) + " min" : "";
+      var verb = o.closeDealId ? "✕ STÄNG" : (o.side === "BUY" ? "▲ KÖP (lång)" : "▼ SÄLJ (kort)");
       return '<div class="am-row" data-row="' + esc(o.id) + '">'
-        + '<div class="am-big"><span style="color:' + col + '">' + (o.side === "BUY" ? "▲ KÖP" : "▼ SÄLJ") + "</span> " + esc(o.symbol)
-        + ' <span style="font-size:14px;color:#c9d1d9">' + (o.quoteUsd ? money(o.quoteUsd) : esc(o.quantity) + " st") + "</span>"
-        + ' <span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + (o.live ? "#22c55e" : "#f0b90b") + ";color:" + (o.live ? "#22c55e" : "#f0b90b") + '">' + (o.live ? "LIVE" : "TEST") + "</span></div>"
+        + '<div class="am-big"><span style="color:' + col + '">' + verb + "</span> " + esc(o.name || nm(o.symbol))
+        + ' <span style="font-size:11px;color:#8b95a7">' + esc(o.symbol) + "</span>"
+        + ' <span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + (o.live ? "#22c55e" : "#f0b90b") + ";color:" + (o.live ? "#22c55e" : "#f0b90b") + '">' + (o.live ? "IG Live" : "IG Demo") + "</span></div>"
         + '<div style="margin-top:2px;color:#8b95a7">Pris nu ~' + esc(o.refPrice) + (o.takeProfit ? " · målpris " + esc(o.takeProfit) : "") + (o.stopLoss ? " · stop-loss " + esc(o.stopLoss) : "") + (hz ? " · håll " + hz : "") + "</div>"
         + outcome(o)
         + (o.expiresAt ? '<div style="margin-top:4px">Giltig i <span class="am-cd" data-exp="' + esc(o.expiresAt) + '"></span></div>' : "")
         + (o.reason ? '<div style="margin-top:4px;font-size:12px;color:#8b95a7">' + esc(o.reason) + "</div>" : "")
+        + (window.IG && !IG.execOn() ? '<div style="margin-top:4px;font-size:12px;color:#fbbf24">Orderläget är avstängt — GODKÄNN skickar inget till IG.</div>' : "")
         + '<div class="am-btns"><button type="button" class="am-ok" data-am="approve" data-id="' + esc(o.id) + '">✓ GODKÄNN</button>'
         + '<button type="button" class="am-no" data-am="reject" data-id="' + esc(o.id) + '">Avvisa</button></div></div>';
     }
-    // Minsta målpris per tidshorisont så att vinsten klarar avgiften (0,25 % in + ut)
-    var MIN_TP = { 1: 0.008, 5: 0.01, 15: 0.015, 30: 0.02 };
     var bestCand = null;
+    // Bästa läge just nu (indikatorerna på stängda IG-ljus). Lång eller kort — IG tillåter båda.
     async function bestBuy() {
       try {
         var r = await fetch("/api/signals"); var d = await r.json();
-        var longs = (d.signals || []).filter(function (x) { return x.direction === "LONG" && x.entry > 0; })
-          .sort(function (a, b) { return b.score - a.score; });
-        if (!longs.length) return null;
-        var x = longs[0], hz = window._hzMin || 1, tpPct = MIN_TP[hz] || 0.01;
-        // Utgå från priset JUST NU på Bybit EU (signalens pris är från senaste stängda ljus)
-        var usdc = x.symbol.replace(/USDT$/, "USDC"), entry = Number(x.entry);
-        try {
-          var tk = await (await fetch("https://api.bybit.eu/v5/market/tickers?category=spot&symbol=" + usdc)).json();
-          var live = Number(tk.result.list[0].lastPrice); if (live > 0) entry = live;
-        } catch (_) {}
-        var tp = Math.max(Number(x.target) || 0, entry * (1 + tpPct));
-        var sl = entry * (1 - tpPct * 0.6);
-        var dec = entry >= 1000 ? 1 : entry >= 1 ? 4 : 6;
-        return { symbol: x.symbol.replace(/USDT$/, "USDC"), score: x.score, reasons: (x.reasons || []).slice(0, 2), entry: entry,
-          tp: +tp.toFixed(dec), sl: +sl.toFixed(dec), hz: hz };
+        var cands = (d.signals || []).filter(function (x) { return (x.direction === "LONG" || x.direction === "SHORT") && x.entry > 0; })
+          .sort(function (a, b) { return Math.abs(b.score) - Math.abs(a.score); });
+        if (!cands.length) return null;
+        var x = cands[0], hz = window._hzMin || 1, side = x.direction === "SHORT" ? "SELL" : "BUY";
+        var entry = Number(x.entry);
+        // Priset JUST NU från IG (servern), annars signalens pris från senaste stängda ljuset
+        var qt = window.IG && IG.quote(x.symbol), qs = qt ? IG.stateOf(qt).state : "";
+        if (qt && qt.bid > 0 && qt.offer > 0 && (qs === "live" || qs === "fördröjt")) entry = (Number(qt.bid) + Number(qt.offer)) / 2;
+        return { symbol: x.symbol, name: nm(x.symbol), side: side, score: x.score, reasons: (x.reasons || []).slice(0, 2), entry: entry,
+          tp: Number(x.target) > 0 ? Number(x.target) : null, sl: Number(x.stopLoss) > 0 ? Number(x.stopLoss) : null, hz: hz };
       } catch (_) { return null; }
     }
+    function stakePctNow() { var v = Number((document.getElementById("ot-pct") || {}).value); return Math.min(3, Math.max(0.1, v > 0 ? v : 1)); }
     async function openModal(a) {
       var list = [];
       try {
@@ -1827,7 +1970,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       } catch (_) {}
       // Vad analyserades och med vilken tid
       var hzNow = window._hzMin || 1, pairs = "";
-      try { var tr = await fetch("/api/team/last"); var td = await tr.json(); pairs = ((td.team && td.team.symbols) || []).map(function (s) { return s.replace(/USD[TC]$/, ""); }).join(", "); } catch (_) {}
+      try { var tr = await fetch("/api/team/last"); var td = await tr.json(); pairs = ((td.team && td.team.symbols) || []).map(function (s) { return nm(s); }).join(", "); } catch (_) {}
       var head = '<div style="margin-bottom:6px;color:#8b95a7">Tidshorisont <b style="color:#e6e6e6">' + hzNow + " min</b>"
         + (pairs ? " · analyserade <b style=\"color:#e6e6e6\">" + esc(pairs) + "</b>" : "") + " · kl " + new Date().toLocaleTimeString("sv-SE").slice(0, 5) + "</div>";
       var html = "";
@@ -1836,18 +1979,25 @@ body.app-state-onboard .fc-panel{display:none !important}
         html = head + '<div class="am-big" style="color:#8b95a7">VÄNTA – agenterna föreslår inget köp</div><div style="margin-top:6px">' + esc(line) + "</div>";
         bestCand = await bestBuy();
         if (bestCand) {
-          var stake = Math.max(1.1, Number((document.getElementById("ot-amt") || {}).value) || 5);
-          var fake = { side: "BUY", refPrice: bestCand.entry, quoteUsd: stake, takeProfit: bestCand.tp, stopLoss: bestCand.sl };
-          html += '<div class="am-row"><div style="font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Bästa köpläge just nu (indikatorerna)</div>'
-            + '<div class="am-big"><span style="color:#3fb950">▲ ' + esc(bestCand.symbol) + "</span> <span style=\"font-size:13px;color:#c9d1d9\">poäng +" + esc(bestCand.score) + "</span></div>"
+          var pct = stakePctNow(), sq = null;
+          try {
+            var qr = await fetch("/api/ig/stake-quote", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ epic: bestCand.symbol, direction: bestCand.side, pct: pct, stopLoss: bestCand.sl, takeProfit: bestCand.tp }) });
+            sq = await qr.json();
+          } catch (_) {}
+          var q = sq && (sq.quote || sq);
+          var fake = { side: bestCand.side, stakePct: pct, stakeAmount: q && q.stake, currency: q && q.currency, quoteInfo: q && q.ok ? q : null };
+          var bc = bestCand.side === "BUY" ? "#3fb950" : "#f85149", bv = bestCand.side === "BUY" ? "▲ Köp (lång)" : "▼ Sälj (kort)";
+          html += '<div class="am-row"><div style="font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Bästa läge just nu (indikatorerna, stängda ljus)</div>'
+            + '<div class="am-big"><span style="color:' + bc + '">' + bv + " " + esc(bestCand.name) + '</span> <span style="font-size:11px;color:#8b95a7">' + esc(bestCand.symbol) + "</span> <span style=\"font-size:13px;color:#c9d1d9\">poäng " + esc(bestCand.score) + "</span></div>"
             + '<div style="color:#8b95a7">' + esc(bestCand.reasons.join(" · ")) + "</div>"
-            + '<div style="margin-top:2px;color:#8b95a7">Pris ~' + esc(bestCand.entry) + " · målpris " + esc(bestCand.tp) + " · stop-loss " + esc(bestCand.sl) + " · håll " + bestCand.hz + " min</div>"
+            + '<div style="margin-top:2px;color:#8b95a7">Pris ~' + esc(bestCand.entry) + (bestCand.tp ? " · målpris " + esc(bestCand.tp) : "") + (bestCand.sl ? " · stop-loss " + esc(bestCand.sl) : "") + " · håll " + bestCand.hz + " min</div>"
             + outcome(fake)
+            + (q && q.ok === false && (q.reason || q.error) ? '<div style="margin-top:4px;color:#fbbf24;font-size:12px">⚠ ' + esc(q.reason || q.error) + "</div>" : "")
             + '<div style="margin-top:6px;color:#fbbf24;font-size:12px">⚠ Agenterna sa vänta. Detta är ditt eget beslut.</div>'
-            + '<div class="am-btns"><button type="button" class="am-ok" data-am="anyway" data-stake="' + stake + '">▲ Köp ändå ' + money(stake) + '</button>'
+            + '<div class="am-btns"><button type="button" class="am-ok" data-am="anyway" data-pct="' + pct + '">' + bv + " ändå " + pct + ' %</button>'
             + '<button type="button" class="am-no" data-am="close">Nej, vänta</button></div></div>';
         } else {
-          html += '<div class="am-row">Inget par har köpsignal just nu (alla pekar nedåt). Med vanlig krypto (spot) tjänar man bara när priset stiger.'
+          html += '<div class="am-row">Inget instrument i bevakningslistan har en tydlig signal just nu (lång eller kort).'
             + '<div class="am-btns"><button type="button" class="am-no" data-am="close">OK</button></div></div>';
         }
       } else {
@@ -1878,9 +2028,9 @@ body.app-state-onboard .fc-panel{display:none !important}
         b.disabled = true;
         try {
           var rr = await fetch("/api/pending-orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-            symbol: bestCand.symbol, side: "BUY", quoteUsd: Number(b.dataset.stake), source: "popup: köp ändå",
-            takeProfit: bestCand.tp, stopLoss: bestCand.sl, horizonSec: bestCand.hz * 60,
-            reason: "Ditt val: " + bestCand.symbol + " poäng +" + bestCand.score + " (" + bestCand.reasons.join(", ") + ")" }) });
+            symbol: bestCand.symbol, side: bestCand.side, stakePct: Number(b.dataset.pct), source: "popup: köp ändå",
+            takeProfit: bestCand.tp || undefined, stopLoss: bestCand.sl || undefined, horizonSec: bestCand.hz * 60,
+            reason: "Ditt val: " + bestCand.name + " poäng " + bestCand.score + " (" + bestCand.reasons.join(", ") + ")" }) });
           var dd = await rr.json().catch(function () { return {}; });
           var host = b.closest(".am-row");
           if (dd.ok && dd.pendingOrder) { host.outerHTML = rowHtml(dd.pendingOrder); }
@@ -1894,7 +2044,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         var r = await fetch("/api/pending-orders/" + b.dataset.id + "/" + b.dataset.am, { method: "POST" });
         var d = await r.json().catch(function () { return {}; });
         row.insertAdjacentHTML("beforeend", '<div style="margin-top:6px;font-weight:700;color:' + (d.ok ? "#3fb950" : "#f85149") + '">'
-          + (d.ok ? (b.dataset.am === "approve" ? "✓ Lagd" : "✕ Avvisad") : "⚠ " + esc(d.error || ("HTTP " + r.status))) + "</div>");
+          + (d.ok ? (b.dataset.am === "approve" ? "✓ Skickad till IG" : "✕ Avvisad") : "⚠ " + esc(d.error || ("HTTP " + r.status))) + "</div>");
       } catch (err) { row.insertAdjacentHTML("beforeend", '<div style="color:#f85149">⚠ ' + esc(err.message) + "</div>"); }
       if (!body.querySelector("button[data-am=approve]:not(:disabled)")) setTimeout(closeModal, 2500);
     });
@@ -1912,16 +2062,17 @@ body.app-state-onboard .fc-panel{display:none !important}
   })();
   </script>
 
-  <!-- Mest rörelse just nu: mynt på Bybit EU som rör sig mest på vald tid.
-       Läser /api/movers. "+ Lägg till" lägger myntet i analysen (/api/custom-symbols). -->
-  <div id="moversBox" data-sec="Mest rörelse just nu · mynten med störst rörelse på vald tid" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
+  <!-- Marknaden just nu: IG-instrument (forex + krypto) från IG-katalogen.
+       Läser /api/movers. "+ Lägg till" lägger EPIC:en i bevakningslistan (/api/market/watchlist). -->
+  <div id="moversBox" data-sec="Mest rörelse just nu · IG-instrumenten med störst rörelse" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
       <strong style="font-size:13px">🔥 Marknaden just nu <span id="mvIv" style="font-size:11px;color:#8b95a7"></span></strong>
       <span id="mvUpd" style="font-size:11px;color:#8b95a7"></span>
     </div>
     <div id="mvTabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
     <div id="mvRows" style="margin-top:8px;font-size:13px;color:#8b95a7">Laddar…</div>
-    <div style="margin-top:8px;font-size:11px;color:#8b95a7;line-height:1.5"><b>Rörelse</b> = hur mycket priset brukar röra sig under en trade på vald tid. <b>Efter avgift</b> = det som kan bli vinst när 0,5 % avgift (in + ut) är dragen. Grönt = rörelsen är större än avgiften. Mer rörelse betyder större vinst <b>och</b> större förlust.</div>
+    <div style="margin-top:8px;font-size:11px;color:#8b95a7;line-height:1.5"><b>Rörelse</b> = snitt (hög − låg) per stängt IG-ljus på vald tid (bara instrument i bevakningslistan). <b>Spread</b> = IG:s kostnad (köp − sälj), ingen fast avgift. <b>Idag</b> = IG:s förändring sedan sessionsstart. "–" = IG gav inget värde (visas som saknat, aldrig gissat).</div>
+    <div id="mvNote" style="margin-top:4px;font-size:11px;color:#fbbf24"></div>
   </div>
   <script>
   (function () {
@@ -1939,40 +2090,43 @@ body.app-state-onboard .fc-panel{display:none !important}
       }).join("");
       document.querySelectorAll("#mvTabs [data-mvcat]").forEach(function (b) { b.addEventListener("click", function () { cat = b.getAttribute("data-mvcat"); try { localStorage.setItem("mvCat", cat); } catch (_) {} tabs(); document.getElementById("mvRows").textContent = "Laddar…"; load(); }); });
     }
-    function px(v) { return v >= 100 ? "$" + v.toFixed(2) : v >= 1 ? "$" + v.toFixed(4) : "$" + v.toPrecision(4); }
-    async function add(base, btn) {
+    function px(v) { return v == null ? "–" : (window.IG ? IG.px(v) : String(v)); }
+    function pp(v) { return v == null || isNaN(v) ? "–" : p2(v); }
+    async function add(epic, btn) {
       btn.disabled = true; btn.textContent = "…";
       try {
-        var r = await fetch("/api/custom-symbols", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol: base, note: "Mest rörelse" }) });
+        var r = await fetch("/api/market/watchlist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ epic: epic }) });
         var d = await r.json().catch(function () { return {}; });
-        if (d.ok) { inList[base] = true; btn.textContent = "✓ med"; btn.style.color = "#3fb950"; btn.style.borderColor = "#3fb950"; }
+        if (d.ok) { inList[epic] = true; btn.textContent = "✓ bevakas"; btn.style.color = "#3fb950"; btn.style.borderColor = "#3fb950"; if (window.IG) IG.refresh(); }
         else { btn.disabled = false; btn.textContent = "+ Lägg till"; alert(d.error || ("HTTP " + r.status)); }
       } catch (e) { btn.disabled = false; btn.textContent = "+ Lägg till"; alert("Fel: " + e.message); }
     }
     async function load() {
       try {
-        var cs = await fetch("/api/custom-symbols").then(function (r) { return r.json(); }).catch(function () { return {}; });
-        inList = {}; (cs.all || []).forEach(function (s) { inList[String(s).replace(/(USDT|USDC)$/, "")] = true; });
+        var w = await fetch("/api/market/watchlist").then(function (r) { return r.json(); }).catch(function () { return {}; });
+        inList = {}; (w.watchlist || []).forEach(function (x) { inList[x.epic] = true; });
         var r = await fetch("/api/movers?cat=" + encodeURIComponent(cat)); var d = await r.json();
         var box = document.getElementById("mvRows");
         if (!d.ok) { box.textContent = "Kunde inte hämta: " + (d.error || r.status); return; }
-        document.getElementById("mvIv").textContent = cat === "move" ? "· rörelse per " + d.interval + " min-trade" : "· senaste 24 h, Bybit EU";
+        document.getElementById("mvIv").textContent = (cat === "move" ? "· rörelse per stängt " + d.interval + " min-ljus" : "· IG idag") + " · " + esc(d.source || "IG");
+        document.getElementById("mvNote").textContent = d.note || "";
         box.innerHTML = d.movers.length ? d.movers.map(function (m, i) {
           var hasMove = typeof m.avgMovePct === "number";
-          var ok = hasMove && m.afterFeePct > 0, col = ok ? "#3fb950" : "#f85149";
-          var c24 = m.change24hPct >= 0 ? "#3fb950" : "#f85149";
-          var btn = inList[m.base]
-            ? '<span style="margin-left:auto;font-size:12px;color:#3fb950">✓ med i analysen</span>'
-            : '<button type="button" data-mvadd="' + esc(m.base) + '" style="margin-left:auto;padding:3px 10px;border:1px solid #f0b90b;background:transparent;color:#f0b90b;border-radius:6px;font-weight:700;cursor:pointer">+ Lägg till</button>';
+          var c24 = m.change24hPct == null ? "#8b95a7" : m.change24hPct >= 0 ? "#3fb950" : "#f85149";
+          var btn = inList[m.epic]
+            ? '<span style="margin-left:auto;font-size:12px;color:#3fb950">✓ bevakas</span>'
+            : '<button type="button" data-mvadd="' + esc(m.epic) + '" style="margin-left:auto;padding:3px 10px;border:1px solid #f0b90b;background:transparent;color:#f0b90b;border-radius:6px;font-weight:700;cursor:pointer">+ Lägg till</button>';
           return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #222834">'
             + '<span style="color:#8b95a7;min-width:18px">' + (i + 1) + '</span>'
-            + '<b style="color:#e6e6e6;min-width:60px">' + esc(m.base) + '</b>'
+            + '<b style="color:#e6e6e6;min-width:90px" title="' + esc(m.epic) + '">' + esc(m.base) + '</b>'
+            + '<span style="font-size:11px;color:#8b95a7">' + (m.category === "crypto" ? "krypto" : "forex") + '</span>'
             + '<span style="color:#e6e6e6">' + px(m.price) + '</span>'
-            + (hasMove ? '<span>rörelse <b style="color:#e6e6e6">' + m.avgMovePct.toFixed(2).replace(".", ",") + ' %</b></span><span>efter avgift <b style="color:' + col + '">' + p2(m.afterFeePct) + '</b></span>' : "")
-            + '<span>24h <b style="color:' + c24 + '">' + p2(m.change24hPct) + '</b></span>'
-            + '<span style="font-size:12px;color:#8b95a7">omsättning $' + big(m.turnover24hUsd) + '</span>'
+            + (cat === "move" ? '<span>rörelse <b style="color:#e6e6e6">' + (hasMove ? m.avgMovePct.toFixed(2).replace(".", ",") + " %" : "– (historik saknas)") + '</b></span>' : "")
+            + '<span>idag <b style="color:' + c24 + '">' + pp(m.change24hPct) + '</b></span>'
+            + '<span style="font-size:12px;color:#8b95a7">spread ' + px(m.spread) + '</span>'
+            + (m.marketStatus && m.marketStatus !== "TRADEABLE" ? '<span style="font-size:11px;color:#fbbf24">' + esc(m.marketStatus) + '</span>' : "")
             + btn + '</div>';
-        }).join("") : "Inga mynt hittades.";
+        }).join("") : "Inga instrument hittades i IG-katalogen.";
         box.querySelectorAll("[data-mvadd]").forEach(function (b) { b.addEventListener("click", function () { add(b.getAttribute("data-mvadd"), b); }); });
         document.getElementById("mvUpd").textContent = "uppdaterad " + new Date().toLocaleTimeString("sv-SE");
       } catch (_) { /* behåll senaste vyn */ }
@@ -1985,7 +2139,7 @@ body.app-state-onboard .fc-panel{display:none !important}
        Läser /api/results (TEST eller LIVE beroende på aktiv mäklare). -->
   <div id="resultsBox" data-sec="Resultat · vinst och förlust på alla affärer" style="margin-top:14px;border:1px solid #2a3140;border-radius:10px;background:#151a23;padding:12px 14px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-      <strong style="font-size:13px">Resultat <span id="resMode" style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid #f0b90b;color:#f0b90b;margin-left:4px">TEST</span></strong>
+      <strong style="font-size:13px">Resultat <span id="resMode" style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid #f0b90b;color:#f0b90b;margin-left:4px">IG Demo</span></strong>
       <span id="resUpdated" style="font-size:11px;color:#8b95a7"></span>
     </div>
     <div id="resTotals" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:10px"></div>
@@ -1993,74 +2147,79 @@ body.app-state-onboard .fc-panel{display:none !important}
     <div id="resOpen" style="margin-top:4px;font-size:13px;color:#8b95a7">Laddar…</div>
     <div style="margin-top:12px;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Händelser (senaste först)</div>
     <div id="resTrades" style="margin-top:4px;font-size:13px;color:#8b95a7;max-height:320px;overflow-y:auto">Laddar…</div>
-    <div style="margin-top:8px;font-size:11px;color:#8b95a7;line-height:1.5">Säkra vinst: sätt TP (målpris) när du köper, så säljer boten själv. Eller tryck <b>Sälj</b> på ett innehav, så hamnar en "Sälj allt" i Väntande ordrar och du trycker Godkänn. Siffrorna är efter avgift (0,25 % per köp och sälj).</div>
+    <div id="resErr" style="margin-top:6px;font-size:12px;color:#fbbf24"></div>
+    <div style="margin-top:8px;font-size:11px;color:#8b95a7;line-height:1.5">Säkra vinst: sätt målpris (TP) när du öppnar, så stänger IG själv. Eller tryck <b>Sälj nu</b> på en position, så hamnar en stängning i Väntande ordrar och du trycker Godkänn. Siffrorna är IG:s egna (kontovaluta, spread ingår). IG Demo och IG Live visas var för sig.</div>
   </div>
   <script>
   (function () {
     function esc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
     var GREEN = "#3fb950", RED = "#f85149", DIM = "#8b95a7";
-    function money(v) { if (v == null || isNaN(v)) return "–"; var s = Math.abs(v) < 1 ? Math.abs(v).toFixed(3) : Math.abs(v).toFixed(2); return (v >= 0 ? "+$" : "−$") + s.replace(".", ","); }
+    var cur = "";
+    function money(v) { if (v == null || isNaN(v)) return "–"; return window.IG ? IG.money(v, cur, true) : (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2) + " " + cur; }
     function pct(v) { if (v == null || isNaN(v)) return ""; return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2).replace(".", ",") + " %"; }
     function col(v) { return v == null ? DIM : v > 0 ? GREEN : v < 0 ? RED : DIM; }
-    function px(v) { return v == null ? "–" : v >= 100 ? v.toFixed(2) : v >= 1 ? v.toFixed(4) : v.toPrecision(4); }
-    var KIND = { TP: "målpris (TP)", SL: "stop-loss (SL)", MARKET: "marknad", LIMIT: "limit", "Sälj allt": "sälj allt", agent: "agent", manuell: "manuell" };
+    function px(v) { return v == null ? "–" : (window.IG ? IG.px(v) : String(v)); }
+    var KIND = { TP: "målpris (TP)", SL: "stop-loss (SL)", MARKET: "marknad", LIMIT: "limit", DEAL: "affär", agent: "agent", manuell: "manuell" };
     function tile(label, v, sub) {
       return '<div style="border:1px solid #2a3140;border-radius:8px;padding:8px 10px;background:#0f141c">'
         + '<div style="font-size:11px;color:' + DIM + '">' + esc(label) + '</div>'
         + '<div style="font-size:20px;font-weight:800;color:' + col(v) + '">' + money(v) + '</div>'
         + (sub ? '<div style="font-size:11px;color:' + DIM + '">' + sub + '</div>' : "") + '</div>';
     }
-    var mode = "TEST";
-    async function sellAll(coin) {
-      if (!confirm("Sälja allt du har av " + coin + " (" + mode + ") till marknadspris? Ordern hamnar i Väntande ordrar och skickas när du trycker Godkänn.")) return;
+    var label = "IG Demo";
+    async function sellNow(dealId, name) {
+      if (!confirm("Stänga " + name + " (" + label + ") till marknadspris? Stängningen hamnar i Väntande ordrar och skickas först när du trycker Godkänn.")) return;
       try {
-        var r = await fetch("/api/pending-orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol: coin + "USDC", side: "SELL", sellAll: true, orderType: "MARKET", source: "resultat", broker: mode === "LIVE" ? "bybit" : "bybit-paper", reason: "Resultatfönstret: säkra / sälj allt " + coin }) });
+        var r = await fetch("/api/ig/positions/" + encodeURIComponent(dealId) + "/close", { method: "POST" });
         var d = await r.json().catch(function () { return {}; });
-        if (!d.ok) { alert("Ordern lades inte i kön.\n\n" + (d.error || ("HTTP " + r.status))); return; }
-        alert("Sälj allt " + coin + " ligger nu i Väntande ordrar. Tryck Godkänn där.");
+        if (!d.ok) { alert("Stängningen lades inte i kön.\n\n" + (d.error || ("HTTP " + r.status))); return; }
+        alert("Stängning av " + name + " ligger nu i Väntande ordrar. Tryck Godkänn där." + (window.IG && !IG.execOn() ? "\n\nObs: Orderläget är avstängt — inget skickas till IG." : ""));
       } catch (e) { alert("Fel: " + e.message); }
     }
     async function load() {
       try {
         var r = await fetch("/api/results"); if (!r.ok) return;
         var d = await r.json();
-        mode = d.mode;
+        label = d.label || (d.mode === "LIVE" ? "IG Live" : "IG Demo"); cur = d.currency || "";
         var m = document.getElementById("resMode");
-        m.textContent = d.mode; m.style.borderColor = m.style.color = d.mode === "LIVE" ? "#22c55e" : "#f0b90b";
+        m.textContent = label + (cur ? " · " + cur : ""); m.style.borderColor = m.style.color = d.mode === "LIVE" ? "#22c55e" : "#f0b90b";
+        document.getElementById("resErr").textContent = d.error ? "⚠ " + d.error + (d.partial ? " (visar det som gick att läsa)" : "") : "";
         var t = d.totals;
         document.getElementById("resTotals").innerHTML =
-          tile("Idag (sålda)", t.today)
-          + tile("Totalt sålda", t.realized, t.trades ? (t.wins + " vinst · " + t.losses + " förlust") : "inga sålda än")
-          + tile("Öppet just nu", t.unrealized, d.open.length + " innehav")
+          tile("Idag (stängda)", t.today)
+          + tile("Totalt stängda", t.realized, t.trades ? (t.wins + " vinst · " + t.losses + " förlust") : "inga stängda än")
+          + tile("Öppet just nu", t.unrealized, d.open.length + " positioner")
           + tile("Allt ihop", t.realized + t.unrealized);
         document.getElementById("resOpen").innerHTML = d.open.length ? d.open.map(function (o) {
-          var inv = o.qty * o.avg;
+          var dir = o.direction === "SELL" ? '<b style="color:' + RED + '">KORT</b>' : '<b style="color:' + GREEN + '">LÅNG</b>';
+          var left = o.closeAt ? Math.max(0, Math.round((o.closeAt - Date.now()) / 60000)) : null;
           return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #222834">'
-            + '<b style="color:#e6e6e6;min-width:52px">' + esc(o.coin) + '</b>'
-            + '<span>insatt $' + (inv > 0 ? inv.toFixed(2) : "–") + '</span>'
-            + '<span>nu $' + (o.value != null ? o.value.toFixed(2) : "–") + '</span>'
+            + dir + '<b style="color:#e6e6e6;min-width:80px" title="' + esc(o.epic || "") + '">' + esc(o.coin) + '</b>'
+            + '<span>storlek ' + esc(o.qty) + ' @ ' + esc(px(o.avg)) + '</span>'
+            + '<span>nu ' + esc(px(o.price)) + '</span>'
             + '<b style="color:' + col(o.upnl) + '">' + money(o.upnl) + ' ' + pct(o.upnlPct) + '</b>'
             + (o.tp ? '<span style="font-size:12px;color:' + GREEN + '">TP ' + esc(px(o.tp)) + '</span>' : "")
             + (o.sl ? '<span style="font-size:12px;color:' + RED + '">SL ' + esc(px(o.sl)) + '</span>' : "")
-            + '<button type="button" data-sellall="' + esc(o.coin) + '" style="margin-left:auto;padding:3px 10px;border:1px solid ' + RED + ';background:#2a1215;color:' + RED + ';border-radius:6px;font-weight:700;cursor:pointer">Sälj</button>'
+            + (left != null ? '<span style="font-size:12px;color:#fbbf24">stängs om ' + left + ' min</span>' : "")
+            + (o.epic ? '<button type="button" data-reschart="' + esc(o.epic) + '" style="margin-left:auto;padding:3px 10px;border:1px solid #2a3140;background:transparent;color:#c9d1d9;border-radius:6px;cursor:pointer">📈 Diagram</button>' : "")
+            + (o.dealId ? '<button type="button" data-sellnow="' + esc(o.dealId) + '" data-name="' + esc(o.coin) + '" style="padding:3px 10px;border:1px solid ' + RED + ';background:#2a1215;color:' + RED + ';border-radius:6px;font-weight:700;cursor:pointer">Sälj nu</button>' : "")
             + '</div>';
-        }).join("") : "Inga öppna innehav.";
-        document.querySelectorAll("#resOpen [data-sellall]").forEach(function (b) { b.addEventListener("click", function () { sellAll(b.getAttribute("data-sellall")); }); });
+        }).join("") : "Inga öppna positioner.";
+        document.querySelectorAll("#resOpen [data-sellnow]").forEach(function (b) { b.addEventListener("click", function () { sellNow(b.getAttribute("data-sellnow"), b.getAttribute("data-name")); }); });
+        document.querySelectorAll("#resOpen [data-reschart]").forEach(function (b) { b.addEventListener("click", function () { if (typeof openChartFor === "function") openChartFor(b.getAttribute("data-reschart")); }); });
         document.getElementById("resTrades").innerHTML = d.trades.length ? d.trades.map(function (x) {
           var when = new Date(x.at).toLocaleString("sv-SE", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-          var isSell = x.side === "SELL";
-          var res = isSell && x.pnl != null
-            ? '<b style="color:' + col(x.pnl) + '">' + (x.pnl > 0 ? "🟢 " : "🔴 ") + money(x.pnl) + ' ' + pct(x.pnlPct) + '</b>'
-            : '<span style="color:' + DIM + '">köpt</span>';
+          var res = x.pnl != null
+            ? '<b style="color:' + col(x.pnl) + '">' + (x.pnl > 0 ? "🟢 " : x.pnl < 0 ? "🔴 " : "") + money(x.pnl) + '</b>'
+            : '<span style="color:' + DIM + '">–</span>';
           return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:5px 0;border-top:1px solid #222834">'
             + '<span style="color:' + DIM + ';font-size:12px;min-width:84px">' + esc(when) + '</span>'
-            + '<b style="color:' + (isSell ? RED : GREEN) + ';min-width:38px">' + (isSell ? "SÄLJ" : "KÖP") + '</b>'
-            + '<b style="color:#e6e6e6;min-width:52px">' + esc(x.coin) + '</b>'
-            + '<span>$' + x.usd.toFixed(2) + ' @ ' + esc(px(x.price)) + '</span>'
+            + '<b style="color:#e6e6e6;min-width:80px">' + esc(x.coin) + '</b>'
+            + '<span>' + esc(x.qty) + (x.openLevel != null ? ' · in ' + esc(px(x.openLevel)) : "") + (x.closeLevel != null ? ' · ut ' + esc(px(x.closeLevel)) : "") + '</span>'
             + res
             + '<span style="font-size:11px;color:' + DIM + ';margin-left:auto">' + esc(KIND[x.kind] || x.kind) + '</span>'
             + '</div>';
-        }).join("") : "Inga affärer än.";
+        }).join("") : "Inga stängda affärer än.";
         document.getElementById("resUpdated").textContent = "uppdaterad " + new Date().toLocaleTimeString("sv-SE");
       } catch (_) { /* servern nere — behåll senaste vyn */ }
     }
@@ -2133,7 +2292,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       var td = "padding:11px 12px;border-top:1px solid #222834";
       var right = td + ";text-align:right;font-variant-numeric:tabular-nums";
       return '<tr data-i="' + i + '" style="cursor:pointer' + (stale ? ';opacity:.5' : '') + '">'
-        + '<td style="' + td + ';font-weight:600">' + s.symbol + '</td>'
+        + '<td style="' + td + ';font-weight:600" title="' + esc(s.symbol) + '">' + esc(IG.label(s.symbol)) + '</td>'
         + '<td style="' + td + '"><span style="display:inline-flex;align-items:center;gap:6px;'
           + 'padding:3px 9px;border-radius:5px;background:' + d.bg + ';color:' + d.color
           + ';font-weight:700;font-size:12px">' + d.sym + " " + d.text + '</span></td>'
@@ -2149,7 +2308,7 @@ body.app-state-onboard .fc-panel{display:none !important}
                    : countdown(s.msUntilNextClose)) + '</td>'
         + '<td style="' + td + '">'
           + (actionable
-              ? '<button data-act="' + s.direction + '" data-sym="' + s.symbol + '" style="padding:5px 12px;'
+              ? '<button data-act="' + s.direction + '" data-sym="' + esc(s.symbol) + '" style="padding:5px 12px;'
                 + 'border:1px solid ' + d.color + ';background:' + d.bg + ';color:' + d.color
                 + ';border-radius:6px;font-weight:700;font-size:12px;cursor:pointer">'
                 + d.sym + " " + d.text + '</button>'
@@ -2168,20 +2327,11 @@ body.app-state-onboard .fc-panel{display:none !important}
     if (!tr) return;
     var s = latest[+tr.dataset.i];
     if (!s) return;
-    reasonsEl.innerHTML = "<strong style='color:#e6e6e6'>" + s.symbol + "</strong> — "
+    reasonsEl.innerHTML = "<strong style='color:#e6e6e6'>" + esc(IG.label(s.symbol)) + "</strong> — "
       + (s.reasons || []).join(" · ");
-    // Öppna paret i huvuddiagrammet (sektion 1)
+    // Öppna instrumentet i huvuddiagrammet (sektion 1)
     try {
-      var base = String(s.symbol).toUpperCase().replace(/(USDT|USDC|USD)$/, "");
-      var useCat = (typeof SYMBOLS !== "undefined" && SYMBOLS.usdc && SYMBOLS.usdc.indexOf(base + "USDC") >= 0) ? "usdc" : "crypto";
-      var want = base + (useCat === "usdc" ? "USDC" : "USDT");
-      var cat = document.getElementById("cat-select"), sel = document.getElementById("sym-select");
-      if (cat && sel && typeof SYMBOLS !== "undefined" && SYMBOLS[useCat] && SYMBOLS[useCat].indexOf(want) >= 0) {
-        if (cat.value !== useCat) { cat.value = useCat; fillSymbols(); }
-        sel.value = want; sel.dispatchEvent(new Event("change"));
-        var mc = document.getElementById("mainChartCard");
-        if (mc) mc.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
+      if (typeof openChartFor === "function") openChartFor(s.symbol);
     } catch (_) {}
   });
 
@@ -2192,35 +2342,33 @@ body.app-state-onboard .fc-panel{display:none !important}
       if (!r.ok) return;
       var d = await r.json();
       var a = (d.brokers || []).find(function (b) { return b.active; });
-      brokerInfo = a ? { name: a.name, mode: a.mode } : null;
+      brokerInfo = a ? { name: a.name, mode: a.mode, label: a.label, exec: a.executionEnabled } : null;
     } catch (_) {}
   }
 
   function brokerLabel() {
     if (!brokerInfo) return "ingen mäklare kopplad";
-    var n = brokerInfo.name.charAt(0).toUpperCase() + brokerInfo.name.slice(1);
-    return n + (brokerInfo.mode === "live" ? " LIVE (riktiga pengar)" : " TEST (låtsaspengar)");
+    return (brokerInfo.label || brokerInfo.name) + (brokerInfo.mode === "live" ? " (LIVE, riktiga pengar)" : " (TEST)");
   }
 
   async function queueFromSignal(dir, sym) {
     await loadBroker();
     if (!brokerInfo) {
-      alert("Ingen mäklare är kopplad på servern.\n\nLägg in Bybit-nycklar i .env och starta om boten.");
+      alert("Ingen IG-mäklare är aktiv på servern.\n\nKoppla IG Demo/Live under Inställningar.");
       return;
     }
     var side = dir === "LONG" ? "BUY" : "SELL";
-    var txt = dir === "LONG"
-      ? "KÖP " + sym + " via " + brokerLabel() + ".\n\nHur många dollar?"
-      : "Blankning (SHORT) går inte hos " + brokerInfo.name + ". Du kan bara SÄLJA det du redan äger.\n\nSälj " + sym + " för hur många dollar? (Avbryt = ingenting händer)";
-    var v = prompt(txt, "10");
+    // IG CFD: LONG = köp, SHORT = sälj (öppnar en kort position). Insats i % av IG-saldot.
+    var txt = (dir === "LONG" ? "KÖP (lång) " : "SÄLJ (kort) ") + IG.label(sym) + " via " + brokerLabel() + ".\n\nInsats i % av IG-saldot (0,1–3):";
+    var v = prompt(txt, "1");
     if (v === null) return;
-    var usd = parseFloat(String(v).replace(",", "."));
-    if (!(usd > 0)) { alert("Ogiltigt belopp."); return; }
+    var pct = parseFloat(String(v).replace(",", "."));
+    if (!(pct > 0 && pct <= 3)) { alert("Välj 0,1–3 %."); return; }
     try {
       var r = await fetch("/api/pending-orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol: sym, side: side, quoteUsd: usd, source: "signal:" + dir })
+        body: JSON.stringify({ symbol: sym, side: side, stakePct: pct, source: "signal:" + dir })
       });
       var d = await r.json().catch(function () { return {}; });
       if (!r.ok || !d.ok) { alert("Ingen order skapad.\n\n" + (d.error || ("HTTP " + r.status))); return; }
@@ -2244,7 +2392,7 @@ body.app-state-onboard .fc-panel{display:none !important}
       var sm = document.getElementById("sigMode");
       if (sm) {
         var isLive = brokerInfo && brokerInfo.mode === "live";
-        sm.textContent = (isLive ? "LIVE — RIKTIGA PENGAR" : "TEST — LÅTSASPENGAR")
+        sm.textContent = (isLive ? "LIVE — IG LIVE, RIKTIGA PENGAR" : "TEST — IG DEMO")
           + (d.executionMode === "approve" ? " · VARJE ORDER KRÄVER GODKÄNN" : " · AUTO-LÄGE");
         sm.style.color = isLive ? "#22c55e" : "#f0b90b";
       }
@@ -2266,37 +2414,27 @@ body.app-state-onboard .fc-panel{display:none !important}
       }
       window._pendSeen = open.length;
       showExecMode(d.executionMode);
-      // Möjlig vinst/förlust som på Forex: "Satsa $1 → +86 % → $1,86" (efter 0,25 % avgift per affär)
+      // IG: pengar i kontovalutan. Insats = marginal (% av saldot). Storlek räknas av IG:s regler vid godkännande.
       var payoutHtml = function (o) {
-        var entry = Number(o.limitPrice || o.refPrice);
-        if (o.side !== "BUY" || !(entry > 0)) return "";
-        var stake = Number(o.quoteUsd) || (Number(o.quantity) * entry);
-        if (!(stake > 0)) return "";
-        var part = function (px, label, color) {
-          if (!(Number(px) > 0)) return "";
-          var pct = ((Number(px) / entry) * (1 - 0.0025) * (1 - 0.0025) - 1) * 100;
-          var back = stake * (1 + pct / 100);
-          return '<span style="color:' + color + '">' + label + " " + (pct >= 0 ? "+" : "") + pct.toFixed(1).replace(".", ",") + " % = $" + back.toFixed(2) + "</span>";
-        };
-        var tp = part(o.takeProfit, "vinst", "#3fb950"), sl = part(o.stopLoss, "förlust", "#f85149");
-        if (!tp && !sl) return '<span style="font-size:12px">+1 % rörelse = +$' + (stake * 0.01).toFixed(2) + "</span>";
-        return '<span style="font-size:12px;font-weight:600">Satsa $' + stake.toFixed(2) + " → " + [tp, sl].filter(Boolean).join(" · ") + "</span>";
+        if (o.closeDealId) return '<span style="font-size:12px">stänger IG-position ' + esc(o.closeDealId) + '</span>';
+        if (o.stakeAmount == null) return "";
+        return '<span style="font-size:12px;font-weight:600">Insats ' + IG.money(o.stakeAmount, o.currency) + (o.stakePct ? " (" + esc(o.stakePct) + " %)" : "") + '</span>';
       };
       var row = function (o, withButtons) {
         var col = o.live ? "#22c55e" : "#f0b90b";
         var st = { done: "✓ lagd", rejected: "✕ avvisad", failed: "⚠ misslyckades", pending: "väntar", expired: "⌛ för gammal" }[o.status] || o.status;
         return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:7px 0;border-top:1px solid #222834">'
-          + '<span style="font-weight:700;color:' + (o.side === "BUY" ? "#3fb950" : "#f85149") + '">' + (o.side === "BUY" ? "KÖP" : "SÄLJ") + '</span>'
-          + '<span style="font-weight:600;color:#e6e6e6">' + esc(o.symbol) + '</span>'
-          + '<span>' + (o.sellAll ? "allt" : o.quoteUsd ? "$" + esc(o.quoteUsd) : esc(o.quantity) + " st") + '</span>'
+          + '<span style="font-weight:700;color:' + (o.side === "BUY" ? "#3fb950" : "#f85149") + '">' + (o.closeDealId ? "STÄNG" : o.side === "BUY" ? "KÖP" : "SÄLJ (kort)") + '</span>'
+          + '<span style="font-weight:600;color:#e6e6e6" title="' + esc(o.symbol) + '">' + esc(o.name || IG.label(o.symbol)) + '</span>'
+          + '<span>' + (o.quantity != null ? esc(o.quantity) + " kontrakt" : "") + '</span>'
           + (o.orderType === "LIMIT" ? '<span style="font-size:12px">limit ' + esc(o.limitPrice) + '</span>' : "")
           + (o.takeProfit ? '<span style="font-size:12px;color:#3fb950">TP ' + esc(o.takeProfit) + '</span>' : "")
           + (o.stopLoss ? '<span style="font-size:12px;color:#f85149">SL ' + esc(o.stopLoss) + '</span>' : "")
           + payoutHtml(o)
           + (withButtons && o.expiresAt ? '<span style="font-size:12px;color:#fbbf24">giltig <span class="pend-cd" data-exp="' + esc(o.expiresAt) + '"></span></span>' : "")
           + (o.horizonSec ? '<span style="font-size:12px">håll ' + Math.round(o.horizonSec / 60) + ' min</span>' : "")
-          + '<span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + col + ';color:' + col + '">' + (o.live ? "LIVE" : "TEST") + '</span>'
-          + '<span style="font-size:12px">' + esc(o.venue.replace("broker:", "")) + ' · ' + esc(o.source) + '</span>'
+          + '<span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + col + ';color:' + col + '">' + (o.live ? "LIVE · IG Live" : "TEST · IG Demo") + '</span>'
+          + '<span style="font-size:12px">' + esc(o.source) + '</span>'
           + (withButtons
               ? '<span style="margin-left:auto;display:flex;gap:6px">'
                 + '<button data-pend="approve" data-id="' + esc(o.id) + '" class="pend-approve">✓ GODKÄNN</button>'
@@ -2307,10 +2445,11 @@ body.app-state-onboard .fc-panel{display:none !important}
       var exitsHtml = "";
       try {
         var xr = await fetch("/api/timed-exits"); var xd = await xr.json();
-        if ((xd.exits || []).length) exitsHtml = '<div style="margin-top:6px;font-size:11px;text-transform:uppercase;letter-spacing:.4px">Säljs automatiskt när tiden är slut</div>'
+        if ((xd.exits || []).length) exitsHtml = '<div style="margin-top:6px;font-size:11px;text-transform:uppercase;letter-spacing:.4px">Stängs automatiskt när tiden är slut</div>'
           + xd.exits.map(function (x) {
-            return '<div style="padding:4px 0;border-top:1px solid #222834">' + esc(x.symbol) + " · " + (x.live ? "LIVE" : "TEST")
-              + ' · säljs om <span class="pend-cd" data-exp="' + new Date(x.exitAt).toISOString() + '" style="color:#fbbf24;font-weight:700"></span></div>';
+            return '<div style="padding:4px 0;border-top:1px solid #222834">' + esc(IG.label(x.symbol)) + " · " + (x.live ? "IG Live" : "IG Demo")
+              + ' · stängs om <span class="pend-cd" data-exp="' + new Date(x.exitAt).toISOString() + '" style="color:#fbbf24;font-weight:700"></span>'
+              + (x.dealId && !IG.execOn() ? ' <span style="color:#f0b90b">(orderläget är avstängt: ingen stängning skickas)</span>' : "") + '</div>';
           }).join("");
       } catch (_) {}
       pendingRowsEl.innerHTML = (open.length ? open.map(function (o) { return row(o, true); }).join("") : '<div style="padding:4px 0">Inga ordrar väntar.</div>')
@@ -2337,7 +2476,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     var isLive = brokerInfo && brokerInfo.mode === "live";
     var h = document.getElementById("execHint");
     if (h) h.innerHTML = mode === "auto"
-      ? "<b>AUTO är på.</b> Agenterna lägger sina ordrar direkt, utan att fråga, inom gränserna (max $ per order). Gäller bara TEST."
+      ? "<b>AUTO är på.</b> Agenterna får lägga ordrar utan att fråga i TEST, men IG-ordrar går alltid via GODKÄNN här (och inget skickas när orderläget är avstängt)."
       : "<b>MANUELL är på.</b> Agenternas ordrar hamnar här och läggs först när du trycker GODKÄNN." + (isLive ? " I LIVE är det alltid så." : "");
   }
   var execSw = document.getElementById("execSwitch");
@@ -2359,12 +2498,12 @@ body.app-state-onboard .fc-panel{display:none !important}
       var b = e.target.closest("button[data-pend]");
       if (!b) return;
       var act = b.dataset.pend;
-      if (act === "approve" && !confirm("Lägga ordern nu hos " + brokerLabel() + "?")) return;
+      if (act === "approve" && !confirm("Lägga ordern nu hos " + brokerLabel() + "?" + (IG.execOn() ? "" : "\n\nObs: orderläget är avstängt, inget skickas till IG."))) return;
       b.disabled = true;
       try {
         var r = await fetch("/api/pending-orders/" + b.dataset.id + "/" + act, { method: "POST" });
         var d = await r.json().catch(function () { return {}; });
-        if (!d.ok && d.error) alert((act === "approve" ? "Ordern lades inte.\n\n" : "") + d.error);
+        if (!d.ok && d.error) alert((act === "approve" ? (/Orderläget är avstängt/.test(d.error) ? "Orderläget är avstängt.\n\n" : "Ordern lades inte.\n\n") : "") + d.error);
       } catch (err) { alert("Fel: " + err.message); }
       loadPending();
     });
@@ -2382,8 +2521,8 @@ body.app-state-onboard .fc-panel{display:none !important}
       });
       var st = data.stream || {};
       streamEl.textContent = st.connected
-        ? "● Ansluten · " + (st.symbols || []).length + " par"
-        : "○ Ej ansluten";
+        ? "● IG ansluten · " + (st.symbols || []).length + " instrument · bara stängda ljus"
+        : "○ IG ej ansluten";
       streamEl.style.color = st.connected ? "#3fb950" : "#f85149";
       render();
     } catch (_) { /* servern nere — behåll senaste vyn */ }
@@ -2398,26 +2537,22 @@ body.app-state-onboard .fc-panel{display:none !important}
 
   <!-- LEFT: CHART + AGENTS -->
   <div class="left">
-    <div class="card" id="mainChartCard" data-sec="1 · Marknaden live · det par du väljer, Bybit via WebSocket">
+    <div class="card" id="mainChartCard" data-sec="1 · Marknaden live · valt IG-instrument, IG Lightstreamer via servern">
       <div class="chart-toolbar">
         <div class="symbol-picker">
-          <select id="cat-select">
-            <option value="usdc">Crypto / USDC (Bybit EU)</option>
-            <option value="crypto">Crypto / USDT</option>
-            <option value="cross">Korspar</option>
-            <option value="forex">Forex</option>
-            <option value="stocks">Aktier</option>
-            <option value="index">Index</option>
-            <option value="commod">Råvaror</option>
+          <select id="cat-select" title="Instrument från IG för aktiv miljö (Demo eller Live)">
+            <option value="watch">Bevakade (IG)</option>
+            <option value="forex">Forex (IG)</option>
+            <option value="crypto">Krypto (IG)</option>
           </select>
           <select id="sym-select"></select>
         </div>
         <span class="cur-price" id="cur-price">--</span>
         <span id="cur-chg" class="ch">--</span>
-        <span id="data-source-indicator" style="margin-left:auto;font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px"><span style="color:var(--label)">○</span> Demo (simulerade priser)</span>
+        <span id="data-source-indicator" style="margin-left:auto;font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px"><span style="color:var(--label)">○</span> IG · väntar på data</span>
         <span id="sync-indicator" title="Cross-device sync mellan dator + mobil — klicka för tvinga refresh från server" onclick="forceSyncFromServer()" style="font-size:10px;color:var(--label);font-weight:600;letter-spacing:.3px;margin-left:10px;cursor:pointer;user-select:none"><span style="color:var(--label)">○</span> Sync init...</span>
         <div class="tf-group" id="tf-group">
-          <button data-tf="1s" title="Byggs av varje affär live (Bybit har inga färdiga 1s-ljus)">1s</button>
+          <button data-tf="1s" style="display:none" title="IG har inga sekundljus">1s</button>
           <button data-tf="1m">1m</button>
           <button data-tf="5m">5m</button>
           <button data-tf="15m">15m</button>
@@ -2425,8 +2560,8 @@ body.app-state-onboard .fc-panel{display:none !important}
           <button data-tf="1h" class="active">1h</button>
           <button data-tf="4h">4h</button>
           <button data-tf="1d">1d</button>
-          <button data-tf="1w">1w</button>
-          <button data-tf="1M">1M</button>
+          <button data-tf="1w" style="display:none">1w</button>
+          <button data-tf="1M" style="display:none">1M</button>
         </div>
         <div class="ind-toggles" id="ind-toggles">
           <button class="ind-toggle" data-ind="sma20">SMA20</button>
@@ -2442,7 +2577,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         </div>
       </div>
       <div class="price-row">
-        <span><span class="lbl">24h:</span> <b id="d-chg">--</b></span>
+        <span><span class="lbl" title="Förändring över de senaste 24 ljusen i diagrammet">24 ljus:</span> <b id="d-chg">--</b></span>
         <span><span class="lbl">High:</span> <b id="d-hi">--</b></span>
         <span><span class="lbl">Low:</span> <b id="d-lo">--</b></span>
         <span><span class="lbl">Vol:</span> <b id="d-vol">--</b></span>
@@ -2464,23 +2599,18 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <!-- RIGHT: BET PANEL -->
-  <div class="right" data-sec="2 · Handla · orderbok och köp/sälj för samma par som diagrammet">
-    <!-- Som på Bybit: orderbok, senaste affärer och order med limit + TP/SL. Live från Bybits publika WebSocket. -->
+  <div class="right" data-sec="2 · Handla · IG-kvot och köp/sälj för samma instrument som diagrammet">
+    <!-- IG: köp- och säljkurs (offer/bid) live via servern. IG har ingen publik orderbok eller affärslista för CFD:er. -->
     <div class="card" id="bybitTradeCard">
-      <h3>Orderbok <span class="tag" id="bk-pair">–</span><span style="float:right;font-size:10px;color:var(--dim)" id="bk-status">ansluter…</span></h3>
-      <a id="bk-open" href="https://www.bybit.eu/en-EU/trade/spot/BTC/USDC" target="_blank" rel="noopener" style="display:block;font-size:11px;color:var(--cyan);margin:-4px 0 6px">↗ Öppna samma par på Bybit</a>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;font-size:9px;color:var(--dim);padding:0 2px 3px">
-        <span>Pris (USDC)</span><span style="text-align:right">Antal</span><span style="text-align:right">Totalt</span></div>
-      <div id="bk-asks" class="bk-side"></div>
-      <div id="bk-mid" style="font-size:15px;font-weight:800;padding:5px 2px;font-family:'SF Mono',monospace">–</div>
-      <div id="bk-bids" class="bk-side"></div>
-      <div id="bk-ratio" style="display:flex;height:4px;border-radius:2px;overflow:hidden;margin:6px 0 2px"><span style="flex:1;background:#3fb950"></span><span style="flex:1;background:#f85149"></span></div>
-
-      <h3 style="margin-top:12px">Senaste affärer</h3>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;font-size:9px;color:var(--dim);padding:0 2px 3px">
-        <span>Pris</span><span style="text-align:right">Antal</span><span style="text-align:right">Tid</span></div>
-      <div id="bk-trades" class="bk-side" style="max-height:150px;overflow:hidden"></div>
-
+      <h3>IG-kvot <span class="tag" id="bk-pair">–</span><span style="float:right;font-size:10px;color:var(--dim)" id="bk-status">väntar…</span></h3>
+      <div id="bk-epic" style="font-size:10px;color:var(--dim);margin:-4px 0 8px;font-family:'SF Mono',monospace">–</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div style="border:1px solid #5c1f1f;border-radius:8px;padding:8px;background:#1a0b0d"><div style="font-size:10px;color:#f85149;font-weight:700">SÄLJ (bid)</div><div id="bk-bid" style="font-size:18px;font-weight:800;color:#f85149;font-family:'SF Mono',monospace">–</div></div>
+        <div style="border:1px solid #1f5c2c;border-radius:8px;padding:8px;background:#0b1a0f"><div style="font-size:10px;color:#3fb950;font-weight:700">KÖP (offer)</div><div id="bk-offer" style="font-size:18px;font-weight:800;color:#3fb950;font-family:'SF Mono',monospace">–</div></div>
+      </div>
+      <div id="bk-mid" style="font-size:12px;padding:8px 2px 2px;color:var(--dim)">–</div>
+      <div id="bk-asks" class="bk-side" style="display:none"></div><div id="bk-bids" class="bk-side" style="display:none"></div>
+      <div id="bk-trades" class="bk-side" style="font-size:11px;color:var(--dim);line-height:1.5;margin-top:6px">IG har ingen publik orderbok eller lista över andras affärer för CFD:er, så de visas inte. Kvoten ovan är IG:s egen köp- och säljkurs för ditt konto.</div>
     </div>
     <div class="card" id="orderCard">
       <h3>Köp / Sälj <span class="tag" id="ot-venue">–</span></h3>
@@ -2488,15 +2618,19 @@ body.app-state-onboard .fc-panel{display:none !important}
         <button type="button" class="ot-type active" data-ot="LIMIT">Limit</button>
         <button type="button" class="ot-type" data-ot="MARKET">Market</button>
       </div>
-      <label style="font-size:10px;color:var(--dim)" id="ot-price-label">Pris (USDC)</label>
+      <label style="font-size:10px;color:var(--dim)" id="ot-price-label">Pris</label>
       <input type="number" id="ot-price" step="any" min="0" style="width:100%;margin-bottom:6px" />
-      <label style="font-size:10px;color:var(--dim)">Belopp (USDC)</label>
-      <input type="number" id="ot-amt" value="5" min="1" step="1" style="width:100%;margin-bottom:4px" />
-      <input type="range" id="ot-pct" min="0" max="100" step="1" value="0" list="ot-pct-stops" style="width:100%;margin:2px 0 0" />
-      <datalist id="ot-pct-stops"><option value="0"></option><option value="25"></option><option value="50"></option><option value="75"></option><option value="100"></option></datalist>
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:4px"><span>0 %</span><span>25 %</span><span>50 %</span><span>75 %</span><span>100 %</span></div>
-      <div id="ot-avail" style="font-size:10px;color:var(--dim);margin-bottom:6px">Tillgängligt: –</div>
-      <label style="display:flex;gap:6px;align-items:center;font-size:11px;margin:4px 0"><input type="checkbox" id="ot-tpsl" /> TP/SL (sälj automatiskt vid vinst eller förlust, med limit)</label>
+      <label style="font-size:10px;color:var(--dim)">Insats = marginal i kontovalutan (<span id="ot-pct-val">1</span> % av IG-saldot)</label>
+      <div style="display:flex;gap:6px;margin-bottom:4px">
+        <button type="button" class="ot-pctq" data-pct="1" style="flex:1">1 %</button>
+        <button type="button" class="ot-pctq" data-pct="2" style="flex:1">2 %</button>
+        <button type="button" class="ot-pctq" data-pct="3" style="flex:1">3 %</button>
+      </div>
+      <input type="range" id="ot-pct" min="0.1" max="3" step="0.1" value="1" list="ot-pct-stops" style="width:100%;margin:2px 0 0" />
+      <datalist id="ot-pct-stops"><option value="1"></option><option value="2"></option><option value="3"></option></datalist>
+      <input type="number" id="ot-amt" value="" min="0" step="any" placeholder="Belopp i kontovalutan" style="width:100%;margin:4px 0" />
+      <div id="ot-avail" style="font-size:10px;color:var(--dim);margin-bottom:6px">Saldo: –</div>
+      <label style="display:flex;gap:6px;align-items:center;font-size:11px;margin:4px 0"><input type="checkbox" id="ot-tpsl" checked /> Egna TP/SL-nivåer (annars sätter boten standardnivåer; IG stänger själv vid TP/SL)</label>
       <div id="ot-tpsl-box" style="display:none;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
         <div><label style="font-size:10px;color:#3fb950">TP-pris (vinst)</label><input type="number" id="ot-tp" step="any" min="0" style="width:100%" /></div>
         <div><label style="font-size:10px;color:#f85149">SL-pris (förlust)</label><input type="number" id="ot-sl" step="any" min="0" style="width:100%" /></div>
@@ -2516,12 +2650,12 @@ body.app-state-onboard .fc-panel{display:none !important}
         <select id="ot-tf-unit"><option value="60">min</option><option value="3600">tim</option><option value="86400">dagar</option></select>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-        <button type="button" id="ot-buy" class="bet-call" style="margin:0">▲ Köp (CALL)</button>
-        <button type="button" id="ot-sell" class="bet-put" style="margin:0">▼ Sälj (PUT)</button>
+        <button type="button" id="ot-buy" class="bet-call" style="margin:0">▲ Köp (lång)</button>
+        <button type="button" id="ot-sell" class="bet-put" style="margin:0">▼ Sälj (kort)</button>
       </div>
-      <button type="button" id="ot-sell-all" class="bet-put" style="margin:6px 0 0;width:100%;opacity:.85" title="Säljer allt du har av myntet (efter avgiften), inget belopp behövs">▼ Sälj allt</button>
+      <button type="button" id="ot-sell-all" class="bet-put" style="margin:6px 0 0;width:100%;opacity:.85" title="Stänger dina öppna IG-positioner i det här instrumentet (via Väntande ordrar)">✕ Stäng positioner i instrumentet</button>
       <div id="ot-est" style="margin-top:8px;font-size:11px;line-height:1.6;padding:6px 8px;border:1px solid var(--border);border-radius:5px;background:var(--card2)"></div>
-      <div class="sim-note" id="ot-note" style="margin-top:6px">Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. Köp med tidshorisont upp till 30 min säljs automatiskt när tiden är slut (om TP/SL inte sålt innan). Samma gränser gäller som för alla ordrar.</div>
+      <div class="sim-note" id="ot-note" style="margin-top:6px">Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn. SÄLJ öppnar en kort position (CFD). Med tidshorisont upp till 30 min stängs IG-positionen automatiskt när tiden är slut (om TP/SL inte stängt den innan). <span data-ig-exec>Orderläget är avstängt</span></div>
     </div>
 
     <div class="card bet-panel">
@@ -3181,7 +3315,7 @@ const CFG = {
 // Påverkar bara vad som visas, inte vilka ordrar som läggs: det styrs av
 // MODE/EXECUTION_MODE på servern.
 function useRealPrices(sym){
-  return CFG.mode === "live" && (!sym || SYMBOLS.crypto.includes(sym) || SYMBOLS.usdc.includes(sym));
+  return CFG.mode === "live"; // IG: alltid riktiga IG-priser via servern, aldrig simulerade
 }
 
 // ── Supabase-konfig (multi-tenant Auth + per-user data) ──
@@ -3194,47 +3328,26 @@ const sb = (typeof window !== "undefined" && window.supabase && SUPABASE_URL)
   : null;
 const useSupabase = !!sb;
 
-const SYMBOLS = {
-  // Samma par som du handlar på bybit.eu (USDC). Data direkt från Bybit EU.
-  usdc: ["BTCUSDC","ETHUSDC","SOLUSDC","XRPUSDC","ADAUSDC","AVAXUSDC","DOGEUSDC","DOTUSDC","LINKUSDC","LTCUSDC"],
-  crypto: ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT","DOTUSDT","POLUSDT","LINKUSDT","UNIUSDT","LTCUSDT","ATOMUSDT","NEARUSDT"],
-  cross: ["BTC/ETH","ETH/BTC","SOL/BTC","SOL/ETH","BNB/BTC","XRP/BTC"],
-  forex: ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/GBP","EUR/JPY","GBP/JPY"],
-  stocks: ["TSLA","NVDA","AAPL","MSFT","AMZN","META","GOOGL","AMD","NFLX","DIS"],
-  index: ["SPY","QQQ","DIA","IWM"],
-  commod: ["XAU/USD","XAG/USD","USOIL","NATGAS"]
-};
-const ALL_SYMS = Object.values(SYMBOLS).flat();
-
-const BASE_PRICES = {
-  BTCUSDT:67500, ETHUSDT:3450, SOLUSDT:178, BNBUSDT:580, XRPUSDT:0.62, ADAUSDT:0.45,
-  AVAXUSDT:38, DOGEUSDT:0.165, DOTUSDT:7.8, POLUSDT:0.74, LINKUSDT:14.2, UNIUSDT:9.5,
-  LTCUSDT:84, ATOMUSDT:8.4, NEARUSDT:5.6,
-  "BTC/ETH":19.6, "ETH/BTC":0.051, "SOL/BTC":0.0026, "SOL/ETH":0.052, "BNB/BTC":0.0086, "XRP/BTC":0.0000092,
-  "EUR/USD":1.0850, "GBP/USD":1.2680, "USD/JPY":149.50, "USD/CHF":0.8830,
-  "AUD/USD":0.6620, "USD/CAD":1.3580, "EUR/GBP":0.8550, "EUR/JPY":162.20, "GBP/JPY":189.60,
-  TSLA:245, NVDA:142, AAPL:228, MSFT:418, AMZN:185, META:495, GOOGL:172, AMD:158, NFLX:680, DIS:96,
-  SPY:565, QQQ:485, DIA:425, IWM:218,
-  "XAU/USD":2380, "XAG/USD":29.80, USOIL:74.50, NATGAS:2.35
-};
-
-// USDC-par: samma startpris som USDT-paret (bara reserv innan riktiga priser kommer)
-SYMBOLS.usdc.forEach(s => { const u = s.replace(/USDC$/,"USDT"); if(BASE_PRICES[s] == null && BASE_PRICES[u] != null) BASE_PRICES[s] = BASE_PRICES[u]; });
-const VOL = {
-  usdc:0.025, crypto:0.025, cross:0.018, forex:0.004, stocks:0.012, index:0.008, commod:0.015
-};
+// IG: instrumenten är EPICs från IG (bevakningslistan + IG:s katalog för aktiv
+// miljö). Inga påhittade symboler eller priser: listorna fylls från servern
+// (refreshIgSymbols) och priserna kommer bara från IG.
+const SYMBOLS = { watch: [], forex: [], crypto: [] };
+const ALL_SYMS = [];
+const BASE_PRICES = {};
+const VOL = { watch:0, forex:0, crypto:0 };
+const IG_DIR = {}; // EPIC → senaste rad ur IG-katalogen (bid/offer/förändring/hög/låg, med IG:s tid)
 
 function symCategory(sym){
   for(const k in SYMBOLS) if(SYMBOLS[k].includes(sym)) return k;
-  return "crypto";
+  return IG.category(sym) || "watch";
 }
 
 /* ======================================================================
    STATE
    ====================================================================== */
 const STATE = {
-  symbol:"BTCUSDT", tf:"1h",
-  betSym:"BTCUSDT", betTf:300, betAmt:10,
+  symbol:"", tf:"1h",
+  betSym:"", betTf:300, betAmt:10,
   indicators:{sma20:false,sma50:false,sma200:false,ema9:false,ema21:false,bb:false,vwap:false,rsi:false,macd:false,vol:false},
   positions:[], history:[],
   candleData:{},  // { "BTCUSDT|1h": [{time,open,high,low,close,volume}, ...] }
@@ -4019,46 +4132,35 @@ function executeConfirmedTrade(c){
   pushInAppAlert(`🧪 SIMULERAD order (ingen riktig order lades): ${c.sym} ${c.side==='BUY'?'LONG':'SHORT'} $${c.amount} · påhittad score ${c.score}/10`, 6000);
 }
 
-// Smart trade-router — väljer watch eller direkt-execute beroende på session
-// Routing: TEST = paper-sim, PROPOSE/TESTNET = Binance Testnet, LIVE = Binance Mainnet
+// Trade-router (IG): allt blir ett förslag i Väntande ordrar. Ingen order skickas
+// förrän du godkänner, och bara om orderläget för miljön är påslaget i .env.
+// sym = IG EPIC, amount = insats i % av saldot (0.1–3).
 async function executeBinanceOrder(sym, side, amount, mode){
   try {
-    const r = await fetch("/api/binance/order", {
+    const pct = Math.min(3, Math.max(0.1, Number(amount) || 1));
+    const r = await fetch("/api/pending-orders", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({mode, symbol: sym, side, quoteOrderQty: amount})
+      body: JSON.stringify({symbol: sym, side, stakePct: pct, source: "dashboard"})
     });
     const data = await r.json();
+    const nm = (window.IG && IG.names[sym]) || sym;
     if(!data.ok){
-      pushInAppAlert(`❌ ${mode.toUpperCase()}-order misslyckades: ${data.error}`, 6000);
+      pushInAppAlert(`❌ ${nm}: ${data.error}`, 6000);
       return null;
     }
-    if(data.pending){
-      // Godkännande-läge: ingen order är lagd än
-      pushInAppAlert(`⏳ ${side} ${sym} $${amount} väntar på ditt godkännande (Väntande ordrar under Signaler). Ingen order är lagd än.`, 7000);
-      return { pending: true };
-    }
-    const fill = data.order;
-    pushInAppAlert(`✅ ${mode.toUpperCase()}-order fylld: ${side} ${sym} $${amount} · pris $${parseFloat(fill.cummulativeQuoteQty/fill.executedQty).toFixed(2)}`, 5000);
-    // Refresha live-sync så saldo/positions uppdateras
-    if(typeof refreshBinanceSync === "function") setTimeout(refreshBinanceSync, 1000);
-    return fill;
+    const po = data.pendingOrder || {};
+    pushInAppAlert(`⏳ ${side==="BUY"?"KÖP":"SÄLJ (kort)"} ${nm} · ${pct} % ≈ ${IG.money(po.stakeAmount, po.currency)} väntar på ditt godkännande (${po.live?"IG Live":"IG Demo"}). Ingen order är lagd än.`, 7000);
+    return { pending: true, order: po };
   } catch(e){
-    pushInAppAlert(`❌ ${mode.toUpperCase()}-order fel: ${e.message}`, 6000);
+    pushInAppAlert(`❌ Ordern kunde inte köas: ${e.message}`, 6000);
     return null;
   }
 }
 
 function requestTradeExecution(sym, side, amount, timeframeSec){
-  // Mikes regel: ALLT går till Binance API (testnet eller live)
-  // Ingen lokal paper-simulering — saldo speglas alltid från Binance
-  // - TEST/paper + PROPOSE = Binance Testnet (gratis demo USDT)
-  // - LIVE = Binance Mainnet (riktiga pengar, max $5/trade)
-  const mode = currentUiMode === "live" ? "live" : "testnet";
-  if(mode === "live" && amount > 5){
-    pushInAppAlert(`🛡 LIVE-säkerhetslås: max $5/trade. Sänk beloppet eller byt till TEST/PROPOSE.`, 6000);
-    return null;
-  }
+  // IG: TEST = IG Demo, LIVE = IG Live. Miljön styrs av servern (aktiv broker).
+  const mode = currentUiMode === "live" ? "live" : "demo";
   executeBinanceOrder(sym, side, amount, mode);
   return { id: mode+"-pending-"+Date.now(), sym, side, amount, mode };
 }
@@ -4087,221 +4189,114 @@ function initChart(){
   try{ new ResizeObserver(()=>{ const el = document.getElementById("chart"); if(el.clientWidth && el.clientHeight) chart.applyOptions({width:el.clientWidth, height:el.clientHeight}); }).observe(document.getElementById("chart")); }catch(_){}
 }
 
-function genCandles(sym, tf, n=300){
-  const cat = symCategory(sym);
-  const vol = VOL[cat];
-  const tfSec = ({"1s":1,"1m":60,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400,"1w":604800,"1M":2592000})[tf] || 3600;
-  const now = Math.floor(Date.now()/1000);
-  let price = BASE_PRICES[sym] || 100;
-  // Walk backwards to start price
-  const seedPrice = price * (1 + (Math.random()-.5)*0.05);
-  price = seedPrice;
-  const out = [];
-  for(let i=n; i>=1; i--){
-    const t = now - i*tfSec;
-    const open = price;
-    const drift = (Math.random()-.5)*vol*price;
-    const close = open + drift + Math.sin(i/15)*vol*price*0.3;
-    const high = Math.max(open,close) + Math.random()*vol*price*0.5;
-    const low = Math.min(open,close) - Math.random()*vol*price*0.5;
-    const volume = Math.round(50000 + Math.random()*200000);
-    out.push({time:t, open, high, low, close, volume});
-    price = close;
-  }
-  return out;
-}
+// IG-porten: inga påhittade ljus. Funktionen finns kvar för gamla anrop men ger alltid tomt.
+function genCandles(sym, tf, n=300){ return []; }
 
 function loadCandles(sym, tf){
   const key = sym+"|"+tf;
-  if(!STATE.candleData[key]) STATE.candleData[key] = genCandles(sym,tf,300);
-  const data = STATE.candleData[key];
+  // Byte av instrument: diagrammet töms direkt så ett annat instruments ljus aldrig blir kvar
+  const data = STATE.candleData[key] || [];
   candleSeries.setData(data.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
-  if(data.length){ applyIndicators(data); updatePriceHeader(data); }
-  if(useRealPrices(sym)) loadRealCandles(sym, tf);
-  else stopBybitChartStream();
+  if(data.length){ applyIndicators(data); updatePriceHeader(data); } else clearPriceHeader();
+  if(sym) loadRealCandles(sym, tf); else stopBybitChartStream();
+}
+function clearPriceHeader(){
+  ["cur-price","cur-chg","d-chg","d-hi","d-lo","d-vol"].forEach(id=>{ const el=document.getElementById(id); if(el){ el.textContent="--"; el.style.color=""; } });
 }
 
-// Ersätter de simulerade ljusen med riktiga från Binance (publik data via
-// boten). Misslyckas hämtningen ligger simuleringen kvar och indikatorn
-// säger fortfarande "Demo".
+// ── IG i diagrammet ──────────────────────────────────────────────────────
+// Historik: /api/market/klines (IG REST, bara STÄNGDA ljus + det pågående
+// separat). Realtid: IG Lightstreamer via servern (/api/market/stream, SSE):
+// kvoter (bid/offer) och ljus (1m/5m/1h). Webbläsaren pratar aldrig direkt
+// med IG. Historikfel → namn/kvot visas med "historik saknas", inga ljus hittas på.
+const IG_TF = {"1m":1,"5m":1,"15m":1,"30m":1,"1h":1,"4h":1,"1d":1};
+const igMain = { key:null, lastInd:0, hist:null, lastSrc:0 };
+function setSourceIndicator(html){ const ind = document.getElementById("data-source-indicator"); if(ind) ind.innerHTML = html; }
+function showIgSource(){
+  if(!STATE.symbol){ setSourceIndicator('<span style="color:var(--label)">○</span> Välj ett IG-instrument'); return; }
+  const q = IG.quote(STATE.symbol);
+  setSourceIndicator(IG.badge(q) + ' <span style="color:var(--label)">' + IG.esc(IG.label(STATE.symbol)) + ' · ' + IG.esc(STATE.symbol) + ' · ' + STATE.tf + ' · ' + IG.envLabel() + '</span>'
+    + (igMain.hist ? ' <span style="color:#f0b90b" title="' + IG.esc(igMain.hist) + '">· historik saknas</span>' : ''));
+}
 async function loadRealCandles(sym, tf){
-  // Bybit först (samma källa som TradingView med Bybit valt), Binance som reserv.
-  if(await loadBybitCandles(sym, tf)) return;
-  if(window.BYBIT_ONLY !== false) return; // Bybit överallt: ingen Binance-reserv
-  try{
-    const r = await fetch(`/api/binance/klines?symbol=${sym}&interval=${tf}&limit=300`);
-    if(!r.ok) return;
-    const d = await r.json();
-    if(!d.klines || !d.klines.length) return;
-    const key = sym+"|"+tf;
-    STATE.candleData[key] = d.klines;
-    STATE.livePrices[sym] = d.klines[d.klines.length-1].close;
-    if(STATE.symbol !== sym || STATE.tf !== tf) return; // användaren hann byta
-    candleSeries.setData(d.klines.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
-    applyIndicators(d.klines);
-    updatePriceHeader(d.klines);
-    const ind = document.getElementById("data-source-indicator");
-    if(ind) ind.innerHTML = `<span style="color:var(--green)">●</span> Binance live · ${new Date().toLocaleTimeString().slice(0,8)}`;
-  }catch(_){ /* behåll senaste vyn */ }
-}
-
-// ── Bybit live i diagrammet ──────────────────────────────────────────────
-// Historik via /api/bybit/klines, sedan Bybits publika WebSocket direkt i
-// webbläsaren: kline.<int>.<PAR> (ljusets OHLC) + tickers.<PAR> (senaste pris
-// flera gånger per sekund). Varje meddelande flyttar sista ljuset, och
-// indikatorerna räknas om högst en gång per sekund. Bara visning, inga ordrar.
-const BYBIT_WS_URLS = ["wss://stream.bybit.com/v5/public/spot", "wss://stream.bybit.eu/v5/public/spot"];
-const BYBIT_IV = {"1m":"1","3m":"3","5m":"5","15m":"15","30m":"30","1h":"60","2h":"120","4h":"240","6h":"360","12h":"720","1d":"D","1w":"W","1M":"M"};
-// USDC-par = Bybit EU (samma marknad som bybit.eu), övriga = bybit.com
-const bybitWsUrls = sym => /USDC$/.test(sym) ? ["wss://stream.bybit.eu/v5/public/spot", "wss://stream.bybit.com/v5/public/spot"] : BYBIT_WS_URLS;
-const bybitChart = { ws:null, key:null, urlIdx:0, lastMsg:0, lastInd:0, ping:null, retry:null };
-
-async function loadBybitCandles(sym, tf){
-  // 1s: Bybit har inga färdiga sekundljus. Ljusen byggs live av varje affär (publicTrade).
-  if(tf === "1s"){
-    // Strömmen går redan för det här paret: rör inte ljusen (annars töms de på lugna par)
-    // (också under återanslutning: ljusen finns kvar och strömmen startar om själv)
-    if(bybitChart.key === sym+"|1s" && ((bybitChart.ws && bybitChart.ws.readyState <= 1) || (STATE.candleData[sym+"|1s"] || []).length)) return true;
-    // Startpunkt = senaste priset (från 1m-ljuset), så diagrammet inte är tomt på lugna par
-    let px = 0;
-    try{ const r = await fetch(`/api/bybit/klines?symbol=${sym}&interval=1m&limit=1`); const d = await r.json(); px = d.klines && d.klines.length ? +d.klines[d.klines.length-1].close : 0; }catch(_){}
-    if(STATE.symbol !== sym || STATE.tf !== tf) return true; // användaren hann byta
-    const now = Math.floor((Date.now() + (bybitChart.skew || 0))/1000) - 1;
-    const seed = px > 0 ? [{time:now, open:px, high:px, low:px, close:px, volume:0}] : [];
-    STATE.candleData[sym+"|1s"] = seed;
-    candleSeries.setData(seed.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
-    if(seed.length) updatePriceHeader(seed);
-    startBybitChartStream(sym, tf);
-    return true;
+  if(!IG.isEpic(sym)){ showIgSource(); return; }
+  if(!IG_TF[tf]){
+    candleSeries.setData([]); clearPriceHeader();
+    setSourceIndicator('<span style="color:#f0b90b">●</span> IG-diagrammet har 1m–1d. Välj ett annat intervall.');
+    return;
   }
+  let d;
+  try{ d = await IG.klines(sym, tf, 300); }catch(e){ setSourceIndicator('<span style="color:#f85149">●</span> frånkopplat · ' + IG.esc(e.message)); return; }
+  if(STATE.symbol !== sym || STATE.tf !== tf) return; // användaren hann byta
+  if(d.env && d.env !== IG.st.env) return; // fel miljö: visas aldrig
+  const bars = (d.klines || []).map(b=>({time:b.time, open:b.open, high:b.high, low:b.low, close:b.close, volume:b.volume || 0}));
+  if(d.forming && (!bars.length || d.forming.time > bars[bars.length-1].time)) bars.push({time:d.forming.time, open:d.forming.open, high:d.forming.high, low:d.forming.low, close:d.forming.close, volume:d.forming.volume || 0});
+  STATE.candleData[sym+"|"+tf] = bars;
+  candleSeries.setData(bars.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
+  if(bars.length){ applyIndicators(bars); updatePriceHeader(bars); }
+  else { clearPriceHeader(); if(d.quote && d.quote.mid != null) document.getElementById("cur-price").textContent = IG.px(d.quote.mid); }
+  if(d.quote && d.quote.mid != null) STATE.livePrices[sym] = d.quote.mid;
+  igMain.key = sym+"|"+tf; igMain.hist = d.historyError || (d.error && !bars.length ? d.error : null);
+  IG.want("main", [sym]);
+  showIgSource();
+}
+IG.on("quote", q=>{
+  if(!q || q.mid == null) return;
+  STATE.livePrices[q.epic] = q.mid;
+  if(q.epic !== STATE.symbol) return;
+  const cp = document.getElementById("cur-price");
+  if(cp){ cp.textContent = IG.px(q.mid); tickFlash(cp, q.mid); }
+  if(Date.now() - igMain.lastSrc > 1000){ igMain.lastSrc = Date.now(); showIgSource(); }
+});
+IG.on("candle", c=>{
+  if(!c || c.epic !== STATE.symbol || c.interval !== STATE.tf) return;
+  const data = STATE.candleData[STATE.symbol+"|"+STATE.tf]; if(!data) return;
+  const b = c.bar, last = data[data.length-1];
+  if(last && b.time < last.time) return; // gammalt ljus: avvisas
+  if(last && b.time === last.time) Object.assign(last, b);
+  else { data.push({time:b.time, open:b.open, high:b.high, low:b.low, close:b.close, volume:b.volume || 0}); if(data.length > 1000) data.shift(); }
+  candleSeries.update({time:b.time, open:b.open, high:b.high, low:b.low, close:b.close});
+  if(Date.now() - igMain.lastInd >= 1000){ igMain.lastInd = Date.now(); applyIndicators(data); updatePriceHeader(data); }
+});
+IG.on("env", ()=>{
+  // Miljöbyte (Demo ↔ Live): allt gammalt bort, aldrig den andra miljöns priser
+  STATE.candleData = {}; STATE.livePrices = {};
+  if(candleSeries) candleSeries.setData([]);
+  clearPriceHeader();
+  refreshIgSymbols(true);
+});
+function bybitChartLive(){ return IG.stateOf(IG.quote(STATE.symbol)).state === "live"; }
+function stopBybitChartStream(){ IG.want("main", []); }
+
+// Instrumentlistor från IG: bevakningslistan + Forex/Krypto ur IG:s katalog (aktiv miljö).
+let _igSymAt = 0;
+async function refreshIgSymbols(force){
+  if(!force && Date.now() - _igSymAt < 240000) return;
+  _igSymAt = Date.now();
   try{
-    const r = await fetch(`/api/bybit/klines?symbol=${sym}&interval=${tf}&limit=300`);
-    if(!r.ok) return false;
-    const d = await r.json();
-    if(!d.klines || !d.klines.length) return false;
-    if(STATE.symbol !== sym || STATE.tf !== tf) return true; // användaren hann byta
-    STATE.candleData[sym+"|"+tf] = d.klines;
-    STATE.livePrices[sym] = d.klines[d.klines.length-1].close;
-    candleSeries.setData(d.klines.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
-    applyIndicators(d.klines);
-    updatePriceHeader(d.klines);
-    startBybitChartStream(sym, tf);
-    return true;
-  }catch(_){ return false; }
-}
-
-function bybitChartLive(){ return bybitChart.ws && bybitChart.ws.readyState === 1 && Date.now() - bybitChart.lastMsg < 5000; }
-
-function startBybitChartStream(sym, tf){
-  const iv = tf === "1s" ? "1s" : BYBIT_IV[tf];
-  const key = sym+"|"+tf;
-  if(!iv) return;
-  if(bybitChart.key === key && bybitChart.ws && bybitChart.ws.readyState <= 1) return;
-  stopBybitChartStream();
-  bybitChart.key = key;
-  let ws;
-  const urls = bybitWsUrls(sym);
-  try { ws = new WebSocket(urls[bybitChart.urlIdx % urls.length]); } catch(_){ return; }
-  bybitChart.ws = ws;
-  ws.onopen = ()=>{
-    // publicTrade = varje enskild affär (som Bybits egen sida). tickers kommer
-    // bara ungefär en gång per sekund, så utan den står priset still.
-    ws.send(JSON.stringify({op:"subscribe", args: iv === "1s" ? [`publicTrade.${sym}`] : [`kline.${iv}.${sym}`, `tickers.${sym}`, `publicTrade.${sym}`]}));
-    bybitChart.ping = setInterval(()=>{ try{ ws.send('{"op":"ping"}'); }catch(_){} }, 20000);
-  };
-  // 1s: ett ljus varje sekund även utan affär (platt på senaste priset), som Bybits 1s-diagram
-  if(iv === "1s"){
-    clearInterval(bybitChart.beat);
-    bybitChart.beat = setInterval(()=>{
-      if(bybitChart.ws !== ws || STATE.symbol+"|"+STATE.tf !== key) return;
-      const data = STATE.candleData[key]; if(!data || !data.length) return;
-      // Börsens klocka (inte datorns), en sekund bakom så sena affärer hinner landa i rätt ljus
-      const now = Math.floor((Date.now() + (bybitChart.skew || 0))/1000) - 1, last = data[data.length-1];
-      if(now <= last.time) return;
-      const c = last.close;
-      data.push({time:now, open:c, high:c, low:c, close:c, volume:0}); if(data.length > 3600) data.shift();
-      candleSeries.update({time:now, open:c, high:c, low:c, close:c});
-    }, 1000);
+    const w = await (await fetch("/api/market/watchlist")).json();
+    IG.remember(w.watchlist);
+    SYMBOLS.watch.splice(0, SYMBOLS.watch.length, ...(w.watchlist || []).map(x=>x.epic));
+  }catch(_){}
+  for(const cat of ["forex","crypto"]){
+    try{
+      const d = await (await fetch("/api/market/directory?category=" + cat)).json();
+      if(d.env && d.env !== IG.st.env) continue;
+      IG.remember(d.markets);
+      (d.markets || []).forEach(m=>{ IG_DIR[m.epic] = m; });
+      SYMBOLS[cat].splice(0, SYMBOLS[cat].length, ...(d.markets || []).map(m=>m.epic));
+      SYMBOLS["_" + cat + "Status"] = d.status === "ready" ? "" : (d.error || d.note || (d.progress ? "katalogen hämtas…" : "ej komplett"));
+    }catch(_){}
   }
-  ws.onmessage = (ev)=>{
-    if(bybitChart.ws !== ws || STATE.symbol+"|"+STATE.tf !== key) return;
-    let msg; try { msg = JSON.parse(ev.data); } catch(_){ return; }
-    if(!msg.topic || !msg.data) return;
-    const data = STATE.candleData[key];
-    if(iv === "1s" && data && msg.topic.startsWith("publicTrade.")){
-      // Sekundljus av varje affär, i tidsordning
-      const batch = Array.isArray(msg.data) ? msg.data : [msg.data];
-      const lastT = Number(batch.length && batch[batch.length-1].T);
-      if(lastT > 0) bybitChart.skew = lastT - Date.now();
-      for(const t of batch){
-        const p = +t.p, v = +t.v || 0, sec = Math.floor(Number(t.T) / 1000);
-        if(!(p > 0) || !sec) continue;
-        const last = data[data.length-1];
-        if(!last || sec > last.time){ data.push({time:sec, open:p, high:p, low:p, close:p, volume:v}); if(data.length > 3600) data.shift(); }
-        else if(sec === last.time){ last.close = p; last.high = Math.max(last.high, p); last.low = Math.min(last.low, p); last.volume += v; }
-        else continue;
-        const b = data[data.length-1];
-        candleSeries.update({time:b.time, open:b.open, high:b.high, low:b.low, close:b.close});
-      }
-      if(!data.length) return;
-    }
-    if(!data || !data.length) return;
-    bybitChart.lastMsg = Date.now();
-    if(msg.topic.startsWith("kline.")){
-      for(const k of (Array.isArray(msg.data) ? msg.data : [msg.data])){
-        const bar = {time:Math.floor(Number(k.start)/1000), open:+k.open, high:+k.high, low:+k.low, close:+k.close, volume:+k.volume};
-        const last = data[data.length-1];
-        if(bar.time === last.time) Object.assign(last, bar);
-        else if(bar.time > last.time){ data.push(bar); if(data.length > 1000) data.shift(); }
-        else continue;
-        candleSeries.update({time:bar.time, open:bar.open, high:bar.high, low:bar.low, close:bar.close});
-      }
-    } else if(iv === "1s"){
-      // redan hanterat ovan
-    } else if(msg.topic.startsWith("publicTrade.")){
-      const trades = Array.isArray(msg.data) ? msg.data : [msg.data];
-      const t = trades[trades.length-1];
-      const price = t ? +t.p : 0;
-      if(!(price > 0)) return;
-      const last = data[data.length-1];
-      last.close = price; last.high = Math.max(last.high, price); last.low = Math.min(last.low, price);
-      candleSeries.update({time:last.time, open:last.open, high:last.high, low:last.low, close:last.close});
-    } else if(msg.topic.startsWith("tickers.")){
-      const price = +msg.data.lastPrice;
-      if(!(price > 0)) return;
-      const last = data[data.length-1];
-      last.close = price; last.high = Math.max(last.high, price); last.low = Math.min(last.low, price);
-      candleSeries.update({time:last.time, open:last.open, high:last.high, low:last.low, close:last.close});
-    }
-    const last = data[data.length-1];
-    STATE.livePrices[sym] = last.close;
-    STATE.livePrices[sym.replace(/USDC$|USDT$/, "")] = last.close;
-    const cp = document.getElementById("cur-price");
-    cp.textContent = formatPrice(last.close, sym);
-    tickFlash(cp, last.close);
-    if(Date.now() - bybitChart.lastInd >= 1000){
-      bybitChart.lastInd = Date.now();
-      applyIndicators(data);
-      updatePriceHeader(data);
-      const ind = document.getElementById("data-source-indicator");
-      if(ind) ind.innerHTML = `<span style="color:var(--green)">●</span> Bybit live · WebSocket · ${new Date().toLocaleTimeString().slice(0,8)}`;
-    }
-  };
-  ws.onclose = ()=>{
-    if(bybitChart.ws !== ws) return;
-    clearInterval(bybitChart.ping);
-    bybitChart.ws = null;
-    bybitChart.urlIdx++;  // nästa gång: prova den andra adressen
-    bybitChart.retry = setTimeout(()=>{ if(STATE.symbol+"|"+STATE.tf === key) startBybitChartStream(sym, tf); }, 3000);
-  };
-  ws.onerror = ()=>{ /* onclose återansluter */ };
-}
-
-function stopBybitChartStream(){
-  clearInterval(bybitChart.ping); clearTimeout(bybitChart.retry); clearInterval(bybitChart.beat);
-  const ws = bybitChart.ws;
-  bybitChart.ws = null; bybitChart.key = null;
-  if(ws){ try{ ws.close(); }catch(_){} }
+  ALL_SYMS.splice(0, ALL_SYMS.length, ...SYMBOLS.watch);
+  const tk = document.getElementById("ticker"); if(tk) tk._init = false;
+  const cat = document.getElementById("cat-select");
+  const keep = STATE.symbol;
+  if(cat){ fillSymbols(keep); }
+  fillBetSymbols();
+  renderLiveStrips();
+  if(!STATE.symbol && SYMBOLS.watch.length){ STATE.symbol = SYMBOLS.watch[0]; fillSymbols(STATE.symbol); }
+  if(STATE.symbol && (!keep || keep !== STATE.symbol || !STATE.candleData[STATE.symbol+"|"+STATE.tf])) loadCandles(STATE.symbol, STATE.tf);
 }
 
 // Grön/röd blink + pil på ett pris-element när priset ändras, så man ser
@@ -4475,6 +4470,7 @@ function updatePriceHeader(data){
 }
 
 function formatPrice(p, sym){
+  if(p == null || isNaN(p)) return "–";
   if(p>=1000) return p.toFixed(2);
   if(p>=10) return p.toFixed(2);
   if(p>=0.1) return p.toFixed(4);
@@ -4490,23 +4486,32 @@ function formatVol(v){
 /* ======================================================================
    SYMBOL & TIMEFRAME PICKERS
    ====================================================================== */
-function fillSymbols(){
+// Listan visar IG:s instrumentnamn; värdet är EPIC. keep = behåll valt instrument om det finns i listan.
+function fillSymbols(keep){
   const cat = document.getElementById("cat-select").value;
   const sel = document.getElementById("sym-select");
-  sel.innerHTML = SYMBOLS[cat].map(s=>`<option value="${s}">${s}</option>`).join("");
-  sel.value = SYMBOLS[cat][0];
-  STATE.symbol = sel.value;
+  const list = SYMBOLS[cat] || [];
+  const status = SYMBOLS["_" + cat + "Status"];
+  sel.innerHTML = list.length
+    ? list.map(s=>`<option value="${IG.esc(s)}">${IG.esc(IG.label(s))}${IG.label(s) !== s ? "" : ""}</option>`).join("")
+    : `<option value="">${cat === "watch" ? "Bevakningslistan är tom (lägg till under Valutapar)" : IG.esc(status || "Hämtar IG-katalogen…")}</option>`;
+  const pick = keep && list.includes(keep) ? keep : (typeof keep === "string" && keep ? "" : list[0] || "");
+  if(pick){ sel.value = pick; STATE.symbol = pick; }
+  else if(!keep){ STATE.symbol = list[0] || ""; }
 }
 function fillBetSymbols(){
   const sel = document.getElementById("bet-sym");
+  if(!sel) return;
+  const keep = sel.value;
   sel.innerHTML = "";
-  for(const k in SYMBOLS){
+  for(const k of ["watch","forex","crypto"]){
+    if(!SYMBOLS[k].length) continue;
     const og = document.createElement("optgroup");
-    og.label = ({usdc:"Crypto / USDC",crypto:"Crypto",cross:"Korspar",forex:"Forex",stocks:"Aktier",index:"Index",commod:"Råvaror"})[k];
-    SYMBOLS[k].forEach(s=>{ const o=document.createElement("option"); o.value=s; o.textContent=s; og.appendChild(o); });
+    og.label = ({watch:"Bevakade (IG)",forex:"Forex (IG)",crypto:"Krypto (IG)"})[k];
+    SYMBOLS[k].slice(0, 300).forEach(s=>{ const o=document.createElement("option"); o.value=s; o.textContent=IG.label(s); og.appendChild(o); });
     sel.appendChild(og);
   }
-  sel.value = "BTCUSDT";
+  if(keep && [...sel.options].some(o=>o.value===keep)) sel.value = keep;
 }
 
 /* ======================================================================
@@ -4517,24 +4522,21 @@ function tick(){
   ALL_SYMS.forEach(sym=>{
     const cat = symCategory(sym);
     const vol = VOL[cat];
-    if(useRealPrices(sym)) return; // riktiga priser kommer från Binance-pollningen
-    const cur = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
+    if(useRealPrices(sym)) return; // IG-priser kommer från servern (ström + kvoter)
+    if(BASE_PRICES[sym] == null && STATE.livePrices[sym] == null) return; // inga påhittade priser
+    const cur = STATE.livePrices[sym] ?? BASE_PRICES[sym];
     const next = cur * (1 + (Math.random()-.5)*vol*0.15);
     STATE.livePrices[sym] = next;
   });
 
   const key = STATE.symbol+"|"+STATE.tf;
   const data = STATE.candleData[key];
-  // Med riktiga priser kan livepriset saknas tills första hämtningen är klar.
-  // När Bybit-strömmen är live sköter den sista ljuset själv.
-  if(data && data.length && STATE.livePrices[STATE.symbol] != null && !bybitChartLive()){
-    const last = data[data.length-1];
-    last.close = STATE.livePrices[STATE.symbol];
-    last.high = Math.max(last.high, last.close);
-    last.low = Math.min(last.low, last.close);
-    candleSeries.update({time:last.time, open:last.open, high:last.high, low:last.low, close:last.close});
-    document.getElementById("cur-price").textContent = formatPrice(last.close, STATE.symbol);
+  // IG: ljusen ändras bara av IG:s egna ljus (ström/REST), aldrig av en kvot.
+  // Priset i rubriken följer senaste IG-kvoten.
+  if(STATE.livePrices[STATE.symbol] != null){
+    document.getElementById("cur-price").textContent = formatPrice(STATE.livePrices[STATE.symbol], STATE.symbol);
   }
+  if(data !== undefined && typeof showIgSource === "function" && Date.now() - igMain.lastSrc > 5000){ igMain.lastSrc = Date.now(); showIgSource(); }
 
   // evaluate active positions (READ-ONLY: live PnL för rendering)
   evalPositions();
@@ -4558,33 +4560,32 @@ function tick(){
 
 function updateTickerStrip(){
   const tk = document.getElementById("ticker");
+  if(!tk) return;
+  const syms = ALL_SYMS.slice(0, 30);
+  const item = s=>`<span class="tk" data-sym="${IG.esc(s)}"><b>${IG.esc(IG.label(s))}</b> <span class="px">–</span> <span class="ch">–</span></span>`;
   if(!tk._init){
-    tk.innerHTML = ALL_SYMS.map(s=>{
-      const p = STATE.livePrices[s] ?? BASE_PRICES[s] ?? 100;
-      return `<span class="tk" data-sym="${s}"><b>${s}</b> <span class="px">${formatPrice(p,s)}</span> <span class="ch up">+0.00%</span></span>`;
-    }).join("") + ALL_SYMS.map(s=>{
-      const p = STATE.livePrices[s] ?? BASE_PRICES[s] ?? 100;
-      return `<span class="tk" data-sym="${s}"><b>${s}</b> <span class="px">${formatPrice(p,s)}</span> <span class="ch up">+0.00%</span></span>`;
-    }).join("");
+    tk.innerHTML = syms.length ? syms.map(item).join("") + syms.map(item).join("") : '<span class="tk">IG: bevakningslistan är tom · lägg till instrument under Valutapar</span>';
     tk._init = true;
-    tk.querySelectorAll(".tk").forEach(el=>{
+    tk.querySelectorAll(".tk[data-sym]").forEach(el=>{
       el.addEventListener("click",()=>{
         const sym = el.dataset.sym; const cat = symCategory(sym);
-        document.getElementById("cat-select").value = cat; fillSymbols();
+        const catEl = document.getElementById("cat-select");
+        if([...catEl.options].some(o=>o.value===cat)) catEl.value = cat;
+        fillSymbols(sym);
         document.getElementById("sym-select").value = sym; STATE.symbol = sym;
         loadCandles(sym, STATE.tf);
       });
     });
+    IG.want("ticker", syms);
   } else {
-    tk.querySelectorAll(".tk").forEach(el=>{
+    tk.querySelectorAll(".tk[data-sym]").forEach(el=>{
       const sym = el.dataset.sym;
-      const cur = STATE.livePrices[sym] ?? BASE_PRICES[sym];
-      const base = BASE_PRICES[sym] ?? cur;
-      const ch = ((cur-base)/base)*100;
-      el.querySelector(".px").textContent = formatPrice(cur,sym);
+      const q = IG.quote(sym);
+      el.querySelector(".px").textContent = q && q.mid != null ? IG.px(q.mid) : "–";
       const chEl = el.querySelector(".ch");
-      chEl.textContent = (ch>=0?"+":"")+ch.toFixed(2)+"%";
-      chEl.className = "ch "+(ch>=0?"up":"down");
+      const ch = q && q.changePct != null ? q.changePct : null; // IG:s egen dagsförändring
+      chEl.textContent = ch == null ? "–" : (ch>=0?"+":"")+ch.toFixed(2)+"%";
+      chEl.className = "ch "+(ch == null ? "" : ch>=0?"up":"down");
     });
   }
 }
@@ -6813,10 +6814,10 @@ function openChartFor(sym){
   const catEl = document.getElementById("cat-select");
   const cat = typeof symCategory === "function" ? symCategory(sym) : null;
   if(catEl && cat && [...catEl.options].some(o=>o.value===cat)) catEl.value = cat;
-  if(typeof fillSymbols === "function") fillSymbols();
+  if(typeof fillSymbols === "function") fillSymbols(sym);
   const symEl = document.getElementById("sym-select");
   if(symEl && ![...symEl.options].some(o=>o.value===sym)){
-    const o = document.createElement("option"); o.value = sym; o.textContent = sym; symEl.appendChild(o);
+    const o = document.createElement("option"); o.value = sym; o.textContent = IG.label(sym); symEl.appendChild(o);
   }
   if(symEl) symEl.value = sym;
   STATE.symbol = sym;
@@ -6829,24 +6830,23 @@ function openChartFor(sym){
 function renderPosBanner(){
   const el = document.getElementById("posBanner");
   if(!el) return;
-  const mine = (STATE.tradePositions || []).filter(p => !p.fromBinance);
+  const mine = (STATE.tradePositions || []).filter(p => p.fromIg);
   if(!mine.length){ el.style.display = "none"; el.innerHTML = ""; return; }
   el.style.display = "block";
-  el.innerHTML = `<div style="font-weight:800;margin-bottom:6px">🟢 Öppna trades (${mine.length}) — klicka ett par för diagrammet</div>` + mine.map(p=>{
-    const cur = STATE.livePrices[p.sym] ?? p.entry;
-    const pnl = (cur - p.entry) * (p.qty || (p.amount / p.entry)) * (p.side === "BUY" ? 1 : -1);
+  el.innerHTML = `<div style="font-weight:800;margin-bottom:6px">🟢 Öppna IG-positioner (${mine.length}, ${IG.esc(IG.envLabel())}) — klicka för diagrammet</div>` + mine.map(p=>{
     const left = p.expiresAt ? Math.max(0, Math.ceil((p.expiresAt - Date.now())/1000)) : null;
     const t = left == null ? "" : ` · ⏱ ${String(Math.floor(left/60)).padStart(2,"0")}:${String(left%60).padStart(2,"0")}`;
     const on = p.sym === STATE.symbol;
+    const pnl = p.upnl;
     return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 6px;border-radius:6px;${on?'background:rgba(6,182,212,.12)':''}">
-      <button type="button" data-pb-chart="${p.sym}" style="background:transparent;border:1px solid var(--cyan);color:var(--cyan);border-radius:6px;padding:2px 8px;cursor:pointer;font-weight:700">📈 ${p.sym}</button>
-      <span>${p.side === "BUY" ? "LONG" : "SHORT"} · in ${formatPrice(p.entry,p.sym)} → ${formatPrice(cur,p.sym)}${t}</span>
-      <b style="color:${pnl>=0?'var(--green)':'var(--red)'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</b>
-      <button type="button" data-pb-close="${p.id}" style="margin-left:auto;background:${pnl>=0?'var(--green)':'#374151'};color:#fff;border:0;border-radius:6px;padding:3px 10px;cursor:pointer;font-weight:800">Sälj nu</button>
+      <button type="button" data-pb-chart="${IG.esc(p.sym)}" style="background:transparent;border:1px solid var(--cyan);color:var(--cyan);border-radius:6px;padding:2px 8px;cursor:pointer;font-weight:700">📈 ${IG.esc(p.name || IG.label(p.sym))}</button>
+      <span>${p.side === "BUY" ? "LÅNG" : "KORT"} ${IG.esc(p.qty)} · in ${IG.px(p.entry)} → ${IG.px(p.current)}${t}</span>
+      <b style="color:${(pnl||0)>=0?'var(--green)':'var(--red)'}">${pnl == null ? "P/L ej verifierad" : IG.money(pnl, p.currency, true)}</b>
+      <button type="button" data-pb-close="${IG.esc(p.id)}" style="margin-left:auto;background:${(pnl||0)>=0?'var(--green)':'#374151'};color:#fff;border:0;border-radius:6px;padding:3px 10px;cursor:pointer;font-weight:800">Sälj nu</button>
     </div>`;
   }).join("");
   el.querySelectorAll("[data-pb-chart]").forEach(b=>b.addEventListener("click", ()=>openChartFor(b.dataset.pbChart)));
-  el.querySelectorAll("[data-pb-close]").forEach(b=>b.addEventListener("click", ()=>{ closePosition(b.dataset.pbClose); renderPosBanner(); }));
+  el.querySelectorAll("[data-pb-close]").forEach(b=>b.addEventListener("click", ()=>closePosition(b.dataset.pbClose)));
 }
 
 function log_warn(msg){ console.warn("[PaperAcct]", msg); }
@@ -7247,7 +7247,30 @@ function renderTradesPage(){
   const posTbl = document.getElementById("trade-positions-table");
   if(posTbl){
     if(!positions.length){
-      posTbl.innerHTML = `<div class="tt-empty">Inga öppna positioner. Skriv "Köp BTC för $50" i chatten — eller klicka "Kör analys" så jobbar Hanna automatiskt.</div>`;
+      posTbl.innerHTML = `<div class="tt-empty">Inga öppna IG-positioner (${IG.esc(IG.envLabel())}). Klicka "Kör analys" så föreslår Hanna trades, eller lägg en order på Trade-sidan.</div>`;
+    } else if(positions[0]?.fromIg){
+      posTbl.innerHTML = `<div class="tt-tbl">${positions.map(p=>{
+        const left = p.expiresAt ? Math.max(0, Math.ceil((p.expiresAt - Date.now())/1000)) : null;
+        const cd = left == null ? "" : `<div class="tt-meta" style="font-weight:700;font-family:'SF Mono',monospace">⏱ stängs om ${String(Math.floor(left/60)).padStart(2,"0")}:${String(left%60).padStart(2,"0")}</div>`;
+        const pnlTxt = p.upnl == null ? '<span style="color:var(--dim)">P/L ej verifierad</span>' : `${IG.money(p.upnl, p.currency, true)}${p.upnlPct != null ? `<br><span style="font-size:10px;font-weight:500">${p.upnlPct>=0?'+':''}${p.upnlPct.toFixed(2)}%</span>` : ""}`;
+        return `<div class="tt-row ${p.side==='BUY'?'long':'short'}" data-id="${IG.esc(p.id)}">
+          <span class="tt-side ${p.side==='BUY'?'buy':'sell'}">${p.side==='BUY'?'📈 LÅNG':'📉 KORT'}</span>
+          <div>
+            <div class="tt-sym" title="${IG.esc(p.sym)}">${IG.esc(p.name || IG.label(p.sym))}</div>
+            <div class="tt-meta">${IG.esc(p.qty)} kontrakt @ ${IG.px(p.entry)}${p.tp ? ` · TP ${IG.px(p.tp)}` : ""}${p.sl ? ` · SL ${IG.px(p.sl)}` : ""}</div>
+          </div>
+          <div class="tt-meta">→ ${IG.px(p.current)}</div>
+          <div class="tt-pnl ${(p.upnl||0)>=0?'up':'down'}">${pnlTxt}</div>
+          <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+            <span class="tt-time" style="font-size:9px;color:var(--dim)">${IG.esc(IG.envLabel())}</span>
+            ${cd}
+            <button class="tt-act" data-chart="${IG.esc(p.sym)}">📈 Diagram</button>
+            <button class="tt-act" data-close="${IG.esc(p.id)}">Sälj nu</button>
+          </div>
+        </div>`;
+      }).join("")}</div>`;
+      posTbl.querySelectorAll("[data-close]").forEach(b=> b.addEventListener("click", ()=>closePosition(b.dataset.close)));
+      posTbl.querySelectorAll("[data-chart]").forEach(b=> b.addEventListener("click", ()=>openChartFor(b.dataset.chart)));
     } else if(positions[0]?.fromBinance){
       // Binance-positioner: enklare rendering (ingen scalp/timeframe), avrundat värde
       posTbl.innerHTML = `<div class="tt-tbl">${positions.map(p=>{
@@ -7371,6 +7394,13 @@ function renderTradesPage(){
     } else {
       histTbl.innerHTML = `<div class="tt-tbl">${history.slice(0,30).map(h=>{
         const t = new Date(h.closedAt).toLocaleTimeString();
+        if(h.fromIg) return `<div class="tt-row closed ${h.side==='BUY'?'long':'short'}">
+          <span class="tt-side ${h.side==='BUY'?'buy':'sell'}">${h.side==='BUY'?'📈 LÅNG':'📉 KORT'}</span>
+          <div><div class="tt-sym">${IG.esc(h.name)}</div><div class="tt-meta">${IG.px(h.entry)} → ${IG.px(h.exit)} · ${IG.esc(h.qty)} kontrakt</div></div>
+          <div></div>
+          <div class="tt-pnl ${h.pnl>=0?'up':'down'}">${IG.money(h.pnl, h.currency, true)}</div>
+          <span class="tt-time">${new Date(h.closedAt).toLocaleString("sv-SE",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"})}</span>
+        </div>`;
         const sideLabel = h.side === "BUY" ? "📈 LONG" : "📉 SHORT";
         return `<div class="tt-row closed ${h.side==='BUY'?'long':'short'}">
           <span class="tt-side ${h.side==='BUY'?'buy':'sell'}">${sideLabel}</span>
@@ -7389,7 +7419,11 @@ function renderTradesPage(){
   // Top-summary
   const sumEl = document.getElementById("trades-summary");
   const posCountEl = document.getElementById("pos-count");
-  if(sumEl && posCountEl){
+  if(sumEl && posCountEl && positions[0]?.fromIg){
+    const verified = positions.filter(p=>p.upnl != null), total = verified.reduce((s,p)=>s+p.upnl,0);
+    posCountEl.textContent = positions.length;
+    sumEl.innerHTML = `<span style="color:${total>=0?'var(--green)':'var(--red)'};font-weight:800">${IG.money(total, positions[0].currency, true)} öppen P/L</span>${verified.length < positions.length ? ` <span style="color:var(--dim)">(${positions.length - verified.length} ej verifierade)</span>` : ""}`;
+  } else if(sumEl && posCountEl){
     const totalPnl = positions.reduce((s,p)=>{
       const cur = STATE.livePrices[p.sym] ?? p.entry;
       return s + (cur - p.entry) * p.qty * (p.side === "BUY" ? 1 : -1);
@@ -7401,7 +7435,20 @@ function renderTradesPage(){
   }
 }
 
+// IG "Sälj nu": lägger en stängning (dealId) i Väntande ordrar. Inget skickas utan GODKÄNN,
+// och med orderläget avstängt skickas inget alls till IG.
+async function igSellNow(dealId){
+  const p = (STATE.tradePositions || []).find(x=>x.dealId === dealId);
+  if(!confirm(`Stänga ${p ? (p.name || p.sym) : dealId} (${p && p.side === "SELL" ? "kort" : "lång"})?\n\nStängningen hamnar i Väntande ordrar och skickas först när du trycker GODKÄNN.`)) return;
+  try{
+    const r = await fetch("/api/ig/positions/" + encodeURIComponent(dealId) + "/close", { method:"POST" });
+    const d = await r.json().catch(()=>({}));
+    if(!d.ok){ alert("Stängningen lades inte i kön.\n\n" + (d.error || ("HTTP " + r.status))); return; }
+    if(typeof pushInAppAlert === "function") pushInAppAlert("⏳ Stängning ligger i Väntande ordrar. " + (d.note || ""), 8000);
+  }catch(e){ alert("Fel: " + e.message); }
+}
 function closePosition(id){
+  if(String(id).startsWith("ig-")) return igSellNow(String(id).slice(3));
   const positions = STATE.tradePositions || [];
   const idx = positions.findIndex(p => p.id === id);
   if(idx === -1) return;
@@ -7613,35 +7660,33 @@ function loadInitialPage(){
 /* ======================================================================
    LIVE AKTIVITET — 4 rullande tickers (CSS-animerade marquees)
    ====================================================================== */
-const CROSS_PAIRS = ["BTC/ETH","ETH/BTC","SOL/BTC","SOL/ETH","BNB/BTC","XRP/BTC"];
-const FOREX_PAIRS = ["EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","EUR/GBP","EUR/JPY","GBP/JPY"];
-const OTHER_PAIRS = ["XAU/USD","XAG/USD","USOIL","NATGAS","SPY","QQQ","DIA","IWM"];
-
+// IG: raderna visar IG-katalogens instrument för aktiv miljö (Demo eller Live).
 function buildLsrItem(sym){
-  return `<span class="lsr-item" data-sym="${sym}"><span class="sym">${sym}</span><span class="price" data-price>--</span><span class="ch" data-ch>0.00%</span></span>`;
+  return `<span class="lsr-item" data-sym="${IG.esc(sym)}"><span class="sym">${IG.esc(IG.label(sym))}</span><span class="price" data-price>–</span><span class="ch" data-ch>–</span></span>`;
 }
 
 function renderLiveStrips(){
   const sets = [
-    {id:"lsr-crypto", syms:SYMBOLS.crypto, dur:60},
-    {id:"lsr-cross",  syms:CROSS_PAIRS,    dur:50},
-    {id:"lsr-forex",  syms:FOREX_PAIRS,    dur:55},
-    {id:"lsr-other",  syms:OTHER_PAIRS,    dur:50},
+    {id:"lsr-crypto", syms:SYMBOLS.crypto.slice(0,40), dur:60},
+    {id:"lsr-cross",  syms:SYMBOLS.watch,  dur:50},
+    {id:"lsr-forex",  syms:SYMBOLS.forex.slice(0,40),  dur:55},
+    {id:"lsr-other",  syms:[],             dur:50},
   ];
   for(const s of sets){
     const el = document.getElementById(s.id);
     if(!el) continue;
     // Dubbla items för seamless loop (translate -50%)
-    const items = s.syms.map(buildLsrItem).join("");
+    const items = s.syms.length ? s.syms.map(buildLsrItem).join("") : `<span class="lsr-item"><span class="sym" style="color:var(--dim)">${s.id === "lsr-other" ? "IG-porten visar Forex och Krypto" : "Inga IG-instrument än"}</span></span>`;
     el.innerHTML = `<div class="lsr-inner" style="--scroll-dur:${s.dur}s">${items}${items}</div>`;
   }
   document.querySelectorAll(".lsr-item").forEach(it=>{
     it.addEventListener("click", ()=>{
       const sym = it.dataset.sym;
+      if(!sym) return;
       const cat = symCategory(sym);
       const catEl = document.getElementById("cat-select");
       if([...catEl.options].some(o=>o.value===cat)) catEl.value = cat;
-      fillSymbols();
+      fillSymbols(sym);
       const symEl = document.getElementById("sym-select");
       if([...symEl.options].some(o=>o.value===sym)){
         symEl.value = sym;
@@ -7656,12 +7701,14 @@ function renderLiveStrips(){
 function refreshLiveStrips(){
   document.querySelectorAll(".lsr-item").forEach(it=>{
     const sym = it.dataset.sym;
-    const cur = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 0;
-    const base = BASE_PRICES[sym] ?? cur;
-    const chPct = base > 0 ? ((cur-base)/base)*100 : 0;
-    const p = it.querySelector("[data-price]"); if(p) p.textContent = formatPrice(cur, sym);
+    if(!sym) return;
+    // IG-kvot (ström) först, annars katalogens senaste IG-rad. Saknas → "–".
+    const q = IG.quote(sym), row = IG_DIR[sym];
+    const cur = q && q.mid != null ? q.mid : row && row.bid != null && row.offer != null ? (row.bid + row.offer) / 2 : null;
+    const chPct = q && q.changePct != null ? q.changePct : row && row.changePercent != null ? row.changePercent : null;
+    const p = it.querySelector("[data-price]"); if(p) p.textContent = cur == null ? "–" : formatPrice(cur, sym);
     const c = it.querySelector("[data-ch]");
-    if(c){ c.textContent = (chPct>=0?"+":"")+chPct.toFixed(2)+"%"; c.className = "ch "+(chPct>=0?"up":"down"); }
+    if(c){ c.textContent = chPct == null ? "–" : (chPct>=0?"+":"")+chPct.toFixed(2)+"%"; c.className = "ch "+(chPct == null ? "" : chPct>=0?"up":"down"); }
   });
 }
 
@@ -7755,36 +7802,26 @@ let binancePollInterval = null;
 let binanceLastUpdate = null;
 
 // Poll riktiga Binance-priser när PROPOSE-mode är aktivt
+// Kvoter för bevakningslistan + valt instrument från IG (servern: ström, REST som reserv).
 async function pollBinancePrices(){
   try {
-    const symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","POLUSDT","BNBUSDT","TRXUSDT"];
-    const r = await fetch(`/api/bybit/prices?symbols=${symbols.join(",")}`);
-    if(!r.ok) return;
-    const data = await r.json();
-    if(data.prices){
-      let count = 0;
-      for(const [sym, price] of Object.entries(data.prices)){
-        // Diagrammets par får sitt pris från Bybit-strömmen när den är live.
-        if(!(sym === STATE.symbol && bybitChartLive())) STATE.livePrices[sym] = price;
-        count++;
-      }
-      binanceLastUpdate = Date.now();
-      // UI-indikator
-      const ind = document.getElementById("data-source-indicator");
-      if(ind && count > 0 && !bybitChartLive()){
-        ind.innerHTML = `<span style="color:var(--green)">●</span> Bybit live · ${count} par · ${new Date().toLocaleTimeString().slice(0,8)}`;
-      }
-    }
+    const symbols = [...new Set([STATE.symbol, ...SYMBOLS.watch])].filter(IG.isEpic).slice(0, 30);
+    if(!symbols.length) return;
+    const quotes = await IG.prices(symbols);
+    let count = 0;
+    for(const [sym, q] of Object.entries(quotes)){ if(q && q.mid != null){ STATE.livePrices[sym] = q.mid; count++; } }
+    binanceLastUpdate = Date.now();
   } catch(e){
-    console.warn("Binance poll-fel:", e);
+    console.warn("IG-kvoter:", e);
   }
 }
 
 function startBinancePolling(){
   if(binancePollInterval) return;
   pollBinancePrices(); // omedelbar
-  binancePollInterval = setInterval(pollBinancePrices, 3000); // Bybit-cachen på servern, var 3s
-  log_ok("📡 Live-priser från Bybit startade");
+  binancePollInterval = setInterval(pollBinancePrices, 10000); // IG-kvoter via servern (strömmen sköter resten)
+  refreshIgSymbols(true);
+  log_ok("📡 IG-priser via servern startade");
 }
 function stopBinancePolling(){
   if(binancePollInterval){
@@ -7793,9 +7830,9 @@ function stopBinancePolling(){
     binanceLastUpdate = null;
     const ind = document.getElementById("data-source-indicator");
     if(ind){
-      ind.innerHTML = `<span style="color:var(--label)">○</span> Demo (simulerade priser)`;
+      ind.innerHTML = `<span style="color:var(--label)">○</span> IG frånkopplat`;
     }
-    log_ok("Binance-poll stoppad — tillbaka till simulerad data");
+    log_ok("IG-kvoter stoppade");
   }
 }
 
@@ -7813,7 +7850,7 @@ function setActiveMode(uiMode){
       tag.style.color = "#22c55e";
       tag.style.border = "1px solid rgba(34,197,94,.4)";
     } else {
-      tag.textContent = "🧪 TEST — Bybit demo";
+      tag.textContent = "🧪 TEST — IG Demo";
       tag.style.background = "rgba(240,185,11,.15)";
       tag.style.color = "#f0b90b";
       tag.style.border = "1px solid rgba(240,185,11,.35)";
@@ -7836,7 +7873,7 @@ function setActiveMode(uiMode){
   }
   // Trigga saldo-card-refresh direkt så panelen byter mellan TESTNET/LIVE-data
   if(typeof refreshBinanceSync === "function") refreshBinanceSync();
-  // PROPOSE = riktiga priser från Binance, och alltid när vi är kopplade till boten
+  // IG-priser via servern när vi är kopplade till boten
   if(uiMode === "propose" || useRealPrices()){
     startBinancePolling();
   } else {
@@ -7850,7 +7887,7 @@ function updateChatModeTag(){
   // Floating chat-panelens header
   const subEl = document.querySelector(".fc-sub");
   if(subEl){
-    subEl.textContent = isLive ? "💚 LIVE — RIKTIGA PENGAR" : "🧪 TEST — Bybit demo";
+    subEl.textContent = isLive ? "💚 LIVE — IG Live (riktiga pengar)" : "🧪 TEST — IG Demo";
     subEl.style.color = isLive ? "#22c55e" : "#f0b90b";
     subEl.style.fontWeight = "700";
   }
@@ -8528,140 +8565,85 @@ function renderModeCard(mode, data, accentColor){
   `;
 }
 
+// IG-konton (ersätter Binance-synken): IG Demo + IG Live sida vid sida, aktiv miljös
+// positioner och stängda affärer till Trades-sidan. Pengar i kontovalutan.
 async function refreshBinanceSync(){
   const body = document.getElementById("binance-sync-body");
   const modeTag = document.getElementById("binance-sync-mode");
   const timeTag = document.getElementById("binance-sync-time");
-  if(!body) return;
+  const setText = (id, val) => { const el = document.getElementById(id); if(el) el.textContent = val; };
   try {
-    const r = await fetch("/api/binance/dual");
-    const data = await r.json();
-    const safetyR = await fetch("/api/binance/safety");
-    const safety = await safetyR.json();
-    if(modeTag){
-      const tnOk = data.testnet?.configured;
-      const liveOk = data.live?.configured;
-      modeTag.textContent = (tnOk && liveOk) ? "DUAL-MODE" : (liveOk ? "LIVE" : (tnOk ? "TESTNET" : "EJ ANSLUTET"));
-      modeTag.style.color = liveOk ? "#22c55e" : "#f0b90b";
-    }
-    // Header LIVE-balance (mainnet, riktiga pengar)
+    const st = await (await fetch("/api/ig/status")).json();
+    const envs = st.environments || {};
+    const acct = e => envs[e] && envs[e].account;
     const lbEq = document.getElementById("lb-equity");
-    // Bybit EU är LIVE-mäklaren när den är kopplad (Binance spärrar API-handel i Sverige)
-    if(lbEq && data.live?.cashUsdt !== undefined && !window._bybitLive){
-      const total = data.live.totalUsdt || data.live.cashUsdt;
-      lbEq.textContent = "$" + total.toFixed(2);
-    }
-    // Header TEST-balance (= testnet-saldo)
     const pbEq = document.getElementById("pb-equity");
     const pbPnl = document.getElementById("pb-pnl");
-    if(pbEq && data.testnet?.cashUsdt !== undefined){
-      const tnTotal = data.testnet.totalUsdt || data.testnet.cashUsdt;
-      pbEq.textContent = "$" + tnTotal.toFixed(2);
+    if(lbEq) lbEq.textContent = acct("live") && acct("live").balance != null ? IG.money(acct("live").balance, acct("live").currency) : (envs.live && envs.live.status === "connected" ? "–" : "ej ansluten");
+    if(pbEq) pbEq.textContent = acct("demo") && acct("demo").balance != null ? IG.money(acct("demo").balance, acct("demo").currency) : (envs.demo && envs.demo.status === "connected" ? "–" : "ej ansluten");
+    if(pbPnl){ pbPnl.textContent = "IG DEMO"; pbPnl.className = ""; }
+    if(modeTag){
+      const d = envs.demo && envs.demo.status === "connected", l = envs.live && envs.live.status === "connected";
+      modeTag.textContent = d && l ? "IG DEMO + LIVE" : l ? "IG LIVE" : d ? "IG DEMO" : "EJ ANSLUTET";
+      modeTag.style.color = l ? "#22c55e" : "#f0b90b";
     }
-    if(pbPnl){ pbPnl.textContent = "TEST"; pbPnl.className = ""; }
-    // Ingen Binance TEST? Visa aktiv mäklares TEST-saldo (t.ex. Alpaca paper) i stället
-    // för ett streck, och säg vilken mäklare det är.
-    if(!data.testnet?.configured && Date.now() - (window._brokerBalTs||0) > 30000){
-      window._brokerBalTs = Date.now();
-      try{
-        const [stR, brR] = await Promise.all([fetch("/api/status"), fetch("/api/brokers")]);
-        const st = await stR.json(); const br = await brR.json();
-        const act = (br.brokers||[]).find(b=>b.active);
-        const acc = act && st[act.name] && st[act.name].account;
-        if(act && act.mode === "paper" && acc && typeof acc.totalValueUsdt === "number"){
-          window._brokerBal = { eq: "$" + acc.totalValueUsdt.toFixed(2), label: act.name === "bybit-paper" ? "BYBIT EU TEST (LÅTSASPENGAR)" : act.name === "bybit-demo" ? "BYBIT DEMO" : act.name.toUpperCase() + " (TILLFÄLLIG TEST)" };
-        } else {
-          window._brokerBal = { eq: "—", label: act ? act.name.toUpperCase() + " (svarar inte)" : "EJ KOPPLAD" };
-        }
-      }catch(_){}
-    }
-    if(!data.testnet?.configured && window._brokerBal){
-      if(pbEq) pbEq.textContent = window._brokerBal.eq;
-      if(pbPnl) pbPnl.textContent = window._brokerBal.label;
-    }
-    if(lbEq && !data.live?.configured && !window._bybitLive){
-      // Ingen Binance LIVE: visa saldot hos en annan LIVE-mäklare (t.ex. Kraken)
-      if(Date.now() - (window._liveBalTs||0) > 30000){
-        window._liveBalTs = Date.now();
-        try{
-          const st = await (await fetch("/api/status")).json();
-          const br = await (await fetch("/api/brokers")).json();
-          const live = (br.brokers||[]).find(b=>b.mode === "live" && st[b.name]?.account);
-          window._liveBal = live ? `${live.name.charAt(0).toUpperCase()+live.name.slice(1)} ${st[live.name].account.totalValueUsdt.toFixed(2)}` : null;
-        }catch(_){ window._liveBal = null; }
-      }
-      lbEq.textContent = window._liveBal || "ej kopplad";
-    }
-
-    // SALDO-CARD speglar mode: TEST → Testnet, LIVE → Mainnet
-    const isLive = currentUiMode === "live";
-    const src = isLive ? data.live : data.testnet;
-
-    // BINANCE-POSITIONS → STATE.tradePositions (för "Aktiva positioner"-tabellen)
-    // Visas på Trades-sidan så Mike ser sina riktiga öppna positioner
-    if(src && src.positions){
-      STATE.tradePositions = src.positions.map((p, idx) => {
-        const pricePerUnit = p.qty > 0 ? p.valueUsdt / p.qty : 0;
-        return {
-          id: `binance-${isLive?"live":"test"}-${p.asset}`,
-          sym: p.asset,
-          side: "BUY",
-          amount: p.valueUsdt,
-          entry: pricePerUnit,
-          qty: p.qty,
-          openedAt: Date.now(),
-          type: "spot",
-          fromBinance: true
-        };
-      });
-      // Re-rendera om Trades-sidan är aktiv
-      if(STATE.activeTab === "trades" && typeof renderTradesPage === "function"){
-        try { renderTradesPage(); } catch(_){}
-      }
-      // Uppdatera position-räknaren i header också
-      const posCount = document.getElementById("pos-count");
-      if(posCount) posCount.textContent = STATE.tradePositions.length;
-    }
+    // Aktiv miljö: positioner och stängda affärer från IG (/api/results läser bara den miljön)
+    const res = await (await fetch("/api/results")).json();
+    const isLive = res.env === "live";
+    STATE.tradePositions = (res.open || []).map(o => ({
+      id: "ig-" + o.dealId, dealId: o.dealId, sym: o.epic || o.coin, name: o.coin, side: o.direction || "BUY",
+      entry: o.avg, qty: o.qty, current: o.price, upnl: o.upnl, upnlPct: o.upnlPct, currency: res.currency,
+      tp: o.tp, sl: o.sl, expiresAt: o.closeAt || null, openedAt: Date.now(), type: "ig", fromIg: true,
+    }));
+    STATE.tradeHistory = (res.trades || []).filter(t => t.pnl != null).map(t => ({
+      sym: t.coin, name: t.coin, side: t.side, entry: t.openLevel, exit: t.closeLevel, qty: t.qty, pnl: t.pnl, currency: res.currency, closedAt: t.at, fromIg: true,
+    }));
+    STATE.tradeDecisions = STATE.tradeDecisions || [];
+    const posCount = document.getElementById("pos-count");
+    if(posCount) posCount.textContent = STATE.tradePositions.length;
     const modeLbl = document.getElementById("pc-mode-label");
-    if(modeLbl) modeLbl.textContent = isLive ? "💚 LIVE-SALDO (BYBIT EU)" : ((window._brokerBal && window._brokerBal.label) ? "🧪 " + window._brokerBal.label + "-SALDO" : "🧪 TEST-SALDO (BYBIT DEMO)");
-    const setText = (id, val) => { const el = document.getElementById(id); if(el) el.textContent = val; };
-    if(src && src.configured && !src.error){
-      const cash = src.cashUsdt || 0;
-      const total = src.totalUsdt || cash;
-      const positionValue = total - cash;
-      setText("pc-equity", "$" + total.toFixed(2));
-      setText("pc-cash", "$" + cash.toFixed(2));
-      setText("pc-unrealized", positionValue > 0 ? `+$${positionValue.toFixed(2)}` : "$0.00");
-      // Realized PnL + W/L hämtas via separat throttlad funktion (var 30s, ej varje 3s)
-      maybeRefreshPortfolioTrades(isLive ? "live" : "testnet");
+    if(modeLbl) modeLbl.textContent = isLive ? "💚 SALDO · IG LIVE" : "🧪 SALDO · IG DEMO";
+    const a = acct(isLive ? "live" : "demo");
+    if(a){
+      setText("pc-equity", IG.money(a.balance, a.currency));
+      setText("pc-cash", IG.money(a.available, a.currency));
+      setText("pc-unrealized", IG.money(res.totals ? res.totals.unrealized : null, a.currency, true));
+      setText("pc-realized", IG.money(res.totals ? res.totals.realized : null, a.currency, true));
+      const t = res.totals || {};
+      setText("pc-trades", `${t.wins || 0}W / ${t.losses || 0}L · ${STATE.tradePositions.length} öppna`);
+      setText("pc-winrate", t.trades ? Math.round((t.wins / t.trades) * 100) + "%" : "—");
     } else {
-      setText("pc-equity", "$0.00");
-      setText("pc-cash", "$0.00");
-      setText("pc-realized", "—");
-      setText("pc-trades", isLive ? "väntar på pengar" : "—");
-      setText("pc-winrate", "—");
+      ["pc-equity","pc-cash","pc-unrealized","pc-realized","pc-winrate"].forEach(id=>setText(id, "—"));
+      setText("pc-trades", (isLive ? "IG Live" : "IG Demo") + " är inte anslutet");
     }
+    if(STATE.activeTab === "trades" && typeof renderTradesPage === "function"){ try { renderTradesPage(); } catch(_){} }
+    if(typeof renderPosBanner === "function") renderPosBanner();
     if(timeTag) timeTag.textContent = "uppdaterat " + new Date().toLocaleTimeString().slice(0,8);
-    const safetyHtml = `
-      <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:5px;padding:8px 12px;margin-bottom:10px;font-size:11px">
-        🛡 <b>LIVE-säkerhetslås:</b> max stake <b>$${safety.maxLiveStakeUsd}</b>/trade · daglig loss-cap <b>$${safety.maxLiveDailyLossUsd}</b> · använt idag: <b style="color:${safety.liveDailyLossUsd > 0 ? 'var(--red)' : 'var(--green)'}">$${safety.liveDailyLossUsd.toFixed(2)}</b> ${safety.tradingAllowed ? "" : "<span style='color:var(--red);font-weight:700'>· TRADING PAUSAD</span>"}
-      </div>
-    `;
-    body.innerHTML = safetyHtml + `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        ${renderModeCard("testnet", data.testnet, "#f0b90b")}
-        ${renderModeCard("live", data.live, "#22c55e")}
-      </div>
-    `;
+    if(!body) return;
+    const card = (e, col) => {
+      const x = envs[e] || {}, ac = x.account;
+      const on = x.status === "connected";
+      return `<div style="background:var(--card2);padding:12px;border-radius:6px;border-left:3px solid ${col}">
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px"><span style="font-size:12px;font-weight:800;color:${col}">${e === "live" ? "💚 IG LIVE" : "🧪 IG DEMO"}</span>
+          <span style="font-size:10px;color:${on ? "#3fb950" : "#f85149"}">${on ? "● ansluten" : "○ " + IG.esc(x.error || x.status || "ej ansluten")}</span></div>
+        ${ac ? `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+          <div><div style="font-size:8px;color:var(--label);font-weight:700">SALDO</div><div style="font-weight:800">${IG.money(ac.balance, ac.currency)}</div></div>
+          <div><div style="font-size:8px;color:var(--label);font-weight:700">TILLGÄNGLIGT</div><div style="font-weight:800">${IG.money(ac.available, ac.currency)}</div></div>
+          <div><div style="font-size:8px;color:var(--label);font-weight:700">ÖPPEN P/L</div><div style="font-weight:800;color:${(ac.profitLoss||0) >= 0 ? "#3fb950" : "#f85149"}">${IG.money(ac.profitLoss, ac.currency, true)}</div></div>
+        </div>` : `<div style="color:var(--dim);font-size:11px">${x.credentialsComplete ? "Inget kontounderlag än." : "Inloggningsuppgifter saknas (Inställningar → IG)."}</div>`}
+        <div style="margin-top:6px;font-size:10px;color:var(--dim)">Kontovaluta ${IG.esc(ac && ac.currency || "–")} · ${x.executionEnabled ? '<span style="color:#3fb950">orderläget PÅ</span>' : '<span style="color:#f0b90b">orderläget är avstängt</span>'} · IG-läsningar ${x.readBudget ? x.readBudget.used + "/min använda" : "–"} · ström ${IG.esc(x.stream && x.stream.status || "–")}</div>
+      </div>`;
+    };
+    body.innerHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${card("demo", "#f0b90b")}${card("live", "#22c55e")}</div>`;
   } catch(e){
-    body.innerHTML = `<div style="color:var(--red)">⚠ ${e.message}</div>`;
+    if(body) body.innerHTML = `<div style="color:var(--red)">⚠ ${IG.esc(e.message)}</div>`;
   }
 }
 
 function startBinanceSync(){
   if(binanceSyncInterval) return;
   refreshBinanceSync();
-  binanceSyncInterval = setInterval(refreshBinanceSync, 3000); // var 3s polling baseline för balans
+  binanceSyncInterval = setInterval(refreshBinanceSync, 15000); // IG-konton + positioner (servern respekterar IG:s läskvot)
   // Bybit överallt: Binance-strömmarna i webbläsaren startas inte längre
   // (priserna kommer från Bybits WebSocket och /api/bybit/prices).
 }
@@ -8684,61 +8666,9 @@ function startBinanceMarketStream(){
   setInterval(updateMarketStreamSubs, 30000); // re-sync var 30s om positions ändras
 }
 
+// IG: ingen direkt marknadsström från webbläsaren. Positionernas instrument följs via servern (IG.want).
 function updateMarketStreamSubs(){
-  // Vilka symbols har vi nu?
-  const targetSyms = new Set();
-  if(STATE.tradePositions){
-    for(const p of STATE.tradePositions){
-      if(!p.sym) continue;
-      // p.sym kan vara 'NEIRO' (asset) eller 'NEIROUSDC' (full symbol)
-      const s = p.sym.endsWith("USDC") || p.sym.endsWith("USDT") ? p.sym : (p.sym + (currentUiMode === "live" ? "USDC" : "USDT"));
-      targetSyms.add(s);
-    }
-  }
-  // Lägg alltid till BTC + ETH för referens
-  targetSyms.add(currentUiMode === "live" ? "BTCUSDC" : "BTCUSDT");
-  targetSyms.add(currentUiMode === "live" ? "ETHUSDC" : "ETHUSDT");
-
-  // Är subscription samma som nu? Skip
-  const same = targetSyms.size === binanceMarketSyms.size && [...targetSyms].every(s => binanceMarketSyms.has(s));
-  if(same && binanceMarketWS && binanceMarketWS.readyState === 1) return;
-
-  // Stäng gammal connection och starta ny med nya symbols
-  if(binanceMarketWS){ try { binanceMarketWS.close(); } catch(_){} }
-  binanceMarketSyms = targetSyms;
-  if(targetSyms.size === 0) return;
-
-  const url = buildMarketStreamUrl([...targetSyms]);
-  try {
-    const ws = new WebSocket(url);
-    binanceMarketWS = ws;
-    ws.onopen = () => console.log("[Binance WS] Connected:", targetSyms.size, "symbols");
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        const data = msg.data;
-        if(data && data.s && data.c){
-          // s = symbol, c = current price
-          const sym = data.s; // ex 'NEIROUSDC'
-          const price = parseFloat(data.c);
-          STATE.livePrices[sym] = price;
-          // Också lägg under base-asset så p.sym = 'NEIRO' funkar
-          const base = sym.replace(/USDC$|USDT$/, "");
-          STATE.livePrices[base] = price;
-          // Triggar PnL-uppdatering om vi är på Trades-sidan
-          if(STATE.activeTab === "trades") updateLivePnLDisplay();
-        }
-      } catch(_){}
-    };
-    ws.onerror = () => { /* tyst — onclose hanterar reconnect */ };
-    ws.onclose = () => {
-      console.log("[Binance WS] Disconnected — reconnect om 5s");
-      if(binanceMarketReconnect) clearTimeout(binanceMarketReconnect);
-      binanceMarketReconnect = setTimeout(updateMarketStreamSubs, 5000);
-    };
-  } catch(e){
-    console.warn("[Binance WS] init fail:", e.message);
-  }
+  IG.want("positions", (STATE.tradePositions || []).map(p=>p.sym).filter(IG.isEpic));
 }
 
 // Light-weight PnL-uppdaterare (anropas från WS onmessage, max 1x per 100ms throttled)
@@ -8749,6 +8679,7 @@ function updateLivePnLDisplay(){
   _lastPnLUpdate = now;
   const positions = STATE.tradePositions || [];
   for(const p of positions){
+    if(p.fromIg) continue; // IG: P/L kommer från servern (IG:s punktvärde i kontovalutan)
     const cur = STATE.livePrices[p.sym] ?? p.entry;
     const pnl = (cur - p.entry) * (p.qty || 0) * (p.side === "BUY" ? 1 : -1);
     const pnlPct = p.entry > 0 ? ((cur - p.entry) / p.entry) * 100 * (p.side === "BUY" ? 1 : -1) : 0;
@@ -8816,118 +8747,26 @@ async function refreshAgentLearnings(){
 // Hämtar /portfolio-trades (recent trades + per-symbol stats) och fyller STATE
 const _lastBinTrades = { ts: 0 };
 async function maybeRefreshBinanceTradeData(){
+  // IG: positioner och stängda affärer hämtas av refreshBinanceSync (IG-konton) var 15:e s.
   const now = Date.now();
-  if(now - _lastBinTrades.ts < 30000) return;
+  if(now - _lastBinTrades.ts < 15000) return;
   _lastBinTrades.ts = now;
-  const mode = currentUiMode === "live" ? "live" : "testnet";
-  try {
-    const r = await fetch(`/api/binance/portfolio-trades?mode=${mode}`);
-    const pt = await r.json();
-    if(!pt.ok) return;
-    // Recent trades → decisions-log (Hannas beslut visar nu Binance fills)
-    const recentTrades = pt.recentTrades || [];
-    STATE.tradeDecisions = recentTrades.map(t => ({
-      timestamp: t.time,
-      action: t.side,
-      sym: t.symbol,
-      amount: t.quoteQty.toFixed(2),
-      reasoning: t.pnl !== null ? `Realized PnL ${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}` : `${t.qty} @ $${t.price}`,
-      source: "binance"
-    }));
-    // Closed trades med PnL → history-tabellen
-    STATE.tradeHistory = recentTrades.filter(t => t.pnl !== null).map(t => ({
-      sym: t.symbol,
-      side: t.side === "SELL" ? "BUY" : "SELL",
-      entry: t.price,
-      exit: t.price,
-      qty: t.qty,
-      amount: t.quoteQty.toFixed(2),
-      profit: t.pnl,
-      won: t.pnl > 0,
-      closedAt: t.time
-    }));
-    // Re-rendera trades-page om vi är där
-    if(STATE.activeTab === "trades" && typeof renderTradesPage === "function"){
-      // Uppdatera tabellerna direkt utan att triggera ny fetch (set _lastBinTrades.ts redan)
-      const decTbl = document.getElementById("trade-decisions-table");
-      const histTbl = document.getElementById("trade-history-table");
-      if(decTbl){
-        if(!STATE.tradeDecisions.length){
-          decTbl.innerHTML = `<div class="tt-empty">Inga trades på Binance ${mode} än. Gör din första trade så syns den här.</div>`;
-        }
-      }
-      if(histTbl){
-        if(!STATE.tradeHistory.length){
-          histTbl.innerHTML = `<div class="tt-empty">Inga stängda trades på Binance ${mode}.</div>`;
-        }
-      }
-    }
-  } catch(e){ /* tyst fail — keep prev state */ }
+  refreshBinanceSync();
 }
 
 // Throttlad portfolio-trades fetch (max 1 per 30s per mode för att skydda Binance rate-limit)
 const _lastPtFetch = { testnet: 0, live: 0 };
-async function maybeRefreshPortfolioTrades(mode){
-  const now = Date.now();
-  if(now - _lastPtFetch[mode] < 30000) return; // skip om < 30s sen senaste
-  _lastPtFetch[mode] = now;
-  const setText = (id, val) => { const el = document.getElementById(id); if(el) el.textContent = val; };
-  try {
-    const ptR = await fetch(`/api/binance/portfolio-trades?mode=${mode}`);
-    const pt = await ptR.json();
-    if(pt.ok){
-      const realized = pt.realizedPnlUsdt || 0;
-      const wins = pt.wins || 0;
-      const losses = pt.losses || 0;
-      const closed = pt.closedTrades || 0;
-      const winRate = closed > 0 ? Math.round((wins / closed) * 100) : null;
-      setText("pc-realized", (realized >= 0 ? "+" : "") + "$" + realized.toFixed(2));
-      const realEl = document.getElementById("pc-realized");
-      if(realEl) realEl.className = "pc-pnl " + (realized >= 0 ? "up" : "down");
-      // ALLTID visa W/L · open så Mike ser strukturen — även när 0 closed
-      const openCount = pt.totalTrades - closed;
-      setText("pc-trades", `${wins}W / ${losses}L · ${openCount} öppna`);
-      setText("pc-winrate", winRate !== null ? winRate + "%" : (pt.totalTrades > 0 ? "vänta sells" : "—"));
-    }
-  } catch(e){ /* tyst — keep prev values */ }
-}
+async function maybeRefreshPortfolioTrades(mode){ /* IG: summor kommer från /api/results i refreshBinanceSync */ }
 
 let binanceUserStreamES = null;
-function startBinanceUserStream(){
-  if(binanceUserStreamES) return;
-  try {
-    const es = new EventSource("/api/binance/stream");
-    binanceUserStreamES = es;
-    // executionReport = order placed/filled/cancelled
-    es.addEventListener("executionReport", (e)=>{
-      try {
-        const d = JSON.parse(e.data);
-        // Trigga omedelbar refresh när order fylls (X = filled)
-        if(d.X === "FILLED" || d.X === "PARTIALLY_FILLED" || d.X === "CANCELED"){
-          // Force-bypass throttle: portfolio-trades uppdateras NU (riktig trade hände)
-          _lastPtFetch.testnet = 0; _lastPtFetch.live = 0;
-          refreshBinanceSync();
-        }
-      } catch {}
-    });
-    // outboundAccountPosition = balansändring
-    es.addEventListener("outboundAccountPosition", ()=>{ refreshBinanceSync(); });
-    // balanceUpdate = deposit/withdrawal
-    es.addEventListener("balanceUpdate", ()=>{ refreshBinanceSync(); });
-    es.onerror = ()=>{ /* EventSource auto-reconnectar */ };
-  } catch(e){ console.warn("SSE-init failed:", e); }
-}
+function startBinanceUserStream(){ /* IG: konto- och affärshändelser kommer via servern (ig-account / ig-trade på /api/events) */ }
 
 function wireBrokerIntegrations(){
   document.getElementById("bnc-connect-btn")?.addEventListener("click", bncConnect);
   document.getElementById("bnc-fetch-btn")?.addEventListener("click", bncFetchAccount);
   document.getElementById("oanda-connect-btn")?.addEventListener("click", oandaConnect);
   document.getElementById("oanda-fetch-btn")?.addEventListener("click", oandaFetchAccount);
-  // Hämta status vid load
-  fetch("/api/integrations/status").then(r=>r.json()).then(data=>{
-    if(data.binance?.configured) bncFetchAccount();
-    if(data.oanda?.configured) oandaFetchAccount();
-  }).catch(()=>{});
+  // IG: Binance/Oanda används inte; IG-kontona visas i IG-kortet och under Inställningar.
 }
 
 function wireTelegramSettings(){
@@ -8990,7 +8829,7 @@ function initApp(){
   loadTelegramIntoSettings();
   wireTelegramSettings();
   wireBrokerIntegrations();
-  startBinanceSync(); // pollar Binance var 3s, visar i Binance Live Sync card
+  startBinanceSync(); // IG-konton (Demo + Live), positioner och resultat från /api/ig/* och /api/results
   document.getElementById("setup-banner-go")?.addEventListener("click", ()=>switchPage("settings"));
   document.getElementById("save-keys-btn")?.addEventListener("click", saveKeysFromSettings);
   fillSymbols();
@@ -9029,9 +8868,9 @@ function initApp(){
   if(CFG.mode === "live"){
     loadFromBackend(); startSSE(); loadTeamLast(); loadCurrentMode(); syncBrokers();
     startBinancePolling();
-    // Hämta om riktiga ljus regelbundet så nya ljus dyker upp i diagrammet.
-    // (med Bybit-strömmen live behövs ingen omhämtning; den är bara reserv)
-    setInterval(()=>{ if(useRealPrices(STATE.symbol) && !bybitChartLive()) loadRealCandles(STATE.symbol, STATE.tf); }, 30000);
+    // Intervall utan IG-ström (15m/30m/4h/1d) eller tappad ström: hämta om stängda ljus från servern.
+    setInterval(()=>{ if(STATE.symbol && (!bybitChartLive() || !["1m","5m","1h"].includes(STATE.tf))) loadRealCandles(STATE.symbol, STATE.tf); }, 30000);
+    setInterval(()=>refreshIgSymbols(false), 60000);
   }
 }
 
@@ -9045,11 +8884,11 @@ async function syncBrokers(){
       const base = o.dataset.label || (o.dataset.label = o.textContent);
       o.textContent = connected.has(o.value) ? `${base} ✓` : `${base} (ej kopplad)`;
     });
-    // Utan Bybit demo-nyckel kör TEST tillfälligt på en annan mäklare: visa det ärligt
+    // Okänd mäklare (ska inte hända med IG): visa den ärligt
     if(r.activeBroker && !Array.from(sel.options).some(o=>o.value === r.activeBroker)){
       const o = document.createElement("option");
       o.value = r.activeBroker;
-      o.textContent = `${r.activeBroker} (tillfällig TEST tills Bybit demo-nyckel finns)`;
+      o.textContent = `${r.activeBroker} (okänd)`;
       o.dataset.label = o.textContent;
       sel.appendChild(o);
     }
@@ -9853,139 +9692,123 @@ document.addEventListener("DOMContentLoaded", boot);
 .bk-row .bk-bar{position:absolute;right:0;top:0;bottom:0;z-index:0;opacity:.18}
 .ot-type{flex:1;padding:6px;background:var(--card2);border:1px solid var(--border);border-radius:4px;color:var(--dim);font-weight:700;cursor:pointer}
 .ot-type.active{border-color:var(--cyan);color:var(--cyan)}
+.ot-pctq{padding:5px;background:var(--card2);border:1px solid var(--border);border-radius:4px;color:var(--dim);font-weight:700;cursor:pointer}
+.ot-pctq.active{border-color:#3fb950;color:#3fb950}
 </style>
 <script>
-// ── Som på Bybit: orderbok + senaste affärer + order med limit och TP/SL ──
-// Orderboken och affärerna kommer live från Bybits publika WebSocket (orderbook.50
-// och publicTrade) för samma mynt som diagrammet, i USDC som ditt Bybit-konto.
-// Ordrar går till Väntande ordrar som allt annat: inget skickas utan Godkänn.
+// ── IG: kvot + order (ersätter Bybits orderbok) ──
+// Kvoten (bid/offer) kommer från IG via servern (Lightstreamer → SSE, REST som reserv).
+// Ordrar går till Väntande ordrar som allt annat: inget skickas utan Godkänn,
+// och med orderläget avstängt skickas inget alls till IG.
 (function(){
-  // Orderboken är USDC = Bybit EU först (samma bok som på bybit.eu)
-  const URLS = ["wss://stream.bybit.eu/v5/public/spot", "wss://stream.bybit.com/v5/public/spot"];
-  const bk = { ws:null, pair:null, asks:new Map(), bids:new Map(), trades:[], urlIdx:0, last:0, ping:null, dirty:false };
-  let otType = "LIMIT";
+  let otType = "MARKET";
   const $ = (id)=>document.getElementById(id);
-  const baseOf = (sym)=> String(sym||"").replace(/(USDT|USDC|USD|BUSD|FDUSD)$/,"");
-  const fmt = (n, d)=> Number(n).toLocaleString("sv-SE", {minimumFractionDigits:d, maximumFractionDigits:d});
-  function priceDecimals(p){ return p >= 1000 ? 2 : p >= 10 ? 2 : p >= 1 ? 4 : 6; }
-
-  function connect(){
-    const sym = (typeof STATE !== "undefined" && STATE.symbol) || "BTCUSDT";
-    const base = baseOf(sym);
-    if(!base) return;
-    const pair = base + "USDC";
-    if(bk.pair === pair && bk.ws && bk.ws.readyState <= 1) return;
-    stop();
-    bk.pair = pair; bk.asks.clear(); bk.bids.clear(); bk.trades = [];
-    $("bk-pair").textContent = base + "/USDC";
-    $("bk-open").href = `https://www.bybit.eu/en-EU/trade/spot/${base}/USDC`;
-    $("ot-price").value = "";
-    let ws;
-    try { ws = new WebSocket(URLS[bk.urlIdx % URLS.length]); } catch(_){ return; }
-    bk.ws = ws;
-    ws.onopen = ()=>{
-      ws.send(JSON.stringify({op:"subscribe", args:[`orderbook.50.${pair}`, `publicTrade.${pair}`]}));
-      bk.ping = setInterval(()=>{ try{ ws.send('{"op":"ping"}'); }catch(_){} }, 20000);
-    };
-    ws.onmessage = (ev)=>{
-      if(bk.ws !== ws) return;
-      let m; try { m = JSON.parse(ev.data); } catch(_){ return; }
-      if(!m.topic || !m.data) return;
-      bk.last = Date.now();
-      if(m.topic.startsWith("orderbook.")){
-        if(m.type === "snapshot"){ bk.asks.clear(); bk.bids.clear(); }
-        for(const [p,q] of (m.data.a||[])){ if(+q === 0) bk.asks.delete(p); else bk.asks.set(p, +q); }
-        for(const [p,q] of (m.data.b||[])){ if(+q === 0) bk.bids.delete(p); else bk.bids.set(p, +q); }
-      } else if(m.topic.startsWith("publicTrade.")){
-        for(const t of m.data){ bk.trades.unshift({p:+t.p, v:+t.v, buy:t.S === "Buy", ts:+t.T}); }
-        bk.trades.length = Math.min(bk.trades.length, 30);
-      }
-      bk.dirty = true;
-    };
-    ws.onclose = ()=>{
-      if(bk.ws !== ws) return;
-      clearInterval(bk.ping); bk.ws = null; bk.urlIdx++;
-      $("bk-status").textContent = "återansluter…";
-      setTimeout(()=>{ if(bk.pair === pair) { bk.pair = null; connect(); } }, 3000);
-    };
-    ws.onerror = ()=>{};
+  const esc = IG.esc;
+  let quoteT = 0, lastSym = null, sq = null, sqKey = "", sqBusy = false;
+  function sym(){ return (typeof STATE !== "undefined" && STATE.symbol) || ""; }
+  function renderQuote(){
+    const s = sym();
+    if(s !== lastSym){ lastSym = s; $("ot-price").value = ""; sq = null; sqKey = ""; }
+    $("bk-pair").textContent = s ? IG.label(s) : "–";
+    $("bk-epic").textContent = s ? s + " · " + IG.envLabel() : "Välj ett IG-instrument";
+    const q = IG.quote(s);
+    $("bk-status").innerHTML = IG.badge(q);
+    $("bk-bid").textContent = q && q.bid != null ? IG.px(q.bid) : "–";
+    $("bk-offer").textContent = q && q.offer != null ? IG.px(q.offer) : "–";
+    const spread = q && q.bid != null && q.offer != null ? q.offer - q.bid : null;
+    $("bk-mid").innerHTML = q ? `Spread ${spread == null ? "–" : IG.px(spread)} · IG idag ${q.changePct == null ? "–" : (q.changePct >= 0 ? '<b style="color:#3fb950">+' : '<b style="color:#f85149">') + Number(q.changePct).toFixed(2) + " %</b>"} · hög ${IG.px(q.high)} · låg ${IG.px(q.low)}${q.marketStatus && q.marketStatus !== "TRADEABLE" ? ' · <b style="color:#f0b90b">' + esc(q.marketStatus) + "</b>" : ""}` : "Ingen IG-kvot än";
+    if(otType === "LIMIT" && !$("ot-price").value && q && q.mid != null) $("ot-price").value = String(q.mid);
   }
-  function stop(){
-    clearInterval(bk.ping);
-    const ws = bk.ws; bk.ws = null;
-    if(ws){ try{ ws.close(); }catch(_){} }
-  }
-
-  function render(){
-    const live = bk.ws && bk.ws.readyState === 1 && Date.now() - bk.last < 5000;
-    $("bk-status").innerHTML = live ? '<span style="color:var(--green)">●</span> Bybit live' : (bk.ws ? "ansluter…" : "frånkopplad");
-    if(!bk.dirty) return;
-    bk.dirty = false;
-    const asks = [...bk.asks].map(([p,q])=>[+p,q]).sort((a,b)=>a[0]-b[0]).slice(0,10);
-    const bids = [...bk.bids].map(([p,q])=>[+p,q]).sort((a,b)=>b[0]-a[0]).slice(0,10);
-    const ref = asks[0]?.[0] || bids[0]?.[0] || 0;
-    const pd = priceDecimals(ref);
-    const rows = (list, col, cum)=>{
-      let tot = 0; const out = list.map(([p,q])=>{ tot += p*q; return [p,q,tot]; });
-      const max = out.length ? out[out.length-1][2] : 1;
-      const html = out.map(([p,q,t])=>`<div class="bk-row" data-p="${p}"><span class="bk-bar" style="background:${col};width:${Math.min(100,t/max*100)}%"></span><span style="color:${col}">${fmt(p,pd)}</span><span>${fmt(q, q < 1 ? 4 : 2)}</span><span>${fmt(t,0)}</span></div>`);
-      return cum ? html.reverse().join("") : html.join("");
-    };
-    $("bk-asks").innerHTML = rows(asks, "#f85149", true);
-    $("bk-bids").innerHTML = rows(bids, "#3fb950", false);
-    const lastT = bk.trades[0];
-    if(lastT){
-      $("bk-mid").innerHTML = `<span style="color:${lastT.buy ? "#3fb950" : "#f85149"}">${lastT.buy ? "▲" : "▼"} ${fmt(lastT.p,pd)}</span>`;
-    }
-    const bidSum = bids.reduce((s,[p,q])=>s+p*q,0), askSum = asks.reduce((s,[p,q])=>s+p*q,0);
-    if(bidSum + askSum > 0){
-      const r = $("bk-ratio").children; r[0].style.flex = String(bidSum); r[1].style.flex = String(askSum);
-    }
-    $("bk-trades").innerHTML = bk.trades.slice(0,10).map(t=>`<div class="bk-row" style="cursor:default"><span style="color:${t.buy ? "#3fb950" : "#f85149"}">${fmt(t.p,pd)}</span><span>${fmt(t.v, t.v < 1 ? 4 : 2)}</span><span>${new Date(t.ts).toLocaleTimeString("sv-SE")}</span></div>`).join("");
-    const pr = $("ot-price");
-    if(otType === "LIMIT" && !pr.value && ref) pr.value = String(ref);
-  }
-
-  // Klick på en rad i orderboken = det priset i limit-fältet (som på Bybit)
-  ["bk-asks","bk-bids"].forEach(id=>$(id).addEventListener("click", (e)=>{
-    const r = e.target.closest(".bk-row[data-p]"); if(!r) return;
-    otType = "LIMIT"; syncType(); $("ot-price").value = r.dataset.p;
-  }));
   function syncType(){
     document.querySelectorAll(".ot-type").forEach(b=>b.classList.toggle("active", b.dataset.ot === otType));
     const lim = otType === "LIMIT";
     $("ot-price").disabled = !lim;
-    $("ot-price-label").textContent = lim ? "Pris (USDC)" : "Pris: bästa marknadspris";
+    $("ot-price-label").textContent = lim ? "Limitpris (IG-pris)" : "Pris: IG:s marknadspris (offer vid köp, bid vid sälj)";
     if(!lim) $("ot-price").value = "";
   }
-  document.querySelectorAll(".ot-type").forEach(b=>b.addEventListener("click", ()=>{
-    otType = b.dataset.ot;
-    if(otType === "MARKET" && $("ot-tpsl").checked){ $("ot-tpsl").checked = false; $("ot-tpsl-box").style.display = "none"; }
-    syncType(); bk.dirty = true;
-  }));
-  $("ot-tpsl").addEventListener("change", (e)=>{
-    $("ot-tpsl-box").style.display = e.target.checked ? "grid" : "none";
-    if(e.target.checked && otType !== "LIMIT"){ otType = "LIMIT"; syncType(); bk.dirty = true; } // TP/SL går med limit-order
-  });
+  document.querySelectorAll(".ot-type").forEach(b=>b.addEventListener("click", ()=>{ otType = b.dataset.ot; syncType(); renderQuote(); }));
+  $("ot-tpsl").addEventListener("change", (e)=>{ $("ot-tpsl-box").style.display = e.target.checked ? "grid" : "none"; sqKey = ""; });
+  $("ot-tpsl-box").style.display = $("ot-tpsl").checked ? "grid" : "none";
 
-  async function submit(side, sellAll){
+  // ── Insats: 1–3 % av IG-saldot (marginal), belopp i kontovalutan ──
+  function pct(){ return Math.min(3, Math.max(0.1, Number($("ot-pct").value) || 1)); }
+  function syncAmt(){
+    $("ot-pct-val").textContent = pct().toFixed(1).replace(".0", "");
+    document.querySelectorAll(".ot-pctq").forEach(b=>b.classList.toggle("active", Number(b.dataset.pct) === pct()));
+    if(IG.st.balance != null) $("ot-amt").value = (IG.st.balance * pct() / 100).toFixed(2);
+    renderAvail(); sqKey = "";
+  }
+  $("ot-pct").addEventListener("input", syncAmt);
+  document.querySelectorAll(".ot-pctq").forEach(b=>b.addEventListener("click", ()=>{ $("ot-pct").value = b.dataset.pct; syncAmt(); }));
+  $("ot-amt").addEventListener("input", ()=>{
+    const a = Number($("ot-amt").value);
+    if(IG.st.balance > 0 && a > 0){ $("ot-pct").value = String(Math.min(3, Math.max(0.1, Math.round(a / IG.st.balance * 1000) / 10))); $("ot-pct-val").textContent = pct().toFixed(1).replace(".0", ""); }
+    sqKey = "";
+  });
+  function renderAvail(){
+    const st = IG.st;
+    $("ot-avail").innerHTML = st.connected
+      ? `${esc(IG.envLabel())} · saldo <b>${IG.money(st.balance)}</b> · tillgängligt ${IG.money(st.available)} · max 3 % per order`
+      : `${esc(IG.envLabel())}: ${esc(st.error || "inte ansluten")}`;
+  }
+  IG.on("account", ()=>{ renderAvail(); if(!$("ot-amt").value) syncAmt(); });
+
+  // Pengar för ordern i kontovalutan: storlek från IG:s regler, marginal, pengar vid SL/TP.
+  async function stakeQuote(direction){
+    const s = sym(); if(!IG.isEpic(s)) return null;
+    const tp = $("ot-tpsl").checked ? parseFloat($("ot-tp").value) : NaN, sl = $("ot-tpsl").checked ? parseFloat($("ot-sl").value) : NaN;
+    const key = [s, direction, pct(), $("ot-amt").value, tp, sl].join("|");
+    if(key === sqKey && sq) return sq;
+    if(sqBusy) return sq;
+    sqBusy = true;
+    try{
+      const r = await fetch("/api/ig/stake-quote", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ epic: s, direction, pct: pct(), stake: Number($("ot-amt").value) || undefined, takeProfit: tp > 0 ? tp : undefined, stopLoss: sl > 0 ? sl : undefined }) });
+      sq = await r.json().catch(()=>null); sqKey = key;
+    }catch(_){ sq = null; }
+    finally{ sqBusy = false; }
+    return sq;
+  }
+  async function renderEst(){
+    const el = $("ot-est");
+    if(!IG.isEpic(sym())){ el.textContent = "Välj ett IG-instrument."; return; }
+    const [b, s] = [await stakeQuote("BUY"), null];
+    const q = b;
+    if(!q){ el.textContent = "Räknar…"; return; }
+    if(q.error){ el.innerHTML = `<span style="color:#f85149">${esc(q.error)}</span>`; return; }
+    const c = q.currency || IG.currency();
+    const lines = [];
+    lines.push(`<div><b>Insats (marginal)</b> ${IG.money(q.stake, c)} = ${esc(q.pct)} % av saldot</div>`);
+    if(!q.ok){ lines.push(`<div style="color:#f0b90b">⚠ ${esc(q.reason || "Storleken kunde inte räknas fram")}</div>`); }
+    else {
+      lines.push(`<div><b>Storlek</b> ${esc(q.size)} ${esc((q.unit || "kontrakt").toLowerCase())}${q.contractSize ? ` · kontraktsstorlek ${esc(q.contractSize)}` : ""}${q.minSize != null ? ` · minst ${esc(q.minSize)}` : ""}</div>`);
+      lines.push(`<div><b>Krävd marginal</b> ${IG.money(q.margin, c)} · exponering ${IG.money(q.exposure, c)}</div>`);
+      if(q.moneyAtTp != null) lines.push(`<div style="color:#3fb950">Vid TP ${IG.px(q.takeProfit)}: +${IG.money(q.moneyAtTp, c)}</div>`);
+      if(q.moneyAtSl != null) lines.push(`<div style="color:#f85149">Vid SL ${IG.px(q.stopLoss)}: −${IG.money(q.moneyAtSl, c)}</div>`);
+      lines.push(`<div style="color:var(--dim)">Gäller KÖP (lång). SÄLJ (kort) räknas från bid. ${esc(q.basis || "")}</div>`);
+    }
+    if(!q.executionEnabled) lines.push(`<div style="color:#f0b90b">Orderläget är avstängt för ${esc(IG.envLabel())}: GODKÄNN skickar inget till IG.</div>`);
+    el.innerHTML = lines.join("");
+  }
+  ["ot-tp","ot-sl"].forEach(id=>$(id).addEventListener("input", ()=>{ sqKey = ""; }));
+
+  async function submit(side, closeAll){
     if(typeof CFG !== "undefined" && CFG.mode !== "live"){ alert("Boten är inte ansluten. Starta Trading OS-boten först."); return; }
-    if(typeof STATE !== "undefined" && STATE.killActive && side === "BUY"){ alert("Kill switch är aktiverad. Inga nya köp."); return; }
-    const amt = sellAll ? 0 : parseFloat($("ot-amt").value);
-    if(!sellAll && !(amt > 0)){ alert("Skriv ett belopp i USDC."); return; }
-    const body = { symbol: bk.pair || (baseOf(STATE.symbol) + "USDC"), side, quoteUsd: amt, source: "orderpanel", orderType: sellAll ? "MARKET" : otType };
-    if(sellAll){
-      body.sellAll = true;
-      body.reason = `Orderpanelen: sälj allt ${body.symbol} till marknadspris`;
-      if(!confirm(`Sälja ALLT du har av ${baseOf(body.symbol)} till marknadspris? Ordern hamnar i Väntande ordrar.`)) return;
+    const s = sym();
+    if(!IG.isEpic(s)){ alert("Välj ett IG-instrument först."); return; }
+    if(closeAll){
+      // Stäng öppna IG-positioner i instrumentet: en stängning per position i Väntande ordrar
       try{
-        const r = await fetch("/api/pending-orders", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
-        const d = await r.json().catch(()=>({}));
-        if(!d.ok){ alert("Ordern lades inte i kön.\n\n" + (d.error || ("HTTP " + r.status))); return; }
-        if(typeof pushInAppAlert === "function") pushInAppAlert(`⏳ SÄLJ ALLT ${body.symbol} ligger i Väntande ordrar. Tryck Godkänn för att lägga den.`, 7000);
+        const res = await (await fetch("/api/results")).json();
+        const mine = (res.open || []).filter(o=>o.epic === s && o.dealId);
+        if(!mine.length){ alert("Du har ingen öppen IG-position i " + IG.label(s) + "."); return; }
+        if(!confirm(`Stänga ${mine.length} position(er) i ${IG.label(s)}? Stängningen hamnar i Väntande ordrar och skickas först när du trycker GODKÄNN.`)) return;
+        for(const o of mine){ await fetch("/api/ig/positions/" + encodeURIComponent(o.dealId) + "/close", { method:"POST" }); }
+        if(typeof pushInAppAlert === "function") pushInAppAlert(`⏳ Stängning av ${IG.label(s)} ligger i Väntande ordrar.`, 7000);
       }catch(e){ alert("Fel: " + e.message); }
       return;
     }
+    if(typeof STATE !== "undefined" && STATE.killActive){ alert("Kill switch är aktiverad. Inga nya positioner."); return; }
+    const body = { symbol: s, side, stakePct: pct(), source: "orderpanel", orderType: otType };
     if(otType === "LIMIT"){
       const p = parseFloat($("ot-price").value);
       if(!(p > 0)){ alert("Skriv ett limitpris, eller välj Market."); return; }
@@ -9995,79 +9818,19 @@ document.addEventListener("DOMContentLoaded", boot);
       const tp = parseFloat($("ot-tp").value), sl = parseFloat($("ot-sl").value);
       if(tp > 0) body.takeProfit = tp;
       if(sl > 0) body.stopLoss = sl;
-      if(!body.takeProfit && !body.stopLoss){ alert("Fyll i TP, SL eller båda, eller bocka ur TP/SL."); return; }
     }
     const tfSec = otHorizon();
-    // Köp med tidshorisont: ≤ 30 min säljs automatiskt när tiden är slut
-    if(side === "BUY" && tfSec > 0) body.horizonSec = tfSec;
+    if(tfSec > 0) body.horizonSec = tfSec;
     const parts = [otType === "LIMIT" ? `limit ${body.limitPrice}` : "marknadspris", body.takeProfit ? `TP ${body.takeProfit}` : "", body.stopLoss ? `SL ${body.stopLoss}` : "", tfSec ? `tidshorisont ${fmtHorizon(tfSec)}` : ""].filter(Boolean);
-    body.reason = `Orderpanelen: ${side === "BUY" ? "köp" : "sälj"} ${body.symbol} $${amt} · ${parts.join(" · ")}`;
+    body.reason = `Orderpanelen: ${side === "BUY" ? "köp (lång)" : "sälj (kort)"} ${IG.label(s)} ${pct()} % · ${parts.join(" · ")}`;
     try{
       const r = await fetch("/api/pending-orders", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
       const d = await r.json().catch(()=>({}));
       if(!d.ok){ alert("Ordern lades inte i kön.\n\n" + (d.error || ("HTTP " + r.status))); return; }
-      if(typeof pushInAppAlert === "function") pushInAppAlert(`⏳ ${side === "BUY" ? "KÖP" : "SÄLJ"} ${body.symbol} $${amt} (${parts.join(", ")}) ligger i Väntande ordrar. Tryck Godkänn för att lägga den.`, 7000);
+      const po = d.pendingOrder || {};
+      if(typeof pushInAppAlert === "function") pushInAppAlert(`⏳ ${side === "BUY" ? "KÖP" : "SÄLJ (kort)"} ${IG.label(s)} ${IG.money(po.stakeAmount, po.currency)} (${parts.join(", ")}) ligger i Väntande ordrar. Tryck GODKÄNN.`, 7000);
     }catch(e){ alert("Fel: " + e.message); }
   }
-  // %-reglaget: andel av tillgängligt saldo (högst gränsen per order) → Belopp.
-  // Under knapparna: vad ordern skulle ge vid TP / förlora vid SL, med avgift.
-  const FEE = 0.0025; // Bybit EU spot: 0,25 % per affär (som på bybit.eu)
-  let otAvail = null, otCap = null;
-  async function loadAvail(){
-    try{
-      const [stR, brR, mdR] = await Promise.all([fetch("/api/status"), fetch("/api/brokers"), fetch("/api/mode")]);
-      const st = await stR.json(), br = await brR.json(), md = await mdR.json().catch(()=>({}));
-      const act = (br.brokers||[]).find(b=>b.active);
-      const acc = act && st[act.name] && st[act.name].account;
-      if(acc){
-        const cash = (acc.balances||[]).filter(b=>/^(USDC|USDT|USD)$/.test(b.asset)).reduce((t,b)=>t + (Number(b.free)||0), 0);
-        otAvail = cash > 0 ? cash : (Number(acc.totalValueUsdt) || null);
-      }
-      const lim = md.limits || {};
-      otCap = (act && act.mode === "live") ? lim.maxLiveStakeUsd : lim.maxTestStakeUsd;
-    }catch(_){}
-    const cap = otCap ? ` · max $${otCap} per order` : "";
-    const top = otMax();
-    $("ot-avail").textContent = otAvail != null
-      ? `Tillgängligt: $${otAvail.toFixed(2)}${cap}${top != null ? ` · 100 % = $${top.toFixed(2)}` : ""}`
-      : `Tillgängligt: okänt${cap}`;
-  }
-  // 100 % = det mesta en order får vara: saldot, men aldrig över gränsen per order
-  function otMax(){
-    if(otAvail == null) return null;
-    return otCap ? Math.min(otAvail, otCap) : otAvail;
-  }
-  $("ot-pct").addEventListener("input", ()=>{
-    const pct = Number($("ot-pct").value), top = otMax();
-    if(top == null){ return; }
-    const amt = Math.max(1, Math.floor(top * pct) / 100); // avrundat nedåt, minst $1
-    $("ot-amt").value = pct ? amt.toFixed(2) : "";
-    renderEst();
-  });
-  function curPx(){
-    const lim = parseFloat($("ot-price").value);
-    if(otType === "LIMIT" && lim > 0) return lim;
-    const k = bk.trades && bk.trades[0]; return k ? k.p : (STATE.livePrices[STATE.symbol] || 0);
-  }
-  function renderEst(){
-    const amt = parseFloat($("ot-amt").value), px = curPx();
-    const el = $("ot-est");
-    if(!(amt > 0) || !(px > 0)){ el.innerHTML = "Skriv ett belopp för att se möjlig vinst och förlust."; return; }
-    const qty = amt / px, fee = amt * FEE * 2;
-    const base = baseOf(STATE.symbol);
-    // Som på Forex: "Satsa $1 → +86 % → du får $1,86" (avgift för köp + sälj räknad)
-    const row = (lbl, p, col) => { const pnl = qty * (p - px) - fee; const pct = pnl / amt * 100; return `<div>${lbl} ${fmt(p, px >= 100 ? 2 : 4)}: <b style="color:${pnl >= 0 ? "#3fb950" : "#f85149"}">${pct >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")} % → du får $${(amt + pnl).toFixed(2)}</b> (${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)})</div>`; };
-    let html = `<div>≈ ${fmt(qty, qty < 1 ? 6 : 3)} ${base} för $${amt.toFixed(2)} · avgift ≈ $${fee.toFixed(2)} (köp + sälj)</div>`;
-    const tp = parseFloat($("ot-tp").value), sl = parseFloat($("ot-sl").value);
-    if($("ot-tpsl").checked && tp > 0) html += row("Vinst vid TP", tp);
-    if($("ot-tpsl").checked && sl > 0) html += row("Förlust vid SL", sl);
-    html += `<div style="color:var(--dim)">Per 1 % rörelse: ±$${(amt * 0.01).toFixed(2)}</div>`;
-    el.innerHTML = html;
-  }
-  ["ot-amt","ot-price","ot-tp","ot-sl"].forEach(id=>$(id).addEventListener("input", renderEst));
-  $("ot-tpsl").addEventListener("change", renderEst);
-  document.querySelectorAll(".ot-type").forEach(b=>b.addEventListener("click", ()=>setTimeout(renderEst, 0)));
-  loadAvail(); setInterval(loadAvail, 30000); setInterval(renderEst, 2000); renderEst();
 
   // Tidshorisont: knapp eller egen tid (egen tid vinner om den är ifylld)
   let otTf = 0;
@@ -10096,16 +9859,14 @@ document.addEventListener("DOMContentLoaded", boot);
       const el = $("ot-venue");
       if(!a){ el.textContent = "ingen mäklare"; return; }
       const live = a.mode === "live";
-      el.textContent = a.name + (live ? " · LIVE" : " · TEST");
+      el.textContent = (a.label || a.name) + (live ? " · LIVE" : " · TEST");
       el.style.color = live ? "#22c55e" : "#f0b90b";
-      $("ot-note").textContent = "Ordern hamnar i Väntande ordrar hos " + a.name + (live ? " (riktiga pengar)" : " (låtsaspengar)") + " och skickas först när du trycker Godkänn. Köp med tidshorisont upp till 30 min säljs automatiskt när tiden är slut."
-        + (a.name === "alpaca" ? " Alpaca har inte TP/SL för krypto, så TP/SL fungerar bara via Bybit." : "");
     }catch(_){}
   }
 
-  syncType();
-  connect();
-  setInterval(()=>{ connect(); render(); }, 250);
+  document.querySelectorAll(".ot-type").forEach(b=>{ if(b.dataset.ot === "MARKET") b.classList.add("active"); else b.classList.remove("active"); });
+  syncType(); syncAmt();
+  setInterval(()=>{ renderQuote(); if(Date.now() - quoteT > 3000){ quoteT = Date.now(); renderEst(); } }, 500);
   setInterval(syncVenue, 10000); syncVenue();
 })();
 </script>
@@ -10145,21 +9906,21 @@ document.addEventListener("DOMContentLoaded", boot);
 (function(){
   const $ = (id)=>document.getElementById(id);
   const esc = (t)=>String(t == null ? "" : t).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
-  const bases = (list)=> (list||[]).map(x=>String(x).replace(/(USDT|USDC|USD)$/,"")).join(", ");
+  const bases = (list)=> (list||[]).map(x=>IG.label(String(x))).join(", "); // IG: namn från IG, värdet är EPIC
   async function load(){
     try{
       const r = await fetch("/api/live/watchlist");
       if(r.ok){
         const w = await r.json();
-        $("ti-sig").innerHTML = `<b>${(w.signalSymbols||[]).length} par</b>: ${esc(bases(w.signalSymbols))}. Intervall <b>${esc(w.signalInterval||"–")}</b>. Indikatorerna (RSI, trend, volym) räknas om varje gång ett ljus stänger.`;
+        $("ti-sig").innerHTML = `<b>${(w.signalSymbols||[]).length} IG-instrument</b>: ${esc(bases(w.signalSymbols))}. Intervall <b>${esc(w.signalInterval||"–")}</b>. Indikatorerna (RSI, trend, volym) räknas om varje gång ett ljus stänger.`;
         const ps = w.prescreen;
         if(ps && ps.enabled){
           // Försållning: signalmotorn + JEV bevakar alla par, AI-teamet körs bara på par med signal
-          const now = (ps.flaggedNow||[]).map(f=>`${esc(f.symbol.replace(/(USDT|USDC|USD)$/,""))} ${f.direction==="LONG"?"▲":"▼"}`).join(", ");
+          const now = (ps.flaggedNow||[]).map(f=>`${esc(IG.label(f.symbol))} ${f.direction==="LONG"?"▲":"▼"}`).join(", ");
           const lt = ps.lastTurn ? `<br><span style="color:var(--dim)">Senaste tur: ${esc(ps.lastTurn.note)}</span>` : "";
-          $("ti-agents").innerHTML = `Signalmotorn bevakar <b>alla ${(w.agentSymbols||[]).length} mynt</b>. AI-teamet körs bara på de starkaste (högst 3 per tur)${now ? `. Signal nu: <b>${now}</b>` : `, och <b>inget har signal just nu</b>`}. <b>${esc((w.analysis&&w.analysis.text)||"AI körs bara när du trycker Kör analys")}</b>. Indikatorerna räknas gratis hela tiden.${lt}`;
+          $("ti-agents").innerHTML = `Signalmotorn bevakar <b>alla ${(w.agentSymbols||[]).length} instrument</b>. AI-teamet körs bara på de starkaste (högst 3 per tur)${now ? `. Signal nu: <b>${now}</b>` : `, och <b>inget har signal just nu</b>`}. <b>${esc((w.analysis&&w.analysis.text)||"AI körs bara när du trycker Kör analys")}</b>. Indikatorerna räknas gratis hela tiden.${lt}`;
         } else {
-          $("ti-agents").innerHTML = `<b>${(w.agentSymbols||[]).length} mynt</b>: ${esc(bases(w.agentSymbols))}. <b>${esc((w.analysis&&w.analysis.text)||"AI körs bara när du trycker Kör analys")}</b>. Förslagen hamnar i Väntande ordrar.`;
+          $("ti-agents").innerHTML = `<b>${(w.agentSymbols||[]).length} instrument</b>: ${esc(bases(w.agentSymbols))}. <b>${esc((w.analysis&&w.analysis.text)||"AI körs bara när du trycker Kör analys")}</b>. Förslagen hamnar i Väntande ordrar.`;
         }
       }
     }catch(_){}
@@ -10168,7 +9929,7 @@ document.addEventListener("DOMContentLoaded", boot);
       if(r.ok){
         const d = await r.json(); const a = (d.brokers||[]).find(b=>b.active);
         $("ti-mode").innerHTML = a
-          ? `<b style="color:${a.mode==="live"?"#22c55e":"#f0b90b"}">${a.mode==="live"?"LIVE · riktiga pengar":"TEST · låtsaspengar"}</b> via ${esc(a.name)}. Varje order väntar på ditt Godkänn.`
+          ? `<b style="color:${a.mode==="live"?"#22c55e":"#f0b90b"}">${a.mode==="live"?"LIVE · IG Live (riktiga pengar)":"TEST · IG Demo"}</b>${a.connection && a.connection.currency ? " · " + esc(a.connection.currency) : ""}. Varje order väntar på ditt Godkänn. <span style="color:${a.executionEnabled?"#3fb950":"#f0b90b"}">${a.executionEnabled ? "Orderläget PÅ." : "Orderläget är avstängt: Godkänn skickar inget till IG."}</span>`
           : "Ingen mäklare kopplad.";
       }
     }catch(_){}
