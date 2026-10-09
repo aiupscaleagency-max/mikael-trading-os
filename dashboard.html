@@ -2740,6 +2740,10 @@ body.app-state-onboard .fc-panel{display:none !important}
       <div id="vol-pane"></div>
       <div id="rsi-pane"></div>
       <div id="macd-pane"></div>
+      <div id="tvMainCard" style="margin-top:8px">
+        <label style="font-size:11px;display:flex;gap:6px;align-items:center;color:var(--label)" title="Bara analys. Huvuddiagrammet ovan (IG) styr fortfarande orderpanelen."><input type="checkbox" id="tvMainOn" /> Visa TradingView-analysdiagram under IG-diagrammet (inte IG:s priser, inga order)</label>
+        <div id="tvMainBox" style="display:none;margin-top:6px"></div>
+      </div>
     </div>
 
     <div class="card" id="ai-team-card" data-sec="6 · AI-teamet · vem som gjorde vad i senaste analysen" style="scroll-margin-top:70px">
@@ -9654,6 +9658,103 @@ document.addEventListener("DOMContentLoaded", boot);
 })();
 </script>
 <script>
+/* TradingView-analysdiagram (valfritt). TradingViews gratis Advanced Chart-widget i en iframe
+   (samma inbäddning som grenen trade-multichart använde: s.tradingview.com/widgetembed).
+   Bara analys: TradingViews egna priser, INTE IG:s. Inga orderfunktioner, och widgeten styr
+   aldrig orderpanelen; huvuddiagrammet som driver Köp/Sälj är alltid IG-diagrammet.
+   Symbolen mappas från valt IG-instrument bara när mappningen är säker; annars visas en
+   symbolsökning i stället för en gissning. */
+window.TVW = (function(){
+  const LABEL = "TradingView · analysdiagram · inte IG:s priser";
+  const FIAT = ["USD","EUR","GBP","JPY","CHF","AUD","NZD","CAD","SEK","NOK","DKK","PLN","HUF","CZK","ZAR","MXN","SGD","HKD","TRY","CNH"];
+  // Krypto mot USD: bara mynt där både IG-namnet/EPIC och TradingView-symbolen är entydiga.
+  const CRYPTO = [
+    [/^(?:bitcoin|btc)(?:\s*\/\s*usd)?$/i, /\b(?:BITCOIN|BTCUSD)\b/, "BITSTAMP:BTCUSD"],
+    [/^(?:ether(?:eum)?|eth)(?:\s*\/\s*usd)?$/i, /\b(?:ETHUSD|ETHER)\b/, "COINBASE:ETHUSD"],
+    [/^(?:litecoin|ltc)(?:\s*\/\s*usd)?$/i, /\bLTCUSD\b/, "BITSTAMP:LTCUSD"],
+    [/^(?:ripple|xrp)(?:\s*\/\s*usd)?$/i, /\bXRPUSD\b/, "BITSTAMP:XRPUSD"],
+    [/^(?:bitcoin cash|bch)(?:\s*\/\s*usd)?$/i, /\bBCHUSD\b/, "BITSTAMP:BCHUSD"],
+    [/^(?:solana|sol)(?:\s*\/\s*usd)?$/i, /\bSOLUSD\b/, "COINBASE:SOLUSD"],
+  ];
+  const IV = { "1m":"1", "5m":"5", "15m":"15", "30m":"30", "1h":"60", "4h":"240", "1d":"D", "1w":"W" };
+  /** IG-instrument → TradingView-symbol, eller null när mappningen inte är säker. */
+  function map(epic, name){
+    const n = String(name || "").trim(), e = String(epic || "").toUpperCase();
+    const fx = /^([A-Z]{3})\s*\/\s*([A-Z]{3})(?:\s+Mini)?$/.exec(n);
+    if(fx && FIAT.includes(fx[1]) && FIAT.includes(fx[2])){
+      // Bara när EPIC:en innehåller samma par (CS.D.EURUSD.MINI.IP): namn och EPIC måste stämma överens.
+      if(!e.includes(fx[1] + fx[2])) return null;
+      return (["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","USDCHF","NZDUSD","EURGBP","EURJPY","GBPJPY"].includes(fx[1]+fx[2]) ? "FX:" : "OANDA:") + fx[1] + fx[2];
+    }
+    for(const [nameRe, epicRe, sym] of CRYPTO) if(nameRe.test(n) && epicRe.test(e)) return sym;
+    return null;
+  }
+  const validSymbol = s => /^[A-Z0-9_]{1,20}:[A-Z0-9._!-]{1,30}$/i.test(String(s || ""));
+  function url(symbol, tf){
+    const up = "#10b981", down = "#ef4444";
+    return "https://s.tradingview.com/widgetembed/?" + new URLSearchParams({
+      symbol, interval: IV[tf] || "60", theme: "dark", style: "1", locale: "sv_SE", timezone: "Europe/Stockholm",
+      hide_side_toolbar: "0", hide_top_toolbar: "0", allow_symbol_change: "1", withdateranges: "1", saveimage: "0",
+      toolbarbg: "0f1520",
+      overrides: JSON.stringify({ "mainSeriesProperties.candleStyle.upColor": up, "mainSeriesProperties.candleStyle.downColor": down,
+        "mainSeriesProperties.candleStyle.borderUpColor": up, "mainSeriesProperties.candleStyle.borderDownColor": down,
+        "mainSeriesProperties.candleStyle.wickUpColor": up, "mainSeriesProperties.candleStyle.wickDownColor": down,
+        "paneProperties.background": "#0f1520" }),
+    }).toString();
+  }
+  const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  function frame(box, symbol, tf, h){
+    box.querySelector(".tv-body").innerHTML = `<iframe class="tv-frame" title="TradingView ${esc(symbol)}" src="${esc(url(symbol, tf))}" style="width:100%;height:${h}px;border:0;border-radius:4px;background:#0f1520" loading="lazy" referrerpolicy="no-referrer-when-downgrade" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>`;
+  }
+  /** Ritar widgeten (eller symbolsökningen) i box. Returnerar vald symbol eller null. */
+  function render(box, epic, name, tf, h){
+    h = h || 420;
+    const sym = map(epic, name);
+    box.classList.add("tv-wrap");
+    box.innerHTML = `<div class="tv-label" style="font-size:11px;font-weight:800;color:#f0b90b;padding:3px 6px;border:1px solid #5c4a12;border-radius:4px;background:#1a160b;margin-bottom:4px">${LABEL}`
+      + `<span class="tv-sym" style="font-weight:600;color:var(--dim);margin-left:8px">${sym ? esc(sym) + " · " + esc(tf) : "ingen säker symbol"}</span></div><div class="tv-body"></div>`;
+    if(sym){ frame(box, sym, tf, h); return sym; }
+    const body = box.querySelector(".tv-body");
+    body.innerHTML = `<div class="tv-search" style="padding:10px;border:1px dashed var(--border);border-radius:6px;font-size:12px">`
+      + `Ingen säker TradingView-symbol för <b>${esc(name || epic || "–")}</b>${epic ? ` <span style="color:var(--dim)">(${esc(epic)})</span>` : ""}. Vi gissar inte. Sök och välj själv:`
+      + `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap"><input class="tv-q" placeholder="t.ex. OANDA:XAUUSD" style="flex:1;min-width:140px;padding:5px 8px" maxlength="52" />`
+      + `<button type="button" class="tv-go" style="padding:5px 12px;border:1px solid var(--cyan);background:transparent;color:var(--cyan);border-radius:4px;font-weight:700;cursor:pointer">Visa</button></div>`
+      + `<div class="tv-err" style="color:#f85149;margin-top:6px"></div></div>`;
+    const go = () => {
+      const q = body.querySelector(".tv-q").value.trim().toUpperCase();
+      if(!validSymbol(q)){ body.querySelector(".tv-err").textContent = "Skriv BÖRS:SYMBOL, t.ex. OANDA:XAUUSD"; return; }
+      box.querySelector(".tv-sym").textContent = q + " · " + tf + " (eget val)";
+      frame(box, q, tf, h);
+    };
+    body.querySelector(".tv-go").addEventListener("click", go);
+    body.querySelector(".tv-q").addEventListener("keydown", e => { if(e.key === "Enter") go(); });
+    return null;
+  }
+  return { LABEL, map, url, render, interval: tf => IV[tf] || null };
+})();
+// Trade-sidan: valfritt TradingView-diagram under IG-huvuddiagrammet. Följer valt instrument och
+// intervall, men huvuddiagrammet (IG) och orderpanelen påverkas aldrig av widgeten.
+(function(){
+  const on = document.getElementById("tvMainOn"), box = document.getElementById("tvMainBox");
+  if(!on || !box) return;
+  const KEY = "trade-tv-main";
+  try{ on.checked = localStorage.getItem(KEY) === "1"; }catch(_){}
+  let shown = "";
+  function sync(force){
+    if(!on.checked){ if(shown){ box.innerHTML = ""; shown = ""; } box.style.display = "none"; return; }
+    box.style.display = "";
+    const e = typeof STATE !== "undefined" ? STATE.symbol : "", tf = typeof STATE !== "undefined" ? STATE.tf : "1h";
+    const name = window.IG && IG.isEpic(e) ? IG.label(e) : "";
+    const k = e + "|" + tf + "|" + name;
+    if(!force && k === shown) return;
+    shown = k; TVW.render(box, e, name, tf, 460);
+  }
+  on.addEventListener("change", () => { try{ localStorage.setItem(KEY, on.checked ? "1" : "0"); }catch(_){} sync(true); });
+  setInterval(() => sync(false), 1000);
+  setTimeout(() => sync(true), 0);
+})();
+</script>
+<script>
 /* Fler diagram (IG): 1–4 instrument samtidigt. Historik = stängda IG-ljus (/api/market/klines),
    sedan IG Lightstreamer via servern (candle-händelser, även pågående ljus). Inga egna ljus byggs
    av kvoter. Varje diagram visar namn, EPIC, intervall och IG Demo/Live. Klick gör diagrammet
@@ -9675,7 +9776,7 @@ document.addEventListener("DOMContentLoaded", boot);
 
   function streamWant(){
     const ep = panes.map(p=>p.pc.e).filter(IG.isEpic);
-    IG.want("multichart", ep, panes.filter(p=>IG.isEpic(p.pc.e)).map(p=>p.pc.e + "|" + p.pc.iv));
+    IG.want("multichart", ep, panes.filter(p=>IG.isEpic(p.pc.e) && p.pc.mode !== "tv").map(p=>p.pc.e + "|" + p.pc.iv));
   }
 
   function label(pane){
@@ -9700,8 +9801,9 @@ document.addEventListener("DOMContentLoaded", boot);
       const el = document.createElement("div"); el.className = "mc-pane";
       el.innerHTML = `<div class="mc-head"><select class="mc-s"></select>`
         + `<select class="mc-iv">${IVS.map(x=>`<option${x===pc.iv?" selected":""}>${x}</option>`).join("")}</select>`
+        + `<select class="mc-mode" title="IG-diagram (styr orderpanelen) eller TradingView-analysdiagram (bara analys)"><option value="ig"${pc.mode!=="tv"?" selected":""}>IG-diagram</option><option value="tv"${pc.mode==="tv"?" selected":""}>TradingView</option></select>`
         + `<span class="mc-px">–</span><span class="mc-chg" style="font-size:11px"></span><span class="mc-st" style="font-size:11px"></span></div>`
-        + `<div class="mc-lbl" style="font-size:11px;padding:2px 6px"></div><div class="mc-chart" style="height:${h}px"></div>`;
+        + `<div class="mc-lbl" style="font-size:11px;padding:2px 6px"></div><div class="mc-chart" style="height:${h}px"></div><div class="mc-tv" style="display:none"></div>`;
       box.appendChild(el);
       const cbox = el.querySelector(".mc-chart");
       const chart = LightweightCharts.createChart(cbox, {
@@ -9712,7 +9814,7 @@ document.addEventListener("DOMContentLoaded", boot);
       });
       const candles = chart.addCandlestickSeries({upColor:"#10b981",downColor:"#ef4444",borderUpColor:"#10b981",borderDownColor:"#ef4444",wickUpColor:"#10b981",wickDownColor:"#ef4444"});
       try{ new ResizeObserver(()=>{ if(cbox.clientWidth) chart.applyOptions({width:cbox.clientWidth, height:cbox.clientHeight}); }).observe(cbox); }catch(_){}
-      const pane = { el, chart, candles, data:[], pc };
+      const pane = { el, chart, candles, data:[], pc, h };
       chart.subscribeCrosshairMove(param => {
         if(!cfg.xh || xhLock) return;
         xhLock = true;
@@ -9725,13 +9827,15 @@ document.addEventListener("DOMContentLoaded", boot);
         xhLock = false;
       });
       fillSel(pane);
-      el.querySelector(".mc-s").addEventListener("change", e => { pc.e = e.target.value; save(); load(pane); streamWant(); activate(pane); });
+      el.querySelector(".mc-s").addEventListener("change", e => { pc.e = e.target.value; save(); load(pane); streamWant(); if(pc.mode !== "tv") activate(pane); });
+      el.querySelector(".mc-mode").addEventListener("change", e => { pc.mode = e.target.value === "tv" ? "tv" : "ig"; save(); load(pane); streamWant(); });
       el.querySelector(".mc-iv").addEventListener("change", e => {
         const targets = cfg.sync ? panes : [pane];
         targets.forEach(t => { t.pc.iv = e.target.value; t.el.querySelector(".mc-iv").value = e.target.value; load(t); });
         save(); streamWant();
       });
-      el.addEventListener("click", e => { if(!e.target.closest("select")) activate(pane); });
+      // Bara IG-diagram kan bli huvuddiagram; TradingView-läget styr aldrig orderpanelen.
+      el.addEventListener("click", e => { if(!e.target.closest("select") && pane.pc.mode !== "tv") activate(pane); });
       panes.push(pane); load(pane);
     }
     streamWant();
@@ -9748,8 +9852,17 @@ document.addEventListener("DOMContentLoaded", boot);
   }
 
   async function load(pane){
-    const e = pane.pc.e, iv = pane.pc.iv, want = e+"|"+iv; pane.key = want; pane.data = [];
+    const e = pane.pc.e, iv = pane.pc.iv, tv = pane.pc.mode === "tv", want = e+"|"+iv+"|"+(tv?"tv":"ig"); pane.key = want; pane.data = [];
     pane.candles.setData([]); label(pane);
+    const cbox = pane.el.querySelector(".mc-chart"), tbox = pane.el.querySelector(".mc-tv");
+    cbox.style.display = tv ? "none" : ""; tbox.style.display = tv ? "" : "none";
+    if(tv){
+      // TradingView: inga IG-ljus hämtas för den här rutan; IG-kvoten i rubriken är fortfarande IG:s.
+      pane.el.classList.remove("active");
+      TVW.render(tbox, e, IG.isEpic(e) ? IG.label(e) : "", iv, pane.h);
+      head(pane); return;
+    }
+    tbox.innerHTML = "";
     if(!IG.isEpic(e)) return;
     try{
       const d = await IG.klines(e, iv, 300);

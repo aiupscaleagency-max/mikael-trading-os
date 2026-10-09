@@ -303,5 +303,31 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
   ok("H1 order (granskning, skick/stopp), pengar (SEK) och resultat körs i båda miljöerna; Live skickar inget med orderläget av");
 }
 
+// ══ TradingView-analysdiagram: säker symbolmappning, intervall, etikett; ingen orderkoppling ══
+{
+  const vm = await import("node:vm");
+  const html = fs.readFileSync(new URL("../dashboard.html", import.meta.url), "utf8");
+  const src = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!).find((x) => x.includes("window.TVW ="));
+  assert.ok(src, "TradingView-modulen finns");
+  const sandbox: any = { window: {}, document: { getElementById: () => null }, URLSearchParams, JSON, setInterval: () => 0, setTimeout: () => 0 };
+  vm.createContext(sandbox); vm.runInContext(src!, sandbox);
+  const TVW = sandbox.window.TVW;
+  assert.equal(TVW.LABEL, "TradingView · analysdiagram · inte IG:s priser");
+  assert.equal(TVW.map("CS.D.EURUSD.MINI.IP", "EUR/USD Mini"), "FX:EURUSD");
+  assert.equal(TVW.map("CS.D.USDSEK.CFD.IP", "USD/SEK"), "OANDA:USDSEK");
+  assert.equal(TVW.map("CS.D.BITCOIN.CFD.IP", "Bitcoin"), "BITSTAMP:BTCUSD");
+  assert.equal(TVW.map("CS.D.ETHUSD.CFD.IP", "Ether"), "COINBASE:ETHUSD");
+  assert.equal(TVW.map("CS.D.GBPUSD.MINI.IP", "EUR/USD Mini"), null, "namn och EPIC stämmer inte: ingen gissning");
+  assert.equal(TVW.map("IX.D.OMX.IFM.IP", "OMX Stockholm 30"), null, "okänt: symbolsökning");
+  assert.equal(TVW.map("CS.D.DOGEUSD.CFD.IP", "Dogecoin"), null, "krypto utan säker mappning: symbolsökning");
+  assert.equal(TVW.interval("1h"), "60"); assert.equal(TVW.interval("4h"), "240"); assert.equal(TVW.interval("1d"), "D"); assert.equal(TVW.interval("1m"), "1");
+  const u = new URL(TVW.url("FX:EURUSD", "15m"));
+  assert.equal(u.host, "s.tradingview.com"); assert.equal(u.searchParams.get("interval"), "15"); assert.equal(u.searchParams.get("theme"), "dark");
+  assert.equal(u.searchParams.get("hide_side_toolbar"), "0", "ritverktyg på");
+  assert.match(u.searchParams.get("overrides") ?? "", /#10b981/); assert.match(u.searchParams.get("overrides") ?? "", /#ef4444/);
+  assert.ok(!/\b(?:order\w*|deal\w*|fetch)\b|positions\/otc|api\/ig/i.test(src!.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "").replace(/orderpanelen|inga order/gi, "")), "widgeten anropar inga order- eller IG-funktioner");
+  ok("TradingView: säker mappning (FX/OANDA, BITSTAMP/COINBASE), annars symbolsökning; intervall, mörkt tema, grönt/rött, etikett, inga orderfunktioner");
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("Granskning 2: alla tester godkända (endast mocks, inga nätverksanrop)");
