@@ -413,6 +413,7 @@ const mkBroker = (positions: any[], env: "demo" | "live" = "demo") => new IgBrok
   for (const k of ["cc-page", "cc-epic", "cc-strategy", "cc-files", "cc-links", "cc-used", "CHATCTX.collect", "CHATCTX.showUsed", "data-ask-agent", "Inget sparas"]) assert.ok(html.includes(k), k);
   const chatPage = html.slice(html.indexOf('id="page-chat"'), html.indexOf("<!-- ═══ TRADES-SIDA"));
   assert.ok(!/\$\d|Binance|BTC för/.test(chatPage), "chattsidan har kvar Binance/$-förslag");
+  assert.ok(!/BTC för \$|ETH för \$|SOL för \$|Sälj 50% av min ETH/.test(html), "chattförslag/exempel i $ finns kvar");
   ok("F4 chatten skickar sida/instrument/strategi/miljö + filer/länkar inom gränser, visar exakt vad som lästes, inga Binance-förslag");
 
   // F5: kurs + Tiingo
@@ -436,6 +437,15 @@ const mkBroker = (positions: any[], env: "demo" | "live" = "demo") => new IgBrok
   assert.equal(prtLink("https://www.ig.com/se/prorealtime").url, "https://www.ig.com/se/prorealtime");
   assert.ok(html.includes("Öppna ProRealTime (IG)") && html.includes('"_blank"'));
   assert.ok(!/<iframe[^>]*(prorealtime|ig\.com)/i.test(html), "ingen inbäddning");
+  // Rutterna nås faktiskt genom routern (smoke-testet hittade 404 här)
+  const { handleIgRoutes } = await import("../src/server/igRoutes.js");
+  for (const route of ["/api/tools/prt", "/api/strategy-library", "/api/reference-status", "/api/course"]) {
+    let code = 0, bodyOut = "";
+    const res: any = { writeHead: (c: number) => { code = c; }, end: (b: string) => { bodyOut = b; } };
+    const handled = await handleIgRoutes(new URL("http://x" + route), "GET", {} as never, res, async () => "", {}, () => undefined, () => {}, async () => ({ id: "x" }));
+    assert.equal(handled, true, route); assert.equal(code, 200, route); assert.ok(JSON.parse(bodyOut), route);
+  }
+  ok("G/F rutterna /api/tools/prt, /api/strategy-library, /api/reference-status och /api/course svarar 200 via routern");
   ok("G PRT-knapp öppnar IG:s egen sida i nytt fönster; inget API, ingen inbäddning, ingen sessionslänk");
 }
 

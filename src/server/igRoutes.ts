@@ -118,7 +118,8 @@ export async function handleIgRoutes(
   addPending: (o: Record<string, any>) => Promise<{ id: string }>,
 ): Promise<boolean> {
   const p = url.pathname;
-  if (!p.startsWith("/api/ig/") && !p.startsWith("/api/market/")) return false;
+  const OTHER = ["/api/strategy-library", "/api/reference-status", "/api/course", "/api/course/backtest", "/api/tools/prt"];
+  if (!p.startsWith("/api/ig/") && !p.startsWith("/api/market/") && !OTHER.includes(p)) return false;
   const env = igMarketData.getActiveEnv();
   const activeIg = (): IgBroker | null => { const b = brokers[activeBroker() ?? ""]; return b instanceof IgBroker ? b : null; };
   try {

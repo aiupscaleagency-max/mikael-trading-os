@@ -3723,9 +3723,9 @@ body.app-state-onboard .fc-panel{display:none !important}
   <div class="fc-body" id="fc-body"></div>
   <div class="fc-input">
     <div class="fc-quicks">
-      <button data-q="Köp BTC för $50">BTC $50</button>
-      <button data-q="Köp ETH för $50">ETH $50</button>
-      <button data-q="Köp SOL för $50">SOL $50</button>
+      <button data-q="Föreslå ett köp på 0,5 % av saldot i det valda instrumentet">Köp 0,5 %</button>
+      <button data-q="Föreslå en sälj på 0,5 % av saldot i det valda instrumentet">Sälj 0,5 %</button>
+      <button data-q="Visa kontostatus">Konto</button>
       <button data-q="Stäng alla positioner">Stäng allt</button>
       <button data-q="Vad tycker teamet om marknaden just nu?">Status?</button>
     </div>
@@ -6166,11 +6166,11 @@ function renderTeamChatLog(){
     if(!logEl) return;
     if(teamChatLog.length === 0){
       if(isFloating){
-        logEl.innerHTML = `<div class="fc-empty">💬 Skriv en instruktion till teamet.<br>Exempel: <i>"Köp BTC för $50"</i></div>`;
+        logEl.innerHTML = `<div class="fc-empty">💬 Skriv en instruktion till teamet.<br>Exempel: <i>"Föreslå köp 0,5 % i valt instrument"</i></div>`;
       } else {
         logEl.innerHTML = `<div class="empty">
           💬 Inga instruktioner än. Skriv vad du vill att teamet ska göra eller välj ett snabbförslag.<br><br>
-          <span style="font-size:11px">Exempel: <i>"Köp BTC för $50"</i> · <i>"Sälj 50% av min ETH"</i> · <i>"Vad tycker Albert om guld just nu?"</i></span>
+          <span style="font-size:11px">Exempel: <i>"Föreslå köp 0,5 % i valt instrument"</i> · <i>"Vad tycker ni om EUR/USD just nu?"</i> · <i>"Förklara vald strategi"</i></span>
         </div>`;
       }
       return;
@@ -11353,7 +11353,7 @@ window.IGS = (function(){
     $("course-report").innerHTML = '<tr><th>Mått</th><th>Status</th></tr>' + REPORT.map(r=>'<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>').join("");
     try{
       const v = await getJson("/api/course");
-      $("course-state").textContent = v.status || "";
+      $("course-state").textContent = ({ blocked:"spärrad", running:"körs", completed:"klar", failed:"misslyckades" })[v.status] || v.status || "";
       $("course-view").innerHTML = esc(v.note || "") + (v.metrics ? '<br>Verifierade mått på denna dator: ' + esc(JSON.stringify(v.metrics)) : "");
       $("course-run").disabled = !v.canRun;
     }catch(e){ $("course-view").textContent = "Kursstatus kunde inte läsas: " + e.message; $("course-run").disabled = true; }
