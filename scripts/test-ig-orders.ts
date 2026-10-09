@@ -48,8 +48,9 @@ console.log('PASS: reconnect avbryter gamla tidsplaner utan stängningsanrop');
 // Ett okänt orderutfall förblir spärrat även efter en ny anslutning.
 generation='account-D';assert.ok(orders.snapshot('demo').pendingOrders.some(d=>d.status==='unknown'&&d.previousConnection));await assert.rejects(orders.preview('demo',ticket),/avstämmas/);
 // Tidsgränsen kontrolleras efter en långsam riskvalidering.
-let slow=false;const expiry=createIgOrders({...deps,directory:path.join(directory,'expiry'),accounts:(async()=>{if(slow)now+=31000;return {status:'ready'};}) as never});
-const exp=await expiry.preview('demo',ticket);slow=true;const beforeExpiry=calls.filter(c=>c.method==='POST').length;await assert.rejects(expiry.confirm('demo',exp.id),/hann gå ut/);assert.equal(calls.filter(c=>c.method==='POST').length,beforeExpiry);
+// (Granskning 2: bekräftelsen återanvänder granskningens kontoläsning, så långsamheten ligger i marknadsläsningen.)
+let slow=false;const expiry=createIgOrders({...deps,directory:path.join(directory,'expiry'),market:(async(...a:any[])=>{if(slow)now+=31000;return (market as any)(...a);}) as never});
+const exp=await expiry.preview('demo',ticket);slow=true;const beforeExpiry=calls.filter(c=>c.method==='POST').length;await assert.rejects(expiry.confirm('demo',exp.id),/hann gå ut|hann bli inaktuell/);assert.equal(calls.filter(c=>c.method==='POST').length,beforeExpiry);
 console.log('PASS: okänt orderutfall spärrar efter reconnect och utgånget underlag skickas inte');
 
 await assert.rejects(clean.preview('demo',{...ticket,orderType:'LIMIT',entry:99}),/manuell stängning/);
@@ -116,7 +117,7 @@ console.log('PASS: arbetsorder-visning har 30s generationbunden cache/singleflig
 // Sessionskvoten följer de beständigt reserverade orderförsöken, inte öppna positioner.
 let sessionPolicy:any={id:'session-five',marginPercent:1,maxTrades:5,riskPercent:1,holdingMinutes:3},slowSession=false;
 const sessionDir=path.join(directory,'session-policy'),sessionCalls:any[]=[];
-const sessionDeps={...deps,directory:sessionDir,status:(()=>({environments:{demo:{...environment('demo'),account:{accountType:'CFD',balance:1000,available:1000,profitLoss:0,currency:'USD'}},live:environment('live')}})) as never,sessionPolicy:()=>sessionPolicy,positions:async()=>({status:'ready',positions:[]}) as never,accounts:(async()=>{if(slowSession)sessionPolicy=null;return {status:'ready'};}) as never,call:(async(...args:any[])=>{sessionCalls.push(args);if(args[2]==='POST')return {dealReference:'session-ref'};if(args[1].startsWith('confirms/'))return {dealStatus:'REJECTED'};return call(...args as Parameters<typeof call>);}) as never};
+const sessionDeps={...deps,directory:sessionDir,status:(()=>({environments:{demo:{...environment('demo'),account:{accountType:'CFD',balance:1000,available:1000,profitLoss:0,currency:'USD'}},live:environment('live')}})) as never,sessionPolicy:()=>sessionPolicy,positions:async()=>({status:'ready',positions:[]}) as never,accounts:(async()=>({status:'ready'})) as never,market:(async(...a:any[])=>{if(slowSession)sessionPolicy=null;return (market as any)(...a);}) as never,call:(async(...args:any[])=>{sessionCalls.push(args);if(args[2]==='POST')return {dealReference:'session-ref'};if(args[1].startsWith('confirms/'))return {dealStatus:'REJECTED'};return call(...args as Parameters<typeof call>);}) as never};
 const sessionOrders=createIgOrders(sessionDeps),sessionTicket={...ticket,size:.5,holdingMinutes:3};
 await assert.rejects(sessionOrders.preview('demo',{...sessionTicket,size:1}),/marginal-/);
 await assert.rejects(sessionOrders.preview('demo',{...sessionTicket,stopLevel:50}),/SL-risk/);

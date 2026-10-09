@@ -33,7 +33,8 @@ export interface IgAccountLimits {
 
 export function igAccountLimits(balance: number): IgAccountLimits {
   const b = Number.isFinite(balance) && balance > 0 ? balance : 0;
-  const stakePct = Math.min(100, num("IG_MAX_STAKE_PCT") ?? 3);
+  // Granskning 2 (mindre 11): .env kan sänka men aldrig höja taket över 3 %.
+  const stakePct = Math.min(3, num("IG_MAX_STAKE_PCT") ?? 3);
   const totalPct = Math.min(100, num("IG_MAX_TOTAL_MARGIN_PCT") ?? 15);
   const lossPct = Math.min(100, num("IG_MAX_DAILY_LOSS_PCT") ?? 5);
   return {

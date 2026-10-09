@@ -15,12 +15,15 @@ import { config } from "../config.js";
 import { getCostSummary } from "../cost/tracker.js";
 import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
 import { igMarketData } from "./igMarketData.js";
+import { setIgLateAcceptedHook } from "../integrations/igOrders.js";
 import { handleIgRoutes } from "./igRoutes.js";
 import { getIgTimes, setIgTimes, ANALYSIS_INTERVALS, SESSION_MINUTES } from "./igTimes.js";
 import { type createIgSessions, DIRECT_ANALYSIS_MAX } from "./igSessions.js";
 import { listIgImportedSignals, reviewIgImportedSignal } from "../integrations/igImportedSignals.js";
 import { igOrderExecutionEnabled } from "../integrations/igConnection.js";
-import { currentStake } from "../risk/stakeLadder.js";
+import { currentStake, setStakeEnvProvider } from "../risk/stakeLadder.js";
+// M5 (granskning 2): insats-trappan följer aktiv IG-miljö (egna resultat och eget saldo).
+setStakeEnvProvider(() => igMarketData.getActiveEnv());
 import { igAccountLimits } from "../integrations/igRiskLimits.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
@@ -424,6 +427,14 @@ export async function createIgDoubleUp(dealId: string, broker: IgBroker): Promis
   } };
 }
 
+// B1 (granskning 2): en order som först blev "okänd" men senare stäms av som accepterad får sin tidsstängning.
+// Kvarvarande tid räknas från när ordern skickades; har tiden redan gått stängs den vid nästa varv (minst 30 s).
+setIgLateAcceptedHook((mode, d) => {
+  const remaining = Math.max(30, Math.round((d.submittedAt + d.timedExitSec * 1000 - Date.now()) / 1000));
+  addTimedExit({ broker: mode === "live" ? "ig" : "ig-demo", symbol: d.epic, qty: d.size, live: mode === "live", horizonSec: Math.min(remaining, MAX_AUTO_EXIT_SEC), baseline: 0, dealId: d.dealId });
+  log.trade(`[horisont] sen avstämning: ${d.epic} (${d.dealId}) fick sin tidsstängning`);
+});
+
 // ─── IG: godkänd order → IG (granskning + bekräftelse i Codex igOrders) ───
 // Orderläget AV (standard): inget skickas, ordern ligger kvar med ett tydligt besked.
 // Okänt utfall: markeras som misslyckad och skickas ALDRIG om automatiskt.
@@ -444,6 +455,7 @@ async function executeIgOrder(p: PendingOrder, broker: IgBroker): Promise<{ ok: 
       price: p.orderType === "LIMIT" ? p.limitPrice : undefined,
       quantity: p.quantity, stakeAmount: p.stakeAmount,
       takeProfit: p.takeProfit, stopLoss: p.stopLoss,
+      ...(p.orderType !== "LIMIT" && p.horizonSec && p.horizonSec <= MAX_AUTO_EXIT_SEC ? { timedExitSec: p.horizonSec } : {}),
     });
     if (order.dealId && p.orderType !== "LIMIT" && p.horizonSec && p.horizonSec <= MAX_AUTO_EXIT_SEC) {
       addTimedExit({ broker: broker.name, symbol: p.symbol, qty: order.executedQty, live: p.live, horizonSec: p.horizonSec, baseline: 0, dealId: order.dealId });
@@ -1266,6 +1278,7 @@ export function startServer(
           json(res, { error: "Ingen broker tillgänglig" });
           return;
         }
+        if (broker.mode === "live" && !liveAllowedByServer()) { json(res, { error: "IG Live är låst på servern", symbol, interval, klines: [] }); return; }
         try {
           const klines = await broker.getKlines(symbol, interval, Math.min(limit, 500));
           const indicators = computeIndicators(klines);
@@ -1285,6 +1298,7 @@ export function startServer(
           json(res, { error: "Ingen broker tillgänglig" });
           return;
         }
+        if (broker.mode === "live" && !liveAllowedByServer()) { json(res, { error: "IG Live är låst på servern" }); return; }
         try {
           const ticker = await broker.getTicker(symbol);
           json(res, ticker);

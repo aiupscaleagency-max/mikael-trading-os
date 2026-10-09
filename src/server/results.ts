@@ -123,9 +123,11 @@ export async function getResults(
   }
 
   // Bara när IG-historiken faktiskt lästes: ett IG-avbrott får aldrig nollställa trappan/minnet.
-  if (env === "demo" && !errors.length) {
+  if (!errors.length) {
     const pnls = trades.filter((t) => t.pnl !== undefined).sort((a, b) => a.at - b.at).map((t) => t.pnl!);
-    setStakeHistory(pnls, balance, currency);
+    setStakeHistory(pnls, balance, currency, env);
+  }
+  if (env === "demo" && !errors.length) {
     try {
       mkdirSync(path.dirname(dataPath("ig-closed-demo.json")), { recursive: true });
       writeFileSync(dataPath("ig-closed-demo.json"), JSON.stringify(trades.filter((t) => t.pnl !== undefined).map((t) => ({ base: t.coin, side: "SELL", qty: t.qty, price: t.price, at: t.at, kind: "IG Demo", pnl: t.pnl }))));
@@ -138,7 +140,7 @@ export async function getResults(
 // samma läsning, så att resultatpanelen inte äter IG:s läsbudget som order och stängningar behöver.
 const resultsCache = new Map<string, { at: number; value: Results }>();
 const resultsJobs = new Map<string, Promise<Results>>();
-export const RESULTS_CACHE_MS = 10_000;
+export const RESULTS_CACHE_MS = 30_000;
 export async function getResultsCached(brokers: Record<string, BrokerAdapter>, mode: "TEST" | "LIVE", now = Date.now): Promise<Results> {
   const c = resultsCache.get(mode);
   if (c && now() - c.at < RESULTS_CACHE_MS) return c.value;

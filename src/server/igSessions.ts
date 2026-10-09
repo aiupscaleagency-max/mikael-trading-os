@@ -268,7 +268,10 @@ export function createIgSessions(deps: IgSessionDeps) {
   /** Orderhook (orderGate): räknar agenternas nya orderförsök under en omgång; spärrar efter 5. */
   function orderGateHook(input: { live: boolean; opening?: boolean; side: string; source: string }): string | null {
     if (input.source.startsWith("godkänd:")) return null;
-    if (!(input.opening || input.side === "BUY")) return null;
+    // M1: bara agenternas/strategiernas NYA positioner räknas. Stängningar, Sälj allt och Mikes egna
+    // manuella ordrar under en omgång är inga orderförsök från sessionen.
+    if (input.opening !== true) return null;
+    if (!/^(agent|strategi|session)/i.test(input.source)) return null;
     const env: IgEnvironment = input.live ? "live" : "demo";
     const x = load(env).session;
     if (!x || x.status !== "running" || !x.batchInFlight) return null;

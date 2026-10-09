@@ -49,7 +49,7 @@ let proofClock=clock,proofGeneration='proof-first',proofCalls=0;
 let evidence:any={epic:'EUR',streamingPricesAvailable:true,quote:{delayTime:0,marketStatus:'TRADEABLE',receivedAt:proofClock,observedAt:proofClock}};
 let resolveEvidence:((v:any)=>void)|null=null;
 let deferred=false;
-const verified=createIgStreaming({now:()=>proofClock,sdk:{LightstreamerClient:Client,Subscription},identity:()=>({endpoint:'https://fixture.ig.com',accountId:'fixture',password:'fixture',generation:proofGeneration}),verifyPrice:async()=>{proofCalls++;return deferred?new Promise(resolve=>{resolveEvidence=resolve;}):evidence;}});
+const verified=createIgStreaming({verifyEveryMs:30000,now:()=>proofClock,sdk:{LightstreamerClient:Client,Subscription},identity:()=>({endpoint:'https://fixture.ig.com',accountId:'fixture',password:'fixture',generation:proofGeneration}),verifyPrice:async()=>{proofCalls++;return deferred?new Promise(resolve=>{resolveEvidence=resolve;}):evidence;}});
 const chart=[{epic:'EUR',scale:'1MINUTE'}];
 verified.ensure('demo',['EUR'],chart);const pc=Client.all.at(-1)!;
 pc.listener.onStatusChange('CONNECTED:WS-STREAMING');await flush();
@@ -92,3 +92,18 @@ assert.equal(await endpointSession('https://ig.com.evil.invalid'),null);
 assert.equal(await endpointSession('https://evil.invalid'),null);
 assert.equal((await endpointSession('https://stream.ig.com'))?.password,'CST-fixture-cst|XST-fixture-xst');
 console.log('IG streaming review: DI, tidsstämplar, generationsbyte och endpoint-validering godkända');
+
+// B1 (granskning 2): standardintervallet är 50 s, och en ström som själv säger DELAY=0 kontrolleras inte via REST.
+{
+ let c=1_000_000,calls=0;
+ const s2=createIgStreaming({now:()=>c,sdk:{LightstreamerClient:Client,Subscription},identity:()=>({endpoint:'https://fixture.ig.com',accountId:'fixture',password:'fixture',generation:'g'}),verifyPrice:async()=>{calls++;return {epic:'EUR',streamingPricesAvailable:true,quote:{delayTime:0,marketStatus:'TRADEABLE',receivedAt:c,observedAt:c}};}});
+ s2.ensure('demo',['EUR'],[{epic:'EUR',scale:'1MINUTE'}]);const cl=Client.all.at(-1)!;cl.listener.onStatusChange('CONNECTED:WS-STREAMING');await flush();
+ assert.equal(calls,1);
+ c+=40000;s2.ensure('demo',['EUR'],[{epic:'EUR',scale:'1MINUTE'}]);await flush();assert.equal(calls,1,'Ingen ny REST-kontroll inom 50 s');
+ c+=11000;s2.ensure('demo',['EUR'],[{epic:'EUR',scale:'1MINUTE'}]);await flush();assert.equal(calls,2,'Ny kontroll efter 50 s');
+ const sub=cl.subscriptions.find((x:any)=>x.items[0]==='PRICE:fixture:EUR')!;
+ sub.update({...valid,TIMESTAMP:String(c),DELAY:'0'});
+ c+=60000;s2.ensure('demo',['EUR'],[{epic:'EUR',scale:'1MINUTE'}]);await flush();assert.equal(calls,2,'Strömmens DELAY=0 räcker, ingen REST-läsning');
+ s2.close();
+ console.log('B1 strömkontroll: 50 s intervall och DELAY=0-undantag OK');
+}

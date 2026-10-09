@@ -53,7 +53,7 @@ function stakeBlock(): string {
   return `PLATTFORM: IG (CFD). Symbolerna är IG-EPICs. KÖP = lång, SÄLJ utan position = KORT (blankning är tillåten).
 INSATS: ${s.pct} % av IG-saldot som marginal = ca ${s.amount.toFixed(2)} ${cur} per trade. Servern räknar fram antal kontrakt
   från IG:s regler (minsta storlek, marginal, punktvärde). Ange ALLTID take_profit och stop_loss (för SÄLJ: målpris under, stop över priset).
-  • Princip: börja på 1 %. Höjs till 2 → 3 % först när avslutade IG Demo-affärer visar vinst och träffsäkerhet. Förlustsvit → 1 %.
+  • Princip: börja på 1 %. Höjs till 2 → 3 % först när avslutade affärer i SAMMA miljö (${s.env === "live" ? "IG Live" : "IG Demo"}) visar vinst och träffsäkerhet. Förlustsvit → 1 %.
   • Nu: ${s.reason} (${s.closed} avslutade, träff ${Math.round(s.winRate * 100)} %, resultat ${s.totalPnl.toFixed(2)} ${cur}).
   • quote_qty i USD används inte på IG; låt den vara.
 `;

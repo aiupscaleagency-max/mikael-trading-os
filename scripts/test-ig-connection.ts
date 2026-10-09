@@ -86,11 +86,11 @@ await budgetConnection.testConnection('demo');const initialBudgetGeneration=budg
 await budgetConnection.testConnection('demo');assert.equal(budgetLogins,1,'Återanslutningsknappen återanvänder en giltig verifierad session');
 assert.equal(budgetConnection.getStatus().environments.demo.connectionGeneration,initialBudgetGeneration);
 await budgetConnection.getAccounts('demo');await budgetConnection.getPositions('demo');
-// Bakgrundsläsningar lämnar reserven (8) åt order/stängningar; orderprioritet får använda resten.
-for(let i=0;i<13;i++)await budgetConnection.callAuthenticated('demo','workingorders');
-assert.equal(budgetConnection.getReadBudget('demo').used,16);
+// Bakgrundsläsningar lämnar reserven (12 = en orders värsta fall, granskning 2) åt order/stängningar.
+for(let i=0;i<9;i++)await budgetConnection.callAuthenticated('demo','workingorders');
+assert.equal(budgetConnection.getReadBudget('demo').used,12);
 await assert.rejects(budgetConnection.callAuthenticated('demo','markets'),/begränsade antal läsanrop/,'Bakgrund stoppas vid reserven');
-await withIgPriority(async()=>{for(let i=0;i<8;i++)await budgetConnection.callAuthenticated('demo','workingorders');});
+await withIgPriority(async()=>{for(let i=0;i<12;i++)await budgetConnection.callAuthenticated('demo','workingorders');});
 assert.equal(budgetConnection.getReadBudget('demo').used,24);
 const requestsAtLimit=budgetRequests;
 await assert.rejects(budgetConnection.callAuthenticated('demo','markets'),/begränsade antal läsanrop/);

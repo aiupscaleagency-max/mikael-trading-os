@@ -1,8 +1,11 @@
 // IG marknadsdata (katalog, instrument, kvot, historik, kontohistorik).
 // Utdrag ur Codex igWorkspace.ts (codex/ig-continuation-20261007): endast läsvägar.
 // Analys/sessioner ligger i vårt eget agentflöde (JEV → Teknisk + Risk → Hanna).
-import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igUsdSekFx,type IgAccountFx} from "./igRules.js";
+import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igFxIsFresh,igPairQuote,igStaleFx,FX_STALE_MAX_MS,type IgAccountFx} from "./igRules.js";
 import {callIgAuthenticated,getIgReadBudget,isIgTemporaryRateError,getIgStatus,type IgEnvironment} from "./igConnection.js";
+import fs from "node:fs";
+import path from "node:path";
+import {dataPath} from "../dataDir.js";
 
 const frames={"1m":{resolution:"MINUTE",ms:60000},"3m":{resolution:"MINUTE_3",ms:180000},"5m":{resolution:"MINUTE_5",ms:300000},"15m":{resolution:"MINUTE_15",ms:900000},"30m":{resolution:"MINUTE_30",ms:1800000},"1h":{resolution:"HOUR",ms:3600000},"4h":{resolution:"HOUR_4",ms:14400000},"1d":{resolution:"DAY",ms:86400000}} as const;
 export type IgTimeframe=keyof typeof frames;
@@ -240,22 +243,54 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
         dealingRules:clone(data.dealingRules),updatedAt:now()};
     });
   }
-  async function accountFx(mode:IgEnvironment):Promise<IgAccountFx|null> {
+  // ── Valutaomräkning (granskning 2, FX) ──
+  // Exekveringsvaluta B → kontovaluta A: direkt par B/A, omvänt A/B, annars kors via USD (B→USD→A).
+  // Stängd FX-marknad (helg): senaste verifierade kurs med 2 % säkerhetsmarginal, märkt "senaste växelkurs (fredag)".
+  const fxFile=()=>dataPath('ig-fx-last.json');
+  let fxLast:Record<string,IgAccountFx>|null=null;
+  function loadFxLast(){if(fxLast)return fxLast;try{fxLast=JSON.parse(fs.readFileSync(fxFile(),'utf8'));}catch{fxLast={};}return fxLast!;}
+  function saveFxLast(key:string,fx:IgAccountFx){const all=loadFxLast();all[key]=fx;try{fs.mkdirSync(path.dirname(fxFile()),{recursive:true});fs.writeFileSync(fxFile(),JSON.stringify(all));}catch{/* bara en reserv */}}
+  async function pairEpic(mode:IgEnvironment,x:string,y:string):Promise<string|null>{
+    // Parets EPIC ändras inte: sökningen cachas en timme. Stängd marknad (helg) hindrar inte att paret hittas.
+    return cached(`fxpair:${mode}:${x}${y}`,3600000,async()=>{
+      const found=await searchMarkets(mode,`${x}/${y}`);
+      const re=new RegExp(`^${x}\\s*\\/\\s*${y}(?:\\s+Mini)?\\s*$`,'i');
+      const rows=(found.markets as any[]).filter(m=>m.type==='CURRENCIES'&&re.test(m.name??''));
+      rows.sort((a,b)=>Number(/Mini/i.test(a.name))-Number(/Mini/i.test(b.name)));
+      return rows[0]?.epic??null;
+    });
+  }
+  async function pairRate(mode:IgEnvironment,from:string,to:string):Promise<{bid:number;offer:number;receivedAt:number;observedAt:number;path:string}|null>{
+    const direct=await pairEpic(mode,from,to).catch(()=>null);
+    if(direct){const q=igPairQuote(await rawMarket(mode,direct),from,to,now());if(q)return {...q,path:`${from}/${to}`};}
+    const inverse=await pairEpic(mode,to,from).catch(()=>null);
+    if(inverse){const q=igPairQuote(await rawMarket(mode,inverse),to,from,now());if(q)return {bid:1/q.offer,offer:1/q.bid,receivedAt:q.receivedAt,observedAt:q.observedAt,path:`1/(${to}/${from})`};}
+    return null;
+  }
+  async function accountFx(mode:IgEnvironment,base='USD'):Promise<IgAccountFx|null> {
     connected(mode);const currency=status().environments[mode].account?.currency;
-    if(currency==='USD')return {baseCurrency:'USD',accountCurrency:'USD',bid:1,offer:1,receivedAt:now(),observedAt:now(),source:'USD-konto · ingen valutaomräkning'};
-    if(currency!=='SEK')return null;
+    if(!currency||!/^[A-Z]{3}$/.test(currency)||!/^[A-Z]{3}$/.test(base))return null;
+    if(currency===base)return {baseCurrency:base,accountCurrency:currency,bid:1,offer:1,receivedAt:now(),observedAt:now(),source:`${base}-konto · ingen valutaomräkning`};
+    const key=`${mode}:${base}:${currency}`;
+    let fresh:IgAccountFx|null=null;
     try{
-      const found=await searchMarkets(mode,'USD/SEK');
-      const pair=found.markets.find((m:any)=>m.type==='CURRENCIES'&&/^USD\s*\/\s*SEK(?:\s+Mini)?\s*$/i.test(m.name??'')&&m.marketStatus==='TRADEABLE');
-      if(!pair)return null;
-      return igUsdSekFx(await rawMarket(mode,pair.epic),now());
-    }catch{return null;}
+      fresh=await cached<IgAccountFx|null>(`fx:${mode}:${base}${currency}`,30000,async()=>{
+        let r=await pairRate(mode,base,currency);
+        if(!r&&base!=='USD'&&currency!=='USD'){const a=await pairRate(mode,base,'USD'),b2=a?await pairRate(mode,'USD',currency):null;if(a&&b2)r={bid:a.bid*b2.bid,offer:a.offer*b2.offer,receivedAt:Math.min(a.receivedAt,b2.receivedAt),observedAt:Math.min(a.observedAt,b2.observedAt),path:`${a.path} × ${b2.path}`};}
+        if(!r)return null; // även "ingen färsk kurs" cachas 30 s så att en stängd FX-marknad inte kostar läsningar
+        return {baseCurrency:base,accountCurrency:currency,bid:r.bid,offer:r.offer,receivedAt:r.receivedAt,observedAt:r.observedAt,source:`IG ${r.path} · verifierad bid/ask`,path:r.path} as IgAccountFx;
+      });
+    }catch(e){if(e instanceof Error&&e.message.startsWith('IG begränsade antal'))fresh=null;}
+    if(fresh&&igFxIsFresh(fresh,currency,now(),base)){saveFxLast(key,fresh);return fresh;}
+    const last=loadFxLast()[key];
+    if(last&&now()-last.observedAt<=FX_STALE_MAX_MS){const stale=igStaleFx(last);return igFxIsFresh(stale,currency,now(),base)?stale:null;}
+    return null;
   }
   async function market(mode:IgEnvironment,epic:string) {
     const detail=await rawMarket(mode,epic),currency=status().environments[mode].account?.currency??null;
     const currencies=detail.instrument.currencies;
     const execution=(currencies.find((c:any)=>c.isDefault===true)??(currencies.length===1?currencies[0]:null))?.code;
-    const fx=execution==='USD'&&currency==='SEK'?await accountFx(mode):null;
+    const fx=execution&&currency&&execution!==currency?await accountFx(mode,execution):null;
     return {...detail,calculationRules:{...igCalculationRules(detail.instrument,{scalingFactor:detail.instrument.scalingFactor},currency,fx,now()),minSize:detail.dealingRules.minDealSize?.value??null}};
   }
   async function candles(mode:IgEnvironment,epic:string,timeframe:IgTimeframe,limit=100) {
@@ -282,7 +317,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
   }
   async function history(mode:IgEnvironment) {
     connected(mode);
-    return cached(`history:${mode}`,60000,async()=>{
+    return cached(`history:${mode}`,120000,async()=>{
       const from=new Date(now()-30*86400000).toISOString().slice(0,19),to=new Date(now()).toISOString().slice(0,19);
       const query=new URLSearchParams({from,to,pageSize:"100",pageNumber:"1"}).toString();
       const [t,a]=await Promise.all([read(mode,"history/transactions","GET","2",undefined,{query}),read(mode,"history/activity","GET","3",undefined,{query})]);

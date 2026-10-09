@@ -56,12 +56,16 @@ const defaultDeps: IgDeps = {
   observe: (env, positions) => { try { getIgOrderState(env, positions); } catch { /* bara avstämning */ } },
 };
 /** Positioner cachas så här länge (samma IG-session). Order och stängningar läser alltid färskt. */
-export const IG_POSITIONS_CACHE_MS = 15_000;
+export const IG_POSITIONS_CACHE_MS = 30_000;
+/** B1 (granskning 2): saldo/positioner för visning cachas 30 s (order läser alltid färskt). */
+export const IG_ACCOUNT_CACHE_MS = 30_000;
 
 /** Pengar för en order i kontovalutan: storlek från IG:s regler, marginal, SL/TP i kronor. */
 export interface IgStakeQuote {
   ok: boolean;
   reason?: string;
+  /** Vilken växelkurs som användes (granskning 2, FX). */
+  fxNote?: string | null;
   epic: string;
   name: string | null;
   direction: "BUY" | "SELL";
@@ -130,7 +134,7 @@ export class IgBroker implements BrokerAdapter {
   async getAccount(): Promise<Account> {
     await this.ensureConnected();
     const gen = this.status().connectionGeneration ?? null;
-    if (this.accountCache && this.accountCache.gen === gen && this.d.now() - this.accountCache.at < 15_000) return this.accountCache.value;
+    if (this.accountCache && this.accountCache.gen === gen && this.d.now() - this.accountCache.at < IG_ACCOUNT_CACHE_MS) return this.accountCache.value;
     const read = await this.d.accounts(this.env).catch(() => null); // uppdaterar kontosammanfattningen i statusen
     const a = this.status().account;
     if (!a) throw new Error("IG-kontot kunde inte läsas");
@@ -227,6 +231,8 @@ export class IgBroker implements BrokerAdapter {
       stopLoss: input.stopLoss ?? null, takeProfit: input.takeProfit ?? null,
       quoteAgeMs: finite(q.observedAt) ? this.d.now() - q.observedAt : null,
       basis: r.note ?? "IG-regler",
+      // FX (granskning 2): vilken växelkurs som användes, och tydlig märkning när FX-marknaden är stängd.
+      fxNote: r.fx ? (r.fx.stale ? `${r.fx.label} · ${Math.round((r.fx.safetyMargin ?? 0) * 100)} % säkerhetsmarginal i budgeten` : `växelkurs ${r.fx.path ?? `${r.fx.baseCurrency}/${r.fx.accountCurrency}`} (live)`) : null,
     };
     if (!finite(entry) || entry <= 0) return { ...base, reason: "IG-kvot saknas" };
     if (!r.verified || !finite(r.pointValue) || !finite(r.marginRate)) return { ...base, reason: r.note || "IG:s kontraktsvärde eller marginal kunde inte verifieras" };
@@ -254,7 +260,9 @@ export class IgBroker implements BrokerAdapter {
     const pr = priced(size);
     // Samma gränser som godkännandet (igOrders): marginal ≤ 3 % av saldot, ≤ tillgängligt, SL-förlust ≤ 5 %
     const acc = await this.getAccount().catch(() => null);
-    if (acc && finite(acc.balance) && finite(acc.available) && acc.currency === r.pointCurrency) {
+    // Granskning 2: utan verifierat konto kan budgeten inte kontrolleras → aldrig ok:true.
+    if (!acc || !finite(acc.balance) || !finite(acc.available) || acc.currency !== r.pointCurrency) return { ...base, minMargin, ...pr, ok: false, reason: "IG-kontot kunde inte läsas, så budgeten (≤ 3 % marginal) kan inte kontrolleras just nu" };
+    {
       const why = igPositionLimitReason({ margin: pr.margin, risk: pr.moneyAtSl, balance: acc.balance, available: acc.available, currency: acc.currency ?? "" });
       if (why) return { ...base, minMargin, ...pr, ok: false, reason: why };
     }
@@ -320,6 +328,7 @@ export class IgBroker implements BrokerAdapter {
       epic, direction, size, orderType: order.type === "LIMIT" ? "LIMIT" : "MARKET",
       entry: order.type === "LIMIT" ? order.price : undefined,
       stopLevel: stopLoss, targetLevel: takeProfit, holdingMinutes: 15, autoClose: false,
+      ...(finite(order.timedExitSec) && order.timedExitSec > 0 ? { timedExitSec: order.timedExitSec } : {}),
     });
     const done = await this.d.confirm(this.env, draft.id);
     const result: OrderResult = {

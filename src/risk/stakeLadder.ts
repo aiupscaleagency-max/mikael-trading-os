@@ -10,6 +10,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface StakeLevel {
+  env: StakeEnv;
   pct: number;
   /** Insats i kontovalutan (fältnamnet behålls av bakåtkompatibilitet; IG: SEK) */
   usd: number;
@@ -22,21 +23,28 @@ export interface StakeLevel {
   reason: string;
 }
 
-let demo: { pnls: number[]; balance: number | null; currency: string | null; at: number } = { pnls: [], balance: null, currency: null, at: 0 };
+// M5 (granskning 2): en trappa PER MILJÖ. Live använder bara Live-resultat och Live-saldo, Demo bara Demo.
+export type StakeEnv = "demo" | "live";
+const ladders = new Map<StakeEnv, { pnls: number[]; balance: number | null; currency: string | null; at: number }>();
+let envProvider: () => StakeEnv = () => "demo";
+/** Kopplas vid start till aktiv IG-miljö (igMarketData.getActiveEnv). */
+export function setStakeEnvProvider(fn: () => StakeEnv): void { envProvider = fn; }
 
-/** Anropas med IG Demo:s avslutade affärer (äldst först) och saldot. */
-export function setStakeHistory(pnls: number[], balance: number | null, currency: string | null): void {
-  demo = { pnls: pnls.filter((x) => Number.isFinite(x)), balance, currency, at: Date.now() };
+/** Anropas med miljöns avslutade affärer (äldst först) och saldot. */
+export function setStakeHistory(pnls: number[], balance: number | null, currency: string | null, env: StakeEnv = "demo"): void {
+  ladders.set(env, { pnls: pnls.filter((x) => Number.isFinite(x)), balance, currency, at: Date.now() });
 }
 
-export function currentStake(): StakeLevel | null {
+export function currentStake(env: StakeEnv = envProvider()): StakeLevel | null {
+  const demo = ladders.get(env) ?? { pnls: [], balance: null, currency: null, at: 0 };
+  const label = env === "live" ? "IG Live" : "IG Demo";
   const pnls = demo.pnls;
   const total = pnls.reduce((t, p) => t + p, 0);
   const winRate = pnls.length ? pnls.filter((p) => p > 0).length / pnls.length : 0;
   const last10 = pnls.slice(-10).reduce((t, p) => t + p, 0);
   const start = Number(process.env.STAKE_PCT_START ?? 1) || 1;
   const max = Number(process.env.STAKE_PCT_MAX ?? 3) || 3;
-  let pct = start, reason = "start: 1 % av saldot tills agenterna visat resultat i IG Demo";
+  let pct = start, reason = `start: 1 % av saldot tills agenterna visat resultat i ${label}`;
   const n = pnls.length;
   if (n >= 10 && last10 < 0) reason = "senaste 10 affärerna gick med förlust: tillbaka till 1 %";
   else if (n >= 20 && total > 0 && winRate >= 0.5) { pct = 3; reason = `${n} affärer, vinst, ${Math.round(winRate * 100)} % träff`; }
@@ -44,5 +52,5 @@ export function currentStake(): StakeLevel | null {
   else if (n > 0) reason = `${n} av 10 affärer klara innan nästa steg`;
   pct = Math.min(Math.max(pct, start), max);
   const amount = demo.balance !== null ? Math.floor(demo.balance * pct) / 100 : 0;
-  return { pct, usd: amount, amount, currency: demo.currency, equityUsd: demo.balance ?? 0, closed: n, winRate, totalPnl: total, reason };
+  return { env, pct, usd: amount, amount, currency: demo.currency, equityUsd: demo.balance ?? 0, closed: n, winRate, totalPnl: total, reason };
 }

@@ -35,7 +35,7 @@ export interface Strategy {
   name: string;
   description: string;
   enabled: boolean;
-  /** Bas-coins, t.ex. ["BTC", "ETH"]. Paret blir coin + Bybit-quote (USDC). */
+  /** Bas-coins, t.ex. ["BTC", "ETH"]. Mappas till verifierade IG-EPICs i aktiv miljö. */
   coins: string[];
   interval: StrategyInterval;
   entry: Rule[];
@@ -46,7 +46,7 @@ export interface Strategy {
   targetAtr: number;
   /** Belopp per köp i USD. Order-grinden tar ändå max $5 i LIVE. */
   stakeUsd: number;
-  /** Var signalerna köas: test = TEST-mäklaren (Alpaca paper), live = Bybit EU. */
+  /** Var signalerna köas: test = TEST-mäklaren (Alpaca paper), live = IG Live. */
   venue: "test" | "live";
   /** off = bara reglerna · jev = JEV bedömer · jev_ai = JEV + AI-modell granskar */
   review: "off" | "jev" | "jev_ai";

@@ -64,7 +64,7 @@ export async function executeIgChatTool(name: string, input: Record<string, unkn
     const out = [];
     for (const p of pos) {
       if (!p.dealId) continue;
-      const gate = await checkOrderGate({ live: broker.mode === "live", side: p.direction === "SELL" ? "BUY" : "SELL", unitsOrder: true, source: "chat:close_all" });
+      const gate = await checkOrderGate({ live: broker.mode === "live", side: p.direction === "SELL" ? "BUY" : "SELL", unitsOrder: true, opening: false, source: "chat:close_all" });
       if (!gate.ok) { out.push({ epic: p.symbol, ok: false, error: gate.error }); continue; }
       const q = await addPendingOrder({ source: "chat:close_all", venue: `broker:${broker.name}`, live: broker.mode === "live", symbol: p.symbol, side: p.direction === "SELL" ? "BUY" : "SELL", quantity: p.quantity, closeDealId: p.dealId, name: p.name ?? undefined, reason: "Stäng allt (chatten)" });
       out.push({ epic: p.symbol, name: p.name, queued: q.id });

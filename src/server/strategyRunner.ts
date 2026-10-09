@@ -409,7 +409,8 @@ export async function queueSignal(signalId: string, venueOverride?: "test" | "li
     });
   } else {
     const r = await createIgPendingOrder({
-      symbol: epic, side: "BUY", source: `strategi:${sig.strategyName}`.slice(0, 60), reason: `${sig.strategyName}: ${sig.why}`.slice(0, 200),
+      // Granskning 2 (mindre 9): strategins KÖP öppnar alltid egen position; den stänger aldrig en annan (manuell/agent) kort position.
+      forceOpen: true, symbol: epic, side: "BUY", source: `strategi:${sig.strategyName}`.slice(0, 60), reason: `${sig.strategyName}: ${sig.why}`.slice(0, 200),
       ...(sig.stopLoss ? { stopLoss: sig.stopLoss } : {}), ...(sig.target ? { takeProfit: sig.target } : {}),
     }, broker as import("../brokers/ig.js").IgBroker);
     if (!r.ok) return fail(r.error);

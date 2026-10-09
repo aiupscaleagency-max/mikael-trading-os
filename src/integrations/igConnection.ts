@@ -7,11 +7,15 @@ import {AsyncLocalStorage} from "node:async_hooks";
 // ── Prioritet i läsbudgeten ──
 // Order (granskning, bekräftelse, stängning) och tidsstyrda stängningar körs i withIgPriority och får
 // hela minutbudgeten. Allt annat (diagramverifiering, katalog, resultat, saldo-polling) måste lämna
-// IG_READ_RESERVE_PER_ENV läsningar (standard 8) kvar, så att en order aldrig stoppas av bakgrundsläsningar.
+// IG_READ_RESERVE_PER_ENV läsningar (standard IG_ORDER_READ_NEED = 12) kvar, så att en order aldrig stoppas av bakgrundsläsningar.
 const priorityContext=new AsyncLocalStorage<boolean>();
 export function withIgPriority<T>(fn:()=>Promise<T>):Promise<T>{return priorityContext.run(true,fn);}
 export function igPriorityActive():boolean{return priorityContext.getStore()===true;}
-export const readReservePerEnv=()=>Math.max(0,Math.min(Math.max(1,Number(process.env.IG_READ_BUDGET_PER_ENV)||24)-1,Number.isFinite(Number(process.env.IG_READ_RESERVE_PER_ENV))&&process.env.IG_READ_RESERVE_PER_ENV!==undefined&&process.env.IG_READ_RESERVE_PER_ENV!==""?Number(process.env.IG_READ_RESERVE_PER_ENV):8));
+/** B1: läsningar en godkänd order behöver i värsta fall (granskning: konto, positioner, arbetsorder,
+ *  transaktioner, marknad, valuta + marknad per position; bekräftelsen återanvänder granskningens läsningar
+ *  under 5 s). confirms/ räknas inte mot spärren. */
+export const IG_ORDER_READ_NEED=12;
+export const readReservePerEnv=()=>Math.max(0,Math.min(Math.max(1,Number(process.env.IG_READ_BUDGET_PER_ENV)||24)-1,Number.isFinite(Number(process.env.IG_READ_RESERVE_PER_ENV))&&process.env.IG_READ_RESERVE_PER_ENV!==undefined&&process.env.IG_READ_RESERVE_PER_ENV!==""?Number(process.env.IG_READ_RESERVE_PER_ENV):IG_ORDER_READ_NEED));
 
 export type IgEnvironment = "demo" | "live";
 interface Credentials {apiKey?:string;identifier?:string;password?:string;accountId?:string}
@@ -58,7 +62,9 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     const remaining=now()<(readBlockedUntil.get(mode)??0)?0:Math.max(0,Math.min(budgetPerEnv()-used,budgetTotal()-reads.length));
     return {used,appUsed:reads.length,remaining,reserve:readReservePerEnv(),backgroundRemaining:Math.max(0,remaining-readReservePerEnv())};
   }
-  function consumeRead(mode:IgEnvironment){const b=readBudget(mode);if(b.remaining===0||(!igPriorityActive()&&b.backgroundRemaining===0))throw Error(IG_READ_RATE_ERROR);reads.push({environment:mode,at:now()});}
+  // B1 (granskning 2): utfallskontrollen confirms/{dealReference} efter en skickad order får ALDRIG stoppas
+  // av vår egen budget; den räknas men spärras inte. (IG:s egen 429 gäller fortfarande.)
+  function consumeRead(mode:IgEnvironment,outcomeCheck=false){const b=readBudget(mode);if(!outcomeCheck&&(b.remaining===0||(!igPriorityActive()&&b.backgroundRemaining===0)))throw Error(IG_READ_RATE_ERROR);reads.push({environment:mode,at:now()});}
   const sharedLogins=new Map<IgEnvironment,{identifier:string;password:string;source:IgEnvironment;sourceFingerprint:string}>();
   function credentials(mode:IgEnvironment):Credentials {
     const data=load(), row=data?.[mode];
@@ -160,7 +166,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     try {
       const {data}=await call(mode,"positions",{apiKey:session.apiKey},session);if(!Array.isArray(data.positions))throw Error("format");
       if(sessions.get(mode)!==session || fingerprint(credentials(mode))!==session.fingerprint)throw Error("session changed");
-      const positions=data.positions.map((row:Record<string,any>)=>({dealId:text(row.position?.dealId),epic:text(row.market?.epic),instrumentName:text(row.market?.instrumentName),direction:text(row.position?.direction),currency:text(row.position?.currency),size:number(row.position?.size),level:number(row.position?.level),stopLevel:number(row.position?.stopLevel),limitLevel:number(row.position?.limitLevel),bid:number(row.market?.bid),offer:number(row.market?.offer),marketStatus:text(row.market?.marketStatus)}));
+      const positions=data.positions.map((row:Record<string,any>)=>({dealId:text(row.position?.dealId),epic:text(row.market?.epic),instrumentName:text(row.market?.instrumentName),direction:text(row.position?.direction),currency:text(row.position?.currency),size:number(row.position?.size),level:number(row.position?.level),stopLevel:number(row.position?.stopLevel),limitLevel:number(row.position?.limitLevel),createdDateUTC:text(row.position?.createdDateUTC),bid:number(row.market?.bid),offer:number(row.market?.offer),marketStatus:text(row.market?.marketStatus)}));
       return {environment:mode,status:"ready",error:null,positions,updatedAt:now()};
     } catch(error) {if(isIgTemporaryRateError(error))return {environment:mode,status:"error",error:IG_READ_RATE_ERROR,positions:null,updatedAt:null};fail(mode,"IG-positionerna kunde inte verifieras; anslut igen");return {environment:mode,status:"error",error:"IG-positionerna kunde inte verifieras; anslut igen",positions:null,updatedAt:null};}
   }
@@ -184,7 +190,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     for(const [name,value] of query) if(!allowedParams.has(name) || value.length>200) throw Error("Ogiltiga IG-frågeparametrar");
     if(route==='categories'||route.startsWith('categories/')||route.startsWith('client-sentiment/')){if(version!=='1')throw Error('Ogiltig IG-kategoriversion');for(const [name,value] of query){if(!/^\d{1,6}$/.test(value)||name==='pageSize'&&(Number(value)<1||Number(value)>1000))throw Error('Ogiltig IG-katalogpaginering');}}
     if(method==="GET"&&route.startsWith("prices/")&&now()<(historyBlockedUntil.get(mode)??0))throw Error(IG_HISTORY_RATE_ERROR);
-    if(method==="GET")consumeRead(mode);
+    if(method==="GET")consumeRead(mode,/^confirms\//.test(route));
     try {
       const response=await request(`${endpoints[mode]}/${route}${query.size?`?${query}`:""}`,{method,headers,signal:AbortSignal.timeout(8000),...(body?{body:JSON.stringify(body)}:{})});
       if(!response.ok) {

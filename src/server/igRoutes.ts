@@ -13,7 +13,7 @@ import { igOrderMoneyView } from "../integrations/igRiskLimits.js";
 import { listIgImportedSignals, saveIgImportedSignal, deleteIgImportedSignal } from "../integrations/igImportedSignals.js";
 import { igPreferences } from "../integrations/igPreferences.js";
 import { cancelTimedExitForDeal, listTimedExits } from "./tradeHorizon.js";
-import { checkOrderGate } from "./orderGate.js";
+import { checkOrderGate, liveAllowedByServer } from "./orderGate.js";
 import { userAction } from "./agentActivity.js";
 import { log } from "../logger.js";
 import { strategyLibrary } from "./igStrategyLibrary.js";
@@ -56,6 +56,12 @@ async function body(req: http.IncomingMessage, readBody: (r: http.IncomingMessag
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
 }
 const envLabel = (e: IgEnvironment) => (e === "live" ? "IG Live" : "IG Demo");
+export const LIVE_LOCKED = "IG Live är låst på servern (MODE=live och LIVE_TRADING_CONFIRMED=true krävs i .env). Ingen inloggning eller läsning mot Live görs.";
+/** M4: belopp visas bara för aktiv miljö; den andra miljön visar bara valuta/kontotyp. */
+export function accountView<T extends { currency: string | null; accountType: string | null }>(a: T | null, active: boolean): T | { currency: string | null; accountType: string | null; hidden: true } | null {
+  if (!a) return null;
+  return active ? a : { currency: a.currency, accountType: a.accountType, hidden: true };
+}
 
 function quoteView(q: IgQuote | null, epic: string, env: IgEnvironment = igMarketData.getActiveEnv()) {
   const ds = igMarketData.dataState(epic, env);
@@ -126,9 +132,12 @@ export async function handleIgRoutes(
     if (p === "/api/ig/status" && method === "GET") {
       const st = getIgStatus();
       send(res, 200, {
-        activeEnv: env, label: envLabel(env),
+        activeEnv: env, label: envLabel(env), liveLocked: !liveAllowedByServer(),
         environments: Object.fromEntries((["demo", "live"] as const).map((e) => [e, {
           ...st.environments[e], connectionGeneration: undefined,
+          // M4 (granskning 2): bara aktiv miljö visar belopp. Den andra miljöns saldo lämnar aldrig servern.
+          account: accountView(st.environments[e].account, e === env),
+          locked: e === "live" && !liveAllowedByServer(),
           executionEnabled: (brokers[e === "live" ? "ig" : "ig-demo"] as IgBroker | undefined)?.executionEnabled() ?? false,
           readBudget: getIgReadBudget(e), stream: igMarketData.streamStatus(e),
         }])),
@@ -138,6 +147,7 @@ export async function handleIgRoutes(
     if (p === "/api/ig/connect" && method === "POST") {
       const b = await body(req, readBody);
       if (b.environment !== "demo" && b.environment !== "live") { send(res, 400, { error: "Välj demo eller live" }); return true; }
+      if (b.environment === "live" && !liveAllowedByServer()) { send(res, 403, { status: "locked", error: LIVE_LOCKED }); return true; }
       const r = await testIgConnection(b.environment);
       igChanged(b.environment);
       send(res, 200, { ...r, connectionGeneration: undefined });
@@ -149,6 +159,7 @@ export async function handleIgRoutes(
       }
       try {
         const saved = saveIgCredentials(await body(req, readBody));
+        if (saved.environment === "live" && !liveAllowedByServer()) { send(res, 200, { saved: true, environment: "live", ok: false, error: `Sparat. ${LIVE_LOCKED}` }); return true; }
         const r = await testIgConnection(saved.environment);
         send(res, 200, { saved: true, environment: saved.environment, ok: r.status === "connected", error: r.error });
       } catch (e) { send(res, 400, { error: e instanceof Error && e.message.startsWith("IG") ? e.message : "IG-uppgifterna kunde inte sparas säkert" }); }
@@ -196,6 +207,7 @@ export async function handleIgRoutes(
     }
     if (p === "/api/ig/history" && method === "GET") {
       const e = url.searchParams.get("env") === "live" ? "live" : url.searchParams.get("env") === "demo" ? "demo" : env;
+      if (e === "live" && !liveAllowedByServer()) { send(res, 403, { env: e, status: "locked", error: LIVE_LOCKED }); return true; }
       try { send(res, 200, { env: e, ...(await getIgHistory(e)) }); } catch (err) { send(res, 200, { env: e, status: "unavailable", error: err instanceof Error ? err.message : String(err) }); }
       return true;
     }

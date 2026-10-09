@@ -1,7 +1,32 @@
 // Kursens prisenhet, exekveringsvaluta och kontovaluta verifieras separat.
-export interface IgAccountFx {baseCurrency:'USD';accountCurrency:string;bid:number;offer:number;receivedAt:number;observedAt:number;source:string;epic?:string}
+// FX (granskning 2): valfri noteringsvaluta → kontovaluta. baseCurrency = instrumentets exekveringsvaluta.
+// stale=true: valutamarknaden är stängd (helg) och senaste verifierade kurs används med säkerhetsmarginal
+// (bid sänkt, offer höjd med safetyMargin) och etiketten "senaste växelkurs (fredag)".
+export interface IgAccountFx {baseCurrency:string;accountCurrency:string;bid:number;offer:number;receivedAt:number;observedAt:number;source:string;epic?:string;stale?:boolean;label?:string;safetyMargin?:number;path?:string}
+export const FX_SAFETY_MARGIN=0.02;
+/** Hur länge en senaste verifierad kurs får användas när FX-marknaden är stängd (helg + helgdag). */
+export const FX_STALE_MAX_MS=4*86400000;
+const WEEKDAYS=['söndag','måndag','tisdag','onsdag','torsdag','fredag','lördag'];
+/** Bygger en "senaste växelkurs"-variant med säkerhetsmarginal. Ändrar aldrig den sparade kursen. */
+export function igStaleFx(last:IgAccountFx,margin=FX_SAFETY_MARGIN):IgAccountFx{
+  const day=WEEKDAYS[new Date(last.observedAt).getDay()]??'okänd dag';
+  return {...last,bid:last.bid*(1-margin),offer:last.offer*(1+margin),stale:true,safetyMargin:margin,label:`senaste växelkurs (${day})`,source:`${last.source} · senaste verifierade kurs ±${Math.round(margin*100)} % säkerhetsmarginal`};
+}
 const numeric=(v:unknown)=>typeof v==='number'?v:typeof v==='string'&&/^[0-9]+(?:\.[0-9]+)?$/.test(v.trim())?Number(v):NaN;
-export function igFxIsFresh(fx:IgAccountFx|null|undefined,accountCurrency:string,now:number){return !!fx&&fx.baseCurrency==='USD'&&fx.accountCurrency===accountCurrency&&Number.isFinite(fx.bid)&&Number.isFinite(fx.offer)&&fx.bid>0&&fx.offer>=fx.bid&&[fx.receivedAt,fx.observedAt].every(t=>Number.isFinite(t)&&now-t>=0&&now-t<=60000);}
+export function igFxIsFresh(fx:IgAccountFx|null|undefined,accountCurrency:string,now:number,baseCurrency='USD'){
+  if(!fx||fx.baseCurrency!==baseCurrency||fx.accountCurrency!==accountCurrency||!Number.isFinite(fx.bid)||!Number.isFinite(fx.offer)||fx.bid<=0||fx.offer<fx.bid)return false;
+  // Senaste kurs vid stängd FX-marknad: bara med säkerhetsmarginal och högst FX_STALE_MAX_MS gammal.
+  if(fx.stale===true)return (fx.safetyMargin??0)>=FX_SAFETY_MARGIN&&[fx.receivedAt,fx.observedAt].every(t=>Number.isFinite(t)&&now-t>=0&&now-t<=FX_STALE_MAX_MS);
+  return [fx.receivedAt,fx.observedAt].every(t=>Number.isFinite(t)&&now-t>=0&&now-t<=60000);
+}
+/** Kurs för ett IG-valutapar "X/Y" (eller "X/Y Mini"). Kräver färsk, ofördröjd, handlingsbar kvot. */
+export function igPairQuote(market:Record<string,any>,base:string,quote:string,now:number):{bid:number;offer:number;receivedAt:number;observedAt:number;epic:string}|null{
+  const q=market?.quote;const name=String(market?.name??'');
+  if(market?.type!=='CURRENCIES'||!new RegExp(`^${base}\\s*\\/\\s*${quote}(?:\\s+Mini)?\\s*$`,'i').test(name))return null;
+  if(q?.marketStatus!=='TRADEABLE'||q.delayTime!==0||!(q.bid>0)||!(q.offer>=q.bid))return null;
+  if(![q.receivedAt,q.observedAt].every((t:number)=>Number.isFinite(t)&&now-t>=0&&now-t<=60000))return null;
+  return {bid:q.bid,offer:q.offer,receivedAt:q.receivedAt,observedAt:q.observedAt,epic:market.epic};
+}
 // IG:s exchangeRate-fält anger inte riktning. Bara ett uttryckligen verifierat par används.
 export function igUsdSekFx(market:Record<string,any>,now:number):IgAccountFx|null {
   const q=market.quote,scale=numeric(market.instrument?.scalingFactor);
@@ -19,7 +44,7 @@ export function igCalculationRules(instrument:Record<string,any>,snapshot:Record
   const contractMatches=instrument.type!=='CURRENCIES'||instrument.unit==='CONTRACTS'&&contract>0&&Math.abs(native-contract)<=contract*1e-8;
   // Bid/ask anges redan i native prisnivå. scalingFactor används för pip-avstånd, aldrig en andra gång för kursvärdet.
   const nativePointValue=[pip,value,scaling].every(v=>Number.isFinite(v)&&v>0)&&Number.isFinite(native)&&currency&&(!meaning?.[2]||meaning[2]===currency)&&contractMatches?native:null;
-  const convert=currency==='USD'&&accountCurrency==='SEK'&&igFxIsFresh(fx,'SEK',now);
+  const convert=!!currency&&!!accountCurrency&&currency!==accountCurrency&&igFxIsFresh(fx,accountCurrency,now,currency);
   const pointValue=nativePointValue!==null?(currency===accountCurrency?nativePointValue:convert?nativePointValue*fx!.offer:null):null;
   const profitPointValue=pointValue!==null?(convert?nativePointValue!*fx!.bid:pointValue):null;
   const factor=numeric(instrument.marginFactor),bands=instrument.marginDepositBands;

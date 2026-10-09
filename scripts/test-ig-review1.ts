@@ -101,7 +101,7 @@ const market = async (_e: string, epic: string) => ({
   const d = await orders.preview("demo", t); const r = await orders.confirm("demo", d.id);
   assert.equal(r.status, "unknown"); assert.equal(r.dealReference, undefined);
   await assert.rejects(orders.preview("demo", t), /avstämmas/, "blockerar tills avstämt");
-  ps.push({ dealId: "found-1", epic: EPIC, direction: "BUY", size: 100, level: 1.1, currency: "SEK" });
+  ps.push({ dealId: "found-1", epic: EPIC, direction: "BUY", size: 100, level: 1.1, currency: "SEK", createdDateUTC: new Date(NOW).toISOString().slice(0, 19) });
   const res = await orders.resolveUnknown("demo", d.id);
   assert.equal(res.status, "accepted"); assert.equal(res.dealId, "found-1");
   assert.equal(posts.length, 1, "avstämningen skickar ingen order");

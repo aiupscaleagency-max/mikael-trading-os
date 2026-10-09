@@ -12,7 +12,8 @@ export function normalizeIgDelayFlag(value:unknown):number|null{
  return flag==='0'||flag==='false'?0:flag==='1'||flag==='true'?1:null;
 }
 export interface IgDelayEvidence {epic:string;streamingPricesAvailable:boolean;quote:{delayTime:number|null;marketStatus:string|null;receivedAt:number;observedAt:number|null}}
-export function createIgStreaming(deps:{verifyPrice?:(mode:IgEnvironment,epic:string)=>Promise<IgDelayEvidence>;identity?:(mode:IgEnvironment)=>StreamingIdentity|null;sdk?:any;now?:()=>number}={}){
+export function createIgStreaming(deps:{verifyPrice?:(mode:IgEnvironment,epic:string)=>Promise<IgDelayEvidence>;identity?:(mode:IgEnvironment)=>StreamingIdentity|null;sdk?:any;now?:()=>number;verifyEveryMs?:number}={}){
+ const verifyEveryMs=deps.verifyEveryMs??50000;
  const identity=deps.identity??getIgStreamingSession,now=deps.now??Date.now;
  const events=new EventEmitter();const states=new Map<IgEnvironment,any>();
  function verifiedQuote(s:any,q:any){
@@ -26,7 +27,10 @@ export function createIgStreaming(deps:{verifyPrice?:(mode:IgEnvironment,epic:st
   // Endast öppna diagram verifieras här; inga REST-anrop per marknadstick eller katalograd.
   for(const epic of s.chartEpics as Set<string>){
    const at=now(),last=s.attempts.get(epic);
-   if(s.pending.has(epic)||(last!==undefined&&at-last<30000))continue;
+   // B1 (granskning 2): strömmen som själv anger DELAY=0 behöver ingen REST-kontroll. Bevis gäller 60 s,
+   // så en kontroll var 50:e s räcker (förr var 30:e s → 8 läsningar/min för fyra diagram).
+   const live=s.quotes.get(epic);if(live&&live.delayTime===0)continue;
+   if(s.pending.has(epic)||(last!==undefined&&at-last<verifyEveryMs))continue;
    s.attempts.set(epic,at);s.pending.add(epic);const epoch=s.epoch;
    void deps.verifyPrice(mode,epic).then(e=>{
     if(states.get(mode)!==s||identity(mode)?.generation!==s.generation||s.epoch!==epoch||s.status!=='CONNECTED:WS-STREAMING'||!s.chartEpics.has(epic))return;

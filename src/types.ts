@@ -78,6 +78,9 @@ export interface OrderRequest {
   closeDealId?: string;
   /** IG: insats (marginal) i kontovalutan; storleken räknas fram från IG:s regler */
   stakeAmount?: number;
+  /** IG: systemets tidsstängning (sekunder). Sparas på orderutkastet så att en order som först blir
+   *  "okänd" och senare stäms av som accepterad ändå får sin tidsstängning (granskning 2, B1). */
+  timedExitSec?: number;
 }
 
 export interface OrderResult {

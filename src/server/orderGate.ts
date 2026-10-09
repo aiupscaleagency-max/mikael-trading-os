@@ -115,20 +115,30 @@ export function setOrderGateSessionHook(hook: ((input: GateInput) => string | nu
   sessionHook = hook; approvalOverride = forceApproval;
 }
 
+/** Öppnar ordern en ny position (eller ökar en)? IG/CFD anger det uttryckligen med `opening`:
+ *  stängning/minskning (även KÖP som stänger en kort) är aldrig "ny" och stoppas aldrig av kill switch
+ *  eller tillfälliga spärrar. Andra handelsplatser utan `opening`: KÖP = ny position. */
+export function isOpeningOrder(input: Pick<GateInput, "side" | "opening" | "unitsOrder">): boolean {
+  if (typeof input.opening === "boolean") return input.opening;
+  if (input.unitsOrder) return true; // IG utan uttrycklig flagga: försiktigt, behandla som ny
+  return input.side === "BUY";
+}
+
 export async function checkOrderGate(input: GateInput): Promise<GateResult> {
   const deny = (error: string): GateResult => {
     log.warn(`🛡 Order stoppad (${input.source}): ${error}`);
     return { ok: false, error };
   };
 
-  if (input.side === "BUY" || input.opening) {
+  const opening = isOpeningOrder(input);
+  if (opening) {
     const state = await loadState().catch(() => null);
     if (state?.killSwitchActive) {
       return deny("Kill switch är på. Inga nya positioner förrän du stänger av den.");
     }
   }
 
-  if ((input.side === "BUY" || input.opening) && !input.source.startsWith("godkänd:")) {
+  if (opening && !input.source.startsWith("godkänd:")) {
     for (const b of blocks) { const why = b(input); if (why) return deny(why); }
   }
   if (sessionHook) {

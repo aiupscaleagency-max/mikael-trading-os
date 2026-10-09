@@ -241,7 +241,8 @@ export const TOOLS: Record<string, ToolDef> = {
         if (stale) return { accepted: false, reason: stale };
         const { getHorizonMin } = await import("../server/tradeHorizon.js");
         const { createIgPendingOrder } = await import("../server/api.js");
-        if (ctx.config.executionMode === "approve" || !ctx.broker.executionEnabled()) {
+        // Granskning 2 (mindre 1): även i AUTO-läge köas IG-förslaget som väntande order (GODKÄNN) i stället för att tappas.
+        {
           const r = await createIgPendingOrder({
             symbol, side, source: "agent", orderType: type, limitPrice, takeProfit, stopLoss,
             reason: String(reasoning ?? "").slice(0, 200), horizonSec: getHorizonMin() * 60,
@@ -253,7 +254,6 @@ export const TOOLS: Record<string, ToolDef> = {
             proposedOrder: { symbol, side, stakePct: r.pendingOrder.stakePct, stakeAmount: r.pendingOrder.stakeAmount, currency: r.pendingOrder.currency, takeProfit: r.pendingOrder.takeProfit, stopLoss: r.pendingOrder.stopLoss },
           };
         }
-        return { accepted: false, reason: "AUTO-läge skickar inte IG-ordrar direkt; varje IG-order kräver GODKÄNN." };
       }
 
       const orderReq: OrderRequest = {
