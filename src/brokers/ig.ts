@@ -1,8 +1,10 @@
 import type { BrokerAdapter } from "./adapter.js";
 import type { Account, Kline, OrderRequest, OrderResult, Position, Ticker } from "../types.js";
 import {
-  getIgStatus, testIgConnection, getIgAccounts, getIgPositions, igOrderExecutionEnabled, type IgEnvironment,
+  getIgStatus, testIgConnection, getIgAccounts, getIgPositions, igOrderExecutionEnabled, withIgPriority, type IgEnvironment,
 } from "../integrations/igConnection.js";
+import { getIgOrderState } from "../integrations/igOrders.js";
+import { igPositionLimitReason } from "../integrations/igRiskLimits.js";
 import { getIgMarket, getIgCandles, type IgTimeframe } from "../integrations/igMarkets.js";
 import { previewIgOrder, confirmIgOrder, closeIgPosition } from "../integrations/igOrders.js";
 
@@ -43,13 +45,18 @@ export interface IgDeps {
   close: (env: IgEnvironment, dealId: string) => Promise<any>;
   enabled: (env: IgEnvironment) => boolean;
   now: () => number;
+  /** M1: verifierade positioner markerar accepterade order som observerade */
+  observe: (env: IgEnvironment, positions: { dealId: string | null }[]) => void;
 }
 
 const defaultDeps: IgDeps = {
   status: getIgStatus, connect: testIgConnection, accounts: getIgAccounts, positions: getIgPositions,
   market: getIgMarket, candles: getIgCandles, preview: previewIgOrder, confirm: confirmIgOrder, close: closeIgPosition,
   enabled: igOrderExecutionEnabled, now: Date.now,
+  observe: (env, positions) => { try { getIgOrderState(env, positions); } catch { /* bara avstämning */ } },
 };
+/** Positioner cachas så här länge (samma IG-session). Order och stängningar läser alltid färskt. */
+export const IG_POSITIONS_CACHE_MS = 15_000;
 
 /** Pengar för en order i kontovalutan: storlek från IG:s regler, marginal, SL/TP i kronor. */
 export interface IgStakeQuote {
@@ -88,7 +95,9 @@ export class IgBroker implements BrokerAdapter {
   private readonly d: IgDeps;
   private connecting: Promise<unknown> | null = null;
   private lastConnectFail = 0;
-  private accountCache: { at: number; value: Account } | null = null;
+  private accountCache: { at: number; gen: string | null; value: Account } | null = null;
+  private positionsCache: { at: number; gen: string | null; value: Position[] } | null = null;
+  private positionsJob: Promise<Position[]> | null = null;
 
   constructor(env: IgEnvironment, deps: Partial<IgDeps> = {}) {
     this.env = env;
@@ -120,8 +129,9 @@ export class IgBroker implements BrokerAdapter {
 
   async getAccount(): Promise<Account> {
     await this.ensureConnected();
-    if (this.accountCache && this.d.now() - this.accountCache.at < 15_000) return this.accountCache.value;
-    await this.d.accounts(this.env).catch(() => null); // uppdaterar kontosammanfattningen i statusen
+    const gen = this.status().connectionGeneration ?? null;
+    if (this.accountCache && this.accountCache.gen === gen && this.d.now() - this.accountCache.at < 15_000) return this.accountCache.value;
+    const read = await this.d.accounts(this.env).catch(() => null); // uppdaterar kontosammanfattningen i statusen
     const a = this.status().account;
     if (!a) throw new Error("IG-kontot kunde inte läsas");
     const cur = a.currency ?? "?";
@@ -132,12 +142,28 @@ export class IgBroker implements BrokerAdapter {
       updatedAt: this.d.now(),
       currency: cur, balance, available, profitLoss: finite(a.profitLoss) ? a.profitLoss : null,
     };
-    this.accountCache = { at: this.d.now(), value };
+    // Misslyckad läsning (t.ex. läsgräns): visa senast kända men cacha den inte som färsk
+    if (read && (read as { status?: string }).status === "ready") this.accountCache = { at: this.d.now(), gen, value };
+    else value.updatedAt = a.updatedAt ?? value.updatedAt;
     return value;
   }
 
-  async getPositions(): Promise<Position[]> {
+  /** Positioner. Cachas 15 s (singleflight, samma IG-session) så att panelernas polling inte äter läsbudgeten.
+   *  fresh = läs alltid från IG (order, stängning, tidsgräns). */
+  async getPositions(opts: { fresh?: boolean } = {}): Promise<Position[]> {
     await this.ensureConnected();
+    const gen = this.status().connectionGeneration ?? null;
+    const c = this.positionsCache;
+    if (!opts.fresh && c && c.gen === gen && this.d.now() - c.at < IG_POSITIONS_CACHE_MS) return c.value.map((p) => ({ ...p }));
+    if (!opts.fresh && this.positionsJob) return (await this.positionsJob).map((p) => ({ ...p }));
+    const job = this.readPositions(gen);
+    if (!opts.fresh) this.positionsJob = job;
+    try { return (await job).map((p) => ({ ...p })); } finally { if (this.positionsJob === job) this.positionsJob = null; }
+  }
+  /** Glöm cachen (efter en order/stängning). */
+  invalidatePositions(): void { this.positionsCache = null; this.accountCache = null; }
+
+  private async readPositions(gen: string | null): Promise<Position[]> {
     const ps = await this.d.positions(this.env);
     if (ps.status !== "ready" || !Array.isArray(ps.positions)) throw new Error(ps.error || "IG-positionerna kunde inte läsas");
     const out: Position[] = [];
@@ -164,6 +190,8 @@ export class IgBroker implements BrokerAdapter {
         stopLevel: p.stopLevel ?? null, limitLevel: p.limitLevel ?? null,
       });
     }
+    this.d.observe(this.env, (ps.positions as any[]).map((p) => ({ dealId: p.dealId ?? null })));
+    this.positionsCache = { at: this.d.now(), gen, value: out };
     return out;
   }
 
@@ -184,7 +212,7 @@ export class IgBroker implements BrokerAdapter {
   }
 
   /** Storlek och pengar för en insats (marginal) i kontovalutan. Skickar inget. */
-  async stakeQuote(input: { epic: string; direction: "BUY" | "SELL"; stake: number; stopLoss?: number; takeProfit?: number }): Promise<IgStakeQuote> {
+  async stakeQuote(input: { epic: string; direction: "BUY" | "SELL"; stake: number; stopLoss?: number; takeProfit?: number; size?: number }): Promise<IgStakeQuote> {
     await this.ensureConnected();
     const m = await this.d.market(this.env, this.epic(input.epic));
     const q = m.quote, r = m.calculationRules ?? {};
@@ -206,7 +234,8 @@ export class IgBroker implements BrokerAdapter {
     const decimals = minSize !== null ? Math.max(0, (String(minSize).split(".")[1] ?? "").length) : 2;
     const step = 10 ** -decimals;
     const raw = input.stake / perContractMargin;
-    const size = Math.floor(raw / step + 1e-9) * step;
+    // Fast antal (quantity) prissätts som det är och måste klara samma budget som en insats
+    const size = finite(input.size) && input.size > 0 ? input.size : Math.floor(raw / step + 1e-9) * step;
     const minMargin = minSize !== null ? minSize * perContractMargin : null;
     const priced = (sz: number) => ({
       size: +sz.toFixed(decimals),
@@ -222,7 +251,14 @@ export class IgBroker implements BrokerAdapter {
       };
     }
     if (!(size > 0)) return { ...base, minMargin, reason: "Insatsen räcker inte till något kontrakt" };
-    return { ...base, ok: true, minMargin, ...priced(size) };
+    const pr = priced(size);
+    // Samma gränser som godkännandet (igOrders): marginal ≤ 3 % av saldot, ≤ tillgängligt, SL-förlust ≤ 5 %
+    const acc = await this.getAccount().catch(() => null);
+    if (acc && finite(acc.balance) && finite(acc.available) && acc.currency === r.pointCurrency) {
+      const why = igPositionLimitReason({ margin: pr.margin, risk: pr.moneyAtSl, balance: acc.balance, available: acc.available, currency: acc.currency ?? "" });
+      if (why) return { ...base, minMargin, ...pr, ok: false, reason: why };
+    }
+    return { ...base, ok: true, minMargin, ...pr };
   }
 
   /** Standardnivåer om agenten inte gav SL/TP: procent från priset, minst IG:s minsta avstånd × 1,5. */
@@ -241,6 +277,10 @@ export class IgBroker implements BrokerAdapter {
 
   async placeOrder(order: OrderRequest): Promise<OrderResult> {
     if (!this.d.enabled(this.env)) throw new IgExecutionOffError(this.env);
+    // Orderns läsningar (granskning + bekräftelse) har förtur i läsbudgeten
+    try { return await withIgPriority(() => this.placeOrderInner(order)); } finally { this.invalidatePositions(); }
+  }
+  private async placeOrderInner(order: OrderRequest): Promise<OrderResult> {
     await this.ensureConnected();
     if (order.closeDealId) return this.closePosition(order.closeDealId, order.symbol);
     const epic = this.epic(order.symbol);
@@ -279,7 +319,7 @@ export class IgBroker implements BrokerAdapter {
   async closePosition(dealId: string, symbol = ""): Promise<OrderResult> {
     if (!this.d.enabled(this.env)) throw new IgExecutionOffError(this.env);
     await this.ensureConnected();
-    const plan = await this.d.close(this.env, dealId);
+    const plan = await withIgPriority(() => this.d.close(this.env, dealId)).finally(() => this.invalidatePositions());
     if (plan.status === "unknown") throw new Error(`IG-stängningens utfall är okänt (${plan.error ?? ""}). Skickas inte om; kontrollera i IG.`);
     if (plan.status === "failed") throw new Error(plan.error || "IG avvisade stängningen");
     return { orderId: dealId, symbol, side: "SELL", type: "MARKET", status: plan.status, executedQty: 0, cummulativeQuoteQty: 0, avgFillPrice: 0, timestamp: this.d.now(), dealId, dealReference: plan.dealReference };

@@ -41,7 +41,10 @@ export function treeEvent(e: TreeEvent): void {
     try {
       if (fs.statSync(FILE).size > MAX_BYTES) fs.renameSync(FILE, `${FILE}.1`);
     } catch { /* filen finns inte än */ }
-    const line = JSON.stringify({ ts: new Date().toISOString(), source: "trading", ...e, why: e.why?.slice(0, 160) });
+    // Andra instansen (t.ex. IG-porten på :3940) märks med AGENT_TREE_SOURCE, t.ex. "trading-ig",
+    // så att arbetsträdet kan skilja instanserna åt även när de skriver till samma fil.
+    const source = (process.env.AGENT_TREE_SOURCE || "trading").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40) || "trading";
+    const line = JSON.stringify({ ts: new Date().toISOString(), source, ...e, why: e.why?.slice(0, 160) });
     fs.appendFile(FILE, line + "\n", () => {});
   } catch { /* arbetsträdet är bara en vy */ }
 }

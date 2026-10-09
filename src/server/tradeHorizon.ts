@@ -17,6 +17,7 @@ import { log } from "../logger.js";
 import { expireStalePendingOrders } from "./orderGate.js";
 import { recordLiveFill } from "./results.js";
 import { isLiveTpSlSelling, onLiveTpSlSold, removeLiveTpSl } from "./liveTpSl.js";
+import { withIgPriority, isIgTemporaryRateError } from "../integrations/igConnection.js";
 
 export const HORIZON_CHOICES = [1, 5, 15, 30] as const;
 /** Längsta horisont som säljs automatiskt (Mike: högst 30 min i början) */
@@ -103,6 +104,9 @@ export interface TimedExit {
   /** IG: positionen som stängs (DELETE /positions/otc) när tiden är slut */
   dealId?: string;
   attempts?: number;
+  /** IG: väntar | orderläget av | försöker igen | kräver åtgärd (visas i dashboarden, tas aldrig bort tyst) */
+  igState?: "waiting" | "execution-off" | "retrying" | "needs-attention";
+  lastError?: string;
 }
 
 let exits: TimedExit[] = (() => {
@@ -145,21 +149,58 @@ export function cancelTimedExitForDeal(dealId: string): void {
   for (const x of exits.filter((y) => y.dealId === dealId)) removeExit(x.id);
 }
 
-/** IG: stäng en position när tiden är slut. Orderläge AV → inget kan vara öppnat av oss, inget görs. */
+/** Nästa försök: 20 s vid läsgräns, sedan 30 s → 60 s → … högst 5 min. */
+function igRetryDelayMs(attempts: number, rateLimited: boolean): number {
+  return rateLimited ? 20_000 : Math.min(300_000, 30_000 * 2 ** Math.max(0, attempts - 1));
+}
+function setExitState(id: string, patch: Partial<TimedExit>): void {
+  const e = exits.find((y) => y.id === id);
+  if (!e) return;
+  Object.assign(e, patch);
+  writeJson(EXITS_FILE, exits);
+}
+
+/**
+ * IG: stäng en position när tiden är slut. Tas bort FÖRST när IG bekräftat att positionen
+ * är stängd (eller redan borta). Annars ligger den kvar, syns i dashboarden och försöker igen:
+ *  - orderläget av   → "väntar – orderläget av" (inget skickas, kollas igen varje minut)
+ *  - läsgräns        → räknas inte som försök, nytt försök om 20 s
+ *  - annat fel       → nytt försök med växande paus (max 5 min); efter 3 försök "kräver åtgärd"
+ * Varje försök läser positionerna färskt först, så en redan stängd position stängs aldrig två gånger.
+ */
 export async function closeIgAtExpiry(x: TimedExit, broker: BrokerAdapter, onEvent?: (e: string, d: unknown) => void): Promise<void> {
-  const ig = broker as BrokerAdapter & { executionEnabled?: () => boolean; closePosition?: (id: string, s?: string) => Promise<unknown> };
+  const ig = broker as BrokerAdapter & { executionEnabled?: () => boolean; closePosition?: (id: string, s?: string) => Promise<unknown>; getPositions: (o?: { fresh?: boolean }) => Promise<Array<{ dealId?: string }>> };
   if (!ig.closePosition || !x.dealId) { removeExit(x.id); return; }
   if (ig.executionEnabled && !ig.executionEnabled()) {
-    removeExit(x.id);
-    log.warn(`[horisont] ${x.symbol}: orderläget är avstängt, ingen IG-stängning skickas (stäng själv i IG om positionen finns).`);
+    // Positionen redan stängd (t.ex. i IG eller av stop-loss)? Då behövs tidsgränsen inte längre.
+    const list = await ig.getPositions().catch(() => null);
+    if (list && !list.some((p) => p.dealId === x.dealId)) { removeExit(x.id); log.info(`[horisont] ${x.symbol}: positionen finns inte längre i IG`); return; }
+    if (x.igState !== "execution-off") log.warn(`[horisont] ${x.symbol}: tiden är ute men orderläget är avstängt. Ligger kvar som "väntar – orderläget av" (stäng själv i IG).`);
+    setExitState(x.id, { igState: "execution-off", lastError: "Orderläget är avstängt – inget skickas till IG", exitAt: Date.now() + 60_000 });
+    onEvent?.("timed-exit", { symbol: x.symbol, dealId: x.dealId, state: "execution-off" });
     return;
   }
-  const open = (await broker.getPositions()).some((p) => p.dealId === x.dealId);
-  if (!open) { removeExit(x.id); log.info(`[horisont] ${x.symbol}: positionen är redan stängd i IG`); return; }
-  await ig.closePosition(x.dealId, x.symbol);
-  removeExit(x.id);
-  log.trade(`[horisont] tiden ute: stängde IG-positionen ${x.dealId} (${x.symbol}, ${x.live ? "LIVE" : "TEST"})`);
-  onEvent?.("timed-exit", { symbol: x.symbol, dealId: x.dealId });
+  try {
+    await withIgPriority(async () => {
+      const open = (await ig.getPositions({ fresh: true })).some((p) => p.dealId === x.dealId);
+      if (!open) { removeExit(x.id); log.info(`[horisont] ${x.symbol}: positionen är redan stängd i IG`); onEvent?.("timed-exit", { symbol: x.symbol, dealId: x.dealId, state: "closed" }); return; }
+      await ig.closePosition!(x.dealId!, x.symbol);
+      // Bekräftelse: positionen ska vara borta i en färsk läsning
+      const still = (await ig.getPositions({ fresh: true }).catch(() => null))?.some((p) => p.dealId === x.dealId);
+      if (still) throw new Error("IG bekräftade inte stängningen (positionen syns fortfarande)");
+      removeExit(x.id);
+      log.trade(`[horisont] tiden ute: stängde IG-positionen ${x.dealId} (${x.symbol}, ${x.live ? "LIVE" : "TEST"})`);
+      onEvent?.("timed-exit", { symbol: x.symbol, dealId: x.dealId, state: "closed" });
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const rate = isIgTemporaryRateError(err) || /läsgräns|läsanrop|läsbudget/i.test(msg);
+    const attempts = (x.attempts ?? 0) + (rate ? 0 : 1);
+    const state = !rate && attempts >= 3 ? "needs-attention" : "retrying";
+    setExitState(x.id, { attempts, igState: state, lastError: msg.slice(0, 200), exitAt: Date.now() + igRetryDelayMs(attempts, rate) });
+    log.warn(`[horisont] ${x.symbol}: IG-stängningen misslyckades (${rate ? "läsgräns, räknas inte" : `försök ${attempts}`}): ${msg}. Försöker igen${state === "needs-attention" ? " – KRÄVER ÅTGÄRD, kontrollera i IG" : ""}.`);
+    onEvent?.("timed-exit", { symbol: x.symbol, dealId: x.dealId, state, error: msg });
+  }
 }
 
 const baseOf = (s: string) => s.toUpperCase().replace("/", "").replace(/(USDT|USDC|USD|EUR)$/, "");

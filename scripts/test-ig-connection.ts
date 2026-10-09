@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {execFileSync,spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
-import {createIgConnection,getIgStatus} from "../src/integrations/igConnection.js";
+import {createIgConnection,getIgStatus,withIgPriority} from "../src/integrations/igConnection.js";
 const directory=mkdtempSync(path.join(os.tmpdir(),"ig-readonly-"));
 const credentialPath=path.join(directory,"credentials.json");process.env.IG_CREDENTIALS_FILE=credentialPath;
 writeFileSync(credentialPath,JSON.stringify({demo:{apiKey:"fixture-demo-key"},live:{apiKey:"fixture-live-key"}}),{mode:0o600});
@@ -86,7 +86,11 @@ await budgetConnection.testConnection('demo');const initialBudgetGeneration=budg
 await budgetConnection.testConnection('demo');assert.equal(budgetLogins,1,'Återanslutningsknappen återanvänder en giltig verifierad session');
 assert.equal(budgetConnection.getStatus().environments.demo.connectionGeneration,initialBudgetGeneration);
 await budgetConnection.getAccounts('demo');await budgetConnection.getPositions('demo');
-for(let i=0;i<21;i++)await budgetConnection.callAuthenticated('demo','workingorders');
+// Bakgrundsläsningar lämnar reserven (8) åt order/stängningar; orderprioritet får använda resten.
+for(let i=0;i<13;i++)await budgetConnection.callAuthenticated('demo','workingorders');
+assert.equal(budgetConnection.getReadBudget('demo').used,16);
+await assert.rejects(budgetConnection.callAuthenticated('demo','markets'),/begränsade antal läsanrop/,'Bakgrund stoppas vid reserven');
+await withIgPriority(async()=>{for(let i=0;i<8;i++)await budgetConnection.callAuthenticated('demo','workingorders');});
 assert.equal(budgetConnection.getReadBudget('demo').used,24);
 const requestsAtLimit=budgetRequests;
 await assert.rejects(budgetConnection.callAuthenticated('demo','markets'),/begränsade antal läsanrop/);
@@ -94,7 +98,7 @@ assert.equal((await budgetConnection.getAccounts('demo')).status,'error');assert
 assert.equal(budgetRequests,requestsAtLimit,'Samtliga GET-vägar stoppas lokalt innan IG-anrop');
 assert.equal(budgetConnection.getStatus().environments.demo.status,'connected','Lokal budget kastar inte verifierad session');
 await budgetConnection.testConnection('live');assert.equal(budgetConnection.getReadBudget('live').used,1,'Demo och Live har separata kontobudgetar');
-for(let i=0;i<23;i++)await budgetConnection.callAuthenticated('live','workingorders');assert.equal(budgetConnection.getReadBudget('live').appUsed,48);await assert.rejects(budgetConnection.callAuthenticated('live','markets'),/begränsade antal läsanrop/);
+await withIgPriority(async()=>{for(let i=0;i<23;i++)await budgetConnection.callAuthenticated('live','workingorders');});assert.equal(budgetConnection.getReadBudget('live').appUsed,48);await assert.rejects(withIgPriority(()=>budgetConnection.callAuthenticated('live','markets')),/begränsade antal läsanrop/,'Även prioritet stoppas när hela budgeten är slut');
 budgetClock+=60001;assert.equal((await budgetConnection.getAccounts('demo')).status,'ready');assert.equal(budgetLogins,2,'Återhämtning behöver inte ny Demo-login');
 assert.equal(budgetConnection.getStatus().environments.demo.connectionGeneration,initialBudgetGeneration);
 const initialLimited=createIgConnection({loadCredentials:()=>credentials,fetch:(async(url:string,options:RequestInit)=>url.endsWith('/accounts')?new Response(JSON.stringify({errorCode:'error.public-api.exceeded-account-allowance'}),{status:403}):mock(url,options)) as typeof fetch});

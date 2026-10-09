@@ -9,6 +9,9 @@ services:
       - .env
     volumes:
       - ./data:/app/data
+      # IG: inloggningsfilen finns utanför repot och måste monteras läsbar för containern (filen ska ha rättigheter 600
+      # och ägas av samma uid som processen i containern). Sätt sedan IG_CREDENTIALS_FILE=/run/ig/trading-ig.json i .env.
+      # - ${HOME}/.config/aiupscale/trading-ig.json:/run/ig/trading-ig.json:ro
     labels:
       - traefik.enable=true
       - traefik.http.routers.trading-os.rule=Host(`trading.aiupscale.agency`)

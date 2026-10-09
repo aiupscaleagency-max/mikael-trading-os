@@ -284,6 +284,9 @@ export async function runOrchestratedTurn(params: {
 
   turnEnd(`Turen klar på ${(totalMs / 1000).toFixed(1)} s`);
   try {
+    const { igTurnStale } = await import("../server/igTurnGuard.js");
+    const stale = igTurnStale();
+    if (stale) { analysisEnd({ status: "stopped", reason: stale }); throw new Error("__stale__"); }
     const orders: AnalysisOrder[] = headTrader.toolCalls
       .filter((c) => c.name === "place_order")
       .map((c) => {

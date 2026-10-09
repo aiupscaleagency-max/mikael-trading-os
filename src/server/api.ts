@@ -18,6 +18,7 @@ import { igMarketData } from "./igMarketData.js";
 import { handleIgRoutes } from "./igRoutes.js";
 import { igOrderExecutionEnabled } from "../integrations/igConnection.js";
 import { currentStake } from "../risk/stakeLadder.js";
+import { igAccountLimits } from "../integrations/igRiskLimits.js";
 import { handleUpdate as handleTelegramUpdate, sendMessage as sendTelegramMessage, setupWebhook as setupTelegramWebhook } from "./telegram.js";
 import { getMarketSnapshot, formatSnapshotForPrompt } from "./marketContext.js";
 import { detectAllPatterns, type Candle } from "./patternDetection.js";
@@ -30,7 +31,7 @@ import { computePositionSize, validateOrderRisk } from "../risk/eliteRisk.js";
 import { verifyAccessToken, signInWithPassword } from "../auth/supabase.js";
 import { getSignals, refreshSignal } from "./signalEngine.js";
 import { getKlineStreamStatus, getFormingCandle, getClosedCandles } from "./klineStream.js";
-import { getResults, recordLiveFill } from "./results.js";
+import { getResultsCached, recordLiveFill } from "./results.js";
 import { CATEGORIES, getCategory, type Category } from "./movers.js";
 import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
 import { addTimedExit, cancelTimedExit, cancelTimedExitForDeal, getHorizonMin, HORIZON_CHOICES, listTimedExits, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
@@ -329,6 +330,30 @@ export async function createIgPendingOrder(b: Record<string, unknown>, broker: I
     if (v !== undefined && !(Number.isFinite(v) && v > 0)) return { ok: false, error: `${label} måste vara ett pris över 0` };
   }
   if (orderType === "LIMIT" && limitPrice === undefined) return { ok: false, error: "Limit-order kräver ett pris" };
+  // M3: motsatt riktning mot en öppen position på samma EPIC STÄNGER den (IG close-position med dealId),
+  // aldrig en ny motriktad (hedgande) position. Bara SÄLJ utan position öppnar en kort position.
+  const sellAll = b.sellAll === true || b.sellAll === "true";
+  if (sellAll && side !== "SELL") return { ok: false, error: "Sälj allt gäller bara SÄLJ" };
+  if (b.forceOpen !== true) {
+    let opposite: Awaited<ReturnType<IgBroker["getPositions"]>>;
+    try { opposite = (await broker.getPositions({ fresh: true })).filter((x) => x.symbol === symbol && x.dealId && x.direction !== side); }
+    catch (err) { return { ok: false, status: 409, error: `IG-positionerna kunde inte läsas, så det går inte att avgöra om ordern ska stänga eller öppna: ${err instanceof Error ? err.message : String(err)}` }; }
+    if (opposite.length) {
+      const gate = await checkOrderGate({ live: broker.mode === "live", side, unitsOrder: true, opening: false, source: String(b.source || "dashboard") });
+      if (!gate.ok) return { ok: false, error: gate.error };
+      let first: PendingOrder | null = null;
+      for (const pos of opposite) {
+        const po = await addPendingOrder({
+          source: String(b.source || "dashboard").slice(0, 60), venue: `broker:${broker.name}`, live: broker.mode === "live",
+          symbol, side, name: pos.name ?? igMarketData.nameOf(symbol) ?? undefined, quantity: pos.quantity, closeDealId: pos.dealId,
+          refPrice: pos.currentPrice, reason: `Stänger ${pos.direction === "SELL" ? "kort" : "lång"} position ${pos.quantity} (${pos.dealId})${b.reason ? ` · ${String(b.reason).slice(0, 120)}` : ""}`,
+        });
+        first ??= po;
+      }
+      return { ok: true, pendingOrder: first!, quote: { ok: true, closes: opposite.length } };
+    }
+    if (sellAll) return { ok: false, error: `Ingen lång position i ${igMarketData.nameOf(symbol) ?? symbol} att stänga` };
+  }
   let account, ticker;
   try { [account, ticker] = await Promise.all([broker.getAccount(), broker.getTicker(symbol)]); }
   catch (err) { return { ok: false, status: 409, error: err instanceof Error ? err.message : String(err) }; }
@@ -343,8 +368,10 @@ export async function createIgPendingOrder(b: Record<string, unknown>, broker: I
   const pct = Math.min(3, Math.max(0.1, Number(b.stakePct) || currentStake()?.pct || 1));
   const quantity = num(b.quantity);
   const stakeAmount = Math.round(((account.balance ?? 0) * pct / 100) * 100) / 100;
-  const q = await broker.stakeQuote({ epic: symbol, direction: side, stake: stakeAmount, stopLoss, takeProfit }).catch((e) => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }) as { ok: boolean; reason?: string });
-  if (!q.ok && quantity === undefined) return { ok: false, error: q.reason ?? "Storleken kunde inte räknas fram", quote: q };
+  // Fast antal (quantity) prissätts och måste klara samma budget (≤ 3 % marginal) som en insats
+  if (quantity !== undefined && !(Number.isFinite(quantity) && quantity > 0)) return { ok: false, error: "Antalet måste vara över 0" };
+  const q = await broker.stakeQuote({ epic: symbol, direction: side, stake: stakeAmount, stopLoss, takeProfit, ...(quantity !== undefined ? { size: quantity } : {}) }).catch((e) => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }) as { ok: boolean; reason?: string });
+  if (!q.ok) return { ok: false, error: q.reason ?? "Storleken kunde inte räknas fram", quote: q };
   const gate = await checkOrderGate({ live: broker.mode === "live", side, unitsOrder: true, opening: true, source: String(b.source || "dashboard") });
   if (!gate.ok) return { ok: false, error: gate.error };
   const hz = Number(b.horizonSec);
@@ -1213,7 +1240,10 @@ export function startServer(
           liveKeys: { ig: !!brokers.ig && (brokers.ig as IgBroker).status().credentialsComplete },
           platform: "IG", env: igMarketData.getActiveEnv(),
           execution: { demo: igOrderExecutionEnabled("demo"), live: igOrderExecutionEnabled("live") },
-          limits: { maxLiveStakeUsd: MAX_LIVE_STAKE_USD, maxTestStakeUsd: testStakeCapUsd(), maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD, liveSpentTodayUsd: getLiveSpentTodayUsd() },
+          limits: { maxLiveStakeUsd: MAX_LIVE_STAKE_USD, maxTestStakeUsd: testStakeCapUsd(), maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD, liveSpentTodayUsd: getLiveSpentTodayUsd(),
+            // IG-ordrar räknas i antal kontrakt: USD-taken ovan gäller INTE dem. IG använder gränser i kontovalutan.
+            ig: { note: "IG-ordrar (Demo och Live) prövas mot gränser i kontovalutan, inte USD-taken ovan.", rules: igAccountLimits(0).basis,
+              env: { IG_MAX_STAKE_PCT: process.env.IG_MAX_STAKE_PCT ?? "3", IG_MAX_TOTAL_MARGIN_PCT: process.env.IG_MAX_TOTAL_MARGIN_PCT ?? "15", IG_MAX_DAILY_LOSS_PCT: process.env.IG_MAX_DAILY_LOSS_PCT ?? "5" } } },
         });
         return;
       }
@@ -1262,7 +1292,7 @@ export function startServer(
       if (url.pathname === "/api/results" && method === "GET") {
         const q = url.searchParams.get("mode");
         const mode = q === "LIVE" || q === "TEST" ? q : (activeBrokerName === "ig" ? "LIVE" : "TEST");
-        json(res, await getResults(brokers, mode, listLiveTpSl()));
+        json(res, await getResultsCached(brokers, mode));
         return;
       }
 
@@ -1315,8 +1345,11 @@ export function startServer(
           const iv = Number(url.searchParams.get("interval")) || getHorizonMin();
           const c = url.searchParams.get("cat") || "move";
           const cat = (c in CATEGORIES ? c : "move") as Category;
-          const movers = await getCategory(cat, iv, 10);
-          json(res, { ok: true, interval: iv, cat, categories: CATEGORIES, feePct: null, source: `IG ${igMarketData.getActiveEnv() === "live" ? "Live" : "Demo"}`, note: movers.note ?? null, movers: [...movers] });
+          const env = igMarketData.getActiveEnv(); // bunden vid begärans start
+          const movers = await getCategory(cat, iv, 10, { env });
+          const changed = env !== igMarketData.getActiveEnv();
+          json(res, { ok: true, env, interval: iv, cat, categories: CATEGORIES, feePct: null, source: `IG ${env === "live" ? "Live" : "Demo"}`,
+            note: changed ? "Kontot byttes under hämtningen; uppdatera igen." : movers.note ?? null, movers: changed ? [] : [...movers], envChanged: changed });
         } catch (err) {
           jsonStatus(res, 502, { ok: false, error: err instanceof Error ? err.message : String(err) });
         }

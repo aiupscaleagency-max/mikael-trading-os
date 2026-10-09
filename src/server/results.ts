@@ -24,6 +24,8 @@ export interface ResultTrade {
 export interface ResultOpen {
   coin: string; qty: number; avg: number; price: number | null; value: number | null; upnl: number | null; upnlPct: number | null;
   tp?: number; sl?: number; epic?: string; dealId?: string; direction?: "BUY" | "SELL"; closeAt?: number | null;
+  /** Tidsgränsens läge: waiting | execution-off ("väntar – orderläget av") | retrying | needs-attention */
+  exitState?: string | null; exitError?: string | null;
 }
 export interface Results {
   mode: "TEST" | "LIVE";
@@ -112,6 +114,8 @@ export async function getResults(
           upnlPct: p.pnlVerified && exposure > 0 ? ((p.direction === "SELL" ? -1 : 1) * (p.currentPrice - p.avgEntryPrice) / p.avgEntryPrice) * 100 : null,
           tp: p.limitLevel ?? undefined, sl: p.stopLevel ?? undefined,
           closeAt: exits.find((x) => x.dealId === p.dealId)?.exitAt ?? null,
+          exitState: (() => { const x = exits.find((y) => y.dealId === p.dealId); return x ? x.igState ?? "waiting" : null; })(),
+          exitError: exits.find((x) => x.dealId === p.dealId)?.lastError ?? null,
         });
       }
     } catch (e) { errors.push(`positioner: ${e instanceof Error ? e.message : String(e)}`); }
@@ -127,4 +131,19 @@ export async function getResults(
     } catch { /* bara för tradingminnet */ }
   }
   return summarize({ mode, env, label, currency, trades, open, error: errors.length ? errors.join(" · ") : null, partial });
+}
+
+// Panelerna frågar ofta (var 5:e s). Svaret återanvänds i 10 s per läge och samtidiga anrop delar
+// samma läsning, så att resultatpanelen inte äter IG:s läsbudget som order och stängningar behöver.
+const resultsCache = new Map<string, { at: number; value: Results }>();
+const resultsJobs = new Map<string, Promise<Results>>();
+export const RESULTS_CACHE_MS = 10_000;
+export async function getResultsCached(brokers: Record<string, BrokerAdapter>, mode: "TEST" | "LIVE", now = Date.now): Promise<Results> {
+  const c = resultsCache.get(mode);
+  if (c && now() - c.at < RESULTS_CACHE_MS) return c.value;
+  const running = resultsJobs.get(mode);
+  if (running) return running;
+  const job = getResults(brokers, mode).then((v) => { resultsCache.set(mode, { at: now(), value: v }); return v; });
+  resultsJobs.set(mode, job);
+  try { return await job; } finally { resultsJobs.delete(mode); }
 }

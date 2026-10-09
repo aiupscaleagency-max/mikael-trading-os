@@ -3,7 +3,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { log } from "../logger.js";
 import { dataPath } from "../dataDir.js";
-import { getIgStatus, testIgConnection, type IgEnvironment } from "../integrations/igConnection.js";
+import { getIgStatus, testIgConnection, withIgPriority, type IgEnvironment } from "../integrations/igConnection.js";
 import { getIgMarket, getIgCandles, searchIgMarkets, igMarketCategory, type IgTimeframe } from "../integrations/igMarkets.js";
 import { igStreaming } from "../integrations/igStreaming.js";
 import { tickIgOrders } from "../integrations/igOrders.js";
@@ -37,6 +37,10 @@ const STREAM_SCALE: Record<string, string> = { "1m": "1MINUTE", "5m": "5MINUTE",
 const SCALE_IV: Record<string, string> = { "1MINUTE": "1m", "5MINUTE": "5m", HOUR: "1h" };
 const MAX_BUFFER = 500;
 const MAX_WATCH = 10;
+/** IG-strömmens diagramplatser per miljö (Codex-värdet). Varje diagram kostar REST-verifiering. */
+export const MAX_STREAM_CHARTS = 4;
+/** Ett diagram/serie som ingen frågat efter på så här länge slutar följas (ingen ström, ingen historikpollning). */
+export const SERIES_TTL_MS = 150_000;
 
 interface Series { closed: Candle[]; forming: Candle | null; historyError: string | null; updatedAt: number; seeding?: Promise<void> }
 
@@ -54,7 +58,9 @@ export function createIgMarketData(deps: {
   const quotes = new Map<string, IgQuote>();
   const names = new Map<string, { name: string; category: string | null }>();
   const watch = new Map<IgEnvironment, string[]>();
-  const watchedSeries = new Map<IgEnvironment, Set<string>>(); // "epic|interval"
+  const watchedSeries = new Map<IgEnvironment, Map<string, number>>(); // "epic|interval" → senast begärd
+  const pins = new Map<string, Set<string>>(); // ägare → "env|epic|interval" som alltid följs (t.ex. strategier)
+  const streamedKeys = new Map<IgEnvironment, Set<string>>(); // serier som just nu har en IG-diagramplats
   const extraStreamEpics = new Map<IgEnvironment, Map<string, number>>(); // epic → senast begärd
   let signalInterval = "1m";
   const k = (env: IgEnvironment, epic: string, iv?: string) => iv ? `${env}|${epic}|${iv}` : `${env}|${epic}`;
@@ -106,7 +112,7 @@ export function createIgMarketData(deps: {
     const i = list.indexOf(epic);
     if (i < 0) return;
     list.splice(i, 1);
-    watchedSeries.get(env)?.forEach((s) => { if (s.startsWith(`${epic}|`)) watchedSeries.get(env)!.delete(s); });
+    for (const key of [...(watchedSeries.get(env)?.keys() ?? [])]) if (key.startsWith(`${epic}|`)) watchedSeries.get(env)!.delete(key);
     saveWatch(env);
     syncStream(env);
   }
@@ -152,17 +158,44 @@ export function createIgMarketData(deps: {
       else if (fresh.length) { s.closed.push(...fresh); if (s.closed.length > MAX_BUFFER) s.closed.splice(0, s.closed.length - MAX_BUFFER); }
       s.historyError = res.status === "unavailable" ? (res.error ?? "historik saknas") : null;
       s.updatedAt = now();
-      if (s.closed.length) for (const c of fresh.length && fresh.length < got.length ? fresh : []) events.emit("closed", env, epic, iv, c, s.closed);
+      // Stort glapp (alla hämtade ljus nya): signalera bara det senaste stängda ljuset, inte 200 gamla
+      const emitList = last === -Infinity ? [] : fresh.length < got.length ? fresh : fresh.slice(-1);
+      if (s.closed.length) for (const c of emitList) events.emit("closed", env, epic, iv, c, s.closed);
     } catch (err) {
       s.historyError = `historik saknas: ${err instanceof Error ? err.message : String(err)}`;
       // Kvot/metadata behålls: hämta bara kvoten (cachad) så att priset fortfarande syns.
       try { const m = await market(env, epic); rememberName(env, epic, m.name, m.category); setRestQuote(env, epic, m.quote); } catch { /* visas som frånkopplat */ }
     }
   }
+  function touchSeries(env: IgEnvironment, epic: string, iv: string): void {
+    if (!IV_MS[iv] || !/^[A-Za-z0-9._-]{1,100}$/.test(epic)) return;
+    let m = watchedSeries.get(env);
+    if (!m) { m = new Map(); watchedSeries.set(env, m); }
+    m.set(`${epic}|${iv}`, now());
+  }
+  const isPinned = (env: IgEnvironment, key: string) => {
+    const [epic, iv] = key.split("|");
+    if (iv === signalInterval && loadWatch(env).includes(epic!)) return 2; // bevakningslistans signalserie först
+    for (const set of pins.values()) if (set.has(`${env}|${key}`)) return 1;
+    return 0;
+  };
+  /** Serier som följs nu: fästa + de som begärts inom SERIES_TTL_MS. Gamla tas bort. */
+  function activeSeries(env: IgEnvironment): string[] {
+    const m = watchedSeries.get(env) ?? new Map<string, number>();
+    for (const set of pins.values()) for (const x of set) if (x.startsWith(`${env}|`)) { const key = x.slice(env.length + 1); if (!m.has(key)) m.set(key, 0); }
+    for (const epic of loadWatch(env)) if (!m.has(`${epic}|${signalInterval}`)) m.set(`${epic}|${signalInterval}`, 0);
+    watchedSeries.set(env, m);
+    for (const [key, at] of m) if (!isPinned(env, key) && now() - at > SERIES_TTL_MS) m.delete(key);
+    return [...m.entries()].sort((a, b) => isPinned(env, b[0]) - isPinned(env, a[0]) || b[1] - a[1]).map(([key]) => key);
+  }
+  /** Ägare (t.ex. "strategies") fäster sina serier; en ny lista ersätter den gamla. */
+  function pinSeries(owner: string, env: IgEnvironment, list: Array<{ epic: string; iv: string }>): void {
+    pins.set(owner, new Set(list.filter((x) => IV_MS[x.iv]).map((x) => `${env}|${x.epic}|${x.iv}`)));
+    syncStream(env);
+  }
   async function ensureSeries(env: IgEnvironment, epic: string, iv: string): Promise<Series> {
-    let set = watchedSeries.get(env);
-    if (!set) { set = new Set(); watchedSeries.set(env, set); }
-    set.add(`${epic}|${iv}`);
+    if (!IV_MS[iv]) throw new Error(`IG stöder inte intervallet ${iv}`);
+    touchSeries(env, epic, iv);
     const s = getSeries(env, epic, iv);
     if (!s.closed.length && !s.seeding) {
       s.seeding = refreshHistory(env, epic, iv).finally(() => { s.seeding = undefined; });
@@ -223,10 +256,10 @@ export function createIgMarketData(deps: {
   }
   function syncStream(env: IgEnvironment): void {
     if (status().environments[env].status !== "connected") return;
-    const charts = [...(watchedSeries.get(env) ?? [])]
-      .map((x) => { const [epic, iv] = x.split("|"); return { epic: epic!, scale: STREAM_SCALE[iv!] }; })
-      .filter((c): c is { epic: string; scale: string } => !!c.scale);
-    try { stream.ensure(env, streamEpics(env), charts.slice(0, 10), 10); } catch (err) { log.warn(`[ig] streaming: ${err instanceof Error ? err.message : String(err)}`); }
+    const keys = activeSeries(env).filter((x) => !!STREAM_SCALE[x.split("|")[1]!]).slice(0, MAX_STREAM_CHARTS);
+    streamedKeys.set(env, new Set(keys));
+    const charts = keys.map((x) => { const [epic, iv] = x.split("|"); return { epic: epic!, scale: STREAM_SCALE[iv!]! }; });
+    try { stream.ensure(env, streamEpics(env), charts, MAX_STREAM_CHARTS); } catch (err) { log.warn(`[ig] streaming: ${err instanceof Error ? err.message : String(err)}`); }
   }
   /** Diagram/kort i webbläsaren ber om kvoter för fler EPICs (gäller 2 min). */
   function requestStream(epics: string[], env = activeEnv): void {
@@ -262,10 +295,12 @@ export function createIgMarketData(deps: {
     await seedDefaultWatch(env);
     for (const epic of loadWatch(env)) void ensureSeries(env, epic, signalInterval);
     syncStream(env);
-    // Intervall utan IG-ström (15m, 30m, 4h, 1d): hämta när ett ljus stängt.
-    for (const x of watchedSeries.get(env) ?? []) {
+    // Serier utan IG-diagramplats (15m, 30m, 4h, 1d, eller fler än 4 diagram): hämta via REST när
+    // ett ljus stängt. Serier som ingen följer längre hämtas inte alls.
+    const streamUp = stream.summary(env).status === "CONNECTED:WS-STREAMING";
+    for (const x of activeSeries(env)) {
       const [epic, iv] = x.split("|") as [string, string];
-      if (STREAM_SCALE[iv]) continue;
+      if (streamUp && streamedKeys.get(env)?.has(x)) continue;
       const s = getSeries(env, epic, iv), last = s.closed[s.closed.length - 1];
       if (last && now() >= last.closeTime + IV_MS[iv]! + 5_000 && !s.seeding) { s.seeding = refreshHistory(env, epic, iv).finally(() => { s.seeding = undefined; }); }
     }
@@ -277,7 +312,7 @@ export function createIgMarketData(deps: {
     run();
     timer = setInterval(run, 15_000); timer.unref?.();
     slow = setInterval(() => {
-      void tickIgOrders().catch(() => log.warn("[ig] orderavstämningen misslyckades"));
+      void withIgPriority(() => tickIgOrders()).catch(() => log.warn("[ig] orderavstämningen misslyckades"));
       void tickIgCatalogues().catch(() => {});
     }, 15_000); slow.unref?.();
   }
@@ -303,7 +338,9 @@ export function createIgMarketData(deps: {
     quotes: (env = activeEnv) => [...quotes.entries()].filter(([key]) => key.startsWith(`${env}|`)).map(([, q]) => q),
     setRestQuote, dataState,
     streamStatus: (env = activeEnv) => stream.summary(env),
-    watchedSeries: (env = activeEnv) => [...(watchedSeries.get(env) ?? [])],
+    watchedSeries: (env = activeEnv) => activeSeries(env),
+    streamedSeries: (env = activeEnv) => [...(streamedKeys.get(env) ?? [])],
+    touchSeries, pinSeries,
     category: (m: Record<string, unknown>) => igMarketCategory(m),
   };
 }

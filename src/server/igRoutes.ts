@@ -1,12 +1,12 @@
 import type http from "node:http";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
-import { getIgStatus, testIgConnection, getIgReadBudget, type IgEnvironment } from "../integrations/igConnection.js";
+import { getIgStatus, testIgConnection, getIgReadBudget, withIgPriority, type IgEnvironment } from "../integrations/igConnection.js";
 import { localIgCredentialRequest, saveIgCredentials } from "../integrations/igCredentialStore.js";
 import { igChanged } from "../integrations/igEvents.js";
 import { getIgMarket, getIgHistory, searchIgMarkets } from "../integrations/igMarkets.js";
 import { getIgMarketDirectory, getIgDirectoryEnrichment } from "../integrations/igMarketDirectory.js";
-import { getIgOrderState } from "../integrations/igOrders.js";
+import { getIgOrderState, resolveIgUnknown } from "../integrations/igOrders.js";
 import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
 import { currentStake } from "../risk/stakeLadder.js";
 import { cancelTimedExitForDeal, listTimedExits } from "./tradeHorizon.js";
@@ -51,10 +51,10 @@ async function body(req: http.IncomingMessage, readBody: (r: http.IncomingMessag
 }
 const envLabel = (e: IgEnvironment) => (e === "live" ? "IG Live" : "IG Demo");
 
-function quoteView(q: IgQuote | null, epic: string) {
-  const ds = igMarketData.dataState(epic);
-  return q ? { epic, name: igMarketData.nameOf(epic), bid: q.bid, offer: q.offer, mid: q.mid, changePct: q.changePct, high: q.high, low: q.low, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, source: q.source, state: ds.state, ageMs: ds.ageMs }
-    : { epic, name: igMarketData.nameOf(epic), state: ds.state, ageMs: null };
+function quoteView(q: IgQuote | null, epic: string, env: IgEnvironment = igMarketData.getActiveEnv()) {
+  const ds = igMarketData.dataState(epic, env);
+  return q ? { epic, name: igMarketData.nameOf(epic, env), bid: q.bid, offer: q.offer, mid: q.mid, changePct: q.changePct, high: q.high, low: q.low, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, source: q.source, state: ds.state, ageMs: ds.ageMs }
+    : { epic, name: igMarketData.nameOf(epic, env), state: ds.state, ageMs: null };
 }
 const chartBar = (c: Candle) => ({ time: Math.floor(c.openTime / 1000), open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume, closed: c.closed });
 
@@ -65,7 +65,7 @@ function wireSse(): void {
     const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const c of sse) if (!epic || c.epics.has(epic)) { try { c.res.write(msg); } catch { sse.delete(c); } }
   };
-  igMarketData.events.on("quote", (env: IgEnvironment, q: IgQuote) => { if (env === igMarketData.getActiveEnv()) write(q.epic, "quote", { env, ...quoteView(q, q.epic) }); });
+  igMarketData.events.on("quote", (env: IgEnvironment, q: IgQuote) => { if (env === igMarketData.getActiveEnv()) write(q.epic, "quote", { env, ...quoteView(q, q.epic, env) }); });
   igMarketData.events.on("candle", (env: IgEnvironment, epic: string, iv: string, c: Candle) => { if (env === igMarketData.getActiveEnv()) write(epic, "candle", { env, epic, interval: iv, bar: chartBar(c) }); });
   igMarketData.events.on("stream-status", (env: IgEnvironment, s: unknown) => { if (env === igMarketData.getActiveEnv()) write(null, "stream-status", { env, ...(s as object) }); });
   igMarketData.events.on("env", (env: IgEnvironment) => write(null, "env", { env, label: envLabel(env) }));
@@ -160,6 +160,19 @@ export async function handleIgRoutes(
       try { send(res, 200, { env: e, ...(await getIgHistory(e)) }); } catch (err) { send(res, 200, { env: e, status: "unavailable", error: err instanceof Error ? err.message : String(err) }); }
       return true;
     }
+    {
+      // Manuell avstämning av ett okänt orderutfall utan IG-referens. Läser positioner + IG-aktivitet, skickar inget.
+      const m = p.match(/^\/api\/ig\/orders\/([A-Za-z0-9_-]{1,100})\/resolve$/);
+      if (m && method === "POST") {
+        try {
+          const r = await withIgPriority(() => resolveIgUnknown(env, m[1]!));
+          userAction(`stämde av okänt IG-utfall: ${r.note}`, { to: "orders" });
+          onEvent("pending-orders", { resolved: m[1] });
+          send(res, 200, { ok: true, env, ...r });
+        } catch (e) { send(res, 200, { ok: false, env, error: e instanceof Error ? e.message : String(e) }); }
+        return true;
+      }
+    }
     if (p === "/api/ig/orders" && method === "GET") {
       send(res, 200, { env, ...getIgOrderState(env), timedExits: listTimedExits().filter((x) => x.dealId) });
       return true;
@@ -167,21 +180,21 @@ export async function handleIgRoutes(
 
     // ── Marknad ──
     if (p === "/api/market/watchlist" && method === "GET") {
-      send(res, 200, { env, label: envLabel(env), watchlist: igMarketData.watchlistDetailed(), max: 10 });
+      send(res, 200, { env, label: envLabel(env), watchlist: igMarketData.watchlistDetailed(env), max: 10 });
       return true;
     }
     if (p === "/api/market/watchlist" && method === "POST") {
       const b = await body(req, readBody);
       try {
-        const r = await igMarketData.addWatch(String(b.epic ?? ""));
+        const r = await igMarketData.addWatch(String(b.epic ?? ""), env);
         userAction(`följer ${r.name ?? r.epic}`, { coin: r.epic });
-        send(res, 200, { ok: true, ...r, watchlist: igMarketData.watchlistDetailed() });
+        send(res, 200, { ok: true, env, ...r, watchlist: igMarketData.watchlistDetailed(env) });
       } catch (e) { send(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) }); }
       return true;
     }
     {
       const m = p.match(/^\/api\/market\/watchlist\/([A-Za-z0-9._-]{1,100})$/);
-      if (m && method === "DELETE") { igMarketData.removeWatch(m[1]!); send(res, 200, { ok: true, watchlist: igMarketData.watchlistDetailed() }); return true; }
+      if (m && method === "DELETE") { igMarketData.removeWatch(m[1]!, env); send(res, 200, { ok: true, env, watchlist: igMarketData.watchlistDetailed(env) }); return true; }
     }
     if (p === "/api/market/directory" && method === "GET") {
       const category = url.searchParams.get("category") === "crypto" ? "crypto" : "forex";
@@ -214,43 +227,48 @@ export async function handleIgRoutes(
       try { const m = await getIgMarket(env, epic); igMarketData.rememberName(env, epic, m.name, m.category); igMarketData.setRestQuote(env, epic, m.quote); meta = { name: m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
       catch (e) { meta = { metaError: e instanceof Error ? e.message : String(e) }; }
       try { await igMarketData.ensureSeries(env, epic, iv); } catch { /* historyError visas nedan */ }
-      igMarketData.requestStream([epic]);
-      const closed = igMarketData.closed(epic, iv).slice(-limit);
-      const forming = igMarketData.forming(epic, iv);
+      igMarketData.requestStream([epic], env);
+      // Miljön är bunden vid begärans start: allt nedan läses ur samma miljö (aldrig blandat)
+      const closed = igMarketData.closed(epic, iv, env).slice(-limit);
+      const forming = igMarketData.forming(epic, iv, env);
       send(res, 200, {
-        env, label: envLabel(env), symbol: epic, epic, interval: iv, ...meta, name: (meta.name as string) ?? igMarketData.nameOf(epic),
+        env, label: envLabel(env), symbol: epic, epic, interval: iv, ...meta, name: (meta.name as string) ?? igMarketData.nameOf(epic, env),
         klines: closed.map(chartBar), forming: forming ? chartBar(forming) : null,
-        historyError: igMarketData.historyError(epic, iv), quote: quoteView(igMarketData.quote(epic), epic),
+        historyError: igMarketData.historyError(epic, iv, env), quote: quoteView(igMarketData.quote(epic, env), epic, env),
+        streamed: igMarketData.streamedSeries(env).includes(`${epic}|${iv}`), envChanged: env !== igMarketData.getActiveEnv(),
         source: `${envLabel(env)} · REST-historik (stängda mid-ljus) + Lightstreamer`, at: Date.now(),
       });
       return true;
     }
     if (p === "/api/market/prices" && method === "GET") {
-      const symbols = (url.searchParams.get("symbols") || igMarketData.watchlist().join(",")).split(",").map((x) => x.trim()).filter((x) => EPIC_RE.test(x)).slice(0, 30);
-      igMarketData.requestStream(symbols);
+      const symbols = (url.searchParams.get("symbols") || igMarketData.watchlist(env).join(",")).split(",").map((x) => x.trim()).filter((x) => EPIC_RE.test(x)).slice(0, 30);
+      igMarketData.requestStream(symbols, env);
       const prices: Record<string, number> = {};
       const quotes: Record<string, unknown> = {};
       for (const s of symbols) {
-        let q = igMarketData.quote(s);
+        let q = igMarketData.quote(s, env);
         if (!q || q.observedAt === null || Date.now() - q.observedAt > 60_000) {
-          try { const m = await getIgMarket(env, s); igMarketData.setRestQuote(env, s, m.quote); igMarketData.rememberName(env, s, m.name, m.category); q = igMarketData.quote(s); } catch { /* visas som saknad */ }
+          try { const m = await getIgMarket(env, s); igMarketData.setRestQuote(env, s, m.quote); igMarketData.rememberName(env, s, m.name, m.category); q = igMarketData.quote(s, env); } catch { /* visas som saknad */ }
         }
-        quotes[s] = quoteView(q, s);
+        quotes[s] = quoteView(q, s, env);
         if (q) prices[s] = q.mid;
       }
-      send(res, 200, { env, prices, quotes, source: envLabel(env), at: Date.now() });
+      send(res, 200, { env, prices, quotes, source: envLabel(env), at: Date.now(), envChanged: env !== igMarketData.getActiveEnv() });
       return true;
     }
     if (p === "/api/market/stream" && method === "GET") {
       wireSse();
       const epics = new Set((url.searchParams.get("epics") || "").split(",").map((x) => x.trim()).filter((x) => EPIC_RE.test(x)).slice(0, 30));
-      igMarketData.requestStream([...epics]);
+      // Öppna diagram (charts=EPIC|1m,...) hålls vid liv så länge strömmen är öppen; stängs fliken slutar de följas.
+      const charts = (url.searchParams.get("charts") || "").split(",").map((x) => x.trim().split("|")).filter((x) => x.length === 2 && EPIC_RE.test(x[0]!) && /^(1m|3m|5m|15m|30m|1h|4h|1d)$/.test(x[1]!)).slice(0, 8) as Array<[string, string]>;
+      const touch = () => { igMarketData.requestStream([...epics], env); for (const [e, iv] of charts) igMarketData.touchSeries(env, e, iv); };
+      touch();
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
       const client = { res, epics };
       sse.add(client);
       res.write(`event: hello\ndata: ${JSON.stringify({ env, label: envLabel(env), stream: igMarketData.streamStatus() })}\n\n`);
-      for (const e of epics) { const q = igMarketData.quote(e); if (q) res.write(`event: quote\ndata: ${JSON.stringify({ env, ...quoteView(q, e) })}\n\n`); }
-      const keep = setInterval(() => igMarketData.requestStream([...epics]), 60_000);
+      for (const e of epics) { const q = igMarketData.quote(e, env); if (q) res.write(`event: quote\ndata: ${JSON.stringify({ env, ...quoteView(q, e, env) })}\n\n`); }
+      const keep = setInterval(touch, 60_000);
       req.on("close", () => { sse.delete(client); clearInterval(keep); });
       return true;
     }

@@ -30,7 +30,7 @@
    - Datastatus: live · fördröjt · historiskt · inaktuellt · frånkopplat.
    ══════════════════════════════════════════════════════════════════════ */
 window.IG = (function () {
-  var names = {}, cats = {}, quotes = {}, handlers = {}, owners = {};
+  var names = {}, cats = {}, quotes = {}, handlers = {}, owners = {}, chartOwners = {};
   var st = { env: "demo", label: "IG Demo", currency: null, balance: null, available: null, profitLoss: null, execution: { demo: false, live: false }, connected: false, error: null, watchlist: [] };
   var es = null, esKey = "", reopenT = null, lastMsgAt = 0;
   function esc(t) { return String(t == null ? "" : t).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
@@ -94,14 +94,16 @@ window.IG = (function () {
   }
   // ── Ström (en EventSource för alla som vill ha kvoter/ljus) ──
   function wanted() { var s = {}; Object.keys(owners).forEach(function (o) { owners[o].forEach(function (e) { if (isEpic(e)) s[e] = 1; }); }); return Object.keys(s).sort().slice(0, 30); }
-  function want(owner, epics) { owners[owner] = (epics || []).filter(isEpic); clearTimeout(reopenT); reopenT = setTimeout(open, 250); }
+  // charts = ["EPIC|1m", ...]: öppna diagram hålls vid liv på servern så länge strömmen är öppen (stängs → slutar följas)
+  function want(owner, epics, charts) { owners[owner] = (epics || []).filter(isEpic); chartOwners[owner] = (charts || []).filter(function (c) { return /^[A-Za-z0-9._-]+\|(1m|3m|5m|15m|30m|1h|4h|1d)$/.test(c); }); clearTimeout(reopenT); reopenT = setTimeout(open, 250); }
+  function wantedCharts() { var s = {}; Object.keys(chartOwners).forEach(function (o) { chartOwners[o].forEach(function (c) { s[c] = 1; }); }); return Object.keys(s).sort().slice(0, 8); }
   function open() {
-    var list = wanted(), key = list.join(",");
+    var list = wanted(), charts = wantedCharts(), key = list.join(",") + "#" + charts.join(",");
     if (es && key === esKey && es.readyState !== 2) return;
     if (es) { try { es.close(); } catch (_) {} es = null; }
     esKey = key;
     if (!list.length) return;
-    try { es = new EventSource("/api/market/stream?epics=" + encodeURIComponent(key)); } catch (_) { return; }
+    try { es = new EventSource("/api/market/stream?epics=" + encodeURIComponent(list.join(",")) + (charts.length ? "&charts=" + encodeURIComponent(charts.join(",")) : "")); } catch (_) { return; }
     var mine = es;
     es.addEventListener("quote", function (e) { if (es !== mine) return; lastMsgAt = Date.now(); var q; try { q = JSON.parse(e.data); } catch (_) { return; } if (q.env && q.env !== st.env) return; quotes[q.epic] = q; if (q.name) names[q.epic] = q.name; emit("quote", q); });
     es.addEventListener("candle", function (e) { if (es !== mine) return; lastMsgAt = Date.now(); var c; try { c = JSON.parse(e.data); } catch (_) { return; } if (c.env && c.env !== st.env) return; emit("candle", c); });
@@ -2200,7 +2202,8 @@ body.app-state-onboard .fc-panel{display:none !important}
             + '<b style="color:' + col(o.upnl) + '">' + money(o.upnl) + ' ' + pct(o.upnlPct) + '</b>'
             + (o.tp ? '<span style="font-size:12px;color:' + GREEN + '">TP ' + esc(px(o.tp)) + '</span>' : "")
             + (o.sl ? '<span style="font-size:12px;color:' + RED + '">SL ' + esc(px(o.sl)) + '</span>' : "")
-            + (left != null ? '<span style="font-size:12px;color:#fbbf24">stängs om ' + left + ' min</span>' : "")
+            + (o.exitState && o.exitState !== "waiting" ? '<span style="font-size:12px;color:' + (o.exitState === "needs-attention" ? RED : "#fbbf24") + '" title="' + esc(o.exitError || "") + '">⏱ ' + esc({ "execution-off": "väntar – orderläget av", retrying: "försöker stänga igen", "needs-attention": "tidsstängning kräver åtgärd" }[o.exitState] || o.exitState) + '</span>'
+              : left != null ? '<span style="font-size:12px;color:#fbbf24">stängs om ' + left + ' min</span>' : "")
             + (o.epic ? '<button type="button" data-reschart="' + esc(o.epic) + '" style="margin-left:auto;padding:3px 10px;border:1px solid #2a3140;background:transparent;color:#c9d1d9;border-radius:6px;cursor:pointer">📈 Diagram</button>' : "")
             + (o.dealId ? '<button type="button" data-sellnow="' + esc(o.dealId) + '" data-name="' + esc(o.coin) + '" style="padding:3px 10px;border:1px solid ' + RED + ';background:#2a1215;color:' + RED + ';border-radius:6px;font-weight:700;cursor:pointer">Sälj nu</button>' : "")
             + '</div>';
@@ -2238,7 +2241,46 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
     <div id="execHint" class="exec-hint"></div>
     <div id="pendingRows" style="margin-top:8px;font-size:13px;color:#8b95a7">Laddar…</div>
+    <!-- IG: okända orderutfall och tidsstängningar som väntar/försöker igen. Tas aldrig bort tyst. -->
+    <div id="igOrderIssues" style="margin-top:8px;font-size:12px"></div>
   </div>
+  <script>
+  (function () {
+    function esc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+    var EXIT = { waiting: "väntar", "execution-off": "väntar – orderläget av", retrying: "försöker stänga igen", "needs-attention": "KRÄVER ÅTGÄRD – kontrollera i IG" };
+    async function load() {
+      var box = document.getElementById("igOrderIssues"); if (!box) return;
+      try {
+        var d = await (await fetch("/api/ig/orders")).json();
+        var html = "";
+        (d.pendingOrders || []).filter(function (o) { return (o.status === "unknown" || o.status === "submitted") && !o.dealReference; }).forEach(function (o) {
+          html += '<div style="padding:6px 8px;margin-top:6px;border:1px solid #f0b90b;border-radius:6px;color:#fbbf24">⚠ Okänt IG-utfall: ' + esc(o.direction) + " " + esc((window.IG && IG.names[o.epic]) || o.epic) + " " + esc(o.size)
+            + ' — inget skickas om automatiskt. Kontrollera i IG, tryck sedan <button type="button" data-igresolve="' + esc(o.id) + '" style="margin-left:6px;padding:2px 8px;border:1px solid #f0b90b;background:transparent;color:#f0b90b;border-radius:5px;cursor:pointer">Stäm av mot IG</button></div>';
+        });
+        (d.exitPlans || []).filter(function (p) { return (p.status === "unknown" || p.status === "submitted") && !p.dealReference; }).forEach(function (p) {
+          html += '<div style="padding:6px 8px;margin-top:6px;border:1px solid #f0b90b;border-radius:6px;color:#fbbf24">⚠ Okänt stängningsutfall för ' + esc(p.dealId)
+            + ' <button type="button" data-igresolve="' + esc(p.dealId) + '" style="margin-left:6px;padding:2px 8px;border:1px solid #f0b90b;background:transparent;color:#f0b90b;border-radius:5px;cursor:pointer">Stäm av mot IG</button></div>';
+        });
+        (d.timedExits || []).forEach(function (x) {
+          var st = x.igState || "waiting", warn = st !== "waiting";
+          var left = Math.round((x.exitAt - Date.now()) / 60000);
+          html += '<div style="padding:4px 8px;margin-top:4px;border-left:3px solid ' + (st === "needs-attention" ? "#f85149" : warn ? "#f0b90b" : "#2a3140") + ';color:' + (warn ? "#fbbf24" : "#8b95a7") + '">⏱ Tidsstängning ' + esc((window.IG && IG.names[x.symbol]) || x.symbol)
+            + " · " + esc(EXIT[st] || st) + (st === "waiting" ? " · om " + Math.max(0, left) + " min" : "") + (x.lastError ? ' <span style="color:#8b95a7">(' + esc(x.lastError) + ")</span>" : "") + "</div>";
+        });
+        box.innerHTML = html;
+        box.querySelectorAll("[data-igresolve]").forEach(function (b) {
+          b.addEventListener("click", async function () {
+            if (!confirm("Har du kontrollerat i IG? Servern läser nu IG:s positioner och aktivitet och markerar utfallet som avstämt. Inget skickas till IG.")) return;
+            b.disabled = true;
+            try { var r = await (await fetch("/api/ig/orders/" + encodeURIComponent(b.dataset.igresolve) + "/resolve", { method: "POST" })).json(); alert(r.ok ? r.note : "Kunde inte stämma av: " + r.error); } catch (e) { alert("Fel: " + e.message); }
+            load();
+          });
+        });
+      } catch (_) {}
+    }
+    load(); setInterval(load, 15000);
+  })();
+  </script>
 
 <script>
 (function () {
@@ -4237,7 +4279,7 @@ async function loadRealCandles(sym, tf){
   else { clearPriceHeader(); if(d.quote && d.quote.mid != null) document.getElementById("cur-price").textContent = IG.px(d.quote.mid); }
   if(d.quote && d.quote.mid != null) STATE.livePrices[sym] = d.quote.mid;
   igMain.key = sym+"|"+tf; igMain.hist = d.historyError || (d.error && !bars.length ? d.error : null);
-  IG.want("main", [sym]);
+  IG.want("main", [sym], [sym+"|"+tf]);
   showIgSource();
 }
 IG.on("quote", q=>{

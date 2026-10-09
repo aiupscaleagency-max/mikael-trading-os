@@ -67,11 +67,15 @@ export const TOOLS: Record<string, ToolDef> = {
     definition: {
       name: "get_account",
       description:
-        "Hämtar aktuella saldon och totalvärdet på kontot i USDT. Använd detta för att veta hur mycket kapital som finns att arbeta med.",
+        "Hämtar saldo, tillgängligt och valuta på IG-kontot (kontovalutan, t.ex. SEK). Använd detta för att veta hur mycket kapital som finns att arbeta med.",
       input_schema: { type: "object", properties: {} },
     },
     handler: async (_input, ctx) => {
       const account = await ctx.broker.getAccount();
+      if (account.currency) {
+        // IG: pengar i kontovalutan, aldrig märkta som USDT
+        return { environment: ctx.broker.mode === "live" ? "IG Live" : "IG Demo", currency: account.currency, balance: account.balance ?? null, available: account.available ?? null, profitLoss: account.profitLoss ?? null };
+      }
       return {
         totalValueUsdt: Number(account.totalValueUsdt.toFixed(2)),
         balances: account.balances.map((b) => ({
@@ -92,6 +96,11 @@ export const TOOLS: Record<string, ToolDef> = {
     },
     handler: async (_input, ctx) => {
       const positions = await ctx.broker.getPositions();
+      if (positions.some((p) => p.dealId)) {
+        // IG: P/L från IG:s regler (riktning + punktvärde) i kontovalutan; saknas = null, aldrig gissat
+        return positions.map((p) => ({ epic: p.symbol, name: p.name ?? p.symbol, direction: p.direction === "SELL" ? "KORT" : "LÅNG", size: p.quantity, entry: p.avgEntryPrice, current: p.currentPrice,
+          pnl: p.pnlVerified ? Number(p.unrealizedPnlUsdt.toFixed(2)) : null, currency: p.pnlCurrency ?? null, stopLoss: p.stopLevel ?? null, takeProfit: p.limitLevel ?? null, dealId: p.dealId }));
+      }
       // Berika med entry-pris från memory state
       const enriched = positions.map((p) => {
         const tracked = ctx.state.openPositions[p.symbol];
@@ -226,6 +235,10 @@ export const TOOLS: Record<string, ToolDef> = {
 
       // ── IG (CFD): servern räknar storlek från insats-% och IG:s regler; Codex igOrders gör riskkontrollen ──
       if (ctx.broker instanceof IgBroker) {
+        // B3: turen startade i en annan miljö/session → inga förslag på det nya kontot
+        const { igTurnStale } = await import("../server/igTurnGuard.js");
+        const stale = igTurnStale();
+        if (stale) return { accepted: false, reason: stale };
         const { getHorizonMin } = await import("../server/tradeHorizon.js");
         const { createIgPendingOrder } = await import("../server/api.js");
         if (ctx.config.executionMode === "approve" || !ctx.broker.executionEnabled()) {
@@ -522,9 +535,8 @@ export const TOOLS: Record<string, ToolDef> = {
     definition: {
       name: "get_all_positions",
       description:
-        "Hämtar positioner från ALLA anslutna brokers (Alpaca, Blofin, Binance). " +
-        "Returnerar en sammanfattning per broker med totalt värde och individuella positioner. " +
-        "Använd för att se hela portföljen innan du fattar beslut.",
+        "Hämtar positioner och saldo för den IG-miljö turen körs i (IG Demo eller IG Live, aldrig båda). " +
+        "Returnerar saldo i kontovalutan och individuella positioner.",
       input_schema: { type: "object", properties: {} },
     },
     handler: async (_input, ctx) => {
@@ -535,7 +547,8 @@ export const TOOLS: Record<string, ToolDef> = {
         positions: unknown[];
       }> = [];
 
-      for (const [name, broker] of Object.entries(ctx.brokers)) {
+      // M4: bara turens egen miljö. Den andra IG-miljön läses aldrig (ingen Live-inloggning under en Demo-tur).
+      for (const [name, broker] of Object.entries(ctx.brokers).filter(([, b]) => b === ctx.broker)) {
         try {
           const account = await broker.getAccount();
           const positions = await broker.getPositions();

@@ -90,7 +90,8 @@ const INTERVAL_MS: Record<string, number> = { "1m": 60_000, "5m": 300_000, "15m"
 let llm: Anthropic | null = null;
 const stats = { evaluations: 0, lastEvalAt: 0, lastSignalAt: 0 };
 
-const posKey = (strategyId: string, coin: string) => `${strategyId}:${coin}`;
+// Per IG-miljö: samma EPIC finns i Demo och Live, och "i position" får inte följa med vid byte.
+const posKey = (strategyId: string, coin: string, env: string = igMarketData.getActiveEnv()) => `${env}:${strategyId}:${coin}`;
 /**
  * IG: strategins "coin" är en IG-EPIC (t.ex. CS.D.BITCOIN.CFD.IP) eller ett kortnamn.
  * Kortnamn översätts BARA till en EPIC som redan finns i bevakningslistan för aktiv
@@ -349,6 +350,19 @@ async function evaluate(s: Strategy, coin: string, history: Candle[]): Promise<v
 
 // ─── Köa som väntande order ──────────────────────────────────────────────
 
+/** dealId för strategins senaste KÖP som IG faktiskt accepterade (via den godkända väntande ordern). */
+async function strategyDealId(strategyId: string, pair: string, epic: string): Promise<string | null> {
+  const { getPendingOrder } = await import("./orderGate.js");
+  const buys = signals.filter((x) => x.strategyId === strategyId && x.side === "BUY" && (x.pair === pair || x.pair === epic) && x.queued?.pendingId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  for (const b of buys) {
+    const po = await getPendingOrder(b.queued!.pendingId!);
+    const dealId = po?.status === "done" ? (po.result as { dealId?: string } | undefined)?.dealId : undefined;
+    if (dealId) return dealId;
+  }
+  return null;
+}
+
 export async function queueSignal(signalId: string, venueOverride?: "test" | "live"): Promise<{ ok: boolean; error?: string; pendingId?: string }> {
   const sig = signals.find((x) => x.id === signalId);
   if (!sig) return { ok: false, error: "Signalen finns inte" };
@@ -379,10 +393,13 @@ export async function queueSignal(signalId: string, venueOverride?: "test" | "li
   const { createIgPendingOrder } = await import("./api.js");
   let p: { id: string };
   if (sig.side === "SELL") {
+    // Stäng bara STRATEGINS EGEN position: dealId från strategins senaste godkända KÖP (aldrig en manuell/agentposition)
+    const ownDealId = await strategyDealId(sig.strategyId, sig.pair ?? epic, epic);
+    if (!ownDealId) return fail(`Strategin har ingen egen öppen position i ${sig.coin} (köpet godkändes aldrig, eller är redan stängt)`);
     let held;
-    try { held = (await broker.getPositions()).find((x) => x.symbol === epic && x.direction !== "SELL"); }
+    try { held = (await (broker as import("../brokers/ig.js").IgBroker).getPositions({ fresh: true })).find((x) => x.dealId === ownDealId); }
     catch (err) { return fail(`Kunde inte läsa positioner hos ${brokerName}: ${err instanceof Error ? err.message : String(err)}`); }
-    if (!held?.dealId) return fail(`Ingen öppen KÖP-position i ${sig.coin} hos ${live ? "IG Live" : "IG Demo"}`);
+    if (!held?.dealId) return fail(`Strategins position ${ownDealId} i ${sig.coin} finns inte längre hos ${live ? "IG Live" : "IG Demo"}`);
     const gate = await checkOrderGate({ live, side: "SELL", unitsOrder: true, opening: false, source: `strategi:${sig.strategyName}` });
     if (!gate.ok) return fail(gate.error);
     p = await addPendingOrder({
@@ -414,11 +431,13 @@ export async function syncStrategies(): Promise<void> {
   const lib = await loadLibrary();
   registerStrategies(lib);
   const jobs: Promise<void>[] = [];
+  const pinned: Array<{ epic: string; iv: string }> = [];
   for (const s of lib.filter((x) => x.enabled)) {
     for (const coin of s.coins) {
       const epic = pairOf(coin);
       if (!epic) { log.warn(`[strategi] ${s.name}: ${coin} finns inte som IG-EPIC i bevakningslistan, bevakas inte`); continue; }
       const key = `${epic}:${s.interval}`;
+      pinned.push({ epic, iv: s.interval });
       if (watched.has(key)) continue;
       watched.add(key);
       const env = igMarketData.getActiveEnv();
@@ -428,6 +447,8 @@ export async function syncStrategies(): Promise<void> {
       }));
     }
   }
+  // Påslagna strategiers serier följs så länge strategin är på (inte bara 150 s)
+  igMarketData.pinSeries("strategies", igMarketData.getActiveEnv(), pinned);
   await Promise.all(jobs);
 }
 
@@ -479,7 +500,7 @@ export function getStrategyPositions(): Record<string, OpenPos> {
 /** Nollställ strategins läge för ett coin (t.ex. om Mike sålt manuellt). */
 export function resetStrategyPosition(strategyId: string, coin?: string): void {
   for (const k of Object.keys(positions)) {
-    if (k.startsWith(`${strategyId}:`) && (!coin || k === posKey(strategyId, coin))) delete positions[k];
+    if ((k.startsWith(`demo:${strategyId}:`) || k.startsWith(`live:${strategyId}:`)) && (!coin || k === posKey(strategyId, coin, "demo") || k === posKey(strategyId, coin, "live"))) delete positions[k];
   }
   resetPaper(strategyId, coin);
   scheduleSave();

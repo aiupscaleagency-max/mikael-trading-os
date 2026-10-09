@@ -2,6 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {createHash,randomUUID} from "node:crypto";
+import {AsyncLocalStorage} from "node:async_hooks";
+
+// ── Prioritet i läsbudgeten ──
+// Order (granskning, bekräftelse, stängning) och tidsstyrda stängningar körs i withIgPriority och får
+// hela minutbudgeten. Allt annat (diagramverifiering, katalog, resultat, saldo-polling) måste lämna
+// IG_READ_RESERVE_PER_ENV läsningar (standard 8) kvar, så att en order aldrig stoppas av bakgrundsläsningar.
+const priorityContext=new AsyncLocalStorage<boolean>();
+export function withIgPriority<T>(fn:()=>Promise<T>):Promise<T>{return priorityContext.run(true,fn);}
+export function igPriorityActive():boolean{return priorityContext.getStore()===true;}
+export const readReservePerEnv=()=>Math.max(0,Math.min(Math.max(1,Number(process.env.IG_READ_BUDGET_PER_ENV)||24)-1,Number.isFinite(Number(process.env.IG_READ_RESERVE_PER_ENV))&&process.env.IG_READ_RESERVE_PER_ENV!==undefined&&process.env.IG_READ_RESERVE_PER_ENV!==""?Number(process.env.IG_READ_RESERVE_PER_ENV):8));
 
 export type IgEnvironment = "demo" | "live";
 interface Credentials {apiKey?:string;identifier?:string;password?:string;accountId?:string}
@@ -45,9 +55,10 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
   function readBudget(mode:IgEnvironment){
     validMode(mode);while(reads.length&&now()-reads[0]!.at>=60000)reads.shift();
     const used=reads.filter(r=>r.environment===mode).length;
-    return {used,appUsed:reads.length,remaining:now()<(readBlockedUntil.get(mode)??0)?0:Math.max(0,Math.min(budgetPerEnv()-used,budgetTotal()-reads.length))};
+    const remaining=now()<(readBlockedUntil.get(mode)??0)?0:Math.max(0,Math.min(budgetPerEnv()-used,budgetTotal()-reads.length));
+    return {used,appUsed:reads.length,remaining,reserve:readReservePerEnv(),backgroundRemaining:Math.max(0,remaining-readReservePerEnv())};
   }
-  function consumeRead(mode:IgEnvironment){if(readBudget(mode).remaining===0)throw Error(IG_READ_RATE_ERROR);reads.push({environment:mode,at:now()});}
+  function consumeRead(mode:IgEnvironment){const b=readBudget(mode);if(b.remaining===0||(!igPriorityActive()&&b.backgroundRemaining===0))throw Error(IG_READ_RATE_ERROR);reads.push({environment:mode,at:now()});}
   const sharedLogins=new Map<IgEnvironment,{identifier:string;password:string;source:IgEnvironment;sourceFingerprint:string}>();
   function credentials(mode:IgEnvironment):Credentials {
     const data=load(), row=data?.[mode];

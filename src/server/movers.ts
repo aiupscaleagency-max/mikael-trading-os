@@ -70,8 +70,8 @@ async function allMarkets(env: IgEnvironment, dir: Dir): Promise<{ rows: Mover[]
   return { rows, note: notes.length ? notes.join(" · ") : null };
 }
 
-function avgMove(epic: string, interval: string): number | null {
-  const bars = igMarketData.closed(epic, interval).slice(-30);
+function avgMove(epic: string, interval: string, env: IgEnvironment): number | null {
+  const bars = igMarketData.closed(epic, interval, env).slice(-30);
   if (bars.length < 10) return null;
   return bars.reduce((s, b) => s + (b.close > 0 ? ((b.high - b.low) / b.close) * 100 : 0), 0) / bars.length;
 }
@@ -93,7 +93,7 @@ export async function getCategory(cat: Category, intervalMin: number, limit = 10
   result.note = note;
   let list: Mover[];
   if (cat === "move") {
-    list = rows.map((m) => ({ ...m, avgMovePct: avgMove(m.epic, iv), afterFeePct: null, interval: String(intervalMin) }))
+    list = rows.map((m) => ({ ...m, avgMovePct: avgMove(m.epic, iv, env), afterFeePct: null, interval: String(intervalMin) }))
       .sort(nullsLast((m) => m.avgMovePct ?? m.range24hPct, -1));
     if (!list.some((m) => m.avgMovePct != null)) result.note = [note, `Rörelse per ${intervalMin}-minutersljus finns bara för instrument i bevakningslistan; sorterat på IG:s dagsspann (hög−låg).`].filter(Boolean).join(" · ");
   } else if (cat === "gainers") list = rows.filter((m) => m.change24hPct !== null).sort(nullsLast((m) => m.change24hPct, -1));
@@ -102,6 +102,8 @@ export async function getCategory(cat: Category, intervalMin: number, limit = 10
   else if (cat === "cheapest") list = rows.sort(nullsLast((m) => m.price, 1));
   else list = rows.sort(nullsLast((m) => m.price, -1));
   result.push(...list.slice(0, limit));
+  // Miljön bytt medan katalogen lästes: lämna inget svar med fel miljös data
+  if (!deps.env && env !== igMarketData.getActiveEnv()) { result.length = 0; result.note = "Kontot byttes under hämtningen; uppdatera igen."; }
   return result;
 }
 

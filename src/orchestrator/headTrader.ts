@@ -253,7 +253,7 @@ Du SYNTETISERAR alla 9 rapporter och fattar det slutgiltiga beslutet. Du har ver
 ═══ SYSTEMSTATUS ═══
 Mode: ${config.mode.toUpperCase()} | Execution: ${config.executionMode}
 Kill-switch: ${state.killSwitchActive ? "AKTIV" : "OK"}
-Dagens PnL: ${state.dailyRealizedPnlUsdt.toFixed(2)} USDT
+Dagens PnL: ${state.dailyRealizedPnlUsdt.toFixed(2)} (IG-kontots valuta)
 ${stakeBlock()}Position-sizing (USD per trade):
   • DEFAULT: ${config.risk.defaultPositionUsd} (din standardstorlek)
   • MIN: ${config.risk.minPositionUsd} | MAX: ${config.risk.maxPositionUsd}

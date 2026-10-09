@@ -2,6 +2,9 @@ import { config } from "./config.js";
 import type { BrokerAdapter } from "./brokers/adapter.js";
 import { IgBroker } from "./brokers/ig.js";
 import { igMarketData } from "./server/igMarketData.js";
+import { beginIgTurn, configureIgTurnGuard, endIgTurn, igTurnStale } from "./server/igTurnGuard.js";
+import { getIgStatus } from "./integrations/igConnection.js";
+configureIgTurnGuard({ activeEnv: () => igMarketData.getActiveEnv(), generation: (env) => getIgStatus().environments[env].connectionGeneration ?? null });
 import { RiskManager } from "./risk/riskManager.js";
 import { runAgentTurn } from "./agent/claudeAgent.js";
 import {
@@ -178,6 +181,9 @@ async function runOnce(
     return;
   }
   log.info(`Aktiv broker: ${activeName ?? Object.keys(brokers).find((k) => brokers[k] === primaryBroker) ?? "?"} (${primaryBroker.mode})`);
+  // B3: turen binds till miljön + IG-sessionen den startar i
+  const igTurn = primaryBroker instanceof IgBroker ? beginIgTurn(primaryBroker.env) : null;
+  try {
 
   const risk = new RiskManager(config);
 
@@ -215,6 +221,13 @@ async function runOnce(
       summary: result.headTrader.decision.briefingSummary,
     };
     const teamPayload = { ...result.reports, head: headReport };
+    const staleWhy = igTurnStale(igTurn);
+    if (staleWhy) {
+      // Sen analys efter kontobyte: släng resultatet (inget kvitto, inget minne, ingen popup)
+      log.warn(`[analys] ${staleWhy}`);
+      broadcastEvent("analysis-stale", { reason: staleWhy, at: Date.now() });
+      return;
+    }
     setTeamLast(teamPayload, screen.symbols);
 
     // Tradingminnet: spara vad teamet såg och beslöt (resultatet kopplas
@@ -335,6 +348,7 @@ async function runOnce(
   log.info(
     `Turn klart. beslut=${action} tools=${toolCalls.length} orders=${placedOrders.length} id=${record.id}`,
   );
+  } finally { if (igTurn) endIgTurn(igTurn); }
 }
 
 // ── CLI ──

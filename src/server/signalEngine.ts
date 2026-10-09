@@ -436,3 +436,9 @@ export function refreshSignal(symbol: string, interval: string): Signal | null {
   if (s) latest.set(key(symbol, interval), s);
   return s;
 }
+
+// Samma EPIC finns i IG Demo och IG Live. Signaler och JEV-svar från den ena miljön får inte
+// följa med när kontot byts, så de glöms vid byte (nya räknas på nästa stängda ljus).
+void import("./igMarketData.js").then(({ igMarketData }) => {
+  igMarketData.events.on("env", () => { latest.clear(); jevCache.clear(); lastJev.clear(); });
+}).catch(() => { /* utan IG finns inget att byta */ });
