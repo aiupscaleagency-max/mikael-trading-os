@@ -82,10 +82,13 @@ export function horizonPrompt(): string {
 }
 
 /** Tidsramar som passar horisonten (används för Hannas indikatorpaket) */
+let sessionInterval: string | null = null;
+/** Agentsession: analysintervallet som frystes vid start gäller under omgången. */
+export function setSessionAnalysisInterval(iv: string | null): void { sessionInterval = iv; }
 export function shortIntervals(): string[] {
   // Analysintervallet (eget val, D3) styr; innehavstiden styr inte längre vilka ljus som analyseras.
   const ladder: Record<string, string[]> = { "1m": ["1m", "5m", "15m"], "5m": ["5m", "15m", "1h"], "15m": ["15m", "1h", "4h"], "1h": ["1h", "4h", "1d"] };
-  const iv = getIgTimes().updatedAt ? getIgTimes().analysisInterval : (horizonMin <= 5 ? "1m" : "5m");
+  const iv = sessionInterval ?? (getIgTimes().updatedAt ? getIgTimes().analysisInterval : (horizonMin <= 5 ? "1m" : "5m"));
   return ladder[iv] ?? ["1m", "5m", "15m"];
 }
 

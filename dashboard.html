@@ -1802,6 +1802,14 @@ body.app-state-onboard .fc-panel{display:none !important}
       <span id="hzHint" style="flex-basis:100%"></span>
     </div>
     <div id="analysisRows" style="margin-top:8px;font-size:13px;color:#8b95a7">Ingen analys än. Tryck Kör analys.</div>
+    <div style="margin-top:10px;border-top:1px solid #2a3140;padding-top:8px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px">
+        <strong>Agentsession</strong>
+        <button type="button" data-igs-start-saved style="padding:4px 10px;border:1px solid #fbbf24;background:transparent;color:#fbbf24;border-radius:6px;font-weight:700;cursor:pointer" title="Kör det sparade urvalet (Valutapar) 5 instrument per minut. Agenterna analyserar, inte IG.">▶ Starta agentsession</button>
+        <span style="color:#8b95a7">Urvalet väljs på Valutapar. Sessionen får avstå från trades.</span>
+      </div>
+      <div data-igs-session style="margin-top:6px;font-size:12px;color:#c9d1d9"></div>
+    </div>
   </div>
   <style>
     .hz-btn{padding:3px 10px;border:1px solid #2a3140;background:#0f141c;color:#c9d1d9;border-radius:6px;cursor:pointer;font-size:12px}
@@ -10674,6 +10682,123 @@ window.MK = (function(){
   timer = setInterval(tick, 60000);
   setTimeout(()=>{ if(active()) load(); }, 300);
   return { data, sel, hooks, render, load, visible, setFilter(f){ filterFn = f || (()=>true); render(); }, setSort(f){ sortFn = f; render(); }, all(){ return CATS.flatMap(c=>(data[c] && data[c].markets) || []); } };
+})();
+</script>
+
+<script>
+/* Urval + agentsessioner + schema (krav E). Servern äger urvalet (/api/ig/selection), sessionen
+   (/api/ig/session…) och schemat (/api/ig/schedule). Analysen görs av agenterna
+   (JEV-förkontroll → teknisk analytiker → Hanna), inte av IG. */
+window.IGS = (function(){
+  const esc = IG.esc;
+  let st = null, saveT = null;
+  const ST_COL = { "väntar":"#8b95a7", "analyseras":"#fbbf24", "analyserad":"#3fb950", "misslyckad":"#f85149", "hoppad":"#8b95a7" };
+  const ACT = { buy:"KÖP", sell:"SÄLJ", hold:"AVSTÅ", "avstå":"AVSTÅ" };
+  const hm = (t)=> t ? new Date(t).toLocaleTimeString("sv-SE").slice(0,5) : "–";
+  async function load(){
+    try{ const d = await (await fetch("/api/ig/session")).json(); if(d.ok){ st = d; render(); if(window.MK && !MK._selLoaded){ MK._selLoaded = true; (d.selection.epics || []).forEach(e=>MK.sel.add(e)); MK.render(); } } }catch(_){}
+  }
+  function saveSelection(list){
+    clearTimeout(saveT);
+    saveT = setTimeout(async ()=>{
+      try{ const r = await fetch("/api/ig/selection", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ epics: list }) }); const d = await r.json(); if(!d.ok) alert(d.error); else load(); }catch(_){}
+    }, 600);
+  }
+  async function post(url, body){
+    const r = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body || {}) });
+    const d = await r.json().catch(()=>({}));
+    if(!d.ok) alert(d.error || ("HTTP " + r.status));
+    load(); return d;
+  }
+  async function startSession(epics){
+    const t = await (await fetch("/api/ig/times")).json().catch(()=>({}));
+    const dur = t.sessionMinutes || 60, cap = dur * 5;
+    if(epics && epics.length > cap){ alert(`Urvalet (${epics.length}) ryms inte i ${dur} min × 5/min = ${cap}. Välj längre sessionslängd (Trade → Köp/Sälj → 4 · Sessionslängd) eller ett mindre urval.`); return; }
+    if(!confirm(`Starta agentsession i ${IG.envLabel()} med ${epics ? epics.length : "det sparade urvalet av"} instrument?\n\n${dur} min · 5 instrument per minut · analysintervall ${t.analysisInterval || "1m"}.\nAgenterna (JEV → teknisk analytiker → Hanna) analyserar; förslag hamnar i Väntande ordrar och kräver Godkänn. Högst 5 nya orderförsök.`)) return;
+    await post("/api/ig/session/start", epics ? { epics } : {});
+  }
+  function sessionHtml(x){
+    if(!x) return '<div style="color:var(--dim)">Ingen agentsession har körts i den här miljön.</div>';
+    const n = (s)=>x.items.filter(i=>i.status === s).length;
+    const head = `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <b style="color:${x.status === "running" ? "#fbbf24" : x.status === "completed" ? "#3fb950" : "#f85149"}">${x.status === "running" ? "● Pågår" : x.status === "completed" ? "✓ Klar" : x.status === "stopped" ? "■ Stoppad" : "✕ Avbruten"}</b>
+      <span>${esc(x.env === "live" ? "IG Live" : "IG Demo")} · ${x.trigger === "schema" ? "schemalagd" : "manuell"} · ${x.epics.length} instrument (fryst) · ${esc(x.analysisInterval)} · ${x.durationMinutes} min${x.strategy ? " · strategi " + esc(x.strategy) : ""}</span>
+      <span style="color:var(--dim)">${hm(x.startedAt)}–${hm(x.endsAt)}</span>
+      <span>analyserade ${n("analyserad")} · väntar ${n("väntar")} · analyseras ${n("analyseras")} · misslyckade ${n("misslyckad")}${n("hoppad") ? " · hoppade " + n("hoppad") : ""}</span>
+      <span title="Avvisade och okända räknas">orderförsök ${x.orderAttempts}/${x.maxOrderAttempts}</span>
+      ${x.status === "running" ? '<button type="button" data-igs="stop" style="margin-left:auto;padding:4px 10px;border:1px solid #f85149;background:#2a1215;color:#f85149;border-radius:6px;font-weight:700;cursor:pointer">■ Stoppa session</button>' : ""}
+    </div>${x.reason ? `<div style="color:#fbbf24;margin-top:4px">${esc(x.reason)}</div>` : ""}`;
+    const rows = x.items.slice(0, 500).map(i=>`<tr><td style="padding:2px 6px;white-space:nowrap" title="${esc(i.epic)}">${esc(IG.label(i.epic))}</td><td style="padding:2px 6px;color:${ST_COL[i.status]}">${esc(i.status)}</td><td style="padding:2px 6px;font-weight:700;color:${i.action === "buy" ? "#3fb950" : i.action === "sell" ? "#f85149" : "#8b95a7"}">${esc(ACT[i.action] || i.action || "")}</td><td style="padding:2px 6px;color:var(--dim)">${esc(i.result || "")}</td></tr>`).join("");
+    return head + `<details ${x.status === "running" ? "open" : ""} style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--dim)">Kö per instrument</summary><div style="max-height:260px;overflow:auto"><table style="width:100%;font-size:11px;border-collapse:collapse">${rows}</table></div></details>`;
+  }
+  function scheduleHtml(d){
+    const cap = d.capacity || {};
+    return `<div style="font-size:11px;color:var(--dim);margin-bottom:4px">Schema (Europe/Stockholm) · ${cap.scheduleWindowMinutes || 60} min fönster · analys varje minut · högst ${cap.scheduleCapacity || 300} instrument · använder sparat urval (${(d.selection.epics || []).length}). Schemalagd analys slår aldrig på orderläget; ordrar kräver Godkänn.</div>
+      ${cap.selectionError ? `<div style="color:#f85149;font-size:11px">${esc(cap.selectionError)}</div>` : ""}
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px">${(d.schedule || []).map(s=>`<label style="border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;display:flex;flex-direction:column;gap:4px">
+        <span style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-sch-on="${esc(s.id)}" ${s.enabled ? "checked" : ""}> <b>${esc(s.label)}</b> <input type="time" data-sch-time="${esc(s.id)}" value="${esc(s.time)}" style="margin-left:auto"></span>
+        <span style="font-size:10px;color:var(--dim)">${esc(s.lastResult || "")}</span></label>`).join("")}</div>`;
+  }
+  function render(){
+    if(!st) return;
+    document.querySelectorAll("[data-igs-session]").forEach(el=>{ el.innerHTML = sessionHtml(st.session); });
+    document.querySelectorAll("[data-igs-schedule]").forEach(el=>{ if(!el.contains(document.activeElement)) el.innerHTML = scheduleHtml(st); });
+    document.querySelectorAll("[data-igs-start-saved]").forEach(b=>{ b.disabled = !(st.selection.epics || []).length || (st.session && st.session.status === "running"); b.textContent = `▶ Starta agentsession (sparat urval: ${(st.selection.epics || []).length})`; });
+  }
+  document.addEventListener("click", (ev)=>{
+    const b = ev.target.closest("[data-igs]"); if(!b) return;
+    if(b.dataset.igs === "stop"){ if(confirm("Stoppa agentsessionen? Instrument som inte hunnit analyseras hoppas över.")) post("/api/ig/session/stop"); }
+  });
+  document.addEventListener("click", (ev)=>{ if(ev.target.closest("[data-igs-start-saved]")) startSession(null); });
+  document.addEventListener("change", (ev)=>{
+    const on = ev.target.closest("[data-sch-on]"), tm = ev.target.closest("[data-sch-time]");
+    if(on) post("/api/ig/schedule", { slots: [{ id: on.dataset.schOn, enabled: on.checked }] });
+    if(tm) post("/api/ig/schedule", { slots: [{ id: tm.dataset.schTime, time: tm.value }] });
+  });
+  IG.on("env", ()=>{ st = null; if(window.MK) MK._selLoaded = false; load(); });
+  setInterval(load, 5000); setTimeout(load, 400);
+  return { load, saveSelection, startSession, state: ()=>st };
+})();
+
+// ── Valutapar: urvalsknappar + direktanalys (≤10) + session med valda ──
+(function(){
+  if(!window.MK) return;
+  const bar = document.getElementById("mk-bar"); if(!bar) return;
+  bar.insertAdjacentHTML("beforeend", `
+    <button type="button" id="mk-sel-all" title="Hela den tillåtna katalogen (Forex + Krypto), även utanför filter och Visa mer">Markera alla</button>
+    <button type="button" id="mk-sel-vis" title="Bara de instrument som filtret visar just nu">Markera filtrerade</button>
+    <button type="button" id="mk-sel-none">Avmarkera alla</button>
+    <button type="button" id="mk-analyze" style="border-color:#3fb950;color:#3fb950" title="Agenterna analyserar (JEV → teknisk analytiker → Hanna). Högst 10 instrument.">▶ Analysera valda (0)</button>
+    <button type="button" id="mk-session" style="border-color:#fbbf24;color:#fbbf24" title="Upp till 500 instrument, 5 per minut">▶ Starta agentsession med valda (0)</button>`);
+  const wrap = document.querySelector("#page-markets .mk-wrap");
+  wrap.insertAdjacentHTML("afterbegin", `<div id="mk-sel-list" style="font-size:11px;color:var(--dim);margin:0 0 8px"></div>`);
+  wrap.insertAdjacentHTML("beforeend", `<div class="mk-sec"><h3>🤖 Agentsession</h3><div data-igs-session style="font-size:12px"></div></div><div class="mk-sec"><h3>🗓 Schema</h3><div data-igs-schedule></div></div>`);
+  const $ = (id)=>document.getElementById(id);
+  function sync(){
+    const n = MK.sel.size;
+    $("mk-analyze").textContent = `▶ Analysera valda (${n})`;
+    $("mk-analyze").disabled = n === 0 || n > 10;
+    $("mk-analyze").title = n > 10 ? `Direktanalys tar högst 10 instrument — du har ${n}. Starta en agentsession i stället.` : "Agenterna analyserar (JEV → teknisk analytiker → Hanna). Högst 10 instrument.";
+    $("mk-session").textContent = `▶ Starta agentsession med valda (${n})`;
+    $("mk-session").disabled = n === 0 || n > 500;
+    const list = [...MK.sel];
+    $("mk-sel-list").innerHTML = n ? `<b>${n} markerade:</b> ${list.slice(0, 25).map(e=>IG.esc(IG.label(e))).join(", ")}${n > 25 ? ` … och ${n - 25} till` : ""}${n > 10 ? ' <span style="color:#fbbf24">· över 10: använd agentsession</span>' : ""}` : "Inga instrument markerade.";
+  }
+  MK.onSelect = ()=>{ sync(); IGS.saveSelection([...MK.sel]); };
+  MK.hooks.after.push(sync);
+  $("mk-sel-all").addEventListener("click", ()=>{ MK.all().forEach(m=>MK.sel.add(m.epic)); MK.render(); MK.onSelect(); });
+  $("mk-sel-vis").addEventListener("click", ()=>{ ["forex","crypto"].forEach(c=>MK.visible(c).forEach(m=>MK.sel.add(m.epic))); MK.render(); MK.onSelect(); });
+  $("mk-sel-none").addEventListener("click", ()=>{ MK.sel.clear(); MK.render(); MK.onSelect(); });
+  MK.analyze = async (epics)=>{
+    if(epics.length > 10){ alert("Direktanalys tar högst 10 instrument. Starta en agentsession för fler."); return; }
+    const r = await fetch("/api/run-agent", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ symbols: epics, instruction: `Analysera bara dessa IG-instrument (EPIC): ${epics.join(", ")}. Ge för varje köp (lång), sälj (kort) eller avstå med kort motivering.` }) });
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok || d.ok === false){ alert(d.error || ("HTTP " + r.status)); return; }
+    if(typeof pushInAppAlert === "function") pushInAppAlert(`▶ Agenterna analyserar ${epics.length} instrument. Följ dem i fliken Träd.`, 5000);
+  };
+  $("mk-analyze").addEventListener("click", ()=>MK.analyze([...MK.sel]));
+  $("mk-session").addEventListener("click", ()=>IGS.startSession([...MK.sel]));
+  sync();
 })();
 </script>
 

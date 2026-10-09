@@ -17,6 +17,7 @@ import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
 import { igMarketData } from "./igMarketData.js";
 import { handleIgRoutes } from "./igRoutes.js";
 import { getIgTimes, setIgTimes, ANALYSIS_INTERVALS, SESSION_MINUTES } from "./igTimes.js";
+import { type createIgSessions, DIRECT_ANALYSIS_MAX } from "./igSessions.js";
 import { igOrderExecutionEnabled } from "../integrations/igConnection.js";
 import { currentStake } from "../risk/stakeLadder.js";
 import { igAccountLimits } from "../integrations/igRiskLimits.js";
@@ -933,14 +934,27 @@ const AGENT_PROMPTS: Record<string, { model: string; system: string }> = {
 };
 
 let anthropicApiKey: string | null = null;
-let runAgentCallback: ((instruction?: string) => Promise<void>) | null = null;
+let runAgentCallback: ((instruction?: string, opts?: { symbols?: string[] }) => Promise<void>) | null = null;
+let igSessions: ReturnType<typeof createIgSessions> | null = null;
 
 export function setApiKey(key: string): void {
   anthropicApiKey = key;
 }
 
-export function setRunAgentCallback(cb: (instruction?: string) => Promise<void>): void {
+export function setRunAgentCallback(cb: (instruction?: string, opts?: { symbols?: string[] }) => Promise<void>): void {
   runAgentCallback = cb;
+}
+/** Agentsessioner + schema (krav E). Skapas i run.ts med orkestreringen som omgångskörare. */
+export function setIgSessions(s: ReturnType<typeof createIgSessions>): void { igSessions = s; }
+
+/** Direktanalys: bara IG-EPICs, högst 10 (E2). null = ingen lista. */
+export function directAnalysisSymbols(v: unknown): { ok: true; symbols: string[] | null } | { ok: false; error: string } {
+  if (v === undefined || v === null) return { ok: true, symbols: null };
+  if (!Array.isArray(v)) return { ok: false, error: "symbols måste vara en lista med IG-EPICs" };
+  const list = [...new Set(v.map(String))];
+  if (list.some((e) => !/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$/.test(e))) return { ok: false, error: "Bara IG-EPICs — inga påhittade symboler" };
+  if (list.length > DIRECT_ANALYSIS_MAX) return { ok: false, error: `Direktanalys tar högst ${DIRECT_ANALYSIS_MAX} instrument (du valde ${list.length}). Starta en agentsession för fler (upp till 500, 5 per minut).` };
+  return { ok: true, symbols: list.length ? list : null };
 }
 
 export function startServer(
@@ -1565,6 +1579,26 @@ export function startServer(
       }
 
       // ── Tidshorisont (1/5/15/30 min) + automatiska stängningar ──
+      // ── Urval, agentsessioner och schema (krav E) ──
+      if (url.pathname.startsWith("/api/ig/session") || url.pathname === "/api/ig/selection" || url.pathname === "/api/ig/schedule") {
+        if (!igSessions) { jsonStatus(res, 503, { ok: false, error: "Agentsessioner är inte igång" }); return; }
+        const env = igMarketData.getActiveEnv();
+        const fail = (e: unknown) => jsonStatus(res, 400, { ok: false, env, error: e instanceof Error ? e.message : String(e) });
+        try {
+          if (url.pathname === "/api/ig/session" && method === "GET") { json(res, { ok: true, ...igSessions.state(env) }); return; }
+          const b = method === "POST" ? JSON.parse((await readBody(req)) || "{}") as Record<string, unknown> : {};
+          if (url.pathname === "/api/ig/selection" && method === "POST") { const sel = igSessions.setSelection(env, b.epics); userAction(`sparade urval: ${sel.epics.length} instrument`); json(res, { ok: true, env, selection: sel }); return; }
+          if (url.pathname === "/api/ig/schedule" && method === "POST") { const sch = igSessions.setSchedule(env, b.slots); userAction("ändrade sessionsschemat"); json(res, { ok: true, env, schedule: sch }); return; }
+          if (url.pathname === "/api/ig/session/start" && method === "POST") {
+            const t = getIgTimes();
+            const x = igSessions.start(env, { epics: b.epics, durationMinutes: b.durationMinutes ?? t.sessionMinutes, analysisInterval: b.analysisInterval ?? t.analysisInterval, strategy: b.strategy, trigger: "manuell" });
+            userAction(`startade agentsession: ${x.epics.length} instrument, ${x.durationMinutes} min`, { to: "orchestrator" });
+            void igSessions.tick();
+            json(res, { ok: true, env, session: x }); return;
+          }
+          if (url.pathname === "/api/ig/session/stop" && method === "POST") { const x = igSessions.stop(env); userAction("stoppade agentsessionen"); json(res, { ok: true, env, session: x }); return; }
+        } catch (e) { fail(e); return; }
+      }
       if (url.pathname === "/api/ig/times" && method === "GET") {
         json(res, { ...getIgTimes(), holdingMinutes: getHorizonMin(), choices: { analysisInterval: ANALYSIS_INTERVALS, sessionMinutes: SESSION_MINUTES, holdingMinutes: HORIZON_CHOICES } });
         return;
@@ -1707,13 +1741,17 @@ export function startServer(
         }
         userAction("startade en analys (Kör analys)", { to: "orchestrator" });
 
-        // Body kan vara tom eller ha {instruction: "Köp BTC för $50"}
+        // Body kan vara tom eller ha {instruction: "Köp BTC för $50", symbols: [EPIC, …] (≤10)}
         let instruction: string | undefined;
+        let symbols: string[] | null = null;
         try {
           const body = await readBody(req);
           if (body) {
-            const parsed = JSON.parse(body) as { instruction?: string };
+            const parsed = JSON.parse(body) as { instruction?: string; symbols?: unknown };
             instruction = parsed.instruction?.trim() || undefined;
+            const d = directAnalysisSymbols(parsed.symbols);
+            if (!d.ok) { jsonStatus(res, 400, { ok: false, error: d.error }); return; }
+            symbols = d.symbols;
           }
         } catch { /* ignore parse fel — kör utan instruktion */ }
 
@@ -1722,7 +1760,7 @@ export function startServer(
 
         // Kör async utan att blocka response
         analysisStart("manuell", instruction);
-        runAgentCallback(instruction)
+        runAgentCallback(instruction, symbols ? { symbols } : undefined)
           .then(() => {
             // Turen kom aldrig till agenterna (t.ex. kill switch eller ingen mäklare).
             if (getAnalysis()?.status === "running") analysisEnd({ status: "stopped", reason: "Analysen kördes inte: kill switch på eller ingen mäklare kopplad." });

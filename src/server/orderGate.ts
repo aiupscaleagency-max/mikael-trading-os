@@ -104,6 +104,14 @@ export interface GateInput {
 
 export type GateResult = { ok: true } | { ok: false; error: string };
 
+// Agentsessioner (igSessions): räknar/spärrar agenternas nya orderförsök, och schemalagda
+// omgångar tvingar alltid fram Godkänn. Sätts av run.ts; null = ingen session-logik.
+let sessionHook: ((input: GateInput) => string | null) | null = null;
+let approvalOverride: (() => boolean) | null = null;
+export function setOrderGateSessionHook(hook: ((input: GateInput) => string | null) | null, forceApproval: (() => boolean) | null = null): void {
+  sessionHook = hook; approvalOverride = forceApproval;
+}
+
 export async function checkOrderGate(input: GateInput): Promise<GateResult> {
   const deny = (error: string): GateResult => {
     log.warn(`🛡 Order stoppad (${input.source}): ${error}`);
@@ -115,6 +123,11 @@ export async function checkOrderGate(input: GateInput): Promise<GateResult> {
     if (state?.killSwitchActive) {
       return deny("Kill switch är på. Inga nya positioner förrän du stänger av den.");
     }
+  }
+
+  if (sessionHook) {
+    const why = sessionHook(input);
+    if (why) return deny(why);
   }
 
   if (input.live && !liveAllowedByServer()) {
@@ -144,6 +157,7 @@ export async function checkOrderGate(input: GateInput): Promise<GateResult> {
 
 /** Ska ordern vänta på Mikes godkännande? */
 export function needsApproval(): boolean {
+  if (approvalOverride?.()) return true;
   return config.executionMode === "approve";
 }
 

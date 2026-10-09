@@ -14,11 +14,15 @@ import {
 import { loadState, saveState, appendDecision } from "./memory/store.js";
 import { Scheduler, createDefaultSchedule } from "./scheduler.js";
 import { runOrchestratedTurn } from "./orchestrator/orchestrator.js";
-import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback } from "./server/api.js";
+import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback, setIgSessions } from "./server/api.js";
+import { createIgSessions } from "./server/igSessions.js";
+import { analysisStart, analysisEnd, getAnalysis } from "./server/agentActivity.js";
+import { setSessionAnalysisInterval } from "./server/tradeHorizon.js";
+import { canSpend } from "./cost/tracker.js";
 import { startKlineStream } from "./server/klineStream.js";
 import { getSignals, jevReviewSymbols, startSignalEngine, subscribeSignals } from "./server/signalEngine.js";
 import { recordAnalysis } from "./memory/tradeMemory.js";
-import { listPendingOrders } from "./server/orderGate.js";
+import { listPendingOrders, setOrderGateSessionHook } from "./server/orderGate.js";
 import { type PrescreenResult, prescreenPairs, prescreenEnabled, rememberPrescreen } from "./orchestrator/prescreen.js";
 import { analysisModeInfo, autoLoopEnabled, scheduleTimes, signalTriggerEnabled, startFixedTimes } from "./server/analysisMode.js";
 import { setTeamLast } from "./server/teamLast.js";
@@ -125,19 +129,34 @@ async function runOnce(
   instruction?: string,
   useTeam = true,
   scheduled = false,
+  /** Exakta IG-EPICs (direktanalys ≤10 eller en sessionsomgång ≤5). JEV förkontrollerar dem först. */
+  symbolsOverride?: string[],
+  out?: { jevStopped?: { symbol: string; why: string }[] },
 ): Promise<void> {
   // Försållning: signalmotorn + JEV väljer par innan AI-teamet startas.
   // En schemalagd tur utan någon signal hoppas över helt (inga AI-anrop).
-  const screen: PrescreenResult = prescreenPairs({
-    cryptoSymbols: config.crypto.symbols,
-    otherSymbols: config.stocks.symbols,
-    instruction,
-    scheduled,
-  });
+  const screen: PrescreenResult = symbolsOverride?.length
+    ? { enabled: true, symbols: [...symbolsOverride], flagged: [], skip: false, note: `valda instrument: ${symbolsOverride.join(", ")}` }
+    : prescreenPairs({
+      cryptoSymbols: config.crypto.symbols,
+      otherSymbols: config.stocks.symbols,
+      instruction,
+      scheduled,
+    });
   const turnStartedAt = Date.now();
   let jevStopped: { symbol: string; why: string }[] = [];
+  // Valda instrument: JEV-förkontroll först (stoppade hoppas över, resten går till teknisk analytiker → Hanna)
+  if (symbolsOverride?.length) {
+    try {
+      const { kept, stopped } = await jevReviewSymbols(symbolsOverride, symbolsOverride.length);
+      jevStopped = stopped;
+      screen.symbols = kept;
+      if (!kept.length) { screen.skip = true; screen.note = `JEV stoppade alla valda (${stopped.map((x) => x.symbol).join(", ")})`; }
+      else if (stopped.length) screen.note = `JEV stoppade ${stopped.map((x) => x.symbol).join(", ")}; AI-teamet tar ${kept.join(", ")}`;
+    } catch (err) { screen.note += ` (JEV-förkontrollen kördes inte: ${err instanceof Error ? err.message : String(err)})`; }
+  }
   // JEV granskar bara paren den här analysen valt (signalerna i sig är gratis matte).
-  if (screen.enabled && screen.flagged.length && !screen.skip) {
+  if (!symbolsOverride?.length && screen.enabled && screen.flagged.length && !screen.skip) {
     const maxPairs = Math.max(1, Number(process.env.PRESCREEN_MAX_PAIRS ?? 3) || 3);
     const candidates = screen.flagged.slice(0, maxPairs * 2).map((f) => f.symbol);
     const picked = new Set(screen.symbols);
@@ -162,6 +181,7 @@ async function runOnce(
   }
   rememberPrescreen(screen);
   log.info(`[JEV] försållning: ${screen.note}`);
+  if (out) out.jevStopped = jevStopped;
   if (useTeam && screen.skip) return;
 
   const state = await loadState();
@@ -418,7 +438,37 @@ async function main(): Promise<void> {
 
   // Registrera API-nyckel + run-callback för manuella agent-frågor och dashboard-triggar
   setApiKey(config.anthropicApiKey);
-  setRunAgentCallback((instruction?: string) => runOnce(brokers, engines, instruction));
+  setRunAgentCallback((instruction?: string, opts?: { symbols?: string[] }) => runOnce(brokers, engines, instruction, true, false, opts?.symbols));
+
+  // Agentsessioner + schema (krav E): omgångar om ≤5 EPICs per minut genom samma orkestrering.
+  const sessions = createIgSessions({
+    binding: (env) => getIgStatus().environments[env].status === "connected" ? getIgStatus().environments[env].connectionGeneration ?? null : null,
+    activeEnv: () => igMarketData.getActiveEnv(),
+    busy: () => getAnalysis()?.status === "running",
+    guard: async () => {
+      if ((await loadState()).killSwitchActive) return "Kill switch är på";
+      const c = await canSpend({ dailyCapUsd: config.costCap.dailyUsd, weeklyCapUsd: config.costCap.weeklyUsd });
+      return c.allowed ? null : `Kostnadstaket: ${c.reason ?? "nått"}`;
+    },
+    runBatch: async (env, epics, ctx) => {
+      const names = epics.map((e) => `${igMarketData.nameOf(e, env) ?? e} (${e})`).join(", ");
+      const instruction = `Agentsession (${ctx.scheduled ? "schemalagd" : "manuell"}${ctx.strategy ? `, strategi ${ctx.strategy}` : ""}, analysintervall ${ctx.analysisInterval}): analysera bara ${names}. `
+        + "Ge köp (lång), sälj (kort) eller avstå per instrument. Avstå hellre än att gissa.";
+      analysisStart(ctx.scheduled ? "schema" : "manuell", instruction);
+      setSessionAnalysisInterval(ctx.analysisInterval);
+      const out: { jevStopped?: { symbol: string; why: string }[] } = {};
+      try { await runOnce(brokers, engines, instruction, true, ctx.scheduled, epics, out); }
+      finally { setSessionAnalysisInterval(null); }
+      const a = getAnalysis();
+      if (a?.status === "running") analysisEnd({ status: "stopped", reason: out.jevStopped?.length === epics.length ? "JEV stoppade alla instrument i omgången" : "Omgången kördes inte (kill switch eller ingen mäklare)" });
+      const done = getAnalysis();
+      return { picks: done?.picks ?? [], stopped: out.jevStopped, status: out.jevStopped?.length === epics.length ? "done" : done?.status, reason: done?.reason };
+    },
+    onChange: (env) => broadcastEvent("ig-session", { env }),
+  });
+  setIgSessions(sessions);
+  setOrderGateSessionHook((i) => sessions.orderGateHook(i), () => sessions.forcesApproval());
+  setInterval(() => { void sessions.tick(); }, 15_000).unref?.();
 
   // Serve-läge: bara dashboard och strömmar. Ingen agent-körning, inga
   // LLM-anrop vid start.

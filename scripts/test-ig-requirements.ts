@@ -172,6 +172,113 @@ const mkBroker = (positions: any[], env: "demo" | "live" = "demo") => new IgBrok
   assert.ok(html.includes("ot-kill-reset"), "kill switch-status + återställning i UI");
   ok("D6 separat orderflagga per miljö (båda av), kill switch-status och återställning syns, granskning/Godkänn bevaras");
 }
+
+// ══ E. Urval, analys, sessioner ══
+{
+  const { createIgSessions, stockholmSlot, capacityError } = await import("../src/server/igSessions.js");
+  const { directAnalysisSymbols } = await import("../src/server/api.js");
+  const { checkOrderGate, setOrderGateSessionHook, needsApproval } = await import("../src/server/orderGate.js");
+  let t = Date.parse("2026-10-09T06:00:00Z"); // 08:00 i Stockholm (CEST)
+  let binding: string | null = "demo-g1", active: "demo" | "live" = "demo";
+  const batches: string[][] = [];
+  const ctxs: any[] = [];
+  const gates: Array<{ ok: boolean }> = [];
+  let approvalDuringBatch: boolean[] = [];
+  const mk = (n: number) => `CS.D.T${String(n).padStart(3, "0")}.MINI.IP`;
+  const dir = path.join(tmp, "sess");
+  const S = createIgSessions({
+    binding: (e) => (e === "demo" ? binding : null), activeEnv: () => active, guard: async () => null, now: () => t, directory: dir,
+    runBatch: async (_e, epics, ctx) => {
+      batches.push(epics); ctxs.push(ctx);
+      approvalDuringBatch.push(needsApproval());
+      // Agenterna försöker lägga ordrar under omgången: högst 5 nya försök per session
+      for (let i = 0; i < 3; i++) gates.push(await checkOrderGate({ live: false, side: "BUY", unitsOrder: true, opening: true, source: "agent" }));
+      return { picks: [{ symbol: epics[0]!, action: "buy", reasoning: "test" }], stopped: epics[1] ? [{ symbol: epics[1], why: "svag signal" }] : [] };
+    },
+  });
+  setOrderGateSessionHook((i) => S.orderGateHook(i), () => S.forcesApproval());
+
+  // E2: direktanalys högst 10, bara EPICs
+  assert.equal(directAnalysisSymbols(Array.from({ length: 11 }, (_, i) => mk(i))).ok, false);
+  assert.equal(directAnalysisSymbols(["BTCUSDT"]).ok, false, "inga påhittade symboler");
+  const dd = directAnalysisSymbols([mk(1), mk(1)]); assert.ok(dd.ok && dd.symbols!.length === 1);
+
+  // E2: urvalet sparas på servern (överlever omstart), max 500
+  const sel = Array.from({ length: 12 }, (_, i) => mk(i));
+  S.setSelection("demo", sel);
+  const reloaded = createIgSessions({ binding: () => binding, activeEnv: () => active, guard: async () => null, now: () => t, directory: dir, runBatch: async () => ({ picks: [] }) });
+  assert.deepEqual(reloaded.state("demo").selection.epics, sel, "urvalet ligger på servern");
+  assert.throws(() => S.setSelection("demo", Array.from({ length: 501 }, (_, i) => mk(i))), /Högst 500/);
+  assert.throws(() => S.setSelection("demo", ["BTCUSDT"]), /IG-EPICs/);
+
+  // E5: kapacitet 60 min × 5/min = 300; större urval kräver nytt tidsval
+  assert.equal(capacityError(300, 60), null); assert.match(capacityError(301, 60)!, /Välj ny tid/);
+  assert.throws(() => S.start("demo", { epics: Array.from({ length: 80 }, (_, i) => mk(i)), durationMinutes: 15 }), /ryms inte/);
+
+  // E2/E4: manuell session, fryst lista/miljö/strategi/intervall, omgångar om högst 5 per minut
+  const x = S.start("demo", { durationMinutes: 15, analysisInterval: "5m", strategy: "ema-cross-5m" });
+  assert.equal(x.epics.length, 12); assert.equal(x.binding, "demo-g1"); assert.equal(x.analysisInterval, "5m"); assert.equal(x.strategy, "ema-cross-5m");
+  S.setSelection("demo", [mk(99)]);
+  assert.equal(S.state("demo").session!.epics.length, 12, "listan frystes vid start");
+  assert.throws(() => S.start("demo", {}), /pågår redan/);
+  await S.runNext("demo");
+  assert.deepEqual(batches[0], sel.slice(0, 5)); assert.equal(ctxs[0].analysisInterval, "5m"); assert.equal(ctxs[0].scheduled, false);
+  await S.runNext("demo"); assert.equal(batches.length, 1, "nästa omgång först efter en minut");
+  t += 60_000; await S.runNext("demo");
+  assert.deepEqual(batches[1], sel.slice(5, 10));
+  let st = S.state("demo").session!;
+  assert.equal(st.items.find((i) => i.epic === sel[0])!.action, "buy");
+  assert.match(st.items.find((i) => i.epic === sel[1])!.result!, /JEV stoppade/);
+  assert.equal(st.items.find((i) => i.epic === sel[2])!.action, "avstå", "sessionen får avstå");
+  assert.equal(st.items.filter((i) => i.status === "väntar").length, 2);
+  // Högst 5 nya orderförsök: 3 + 2 tillåts, resten spärras
+  assert.equal(gates.filter((g) => g.ok).length, 5); assert.equal(gates.filter((g) => !g.ok).length, 1);
+  assert.equal(st.orderAttempts, 5);
+  assert.equal((await checkOrderGate({ live: false, side: "BUY", unitsOrder: true, opening: true, source: "orderpanel" })).ok, true, "räknar bara agenternas försök under omgångar");
+  // Stoppa
+  const stopped = S.stop("demo");
+  assert.equal(stopped!.status, "stopped"); assert.ok(stopped!.items.filter((i) => i.status === "hoppad").length === 2);
+
+  // Kontobyte avbryter (kör aldrig vidare på annat konto)
+  S.setSelection("demo", sel.slice(0, 3));
+  S.start("demo", { durationMinutes: 15 });
+  binding = "demo-g2";
+  t += 60_000; await S.runNext("demo");
+  assert.equal(S.state("demo").session!.status, "interrupted"); assert.match(S.state("demo").session!.reason!, /inloggningen ändrades/);
+  binding = "demo-g1";
+
+  // E5: schema 08:00/12:00/15:00/19:00 Stockholm, 1 h, redigerbart; tvingar Godkänn; aktiverar aldrig orderläget
+  const sch = S.state("demo").schedule;
+  assert.deepEqual(sch.map((s) => s.time), ["08:00", "12:00", "15:00", "19:00"]);
+  assert.deepEqual(sch.map((s) => s.label), ["Morgon", "Lunch", "Eftermiddag", "Kväll"]);
+  assert.equal(stockholmSlot(Date.parse("2026-10-09T06:00:00Z")).time, "08:00");
+  assert.equal(stockholmSlot(Date.parse("2026-12-09T07:00:00Z")).time, "08:00", "vintertid");
+  S.setSelection("demo", Array.from({ length: 301 }, (_, i) => mk(i)));
+  assert.throws(() => S.setSchedule("demo", [{ id: "morning", enabled: true }]), /ryms inte/);
+  S.setSelection("demo", sel);
+  S.setSchedule("demo", [{ id: "lunch", time: "12:30", enabled: true }]);
+  assert.throws(() => S.setSchedule("demo", [{ id: "lunch", time: "25:00" }]), /HH:MM/);
+  t = Date.parse("2026-10-09T10:30:00Z"); // 12:30 Stockholm
+  approvalDuringBatch = [];
+  await S.tick();
+  const sx = S.state("demo").session!;
+  assert.equal(sx.trigger, "schema"); assert.equal(sx.durationMinutes, 60); assert.equal(sx.slot, "lunch");
+  assert.ok(approvalDuringBatch.length >= 1 && approvalDuringBatch.every(Boolean), "schemalagd omgång tvingar Godkänn");
+  await S.tick();
+  assert.equal(S.state("demo").schedule.find((x) => x.id === "lunch")!.lastOccurrence, "2026-10-09 12:30", "ingen dubbelstart samma tid");
+  const { config } = await import("../src/config.js");
+  assert.equal(needsApproval(), config.executionMode === "approve", "efter omgången gäller vanligt läge igen");
+  const { igOrderExecutionEnabled } = await import("../src/integrations/igConnection.js");
+  assert.equal(igOrderExecutionEnabled("demo"), false, "schemat slår aldrig på orderläget");
+  setOrderGateSessionHook(null);
+
+  // E1/E3 i UI
+  for (const id of ["mk-sel-all", "mk-sel-vis", "mk-sel-none", "mk-analyze", "mk-session"]) assert.ok(html.includes(`id="${id}"`), id);
+  assert.ok(html.includes("data-igs-start-saved") && html.includes("data-igs-session") && html.includes("data-igs-schedule"));
+  assert.ok(!/IG analyserar|Analysera med IG/.test(html), "knapptexten antyder inte att IG analyserar");
+  assert.ok(html.includes("MK.all().forEach(m=>MK.sel.add(m.epic))"), "Markera alla tar hela katalogen, även utanför filter/Visa mer");
+  ok("E1–E5 urval på servern, direktanalys ≤10, session ≤500 i omgångar om 5/min med fryst lista/konto/strategi/intervall, köstatus, JEV-stopp, avstå, max 5 orderförsök, stopp, schema med kapacitet 300 som tvingar Godkänn");
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("Kravlistan: alla tester godkända (endast mocks, inga nätverksanrop)");
 process.exit(0);
