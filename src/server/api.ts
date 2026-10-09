@@ -357,6 +357,7 @@ export async function createIgPendingOrder(b: Record<string, unknown>, broker: I
     ...(takeProfit !== undefined ? { takeProfit } : {}), ...(stopLoss !== undefined ? { stopLoss } : {}),
     refPrice: ref, reason: b.reason ? String(b.reason).slice(0, 200) : undefined,
     ...(horizonSec ? { horizonSec } : {}),
+    ...(q.ok && "size" in q ? { quoteInfo: { size: q.size, unit: q.unit, contractSize: q.contractSize, margin: q.margin, exposure: q.exposure, moneyAtTp: q.moneyAtTp, moneyAtSl: q.moneyAtSl, minSize: q.minSize, basis: q.basis } } : {}),
   });
   return { ok: true, pendingOrder: p, quote: q };
 }
@@ -2055,6 +2056,22 @@ export function startServer(
           history?: Array<{ role: "user" | "assistant"; text: string }>;
         };
         if (!hasLlmCredentials()) { json(res, { ok: false, error: "AI_GATEWAY_API_KEY eller ANTHROPIC_API_KEY ej satt" }); return; }
+        {
+          // IG: chatten lägger bara förslag i Väntande ordrar (src/server/igChat.ts)
+          const igName = activeName(brokers);
+          const igb = igName ? brokers[igName] : undefined;
+          if (igb instanceof IgBroker) {
+            try {
+              const { igChat } = await import("./igChat.js");
+              const out = await igChat(message, history || [], igb, { llm: createLlmClient(), createPending: createIgPendingOrder });
+              if (out.ok && out.toolCall) broadcastEvent("pending-orders", { from: "chat" });
+              json(res, out);
+            } catch (err) {
+              json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
+            }
+            return;
+          }
+        }
         const creds = resolveBinanceCreds(mode);
         if (!creds) { json(res, { ok: false, error: `Binance ${mode} ej konfigurerat` }); return; }
 

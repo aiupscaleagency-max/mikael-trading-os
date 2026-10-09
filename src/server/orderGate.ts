@@ -178,6 +178,8 @@ export interface PendingOrder {
   stakeAmount?: number;
   currency?: string;
   closeDealId?: string;
+  /** IG: uträkning när förslaget skapades (kontovaluta). Visas i popupen/kön; ändrar inget i ordern. */
+  quoteInfo?: { size: number | null; unit: string | null; contractSize: number | null; margin: number | null; exposure: number | null; moneyAtTp: number | null; moneyAtSl: number | null; minSize: number | null; basis?: string };
   /** Förslaget försvinner (status "expired") efter den här tiden */
   expiresAt?: string;
   status: "pending" | "done" | "rejected" | "failed" | "expired";

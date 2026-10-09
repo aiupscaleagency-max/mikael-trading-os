@@ -183,6 +183,28 @@ function broker(e: "demo" | "live", over: Record<string, unknown> = {}) {
   assert.equal(pairOf("CS.D.BITCOIN.CFD.IP"), "CS.D.BITCOIN.CFD.IP");
   console.log("PASS: strategins kortnamn översätts bara till verifierade EPICs");
 }
+
+// 9. Chatten: bara förslag i kön, inga påhittade EPICs, samma modell
+{
+  const { igChat } = await import("../src/server/igChat.js");
+  const { b, calls } = broker("demo");
+  const models: string[] = [];
+  let turn = 0;
+  const llm = { messages: { create: async (p: any) => { models.push(p.model); turn++;
+    return turn === 1
+      ? { content: [{ type: "tool_use", id: "t1", name: "queue_ig_orders", input: { epics: [EPIC, "CS.D.FAKE.CFD.IP"], side: "SELL", stake_pct: 9 } }] }
+      : { content: [{ type: "text", text: "Lagt i kön." }] }; } } };
+  const queued: any[] = [];
+  const out: any = await igChat("sälj eurusd", [], b, { llm: llm as never, watchlist: () => [{ epic: EPIC, name: "EUR/USD Mini", category: "forex" }],
+    createPending: async (body) => { queued.push(body); return { ok: true, pendingOrder: { id: "p1", symbol: String(body.symbol), side: String(body.side), stakeAmount: 300, currency: "SEK" } }; } });
+  assert.equal(out.ok, true); assert.equal(out.reply, "Lagt i kön.");
+  assert.equal(queued.length, 1, "bara EPIC ur bevakningslistan köas"); assert.equal(queued[0].stakePct, 3, "insats klämd till 3 %");
+  const res = Object.values(out.executed)[0] as any;
+  assert.equal(res.executed, false); assert.match(res.results[1].error, /påhittade/);
+  assert.deepEqual([...new Set(models)], ["claude-haiku-4-5"], "modellen oförändrad");
+  assert.equal(calls.filter((c) => c[0] === "preview" || c[0] === "confirm" || c[0] === "close").length, 0, "inget skickat till IG");
+  console.log("PASS: chatten köar förslag (ingen order), avvisar påhittad EPIC, modellen oförändrad");
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("IG-port: alla tester godkända (endast mocks, inga nätverksanrop)");
 process.exit(0);
