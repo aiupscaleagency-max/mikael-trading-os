@@ -164,7 +164,7 @@ export function createIgMarketData(deps: {
     } catch (err) {
       s.historyError = `historik saknas: ${err instanceof Error ? err.message : String(err)}`;
       // Kvot/metadata behålls: hämta bara kvoten (cachad) så att priset fortfarande syns.
-      try { const m = await market(env, epic); rememberName(env, epic, m.name, m.category); setRestQuote(env, epic, m.quote); } catch { /* visas som frånkopplat */ }
+      try { const m = await market(env, epic); if (m.epic === epic) { rememberName(env, epic, m.name, m.category); setRestQuote(env, epic, m.quote); } } catch { /* visas som frånkopplat */ }
     }
   }
   function touchSeries(env: IgEnvironment, epic: string, iv: string): void {
@@ -213,13 +213,17 @@ export function createIgMarketData(deps: {
     quotes.set(k(env, epic), { epic, bid: q.bid, offer: q.offer, mid: (q.bid + q.offer) / 2, observedAt: q.observedAt ?? null, receivedAt: q.receivedAt ?? now(), delayTime: q.delayTime ?? null, marketStatus: q.marketStatus ?? null, changePct: q.percentageChange ?? prev?.changePct ?? null, high: q.high ?? prev?.high ?? null, low: q.low ?? prev?.low ?? null, source: "rest" });
   }
   function onQuote(env: IgEnvironment, q: any): void {
+    // B1: trasiga eller ofullständiga strömsvar kastas (ingen gissning av pris eller tid).
+    if (!q || typeof q.epic !== "string" || !/^[A-Za-z0-9._-]{1,100}$/.test(q.epic) || !Number.isFinite(q.bid) || !Number.isFinite(q.offer) || !Number.isFinite(q.observedAt)) return;
     const prev = quotes.get(k(env, q.epic));
+    if (prev && prev.observedAt === q.observedAt && prev.bid === q.bid && prev.offer === q.offer && prev.delayTime === (q.delayTime ?? null) && prev.marketStatus === (q.marketStatus ?? null)) return; // dubblett (en ändrad fördröjnings-/statusflagga släpps igenom)
     if (prev && prev.observedAt !== null && q.observedAt < prev.observedAt) return; // gammal/dubblett
     const next: IgQuote = { epic: q.epic, bid: q.bid, offer: q.offer, mid: (q.bid + q.offer) / 2, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, changePct: q.changePercent ?? prev?.changePct ?? null, high: prev?.high ?? null, low: prev?.low ?? null, source: "stream" };
     quotes.set(k(env, q.epic), next);
     events.emit("quote", env, next);
   }
   function onCandle(env: IgEnvironment, c: any): void {
+    if (!c || typeof c.epic !== "string" || ![c.openTime, c.open, c.high, c.low, c.close].every(Number.isFinite)) return;
     const iv = SCALE_IV[c.scale];
     if (!iv) return;
     const s = series.get(k(env, c.epic, iv));

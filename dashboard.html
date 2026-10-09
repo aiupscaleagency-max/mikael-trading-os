@@ -92,6 +92,25 @@ window.IG = (function () {
       el.title = on ? "Godkända ordrar skickas till IG." : "Godkänn skickar inget till IG. Slås på i .env: IG_ORDER_EXECUTION_ENABLED_" + st.env.toUpperCase() + "=true + omstart.";
     });
   }
+  // ── B1: avvisa svar för fel miljö/EPIC, gamla och dubbletter (ren funktion, testas i scripts/test-ig-requirements.ts) ──
+  // Returnerar null om kvoten ska användas, annars skälet till att den kastas.
+  function rejectQuote(prev, q, allowed, env) {
+    if (!q || !isEpic(q.epic)) return "ogiltig EPIC";
+    if (q.env && q.env !== env) return "fel miljö";
+    if (allowed && allowed.indexOf(q.epic) < 0) return "EPIC inte begärd";
+    if (typeof q.bid !== "number" || typeof q.offer !== "number" || !isFinite(q.bid) || !isFinite(q.offer)) return "pris saknas";
+    if (prev && prev.observedAt != null && q.observedAt != null) {
+      if (q.observedAt < prev.observedAt) return "äldre än visad kvot";
+      if (q.observedAt === prev.observedAt && q.bid === prev.bid && q.offer === prev.offer && q.delayTime === prev.delayTime && q.marketStatus === prev.marketStatus && q.state === prev.state) return "dubblett";
+    }
+    return null;
+  }
+  function rejectCandle(c, allowedEpics, env) {
+    if (!c || !isEpic(c.epic)) return "ogiltig EPIC";
+    if (c.env && c.env !== env) return "fel miljö";
+    if (allowedEpics && allowedEpics.indexOf(c.epic) < 0) return "EPIC inte begärd";
+    return null;
+  }
   // ── Ström (en EventSource för alla som vill ha kvoter/ljus) ──
   function wanted() { var s = {}; Object.keys(owners).forEach(function (o) { owners[o].forEach(function (e) { if (isEpic(e)) s[e] = 1; }); }); return Object.keys(s).sort().slice(0, 30); }
   // charts = ["EPIC|1m", ...]: öppna diagram hålls vid liv på servern så länge strömmen är öppen (stängs → slutar följas)
@@ -105,8 +124,8 @@ window.IG = (function () {
     if (!list.length) return;
     try { es = new EventSource("/api/market/stream?epics=" + encodeURIComponent(list.join(",")) + (charts.length ? "&charts=" + encodeURIComponent(charts.join(",")) : "")); } catch (_) { return; }
     var mine = es;
-    es.addEventListener("quote", function (e) { if (es !== mine) return; lastMsgAt = Date.now(); var q; try { q = JSON.parse(e.data); } catch (_) { return; } if (q.env && q.env !== st.env) return; quotes[q.epic] = q; if (q.name) names[q.epic] = q.name; emit("quote", q); });
-    es.addEventListener("candle", function (e) { if (es !== mine) return; lastMsgAt = Date.now(); var c; try { c = JSON.parse(e.data); } catch (_) { return; } if (c.env && c.env !== st.env) return; emit("candle", c); });
+    es.addEventListener("quote", function (e) { if (es !== mine) return; lastMsgAt = Date.now(); var q; try { q = JSON.parse(e.data); } catch (_) { return; } if (rejectQuote(quotes[q.epic], q, list, st.env)) return; quotes[q.epic] = q; if (q.name) names[q.epic] = q.name; emit("quote", q); });
+    es.addEventListener("candle", function (e) { if (es !== mine) return; lastMsgAt = Date.now(); var c; try { c = JSON.parse(e.data); } catch (_) { return; } if (rejectCandle(c, list.concat(charts.map(function (x) { return x.split("|")[0]; })), st.env)) return; emit("candle", c); });
     es.addEventListener("stream-status", function (e) { lastMsgAt = Date.now(); try { emit("stream-status", JSON.parse(e.data)); } catch (_) {} });
     es.addEventListener("heartbeat", function (e) { lastMsgAt = Date.now(); try { var h = JSON.parse(e.data); if (h.env && h.env !== st.env) { refresh(); } emit("heartbeat", h); } catch (_) {} });
     es.addEventListener("hello", function () { lastMsgAt = Date.now(); });
@@ -118,15 +137,25 @@ window.IG = (function () {
     if (!list.length) return {};
     var d = await getJson("/api/market/prices?symbols=" + encodeURIComponent(list.join(",")));
     if (d.env && d.env !== st.env) return {};
-    Object.keys(d.quotes || {}).forEach(function (k) { var q = d.quotes[k]; if (q && q.bid != null) quotes[k] = q; if (q && q.name) names[k] = q.name; });
-    return d.quotes || {};
+    var outQ = {};
+    Object.keys(d.quotes || {}).forEach(function (k) { var q = d.quotes[k]; if (!q || list.indexOf(k) < 0 || (q.epic && q.epic !== k)) return; outQ[k] = q; if (q.bid != null && !rejectQuote(quotes[k], Object.assign({ epic: k }, q), list, st.env)) quotes[k] = q; if (q.name) names[k] = q.name; });
+    return outQ;
   }
   async function klines(epic, interval, limit) {
     var d = await getJson("/api/market/klines?epic=" + encodeURIComponent(epic) + "&interval=" + encodeURIComponent(interval) + "&limit=" + (limit || 300));
+    // Svar för fel instrument eller fel miljö kastas (sen respons efter byte).
+    if ((d.epic && d.epic !== epic) || (d.env && d.env !== st.env)) return { epic: epic, klines: [], forming: null, error: "Svaret gällde fel instrument eller konto och kastades", rejected: true };
     if (d.name) names[epic] = d.name;
     if (d.quote && d.quote.bid != null) quotes[epic] = d.quote;
     return d;
   }
+  // Heartbeat-vakt: servern skickar heartbeat var 15:e s. Tyst i 45 s → stäng och återanslut.
+  function watchdog() {
+    if (!es || !esKey) return;
+    if (es.readyState === 2) { es = null; esKey = ""; open(); return; }
+    if (lastMsgAt && Date.now() - lastMsgAt > 45000) { emit("stream-status", { status: "ingen heartbeat på 45 s (återansluter)" }); try { es.close(); } catch (_) {} es = null; lastMsgAt = 0; open(); }
+  }
+  setInterval(watchdog, 15000);
   setInterval(refresh, 20000);
   setTimeout(refresh, 50);
   return {
@@ -134,6 +163,7 @@ window.IG = (function () {
     money: money, px: px, badge: badge, stateOf: stateOf, age: age, want: want, prices: prices, klines: klines,
     quote: function (e) { return quotes[e] || null; }, category: function (e) { return cats[e] || null; }, names: names,
     currency: cur, execOn: function () { return !!(st.execution && st.execution[st.env]); },
+    rejectQuote: rejectQuote, rejectCandle: rejectCandle,
   };
 })();
 </script>

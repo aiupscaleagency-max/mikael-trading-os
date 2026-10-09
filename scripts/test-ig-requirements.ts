@@ -438,6 +438,97 @@ const mkBroker = (positions: any[], env: "demo" | "live" = "demo") => new IgBrok
   assert.ok(!/<iframe[^>]*(prorealtime|ig\.com)/i.test(html), "ingen inbäddning");
   ok("G PRT-knapp öppnar IG:s egen sida i nytt fönster; inget API, ingen inbäddning, ingen sessionslänk");
 }
+
+// ══ B. Livesynk ══
+{
+  const vm = await import("node:vm");
+  const { EventEmitter } = await import("node:events");
+  const { createIgMarketData } = await import("../src/server/igMarketData.js");
+  // Kör dashboardens riktiga IG-skript i en sandlåda (inga nätverksanrop: fetch styrs här).
+  const igSrc = html.match(/<script>\s*\/\*[\s\S]*?\*\/\s*window\.IG = \(function[\s\S]*?<\/script>/)?.[0]?.replace(/^<script>|<\/script>$/g, "")
+    ?? html.slice(html.indexOf("window.IG = (function"), html.indexOf("</script>", html.indexOf("window.IG = (function")));
+  let fetchImpl: (u: string) => any = () => ({ ok: true, json: async () => ({}) });
+  const sandbox: any = { console, Date, Math, JSON, Object, Array, String, Number, isNaN, isFinite, encodeURIComponent, Promise,
+    setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0,
+    document: { querySelectorAll: () => [], getElementById: () => null, addEventListener: () => {} },
+    fetch: async (u: string) => fetchImpl(u), EventSource: function () { return { addEventListener() {}, close() {}, readyState: 1 }; } };
+  sandbox.window = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(igSrc, sandbox);
+  const IG = sandbox.IG;
+  const A = "CS.D.EURUSD.MINI.IP", B = "CS.D.BITCOIN.CFD.IP";
+  const q0 = { epic: A, bid: 1.1, offer: 1.1002, observedAt: NOW, delayTime: 0, marketStatus: "TRADEABLE", state: "live" };
+  assert.equal(IG.rejectQuote(null, q0, [A], "demo"), null);
+  assert.equal(IG.rejectQuote(null, { ...q0, env: "live" }, [A], "demo"), "fel miljö");
+  assert.equal(IG.rejectQuote(null, { ...q0, epic: B }, [A], "demo"), "EPIC inte begärd");
+  assert.equal(IG.rejectQuote(q0, { ...q0, observedAt: NOW - 1 }, [A], "demo"), "äldre än visad kvot");
+  assert.equal(IG.rejectQuote(q0, { ...q0 }, [A], "demo"), "dubblett");
+  assert.equal(IG.rejectQuote(q0, { ...q0, delayTime: null }, [A], "demo"), null, "ändrad fördröjningsflagga är ingen dubblett");
+  assert.equal(IG.rejectQuote(null, { ...q0, bid: null }, [A], "demo"), "pris saknas");
+  assert.equal(IG.rejectCandle({ epic: B, env: "demo" }, [A], "demo"), "EPIC inte begärd");
+  // Sen klines-respons för fel EPIC/konto kastas
+  fetchImpl = () => ({ ok: true, json: async () => ({ epic: B, env: "demo", name: "Bitcoin", klines: [{ t: 1 }] }) });
+  const late = await IG.klines(A, "1m", 50);
+  assert.equal(late.rejected, true); assert.equal(late.klines.length, 0); assert.notEqual(IG.label(A), "Bitcoin", "fel instruments namn sparas inte");
+  fetchImpl = () => ({ ok: true, json: async () => ({ epic: A, env: "live", klines: [{ t: 1 }] }) });
+  assert.equal((await IG.klines(A, "1m", 50)).rejected, true, "svar från fel konto kastas");
+  fetchImpl = () => ({ ok: true, json: async () => ({ env: "demo", quotes: { [A]: q0, [B]: { ...q0, epic: B } } }) });
+  const pr = await IG.prices([A]);
+  assert.deepEqual(Object.keys(pr), [A], "prices() tar bara begärda EPICs");
+  assert.equal(IG.quote(B), null);
+  // Heartbeat-vakt och återanslutning finns
+  for (const k of ["function watchdog()", "45000", "es.readyState === 2", '"heartbeat"', "rejectQuote(quotes[q.epic], q, list, st.env)"]) assert.ok(html.includes(k), k);
+  ok("B1 klienten avvisar fel miljö/EPIC, gamla kvoter och dubbletter; sena klines/prices för fel instrument/konto kastas; heartbeat-vakt återansluter efter 45 s");
+
+  // Server: strömmen avvisar trasiga/gamla/dubbletter; signaler bara på stängda ljus (B2)
+  const stream = { events: new EventEmitter(), summary: () => ({ status: "CONNECTED:WS-STREAMING" }), ensure: () => {} };
+  let t = NOW;
+  const md = createIgMarketData({ status: igStatus as never, now: () => t, stream: stream as never, file: (e) => path.join(tmp, `b-wl-${e}.json`),
+    candles: (async () => ({ status: "ready", candles: [{ openTime: NOW - 120_000, closeTime: NOW - 60_000, open: 1, high: 1.2, low: 0.9, close: 1.1 }] })) as never,
+    market: (async (_e: string, epic: string) => ({ epic, name: "EUR/USD Mini", category: "forex", quote: { bid: 1, offer: 1.1, observedAt: NOW - 1000 } })) as never });
+  md.start();
+  try {
+    let quotesSeen = 0; md.events.on("quote", () => quotesSeen++);
+    stream.events.emit("quote", "demo", { epic: A, bid: 1.2, offer: 1.21, observedAt: NOW, receivedAt: NOW, delayTime: 0, marketStatus: "TRADEABLE" });
+    stream.events.emit("quote", "demo", { epic: A, bid: 1.2, offer: 1.21, observedAt: NOW, receivedAt: NOW, delayTime: 0, marketStatus: "TRADEABLE" });
+    stream.events.emit("quote", "demo", { epic: A, bid: 1.3, offer: 1.31, observedAt: NOW - 5000, receivedAt: NOW, delayTime: 0, marketStatus: "TRADEABLE" });
+    stream.events.emit("quote", "demo", { epic: A, bid: Number.NaN, offer: 1.31, observedAt: NOW + 1, receivedAt: NOW, delayTime: 0, marketStatus: "TRADEABLE" });
+    stream.events.emit("quote", "demo", { epic: "bad epic", bid: 1, offer: 1, observedAt: NOW + 1 });
+    assert.equal(quotesSeen, 1, "dubblett, äldre och trasiga kvoter avvisas");
+    assert.equal(md.quote(A, "demo")!.bid, 1.2);
+    assert.equal(md.quote(A, "live"), null, "Demo-kvot hamnar aldrig i Live");
+
+    await md.ensureSeries("demo", A, "1m");
+    const closedSeen: number[] = []; md.events.on("closed", (_e: string, _ep: string, _iv: string, c: any) => closedSeen.push(c.openTime));
+    const open = NOW - 60_000;
+    stream.events.emit("candle", "demo", { epic: A, scale: "1MINUTE", openTime: open, open: 1, high: 1.3, low: 1, close: 1.2, closed: false });
+    assert.equal(closedSeen.length, 0, "pågående ljus ger ingen signal");
+    assert.equal(md.forming(A, "1m", "demo")!.openTime, open);
+    stream.events.emit("candle", "demo", { epic: A, scale: "1MINUTE", openTime: open, open: 1, high: 1.3, low: 1, close: 1.25, closed: true });
+    stream.events.emit("candle", "demo", { epic: A, scale: "1MINUTE", openTime: open, open: 1, high: 1.3, low: 1, close: 1.25, closed: true });
+    stream.events.emit("candle", "demo", { epic: A, scale: "1MINUTE", openTime: open - 60_000, open: 1, high: 1.3, low: 1, close: 1.25, closed: true });
+    assert.deepEqual(closedSeen, [open], "bara ett stängt ljus, dubbletter och gamla avvisas");
+    const runner = fs.readFileSync(new URL("../src/server/strategyRunner.ts", import.meta.url), "utf8") + fs.readFileSync(new URL("../src/server/klineStream.ts", import.meta.url), "utf8");
+    assert.ok(!/events\.on\("candle"/.test(runner), "signaler lyssnar inte på pågående ljus");
+    ok("B1/B2 servern avvisar trasiga/gamla/dubbla strömsvar; signaler bara på stängda ljus (pågående ljus ger ingen signal)");
+  } finally { md.stop(); }
+
+  // B3 regression
+  {
+    // Fel EPIC i metadata-svar under historikfel avvisas (inget fel namn/kvot sparas)
+    const md2 = createIgMarketData({ status: igStatus as never, now: () => NOW, stream: stream as never, file: (e) => path.join(tmp, `b2-wl-${e}.json`),
+      candles: (async () => { throw new Error("400"); }) as never,
+      market: (async () => ({ epic: B, name: "Bitcoin", quote: { bid: 60000, offer: 60010, observedAt: NOW } })) as never });
+    await md2.refreshHistory("demo", A, "5m");
+    assert.equal(md2.nameOf(A, "demo"), null, "fel instruments namn sparas inte"); assert.equal(md2.quote(A, "demo"), null, "fel instruments kvot sparas inte");
+    assert.match(md2.historyError(A, "5m", "demo")!, /historik saknas/);
+    // Diagrammet: sena svar efter instrumentbyte (forex ↔ krypto) ritas inte
+    for (const k of ["if(STATE.symbol !== sym || STATE.tf !== tf) return;", "if(q.epic !== STATE.symbol) return;", "c.epic !== STATE.symbol || c.interval !== STATE.tf"]) assert.ok(html.includes(k), k);
+    const routes = fs.readFileSync(new URL("../src/server/igRoutes.ts", import.meta.url), "utf8");
+    assert.ok(routes.includes('if (m.epic !== epic) throw new Error("IG svarade för fel instrument")'));
+    ok("B3 fel EPIC i metadata kastas, sena diagramsvar efter forex/krypto-byte ritas inte (namn+kvot vid historik 400 och kontobyte täcks i test-ig-port/test-ig-review1)");
+  }
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("Kravlistan: alla tester godkända (endast mocks, inga nätverksanrop)");
 process.exit(0);

@@ -335,7 +335,7 @@ export async function handleIgRoutes(
       const limit = Math.min(500, Math.max(10, Number(url.searchParams.get("limit")) || 300));
       if (!EPIC_RE.test(epic)) { send(res, 400, { error: "Välj ett IG-instrument (EPIC)", klines: [] }); return true; }
       let meta: Record<string, unknown> = {};
-      try { const m = await getIgMarket(env, epic); igMarketData.rememberName(env, epic, m.name, m.category); igMarketData.setRestQuote(env, epic, m.quote); meta = { name: m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
+      try { const m = await getIgMarket(env, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(env, epic, m.name, m.category); igMarketData.setRestQuote(env, epic, m.quote); meta = { name: m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
       catch (e) { meta = { metaError: e instanceof Error ? e.message : String(e) }; }
       try { await igMarketData.ensureSeries(env, epic, iv); } catch { /* historyError visas nedan */ }
       igMarketData.requestStream([epic], env);
