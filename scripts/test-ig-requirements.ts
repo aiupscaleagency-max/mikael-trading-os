@@ -529,6 +529,38 @@ const mkBroker = (positions: any[], env: "demo" | "live" = "demo") => new IgBrok
     ok("B3 fel EPIC i metadata kastas, sena diagramsvar efter forex/krypto-byte ritas inte (namn+kvot vid historik 400 och kontobyte täcks i test-ig-port/test-ig-review1)");
   }
 }
+
+// ══ H. Funktionsmatris för båda miljöerna (fixtures, ingen riktig order, inga betalda agentanrop) ══
+{
+  const { igOrderExecutionEnabled } = await import("../src/integrations/igConnection.js");
+  const { strategyLibrary } = await import("../src/server/igStrategyLibrary.js");
+  const { sanitizeChatContext } = await import("../src/server/igChatContext.js");
+  const { prtLink } = await import("../src/server/igRoutes.js");
+  const { createIgSessions } = await import("../src/server/igSessions.js");
+  const { createIgImportedSignals } = await import("../src/integrations/igImportedSignals.js");
+  const { getIgTimes } = await import("../src/server/igTimes.js");
+  const menu = [...html.matchAll(/<button[^>]*data-page="([a-z]+)"/g)].map((m) => m[1]);
+  const sess = createIgSessions({ binding: (e) => `${e}-g1`, activeEnv: () => "demo", guard: async () => null, now: () => NOW, directory: path.join(tmp, "h-sess"), runBatch: async () => ({ picks: [] }) });
+  sess.setSelection("demo", [EPIC]);
+  const sig = createIgImportedSignals({ status: igStatus, now: () => NOW, directory: path.join(tmp, "h-sig") });
+  const lib = strategyLibrary();
+  type Cell = (env: "demo" | "live") => boolean;
+  const rows: Array<[string, Cell]> = [
+    ["Samma meny och sidor (Valutapar, Strategibibliotek, Backtest & kurs, Verktyg …)", () => ["markets", "library", "course", "signals", "sessions", "chat", "tools", "trades", "cost", "settings"].every((p) => menu.includes(p))],
+    ["Orderläget av som standard", (e) => igOrderExecutionEnabled(e) === false && mkBroker([], e).executionEnabled() === false],
+    ["Konto i SEK från IG", (e) => (igStatus as any)().environments[e].account.currency === "SEK"],
+    ["Strategidefinitioner gemensamma, resultat separata", (e) => lib.strategies.length === 12 && lib.strategies.every((x) => x.accounts[e] && Array.isArray(x.accounts[e].results))],
+    ["Chattkontext bunden till serverns miljö", (e) => sanitizeChatContext({ env: e === "demo" ? "live" : "demo" }, e).used.env === e],
+    ["Sessionsurval per miljö", (e) => e === "demo" ? sess.state("demo").selection.epics.length === 1 : sess.state("live").selection.epics.length === 0],
+    ["Inklistrade signaler per konto", (e) => Array.isArray(sig.list(e))],
+    ["ProRealTime-knapp (inget API)", () => prtLink().api === false],
+    ["Tidsval (analysintervall/sessionslängd)", () => ["1m", "5m", "15m", "1h"].includes(getIgTimes().analysisInterval)],
+  ];
+  const table = rows.map(([name, f]) => ({ name, demo: f("demo"), live: f("live") }));
+  console.log("Funktionsmatris (H1):\n| Funktion | IG Demo | IG Live |\n|---|---|---|\n" + table.map((r) => `| ${r.name} | ${r.demo ? "✓" : "✗"} | ${r.live ? "✓" : "✗"} |`).join("\n"));
+  for (const r of table) assert.ok(r.demo && r.live, `matrisen: ${r.name}`);
+  ok("H1 funktionsmatris: alla funktioner finns och beter sig likadant i IG Demo och IG Live, med separata data per miljö");
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("Kravlistan: alla tester godkända (endast mocks, inga nätverksanrop)");
 process.exit(0);
