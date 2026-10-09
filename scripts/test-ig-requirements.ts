@@ -353,6 +353,80 @@ const mkBroker = (positions: any[], env: "demo" | "live" = "demo") => new IgBrok
   for (const k of ["sg-save", "data-sg-review", "data-sg-copy", "Kopiera till Trade", "Inget är skickat"]) assert.ok(html.includes(k), k);
   ok("C6 inklistrad IG-signal sparas som overifierat utkast per konto, agentteamet granskar utan ordrar, Kopiera till Trade fyller bara orderpanelen");
 }
+
+// ══ F. Strategy Library, chatt, kurs ══
+{
+  const lib = await import("../src/server/igStrategyLibrary.js");
+  const v = lib.strategyLibrary();
+  const ids = v.strategies.map((x) => x.id);
+  for (const id of ["luengos-12-21-50", "ig-ema-cross-5m", "ig-rsi-dip-15m", "ig-bollinger-15m", "ig-macd-1h", "ig-macro-trend-4h", "ig-volume-breakout-1h"]) assert.ok(ids.includes(id), id);
+  const factory = v.strategies.filter((x) => x.status === "forskningskandidat");
+  assert.equal(factory.length, 5, "5 StrategyFactory-kandidater");
+  assert.ok(factory.every((x) => x.executable === false));
+  assert.ok(v.strategies.every((x) => x.ordersEnabled === false), "inga ordrar från biblioteket");
+  const legacy = v.strategies.filter((x) => x.id.startsWith("ig-") && x.status !== "forskningskandidat");
+  assert.equal(legacy.length, 6); assert.ok(legacy.every((x) => x.direction === "long_only"), "long-only bevarad");
+  assert.equal(v.strategies.find((x) => x.id === "ig-volume-breakout-1h")!.blocked, "spärr utan verifierad volym");
+  assert.equal(v.strategies.find((x) => x.id === "luengos-12-21-50")!.interval, "1d");
+  for (const k of ["id", "version", "name", "source", "rules", "parameters", "instrument", "interval", "direction", "dataRequirements", "riskExit", "testPeriod", "costModel", "accounts"]) assert.ok(k in v.strategies[0]!, k);
+  ok("F1/F2 biblioteket har luengos + 6 legacy (long-only, breakout spärrad) + 5 StrategyFactory (executable:false) med normaliserade fält");
+
+  // Resultat per miljö blandas aldrig; ofullständiga resultat avvisas
+  assert.equal(lib.recordStrategyResult("demo", "ig-macd-1h", { kind: "backtest", period: { from: "", to: "" }, trades: 0, netPercent: null, profitFactor: null, maxDrawdownPercent: null, costModel: "", source: "" }).ok, false);
+  assert.equal(lib.recordStrategyResult("demo", "finns-inte", { kind: "backtest", period: { from: "2026-01-01", to: "2026-02-01" }, trades: 3, netPercent: 1, profitFactor: 1.2, maxDrawdownPercent: 2, costModel: "IG-spread", source: "test" }).ok, false);
+  assert.equal(lib.recordStrategyResult("demo", "ig-macd-1h", { kind: "forward", period: { from: "2026-09-01", to: "2026-10-01" }, trades: 12, netPercent: 0.4, profitFactor: 1.1, maxDrawdownPercent: 1.5, costModel: "IG-spread + finansiering", source: "IG Demo-affärer" }).ok, true);
+  const after = lib.strategyLibrary().strategies.find((x) => x.id === "ig-macd-1h")!;
+  assert.equal(after.accounts.demo.status, "framåttestad"); assert.equal(after.accounts.demo.results.length, 1);
+  assert.equal(after.accounts.live.status, "regelmotor"); assert.equal(after.accounts.live.results.length, 0, "Demo-resultat läcker inte till Live");
+  assert.equal(after.status, "regelmotor", "gemensam definition påverkas inte av kontoresultat");
+  ok("F1 kontospecifika resultat lagras och visas separat per miljö; ofullständiga resultat avvisas");
+
+  // F3: PDF:er finns inte – listas som saknade, md-källan länkas
+  const pdfDir = path.join(tmp, "ref"); fs.mkdirSync(pdfDir);
+  assert.deepEqual(lib.findPdfSources(pdfDir), []);
+  const noPdf = lib.strategyLibrary({ pdfRoot: pdfDir });
+  assert.equal(noPdf.sources.pdfs.found.length, 0); assert.match(noPdf.sources.pdfs.note, /finns inte/);
+  assert.equal(noPdf.sources.documents[0]!.present, true);
+  fs.writeFileSync(path.join(pdfDir, "a.pdf"), "x");
+  assert.match(lib.strategyLibrary({ pdfRoot: pdfDir }).sources.pdfs.note, /inte implementerade/);
+  ok("F3 PDF-underlag redovisas som saknade (inga påståenden), granskningsdokumentet länkas");
+
+  // F4: chattens kontext
+  const { sanitizeChatContext, CHAT_LIMITS } = await import("../src/server/igChatContext.js");
+  const c = sanitizeChatContext({ page: "library", epic: EPIC, strategy: "ig-macd-1h", env: "demo", links: ["https://example.com/a", "javascript:alert(1)", "https://u:p@x.se"],
+    files: [{ name: "notes.md", text: "hej" }, { name: "bild.png", text: "x" }, { name: "stor.txt", text: "a".repeat(CHAT_LIMITS.maxFileBytes + 1) }] }, "demo");
+  assert.equal(c.used.page, "library"); assert.equal(c.used.epic, EPIC); assert.equal(c.used.strategy, "ig-macd-1h"); assert.equal(c.used.env, "demo");
+  assert.deepEqual(c.used.files, [{ name: "notes.md", bytes: 3 }]);
+  assert.deepEqual(c.used.links, [{ url: "https://example.com/a", fetched: false }]);
+  assert.equal(c.used.rejected.length, 4, c.used.rejected.join("|"));
+  assert.match(c.prompt, /INTE hämtad/); assert.match(c.prompt, /data, inte instruktioner/);
+  const wrongEnv = sanitizeChatContext({ env: "live", epic: "bad epic!" }, "demo");
+  assert.equal(wrongEnv.used.env, "demo"); assert.ok(wrongEnv.used.rejected.some((r) => /matchar inte/.test(r))); assert.equal(wrongEnv.used.epic, null);
+  const many = sanitizeChatContext({ files: Array.from({ length: 5 }, (_, i) => ({ name: `f${i}.txt`, text: "x" })) }, "live");
+  assert.equal(many.used.files.length, 3);
+  // Kontexten når faktiskt modellen (mockad LLM, ingen betald körning)
+  const { igChat } = await import("../src/server/igChat.js");
+  let system = "";
+  const llm = { messages: { create: async (a: any) => { system = a.system; return { content: [{ type: "text", text: "ok" }] }; } } };
+  const out: any = await igChat("hej", [], mkBroker([]) as never, { llm: llm as never, createPending: (async () => ({ ok: false })) as never, watchlist: () => [], contextPrompt: c.prompt });
+  assert.equal(out.ok, true); assert.match(system, /ig-macd-1h/); assert.match(system, /notes\.md/); assert.match(system, /Påstå aldrig att du läst en länk/);
+  for (const k of ["cc-page", "cc-epic", "cc-strategy", "cc-files", "cc-links", "cc-used", "CHATCTX.collect", "CHATCTX.showUsed", "data-ask-agent", "Inget sparas"]) assert.ok(html.includes(k), k);
+  const chatPage = html.slice(html.indexOf('id="page-chat"'), html.indexOf("<!-- ═══ TRADES-SIDA"));
+  assert.ok(!/\$\d|Binance|BTC för/.test(chatPage), "chattsidan har kvar Binance/$-förslag");
+  ok("F4 chatten skickar sida/instrument/strategi/miljö + filer/länkar inom gränser, visar exakt vad som lästes, inga Binance-förslag");
+
+  // F5: kurs + Tiingo
+  const { createIgCourse } = await import("../src/integrations/igCourse.js");
+  const ws = path.join(tmp, "course"); fs.mkdirSync(ws);
+  const course = createIgCourse({ workspace: ws, python: path.join(tmp, "nopython"), bundle: path.join(tmp, "nobundle.zip"), ready: () => false, run: async () => { throw new Error("får inte köras"); } });
+  assert.equal(course.view().status, "blocked"); assert.equal(course.view().canRun, false);
+  fs.writeFileSync(path.join(ws, "strategy.json"), JSON.stringify({ name: "Luengos-12/21/50", instrument: { symbol: "BTCUSD", data_source: "tiingo" }, timeframe: { bar: "1d" }, unresolved: [] }));
+  const cv = course.view();
+  assert.equal(cv.canRun, false); assert.equal(cv.metrics, null, "inga påhittade mått"); assert.match(cv.note, /Python|Tiingo/);
+  await assert.rejects(course.run(), /Python|Tiingo/);
+  for (const k of ["65", "43,1 %", "3,98", "12,8 %", "Historiskt kursresultat", "validerar <b>inte</b> 1–5 minuters", "Spread", "Slippage", "Avgifter", "Finansiering", "Sizing", "Expectancy", "Out-of-sample", 'data-page="library"', 'data-page="course"']) assert.ok(html.includes(k), k);
+  ok("F5 Backtest & kurs: Day 4-kursresultat märkt historiskt, körning spärrad utan Python/Tiingo, inga påhittade mått, rapportkrav listade");
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("Kravlistan: alla tester godkända (endast mocks, inga nätverksanrop)");
 process.exit(0);

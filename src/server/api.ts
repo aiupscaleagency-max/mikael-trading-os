@@ -2228,10 +2228,12 @@ export function startServer(
       // Mike vill mänsklig dialog: "kör 5 trades på $1", "stäng allt", "vad tycker ni om BTC?"
       if (url.pathname === "/api/chat" && method === "POST") {
         const body = await readBody(req);
-        const { message, mode, history } = JSON.parse(body) as {
+        if (body.length > 400_000) { json(res, { ok: false, error: "För stor begäran (max 3 filer à 100 kB)" }); return; }
+        const { message, mode, history, context } = JSON.parse(body) as {
           message: string;
           mode: "testnet" | "live";
           history?: Array<{ role: "user" | "assistant"; text: string }>;
+          context?: unknown;
         };
         if (!hasLlmCredentials()) { json(res, { ok: false, error: "AI_GATEWAY_API_KEY eller ANTHROPIC_API_KEY ej satt" }); return; }
         {
@@ -2241,9 +2243,11 @@ export function startServer(
           if (igb instanceof IgBroker) {
             try {
               const { igChat } = await import("./igChat.js");
-              const out = await igChat(message, history || [], igb, { llm: createLlmClient(), createPending: createIgPendingOrder });
+              const { sanitizeChatContext } = await import("./igChatContext.js");
+              const ctx = sanitizeChatContext(context, igb.env === "live" ? "live" : "demo");
+              const out = await igChat(message, history || [], igb, { llm: createLlmClient(), createPending: createIgPendingOrder, contextPrompt: ctx.prompt });
               if (out.ok && out.toolCall) broadcastEvent("pending-orders", { from: "chat" });
-              json(res, out);
+              json(res, { ...out, contextUsed: ctx.used });
             } catch (err) {
               json(res, { ok: false, error: err instanceof Error ? err.message : String(err) });
             }

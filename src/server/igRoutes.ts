@@ -16,6 +16,9 @@ import { cancelTimedExitForDeal, listTimedExits } from "./tradeHorizon.js";
 import { checkOrderGate } from "./orderGate.js";
 import { userAction } from "./agentActivity.js";
 import { log } from "../logger.js";
+import { strategyLibrary } from "./igStrategyLibrary.js";
+import { getTiingoStatus } from "../data/tiingoHistory.js";
+import { igCourse } from "../integrations/igCourse.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  IG-rutter (auth-grinden i api.ts körs före dessa)
@@ -257,6 +260,32 @@ export async function handleIgRoutes(
         if (last) send(res, 200, { env, label: envLabel(env), ...last, status: "partial", error, liveReferences: [], catalogue: catalogueProgress({ ...last, status: "partial", error }) });
         else send(res, 200, { env, label: envLabel(env), category, markets: [], liveReferences: [], status: "unavailable", error, catalogue: catalogueProgress({ markets: [], status: "unavailable", error }) });
       }
+      return true;
+    }
+    // Krav F1–F3: Strategy Library (definitioner gemensamma, resultat per miljö)
+    if (p === "/api/strategy-library" && method === "GET") {
+      send(res, 200, { env, label: envLabel(env), ...strategyLibrary() });
+      return true;
+    }
+    // Krav F5: Backtest & kurs. Tiingo används bara om nyckel finns; dagsdata validerar inte 1–5 min.
+    if (p === "/api/reference-status" && method === "GET") {
+      const t = getTiingoStatus();
+      send(res, 200, { provider: t.provider, configured: t.configured, status: t.status, error: t.error, interval: t.interval, purpose: t.purpose, note: "Dagliga Tiingo-data validerar inte 1–5 minuters innehav." });
+      return true;
+    }
+    if (p === "/api/course" && method === "GET") {
+      let view: unknown;
+      try { view = igCourse.view(); } catch (e) { view = { status: "blocked", canRun: false, note: e instanceof Error ? e.message : String(e) }; }
+      send(res, 200, view);
+      return true;
+    }
+    if (p === "/api/course/backtest" && method === "POST") {
+      try {
+        if (!String(req.headers["content-type"] ?? "").startsWith("application/json")) throw new Error("JSON krävs");
+        const b = await body(req, readBody);
+        if (Object.keys(b).length) throw new Error("Backtest tar inga ändringar av strategi eller sökväg via HTTP");
+        send(res, 200, await igCourse.run());
+      } catch (e) { send(res, 400, { error: e instanceof Error ? e.message : "Backtest kunde inte startas" }); }
       return true;
     }
     if (p === "/api/market/catalogue-status" && method === "GET") {

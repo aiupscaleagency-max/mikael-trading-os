@@ -1444,6 +1444,12 @@ body.app-state-onboard .fc-panel{display:none !important}
   <button data-page="strategies" title="Strategier — live-lampor, IG-saldo, strategikörning">
     <span class="ico">🧠</span><span>Strategier</span>
   </button>
+  <button data-page="library" title="Strategibibliotek — alla strategier, källor och resultat per miljö">
+    <span class="ico">📚</span><span>Strategibibliotek</span>
+  </button>
+  <button data-page="course" title="Backtest &amp; kurs — PTQA Day 1–4 och Tiingo-backtest">
+    <span class="ico">🎓</span><span>Backtest &amp; kurs</span>
+  </button>
   <button data-page="signals" title="Signaler — agenternas signaler + inklistrade IG-signaler">
     <span class="ico">📡</span><span>Signaler</span>
   </button>
@@ -2898,6 +2904,24 @@ body.app-state-onboard .fc-panel{display:none !important}
 </section>
 
 <style>
+.lib-list{display:flex;flex-direction:column;gap:8px}
+.lib-item{border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--card2)}
+.lib-item h4{margin:0 0 4px;font-size:13px;color:#fff;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.lib-tag{font-size:10px;font-weight:800;padding:1px 6px;border-radius:4px;border:1px solid var(--border);color:var(--label)}
+.lib-tag.warn{color:var(--amber,#f5a524);border-color:var(--amber,#f5a524)}
+.lib-kv{display:grid;grid-template-columns:140px 1fr;gap:2px 10px;font-size:11px;color:var(--dim)}
+.lib-kv b{color:var(--label);font-weight:700}
+.lib-envs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px}
+.lib-env{border:1px dashed var(--border);border-radius:6px;padding:6px;font-size:11px;color:var(--dim)}
+.lib-table{width:100%;border-collapse:collapse;font-size:11px;margin-top:6px;display:block;overflow-x:auto}
+.lib-table th,.lib-table td{border-bottom:1px solid var(--border);padding:4px 6px;text-align:left;color:var(--dim);white-space:nowrap}
+.lib-table th{color:var(--label)}
+.chat-ctx{border-bottom:1px solid var(--border);padding:6px 10px;font-size:11px;color:var(--dim);display:flex;flex-direction:column;gap:4px}
+.chat-ctx-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.chat-ctx select,.chat-ctx input[type=text],.chat-ctx textarea{background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:5px;font-size:11px;padding:3px 6px;max-width:100%}
+.chat-ctx textarea{width:100%;min-height:34px}
+.chat-used{font-size:10px;color:var(--label);margin-top:4px}
+@media (max-width:640px){.lib-kv{grid-template-columns:1fr}.lib-envs{grid-template-columns:1fr}}
 .xp-wrap{max-width:1180px;margin:0 auto;padding:0 16px 24px}
 .xp-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:0 0 12px}
 .xp-card h3{font-size:13px;font-weight:800;color:#fff;margin:0 0 8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -2971,6 +2995,62 @@ body.app-state-onboard .fc-panel{display:none !important}
       <h3>Exportera ljus (CSV)</h3>
       <div class="xp-note">Stängda IG-ljus för aktuellt instrument och intervall i huvuddiagrammet (aktiv miljö). Pågående ljus tas inte med.</div>
       <div style="margin-top:6px"><button type="button" class="xp-btn" id="tl-csv">⬇ Ladda ner CSV</button> <span id="tl-csv-msg" class="xp-note"></span></div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ═══ STRATEGIBIBLIOTEK (krav F1–F3) ═══ -->
+<section class="page" id="page-library">
+  <div class="page-header"><span class="ph-ico">📚</span>Strategibibliotek<span class="ph-sub">— gemensamma definitioner, resultat separat per miljö</span><span class="ph-spacer"></span><button class="ph-action" data-ask-agent="library">💬 Fråga agenten</button></div>
+  <div class="xp-wrap">
+    <div class="xp-card">
+      <h3>Strategier <span id="lib-env" class="xp-note"></span></h3>
+      <div class="xp-note" id="lib-note">Laddar…</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0" id="lib-filter">
+        <button type="button" class="xp-btn" data-lib-f="">Alla</button>
+        <button type="button" class="xp-btn" data-lib-f="regelmotor">Regelmotor</button>
+        <button type="button" class="xp-btn" data-lib-f="forskningskandidat">Forskningskandidater</button>
+        <button type="button" class="xp-btn" data-lib-f="backtestad">Backtestade</button>
+        <button type="button" class="xp-btn" data-lib-f="framåttestad">Framåttestade</button>
+      </div>
+      <div id="lib-list" class="lib-list"></div>
+    </div>
+    <div class="xp-card">
+      <h3>Källor</h3>
+      <div id="lib-sources" class="xp-note">–</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ BACKTEST & KURS (krav F5) ═══ -->
+<section class="page" id="page-course">
+  <div class="page-header"><span class="ph-ico">🎓</span>Backtest &amp; kurs<span class="ph-sub">— PTQA Day 1–4 och Tiingo-backtest</span><span class="ph-spacer"></span><button class="ph-action" data-ask-agent="course">💬 Fråga agenten</button></div>
+  <div class="xp-wrap">
+    <div class="xp-card">
+      <h3>PTQA-kursen, Day 1–4 <span class="xp-note">historiskt kursresultat</span></h3>
+      <div class="xp-note">Kursens strategi Luengos-12/21/50 (BTCUSD, dagsljus, long-only). Kursmotorn finns bevarad i <code>reference/academy/ptqa-runtime-14758cc73bc9.zip</code>.</div>
+      <table class="lib-table" id="course-day4">
+        <tr><th>Day 4-resultat (kurs)</th><th>Instrument</th><th>Affärer</th><th>Vinstandel</th><th>Profit factor</th><th>Max nedgång</th></tr>
+        <tr><td>Historiskt kursresultat – inte IG, inte en prognos</td><td>BTCUSD 1d</td><td>65</td><td>43,1 %</td><td>3,98</td><td>12,8 %</td></tr>
+      </table>
+      <div class="xp-note" style="margin-top:6px">Resultatet kommer från kursens Tiingo-data med kursens kostnadsmodell. Det är inte reproducerat mot IG:s priser, spread eller kontraktsstorlek.</div>
+    </div>
+    <div class="xp-card">
+      <h3>Day 4-körning på denna dator <span id="course-state" class="xp-note"></span></h3>
+      <div id="course-view" class="xp-note">Laddar…</div>
+      <div style="margin-top:6px"><button type="button" class="xp-btn" id="course-run" disabled>▶ Kör Day 4-backtest</button> <span id="course-msg" class="xp-note"></span></div>
+    </div>
+    <div class="xp-card">
+      <h3>Tiingo (historisk referens)</h3>
+      <div id="course-tiingo" class="xp-note">Laddar…</div>
+      <div class="xp-note" style="margin-top:6px"><b>Viktigt:</b> Tiingo ger dagliga data. Dagliga data validerar <b>inte</b> 1–5 minuters innehav.</div>
+    </div>
+    <div class="xp-card">
+      <h3>Vad en backtest måste redovisa</h3>
+      <table class="lib-table" id="course-report">
+        <tr><th>Mått</th><th>Status</th></tr>
+      </table>
     </div>
   </div>
 </section>
@@ -3175,25 +3255,38 @@ body.app-state-onboard .fc-panel{display:none !important}
       <span class="auto-dot"></span>
       <b>Direktinstruktion</b>
       <span class="lbl">·</span>
-      <span class="lbl">Risk-managern blockerar fortfarande orders utanför ramen (MIN/MAX_POSITION_USD).</span>
+      <span class="lbl">Chatten lägger bara förslag i Väntande ordrar. Inget skickas till IG utan ditt godkännande och påslaget orderläge.</span>
+    </div>
+    <div class="chat-ctx" id="chat-ctx">
+      <div class="chat-ctx-row"><b>Kontext som skickas:</b>
+        <span>Sida <select id="cc-page"><option value="">ingen</option></select></span>
+        <span>Instrument <input type="text" id="cc-epic" placeholder="IG EPIC" size="18" maxlength="100"></span>
+        <span>Strategi <select id="cc-strategy"><option value="">ingen</option></select></span>
+        <span id="cc-env" class="lib-tag">–</span>
+      </div>
+      <div class="chat-ctx-row">
+        <span>Filer (max 3 · .txt .md .csv .json · ≤100 kB) <input type="file" id="cc-files" multiple accept=".txt,.md,.csv,.json"></span>
+        <span id="cc-files-info"></span>
+      </div>
+      <textarea id="cc-links" placeholder="Länkar, en per rad (max 5, http/https). Servern hämtar dem inte – agenten ser bara adressen."></textarea>
+      <div class="chat-used" id="cc-used">Inget skickat ännu.</div>
     </div>
     <div class="team-chat-log" id="team-chat-log"></div>
     <div class="team-chat-input">
       <div class="team-chat-suggestions" id="team-chat-suggestions">
-        <button data-q="Köp BTC för $50">Köp BTC för $50</button>
-        <button data-q="Köp ETH och SOL för $30 vardera">ETH + SOL $30 vardera</button>
-        <button data-q="Sälj alla mina BTC-positioner nu">Sälj alla BTC</button>
-        <button data-q="Vad tycker teamet om SOL just nu?">Vad tycker ni om SOL?</button>
+        <button data-q="Vad tycker teamet om det valda instrumentet just nu?">Vad tycker ni om valt instrument?</button>
+        <button data-q="Föreslå ett köp på 0,5 % av saldot i det valda instrumentet">Föreslå köp 0,5 %</button>
+        <button data-q="Förklara den valda strategin och vad som krävs innan den kan användas">Förklara vald strategi</button>
+        <button data-q="Visa kontostatus">Kontostatus</button>
         <button data-q="Stäng alla positioner och avvakta">Stäng allt + avvakta</button>
-        <button data-q="Justera stop-loss till -2% på alla positioner">Stop-loss -2%</button>
       </div>
       <div class="team-chat-row">
-        <textarea id="team-chat-text" rows="2" placeholder="Skriv instruktion eller fråga... t.ex. 'Köp BTC för $50' eller 'Vad är bäst entry på ETH?'"></textarea>
+        <textarea id="team-chat-text" rows="2" placeholder="Skriv instruktion eller fråga... t.ex. 'Föreslå köp 0,5 % i valt instrument'"></textarea>
         <button class="send-btn" id="team-chat-send">Skicka <span style="font-size:9px;color:rgba(0,0,0,.6);margin-left:4px">⌘↵</span></button>
       </div>
       <div class="team-chat-info">
         💡 Hanna får din instruktion som "SPECIAL INSTRUKTION" — hon väger den mot Risk + Advisor innan hon agerar.
-        Live-läge → riktiga ordrar. Paper-läge → testnet. Propose-läge → förslag du godkänner.
+        IG Demo och IG Live hålls isär. Ordrar blir alltid förslag som du godkänner.
       </div>
     </div>
   </div>
@@ -6107,13 +6200,14 @@ async function sendTeamChat(){
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ message: instruction, mode, history })
+      body: JSON.stringify({ message: instruction, mode, history, context: (window.CHATCTX ? await window.CHATCTX.collect() : undefined) })
     });
     const data = await r.json();
     teamChatLog.pop(); // ta bort "⏳ Teamet analyserar..."
     if(!data.ok){
       teamChatLog.push({role:"system", text:`❌ ${data.error}`, timestamp:Date.now()});
     } else {
+      if(window.CHATCTX) window.CHATCTX.showUsed(data.contextUsed);
       teamChatLog.push({
         role: "team",
         text: data.reply || "(tomt svar)",
@@ -7876,7 +7970,7 @@ async function sendFromFloating(){
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ message: instruction, mode, history })
+      body: JSON.stringify({ message: instruction, mode, history, context: (window.CHATCTX ? await window.CHATCTX.collect() : undefined) })
     });
     const data = await r.json();
     teamChatLog.pop();
@@ -7884,6 +7978,7 @@ async function sendFromFloating(){
       teamChatLog.push({role:"system", text:`❌ ${data.error}`, timestamp:Date.now()});
     } else {
       teamChatLog.push({role:"team", text: data.reply || "(tomt svar)", timestamp:Date.now(), instruction, toolCall: data.toolCall, executed: data.executed});
+      if(window.CHATCTX) window.CHATCTX.showUsed(data.contextUsed);
       if(data.toolCall && typeof refreshBinanceSync === "function"){
         _lastPtFetch.testnet = 0; _lastPtFetch.live = 0;
         _lastBinTrades.ts = 0;
@@ -7956,7 +8051,7 @@ function wireTeamChat(){
 /* ======================================================================
    SPA NAVIGATION — varje sidebar-knapp = egen sida
    ====================================================================== */
-const PAGES = ["trade","markets","pairs","signals","sessions","tools","team","chat","live","strategies","tree","trades","cost","settings"];
+const PAGES = ["trade","markets","pairs","library","course","signals","sessions","tools","team","chat","live","strategies","tree","trades","cost","settings"];
 
 function switchPage(name){
   if(!PAGES.includes(name)) name = "trade";
@@ -11165,6 +11260,146 @@ window.IGS = (function(){
   document.addEventListener("page-shown", (e)=>{ if(e.detail === "markets"){ loadFav(); loadSig(); } });
   setInterval(loadSig, 10000);
   loadFav(); apply();
+})();
+</script>
+
+<script>
+/* Strategibibliotek, Backtest & kurs och chattens kontextpanel (krav F1–F5). */
+(function(){
+  const $ = (id)=>document.getElementById(id);
+  const esc = IG.esc;
+  const getJson = async (u, o)=>{ const r = await fetch(u, Object.assign({cache:"no-store"}, o||{})); const j = await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.error || ("HTTP " + r.status)); return j; };
+  const PAGE_NAMES = { trade:"Trade", markets:"Valutapar", pairs:"Alla par", library:"Strategibibliotek", course:"Backtest & kurs", signals:"Signaler", sessions:"Sessioner", tools:"Verktyg", team:"Team", chat:"Agentchatt", live:"Marknader", strategies:"Strategier", tree:"Träd", trades:"Trades", cost:"Cost", settings:"Inställningar" };
+  const LIB = { data:null, filter:"", strategies:[] };
+  let lastPage = "trade";
+
+  // ── Strategibibliotek ──
+  const obj = (v)=> v == null ? "–" : esc(typeof v === "string" ? v : JSON.stringify(v));
+  function envBox(env, a){
+    const rows = (a && a.results) || [];
+    return '<div class="lib-env"><b>' + (env === "live" ? "IG Live" : "IG Demo") + '</b> · status: ' + esc(a ? a.status : "–") + '<br>' +
+      (rows.length ? rows.map(r=> esc(r.kind === "forward" ? "Framåttest" : "Backtest") + ' ' + esc(r.period.from) + '–' + esc(r.period.to) + ' · ' + r.trades + ' affärer · PF ' + (r.profitFactor ?? "–") + ' · DD ' + (r.maxDrawdownPercent ?? "–") + ' % · kostnad: ' + esc(r.costModel)).join("<br>") : 'Inga verifierade resultat i denna miljö.') + '</div>';
+  }
+  function renderLib(){
+    const d = LIB.data; if(!d) return;
+    const list = d.strategies.filter(x => !LIB.filter || x.status === LIB.filter || (x.accounts && (x.accounts.demo.status === LIB.filter || x.accounts.live.status === LIB.filter)));
+    $("lib-env").textContent = "Vy: " + (d.label || "");
+    $("lib-note").textContent = d.note || "";
+    $("lib-list").innerHTML = list.length ? list.map(x =>
+      '<div class="lib-item" data-lib-id="' + esc(x.id) + '"><h4>' + esc(x.name) + ' <span class="lib-tag">' + esc(x.id) + ' v' + esc(x.version) + '</span> <span class="lib-tag">' + esc(x.status) + '</span>' +
+      (x.executable ? ' <span class="lib-tag">endast analys</span>' : ' <span class="lib-tag warn">executable:false</span>') + (x.blocked ? ' <span class="lib-tag warn">' + esc(x.blocked) + '</span>' : '') +
+      ' <button type="button" class="xp-btn" data-lib-ask="' + esc(x.id) + '">💬 Fråga om strategin</button></h4>' +
+      '<div class="lib-kv"><b>Källa</b><span>' + obj(x.source) + '</span><b>Regler</b><span>' + obj(x.rules) + '</span><b>Parametrar</b><span>' + obj(x.parameters) + '</span>' +
+      '<b>Instrument / intervall</b><span>' + obj(x.instrument) + ' · ' + obj(x.interval) + '</span><b>Riktning</b><span>' + obj(x.direction) + '</span><b>Datakrav</b><span>' + obj(x.dataRequirements) + '</span>' +
+      '<b>Risk / exit</b><span>' + obj(x.riskExit) + '</span><b>Testperiod</b><span>' + obj(x.testPeriod) + '</span><b>Kostnadsmodell</b><span>' + obj(x.costModel) + '</span>' +
+      '<b>Extern rapport</b><span>' + (x.reportedExternal ? obj(x.reportedExternal) + ' <i>(ej verifierat för IG)</i>' : "–") + '</span><b>Noter</b><span>' + esc((x.notes || []).join(" · ")) + '</span></div>' +
+      '<div class="lib-envs">' + envBox("demo", x.accounts && x.accounts.demo) + envBox("live", x.accounts && x.accounts.live) + '</div></div>'
+    ).join("") : '<div class="xp-note">Inga strategier matchar filtret.</div>';
+    const src = d.sources || {};
+    $("lib-sources").innerHTML = (src.documents || []).map(x => esc(x.path) + (x.present ? " ✓ finns" : " – saknas")).join("<br>") +
+      '<br>PDF-underlag: ' + (src.pdfs ? (src.pdfs.found.length + " av " + src.pdfs.expected + " hittade. " + esc(src.pdfs.note)) : "–");
+  }
+  async function loadLib(){
+    try{ LIB.data = await getJson("/api/strategy-library"); LIB.strategies = LIB.data.strategies || []; renderLib(); fillStrategies(); }
+    catch(e){ $("lib-note").textContent = "Biblioteket kunde inte läsas: " + e.message; }
+  }
+  document.addEventListener("click", (e)=>{
+    const f = e.target.closest && e.target.closest("[data-lib-f]");
+    if(f){ LIB.filter = f.getAttribute("data-lib-f"); renderLib(); return; }
+    const a = e.target.closest && e.target.closest("[data-lib-ask]");
+    if(a){ openChat("library", a.getAttribute("data-lib-ask")); return; }
+    const g = e.target.closest && e.target.closest("[data-ask-agent]");
+    if(g){ openChat(g.getAttribute("data-ask-agent"), null); }
+  });
+
+  // ── Backtest & kurs ──
+  const REPORT = [["Spread","IG-spread ingår inte i kursresultatet"],["Slippage","Ej modellerad mot IG"],["Avgifter","Kursens kostnadsmodell (6 bps per sida); inte IG:s"],["Finansiering","Overnight-finansiering ingår inte"],["Sizing","Kursens 1 % risk per affär; inte IG-kontraktsstorlek"],["Max nedgång (DD)","12,8 % i kursresultatet"],["Expectancy","Ej redovisad i kursresultatet"],["Out-of-sample (OOS)","Ej gjord – Day 5-granskningen återstår"]];
+  async function loadCourse(){
+    $("course-report").innerHTML = '<tr><th>Mått</th><th>Status</th></tr>' + REPORT.map(r=>'<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>').join("");
+    try{
+      const v = await getJson("/api/course");
+      $("course-state").textContent = v.status || "";
+      $("course-view").innerHTML = esc(v.note || "") + (v.metrics ? '<br>Verifierade mått på denna dator: ' + esc(JSON.stringify(v.metrics)) : "");
+      $("course-run").disabled = !v.canRun;
+    }catch(e){ $("course-view").textContent = "Kursstatus kunde inte läsas: " + e.message; $("course-run").disabled = true; }
+    try{
+      const t = await getJson("/api/reference-status");
+      $("course-tiingo").textContent = t.configured ? "Tiingo-nyckel finns. Backtest med dagsdata kan köras." : (t.error || "Tiingo är inte konfigurerat. Ingen backtest körs utan nyckel.");
+    }catch(e){ $("course-tiingo").textContent = "Tiingo-status kunde inte läsas: " + e.message; }
+  }
+  $("course-run") && $("course-run").addEventListener("click", async ()=>{
+    $("course-run").disabled = true; $("course-msg").textContent = "Startar…";
+    try{ await getJson("/api/course/backtest", { method:"POST", headers:{"Content-Type":"application/json"}, body:"{}" }); $("course-msg").textContent = "Startad. Uppdatera om en stund."; }
+    catch(e){ $("course-msg").textContent = e.message; }
+    setTimeout(loadCourse, 1500);
+  });
+
+  // ── Chattens kontextpanel ──
+  const MAX_FILES = 3, MAX_BYTES = 100000, TYPES = [".txt",".md",".csv",".json"];
+  function fillPages(){
+    const sel = $("cc-page"); if(!sel || sel.options.length > 1) return;
+    Object.keys(PAGE_NAMES).forEach(k=>{ const o = document.createElement("option"); o.value = k; o.textContent = PAGE_NAMES[k]; sel.appendChild(o); });
+  }
+  function fillStrategies(){
+    const sel = $("cc-strategy"); if(!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">ingen</option>' + LIB.strategies.map(x=>'<option value="' + esc(x.id) + '">' + esc(x.name) + '</option>').join("");
+    sel.value = cur;
+  }
+  function syncEnv(){ const el = $("cc-env"); if(el) el.textContent = IG.envLabel(); }
+  function openChat(page, strategy){
+    fillPages();
+    if($("cc-page")) $("cc-page").value = page || lastPage || "";
+    if(strategy && $("cc-strategy")){ if(!LIB.strategies.length) loadLib().then(()=>{ $("cc-strategy").value = strategy; }); else $("cc-strategy").value = strategy; }
+    if($("cc-epic") && !$("cc-epic").value && typeof STATE !== "undefined" && STATE.symbol) $("cc-epic").value = STATE.symbol;
+    if(typeof switchPage === "function") switchPage("chat");
+  }
+  async function readFiles(){
+    const input = $("cc-files"); const out = [], skipped = [];
+    const list = input && input.files ? Array.from(input.files) : [];
+    for(const f of list){
+      const ext = (f.name.toLowerCase().match(/\.[a-z0-9]+$/) || [""])[0];
+      if(out.length >= MAX_FILES){ skipped.push(f.name + ": max " + MAX_FILES + " filer"); continue; }
+      if(!TYPES.includes(ext)){ skipped.push(f.name + ": formatet stöds inte"); continue; }
+      if(f.size > MAX_BYTES){ skipped.push(f.name + ": större än 100 kB"); continue; }
+      out.push({ name: f.name, text: await f.text() });
+    }
+    return { out, skipped };
+  }
+  async function collect(){
+    syncEnv();
+    const page = $("cc-page") ? $("cc-page").value : "";
+    const epic = $("cc-epic") ? $("cc-epic").value.trim() : "";
+    const strategy = $("cc-strategy") ? $("cc-strategy").value : "";
+    const links = ($("cc-links") ? $("cc-links").value : "").split(/\s+/).map(x=>x.trim()).filter(Boolean);
+    const f = await readFiles();
+    if(f.skipped.length && $("cc-files-info")) $("cc-files-info").textContent = "Skickas inte: " + f.skipped.join(", ");
+    return { page: page || null, epic: epic || null, strategy: strategy || null, env: IG.st.env, links, files: f.out };
+  }
+  function showUsed(u){
+    const el = $("cc-used"); if(!el) return;
+    if(!u){ el.textContent = "Servern redovisade ingen kontext (chatten kördes utan IG)."; return; }
+    const parts = [];
+    parts.push("Sida: " + (u.page ? (PAGE_NAMES[u.page] || u.page) : "ingen"));
+    parts.push("Instrument: " + (u.epic || "inget"));
+    parts.push("Strategi: " + (u.strategy || "ingen"));
+    parts.push("Miljö: " + (u.env === "live" ? "IG Live" : u.env === "demo" ? "IG Demo" : "–"));
+    parts.push("Filer lästa: " + (u.files && u.files.length ? u.files.map(f=>f.name + " (" + f.bytes + " byte)").join(", ") : "inga"));
+    parts.push("Länkar: " + (u.links && u.links.length ? u.links.length + " st, inte hämtade" : "inga"));
+    if(u.rejected && u.rejected.length) parts.push("Avvisat: " + u.rejected.join("; "));
+    el.textContent = "Agenten fick: " + parts.join(" · ") + ". Inget sparas.";
+  }
+  $("cc-files") && $("cc-files").addEventListener("change", async ()=>{ const f = await readFiles(); $("cc-files-info").textContent = (f.out.length ? "Klara: " + f.out.map(x=>x.name).join(", ") : "") + (f.skipped.length ? " · Skickas inte: " + f.skipped.join(", ") : ""); });
+  IG.on("env", syncEnv);
+  window.CHATCTX = { collect, showUsed, openChat, readFiles, limits: { MAX_FILES, MAX_BYTES, TYPES } };
+
+  document.addEventListener("page-shown", (e)=>{
+    const p = e.detail;
+    if(p !== "chat") lastPage = p;
+    if(p === "library") setTimeout(loadLib, 0);
+    if(p === "course") setTimeout(loadCourse, 0);
+    if(p === "chat"){ fillPages(); syncEnv(); if(!LIB.strategies.length) loadLib(); if($("cc-page") && !$("cc-page").value) $("cc-page").value = lastPage; }
+  });
 })();
 </script>
 

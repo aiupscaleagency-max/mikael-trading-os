@@ -15,6 +15,8 @@ import { igMarketData } from "./igMarketData.js";
 type Llm = { messages: { create: (p: Anthropic.MessageCreateParamsNonStreaming) => Promise<Anthropic.Message> } };
 
 export interface IgChatDeps {
+  /** Kontext från dashboarden (krav F4), redan validerad i igChatContext.ts. */
+  contextPrompt?: string;
   llm: Llm;
   createPending: (b: Record<string, unknown>, broker: IgBroker) => Promise<{ ok: boolean; error?: string; pendingOrder?: { id: string; symbol: string; side: string; name?: string; stakeAmount?: number; currency?: string } }>;
   watchlist?: () => { epic: string; name: string | null; category: string | null }[];
@@ -103,7 +105,8 @@ Regler:
 - Använd bara EPICs ur bevakningslistan. Hitta aldrig på EPICs.
 - Insats anges i % av saldot (0.1–3 %), pengar i kontovalutan ${acc?.currency ?? ""}.
 - "Stäng allt" → close_all_positions. Status → get_account_status.
-- Vill Mike bara prata → svara utan verktyg.`;
+- Vill Mike bara prata → svara utan verktyg.
+- Påstå aldrig att du läst en länk; länkar hämtas inte.${deps.contextPrompt ?? ""}`;
 
   const messages: Anthropic.MessageParam[] = history.slice(-8).map((h) => ({ role: h.role, content: h.text }));
   messages.push({ role: "user", content: message });
