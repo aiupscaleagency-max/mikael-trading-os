@@ -29,6 +29,22 @@
      Webbläsaren pratar aldrig direkt med IG, Bybit eller Binance.
    - Datastatus: live · fördröjt · historiskt · inaktuellt · frånkopplat.
    ══════════════════════════════════════════════════════════════════════ */
+/* B1 (granskning 2): dold flik → polling glesas ut. GET mot pollade endpoints återanvänder senaste svar
+   upp till 120 s medan fliken är dold (servern cachar dessutom IG-läsningar oberoende av antal flikar). */
+(function () {
+  if (!window.fetch || window.__igThrottle) return; window.__igThrottle = true;
+  var orig = window.fetch.bind(window), last = {};
+  var POLLED = /^\/api\/(results|ig\/balance|ig\/status|ig\/orders|live\/analysis|signals|sync\/load|timed-exits|pending-orders|ig\/session|brokers|market\/prices)(\?|$)/;
+  window.fetch = function (input, init) {
+    var url = typeof input === "string" ? input : (input && input.url) || "";
+    var method = (init && init.method) || "GET";
+    var path = url.replace(/^https?:\/\/[^/]+/, "");
+    if (method !== "GET" || !POLLED.test(path)) return orig(input, init);
+    var hit = last[path];
+    if (document.hidden && hit && Date.now() - hit.at < 120000) return Promise.resolve(new Response(hit.body, { status: hit.status, headers: { "Content-Type": "application/json" } }));
+    return orig(input, init).then(function (r) { if (r.ok) r.clone().text().then(function (b) { last[path] = { at: Date.now(), body: b, status: r.status }; }).catch(function () {}); return r; });
+  };
+})();
 window.IG = (function () {
   var names = {}, cats = {}, quotes = {}, handlers = {}, owners = {}, chartOwners = {};
   var st = { env: "demo", label: "IG Demo", currency: null, balance: null, available: null, profitLoss: null, execution: { demo: false, live: false }, connected: false, error: null, watchlist: [] };
@@ -2349,12 +2365,12 @@ body.app-state-onboard .fc-panel{display:none !important}
       try {
         var d = await (await fetch("/api/ig/orders")).json();
         var html = "";
-        (d.pendingOrders || []).filter(function (o) { return (o.status === "unknown" || o.status === "submitted") && !o.dealReference; }).forEach(function (o) {
-          html += '<div style="padding:6px 8px;margin-top:6px;border:1px solid #f0b90b;border-radius:6px;color:#fbbf24">⚠ Okänt IG-utfall: ' + esc(o.direction) + " " + esc((window.IG && IG.names[o.epic]) || o.epic) + " " + esc(o.size)
+        (d.pendingOrders || []).filter(function (o) { return o.status === "unknown" || o.status === "submitted"; }).forEach(function (o) {
+          html += '<div style="padding:6px 8px;margin-top:6px;border:1px solid #f0b90b;border-radius:6px;color:#fbbf24">⚠ Okänt IG-utfall: ' + esc(o.direction) + " " + esc((window.IG && IG.names[o.epic]) || o.epic) + " " + esc(o.size) + (o.dealReference ? " · referens " + esc(o.dealReference) + " (stäms av automatiskt varje minut)" : " · ingen IG-referens")
             + ' — inget skickas om automatiskt. Kontrollera i IG, tryck sedan <button type="button" data-igresolve="' + esc(o.id) + '" style="margin-left:6px;padding:2px 8px;border:1px solid #f0b90b;background:transparent;color:#f0b90b;border-radius:5px;cursor:pointer">Stäm av mot IG</button></div>';
         });
-        (d.exitPlans || []).filter(function (p) { return (p.status === "unknown" || p.status === "submitted") && !p.dealReference; }).forEach(function (p) {
-          html += '<div style="padding:6px 8px;margin-top:6px;border:1px solid #f0b90b;border-radius:6px;color:#fbbf24">⚠ Okänt stängningsutfall för ' + esc(p.dealId)
+        (d.exitPlans || []).filter(function (p) { return p.status === "unknown" || p.status === "submitted"; }).forEach(function (p) {
+          html += '<div style="padding:6px 8px;margin-top:6px;border:1px solid #f0b90b;border-radius:6px;color:#fbbf24">⚠ Okänt stängningsutfall för ' + esc(p.dealId) + (p.dealReference ? " · referens " + esc(p.dealReference) : "")
             + ' <button type="button" data-igresolve="' + esc(p.dealId) + '" style="margin-left:6px;padding:2px 8px;border:1px solid #f0b90b;background:transparent;color:#f0b90b;border-radius:5px;cursor:pointer">Stäm av mot IG</button></div>';
         });
         (d.timedExits || []).forEach(function (x) {
@@ -3190,7 +3206,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <div class="card sl-wide">
-    <h3>📚 Strategibibliotek <span class="tag" id="sl-lib-meta">—</span></h3>
+    <h3>🧪 Egna strategier (redigera, backtest, träning) <span class="tag" id="sl-lib-meta">—</span> <a href="#library" onclick="switchPage('library');return false" style="font-size:11px;margin-left:8px;color:var(--cyan,#06b6d4)">Hela biblioteket →</a></h3>
     <div class="sl-actions" style="margin:0 0 10px;align-items:center"><button class="sl-btn pri" id="sl-new">+ Ny strategi</button>
       <span class="sl-sub" style="margin-left:12px">Träningskrav: minst</span><input id="sl-min-per-day" type="number" min="0" step="1" value="10" style="width:60px" title="Träningen föreslår bara varianter som gör minst så här många affärer per dag" /><span class="sl-sub">affärer per dag</span></div>
     <div id="sl-editor">
@@ -3381,7 +3397,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
     <!-- Session Mode card -->
-    <div class="card session-card" id="session-card">
+    <div class="card session-card" id="session-card" style="display:none" data-removed="granskning-2">
       <div id="session-body"></div>
     </div>
 
@@ -3393,7 +3409,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
 
     <!-- Pending watches (söker A+ setup) -->
-    <div class="card watch-card" id="watch-card" style="display:none">
+    <div class="card watch-card" id="watch-card" style="display:none" data-removed="granskning-2">
       <h3>🔍 Pågående bevakningar<span class="sim-badge" title="Låtsasdata i webbläsaren. Ingen riktig order, ingen riktig analys.">SIMULERING</span> <span id="watch-count" class="tag" style="margin-left:auto;color:var(--cyan)">0</span></h3>
       <div id="watches-list"></div>
     </div>
@@ -3525,14 +3541,6 @@ body.app-state-onboard .fc-panel{display:none !important}
       <div>
         <label>🧠 Anthropic API <span style="color:var(--red);font-size:9px">KRÄVS</span></label>
         <input type="password" id="set-anthropic" placeholder="sk-ant-api03-..." />
-      </div>
-      <div>
-        <label>🟡 Binance API Key <span style="color:var(--dim);font-size:9px">ANVÄNDS INTE (IG)</span></label>
-        <input type="password" id="set-binance-key" placeholder="64 tecken" />
-      </div>
-      <div>
-        <label>🟡 Binance Secret <span style="color:var(--dim);font-size:9px">ANVÄNDS INTE (IG)</span></label>
-        <input type="password" id="set-binance-secret" placeholder="64 tecken" />
       </div>
       <div>
         <label>🔍 Perplexity (Lars) <span style="color:var(--dim);font-size:9px">VALFRI</span></label>
@@ -4078,176 +4086,8 @@ function evaluateDCALadders(){
 // Confluence-score generator MED transparent breakdown
 // Returnerar både totalscore (4-10) och de faktorer som drev det
 function generateConfluenceAnalysis(side, sym){
-  const factors = [];   // {label, points, detail}
-  let total = 0;
-
-  // 1. TREND-ALIGNMENT (1H + 4H samma riktning) — max 2p
-  const trendAlign = Math.random();
-  if(trendAlign > 0.7){
-    factors.push({label:"Trend 1H+4H aligned", points:2, detail:`Båda timeframes ${side==='BUY'?'bullish':'bearish'}`, positive:true});
-    total += 2;
-  } else if(trendAlign > 0.4){
-    factors.push({label:"Trend mixed", points:1, detail:"1H bullish, 4H neutral", positive:true});
-    total += 1;
-  } else {
-    factors.push({label:"Trend motsatt", points:-1, detail:`4H ${side==='BUY'?'bearish':'bullish'} — varning`, positive:false});
-    total -= 1;
-  }
-
-  // 2. RSI-POSITION — max 1p
-  const rsi = Math.round(20 + Math.random()*60);
-  if(side === 'BUY'){
-    if(rsi >= 30 && rsi <= 60){
-      factors.push({label:`RSI ${rsi} — recovery zone`, points:1, detail:"Inte överköpt, utrymme uppåt", positive:true});
-      total += 1;
-    } else if(rsi > 70){
-      factors.push({label:`RSI ${rsi} — överköpt`, points:-1, detail:"Risk för pullback", positive:false});
-      total -= 1;
-    } else {
-      factors.push({label:`RSI ${rsi}`, points:0, detail:"Neutral zon", positive:null});
-    }
-  } else {
-    if(rsi >= 40 && rsi <= 70){
-      factors.push({label:`RSI ${rsi} — distribution zone`, points:1, detail:"Inte översålt, utrymme nedåt", positive:true});
-      total += 1;
-    } else if(rsi < 30){
-      factors.push({label:`RSI ${rsi} — översålt`, points:-1, detail:"Risk för bounce", positive:false});
-      total -= 1;
-    } else {
-      factors.push({label:`RSI ${rsi}`, points:0, detail:"Neutral zon", positive:null});
-    }
-  }
-
-  // 3. VOLUME (confirms?) — max 1p
-  const volRatio = (0.6 + Math.random()*1.5).toFixed(2);
-  if(parseFloat(volRatio) > 1.3){
-    factors.push({label:`Volume ${volRatio}x snitt`, points:1, detail:"Bekräftar setupen", positive:true});
-    total += 1;
-  } else if(parseFloat(volRatio) < 0.7){
-    factors.push({label:`Volume ${volRatio}x snitt`, points:-1, detail:"Svag deltagande — varning", positive:false});
-    total -= 1;
-  } else {
-    factors.push({label:`Volume ${volRatio}x snitt`, points:0, detail:"Normal volym", positive:null});
-  }
-
-  // 4. S/R-LEVEL närhet — RIKTIG detection om PROPOSE + candles, annars simulerad
-  let srEval = null;
-  if(currentUiMode === "propose" && sym){
-    const key = sym + "|1m";
-    const candles = STATE.candleData[key];
-    const price = STATE.livePrices[sym];
-    if(candles && candles.length >= 30 && price){
-      const levels = detectSRLevels(candles);
-      const nearest = nearestSRDistance(price, side, levels);
-      if(nearest){
-        const distPct = nearest.dist;
-        const strength = nearest.level.strength;
-        if(distPct < 0.005 && strength >= 4){
-          factors.push({label:"Vid stark S/R-level", points:2, detail:`${side==='BUY'?'Support':'Resistance'} testat ${nearest.level.touches}x · avstånd ${(distPct*100).toFixed(2)}%`, positive:true});
-          total += 2;
-          srEval = "strong";
-        } else if(distPct < 0.01 && strength >= 3){
-          factors.push({label:"Nära S/R-zon", points:1, detail:`${nearest.level.touches}x testat · avstånd ${(distPct*100).toFixed(2)}%`, positive:true});
-          total += 1;
-          srEval = "near";
-        } else {
-          factors.push({label:"Mid-range", points:0, detail:`Närmaste ${side==='BUY'?'support':'resistance'} ${(distPct*100).toFixed(1)}% bort`, positive:null});
-          srEval = "mid";
-        }
-      }
-    }
-  }
-  if(!srEval){
-    // Fallback: simulerad om ingen riktig data
-    const srProx = Math.random();
-    if(srProx > 0.7){
-      factors.push({label:"Vid stark S/R-level (sim)", points:2, detail:`${side==='BUY'?'Support':'Resistance'} testat 3+ gånger`, positive:true});
-      total += 2;
-    } else if(srProx > 0.4){
-      factors.push({label:"Nära S/R-zon (sim)", points:1, detail:"Inom 1% av key-level", positive:true});
-      total += 1;
-    } else {
-      factors.push({label:"Mid-range (sim)", points:0, detail:"Inget tydligt level nära", positive:null});
-    }
-  }
-
-  // 5. CANDLESTICK-PATTERN — max 2p (riktig data i PROPOSE)
-  if(currentUiMode === "propose" && sym){
-    const key = sym + "|1m";
-    const candles = STATE.candleData[key];
-    if(candles && candles.length >= 3){
-      const patterns = detectCandlePatterns(candles);
-      if(patterns.length){
-        const matchingPatterns = patterns.filter(p=>{
-          const meta = CANDLE_PATTERNS[p.type];
-          if(!meta) return false;
-          return (side === "BUY" && meta.bullish === true) || (side === "SELL" && meta.bullish === false);
-        });
-        if(matchingPatterns.length){
-          const labels = matchingPatterns.map(p=>CANDLE_PATTERNS[p.type].label).join(" + ");
-          const pts = Math.min(2, matchingPatterns.length);
-          factors.push({label:labels, points:pts, detail:`${pts === 2 ? 'Stark' : 'Svag'} ${side==='BUY'?'bullish':'bearish'} signal`, positive:true});
-          total += pts;
-        } else {
-          const opposite = patterns.filter(p=>{
-            const meta = CANDLE_PATTERNS[p.type];
-            if(!meta) return false;
-            return (side === "BUY" && meta.bullish === false) || (side === "SELL" && meta.bullish === true);
-          });
-          if(opposite.length){
-            factors.push({label:`${CANDLE_PATTERNS[opposite[0].type]?.label || 'Reversal'} mot riktning`, points:-1, detail:"Pattern säger motsatsen", positive:false});
-            total -= 1;
-          } else {
-            factors.push({label:"Inga starka patterns", points:0, detail:"Doji/range", positive:null});
-          }
-        }
-      } else {
-        factors.push({label:"Inga candle-patterns", points:0, detail:"Inga signaler", positive:null});
-      }
-    } else {
-      // Simulerat pattern (TEST-mode utan riktiga candles)
-      const r = Math.random();
-      if(r > 0.7){
-        const sigs = side === 'BUY' ? ["Hammer + bullish engulfing","3 White Soldiers","Bullish engulfing"] : ["Bearish engulfing","Shooting Star","3 Black Crows"];
-        factors.push({label:pick(sigs), points:2, detail:"Stark signal i riktning", positive:true});
-        total += 2;
-      } else if(r > 0.5){
-        factors.push({label:"Svag bullish-bias", points:1, detail:"Marginal signal", positive:true});
-        total += 1;
-      } else {
-        factors.push({label:"Inga starka patterns", points:0, detail:"Range-action", positive:null});
-      }
-    }
-  } else {
-    // TEST-mode: generera trovärdiga simulerade pattern-tags
-    const r = Math.random();
-    if(r > 0.7){
-      const sigs = side === 'BUY' ? ["Hammer-formation","Bullish engulfing","3 White Soldiers","Morning Star"] : ["Shooting Star","Bearish engulfing","3 Black Crows","Hanging Man"];
-      factors.push({label:pick(sigs), points:2, detail:"Stark candle-signal", positive:true});
-      total += 2;
-    } else if(r > 0.5){
-      factors.push({label:"Inside bar", points:1, detail:"Svag konsolidering", positive:true});
-      total += 1;
-    } else {
-      factors.push({label:"Doji / range", points:0, detail:"Indecision", positive:null});
-    }
-  }
-
-  // 6. NEWS-EVENT inom 1h — max 2p (negativt om hög-impact event nära)
-  const newsRisk = Math.random();
-  if(newsRisk > 0.85){
-    factors.push({label:"⚠ Hög-impact event om <1h", points:-2, detail:"Volatilitet kan spike:a", positive:false});
-    total -= 2;
-  } else if(newsRisk > 0.7){
-    factors.push({label:"Mid-impact event imorgon", points:0, detail:"OK för kortsikt-trade", positive:null});
-  } else {
-    factors.push({label:"Ingen kommande news", points:1, detail:"Lugn marknadsmiljö", positive:true});
-    total += 1;
-  }
-
-  // Skala till 1-10 (bas 5 + total justering)
-  const score = Math.max(1, Math.min(10, 5 + total));
-  return { score, factors, totalAdjustment: total };
+  // Borttaget (granskning 2, M3): webbläsarsimulering med slumpade värden. Inga påhittade data visas.
+  return { score: 0, factors: [], totalAdjustment: 0, removed: true };
 }
 
 // Bakåtkompatibel — returnerar bara score
@@ -4292,28 +4132,8 @@ const SETUP_TYPES = {
 
 // Setup-typ-generator — högre score gynnar mer tillförlitliga setups
 function generateSetupType(score){
-  // Lågt score: mer chansartad blandning. Högt score: bättre setups oftare.
-  const r = Math.random();
-  if(score >= 9){
-    if(r < 0.40) return "sr-bounce";
-    if(r < 0.65) return "ema-cross";
-    if(r < 0.85) return "breakout";
-    if(r < 0.95) return "liq-sweep";
-    return "range-scalp";
-  }
-  if(score >= 7){
-    if(r < 0.30) return "ema-cross";
-    if(r < 0.55) return "sr-bounce";
-    if(r < 0.75) return "breakout";
-    if(r < 0.90) return "range-scalp";
-    return "liq-sweep";
-  }
-  // Låga scores — sämre setups oftare
-  if(r < 0.35) return "range-scalp";
-  if(r < 0.60) return "breakout";
-  if(r < 0.80) return "ema-cross";
-  if(r < 0.92) return "sr-bounce";
-  return "liq-sweep";
+  // Borttaget (granskning 2, M3): slumpad setup-typ.
+  return { type: "removed", label: "–", icon: "" };
 }
 
 // ─── Telegram-bridge ───
@@ -4436,87 +4256,8 @@ function createWatch(sym, side, amount, timeframeSec){
 
 // Skanna alla aktiva watches — kallas av tick-loop
 function scanWatches(){
-  ensureWatchState();
-  if(!STATE.pendingWatches.length) return;
-  const now = Date.now();
-  const remaining = [];
-  for(const w of STATE.pendingWatches){
-    // Expire watch?
-    if(now >= w.expiresAt){
-      pushInAppAlert(`⏱ Bevakning avslutad: ${w.sym} ${w.side==='BUY'?'LONG':'SHORT'} — ingen A+ setup hittad på 15 min.`, 6000);
-      continue;
-    }
-    // Throttle: scan max var 30s per watch
-    if(w.lastCheck && (now - w.lastCheck) < WATCH_INTERVAL_MS){
-      remaining.push(w);
-      continue;
-    }
-    // Generera nytt score-försök MED full breakdown (transparenta faktorer)
-    w.attempts++;
-    w.lastCheck = now;
-    const analysis = generateConfluenceAnalysis(w.side, w.sym);
-    const score = analysis.score;
-    w.lastScore = score;
-    if(score >= w.threshold){
-      // A+ träff! Flytta till pendingConfirms
-      const setupType = generateSetupType(score);
-      const setupMeta = SETUP_TYPES[setupType] || {label:setupType, icon:"•"};
-      const entry = STATE.livePrices[w.sym] ?? BASE_PRICES[w.sym] ?? 100;
-      const winrate = scoreToWinrate(score);
-      const histMatch = calcHistoricalMatch(setupType, score);
-      const confirm = {
-        id: "conf-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
-        watchId: w.id,
-        sym: w.sym, side: w.side, amount: w.amount, timeframeSec: w.timeframeSec,
-        score, setupType, setupLabel: setupMeta.label,
-        factors: analysis.factors,           // Transparent breakdown av WHY score är X
-        expectedWinrate: winrate,            // 0.75 = 75% historiskt vid denna score
-        historicalMatch: histMatch,          // Mikes egen data: liknande setups
-        entry,
-        suggestedSL: w.side==='BUY' ? entry * 0.988 : entry * 1.012,  // 1.2% SL
-        suggestedTP: w.side==='BUY' ? entry * 1.024 : entry * 0.976,  // 2.4% TP
-        attemptCount: w.attempts,
-        createdAt: now,
-        expiresAt: now + CONFIRM_TIMEOUT_MS,
-        sessionNum: w.sessionNum
-      };
-      const sideLabel = w.side==='BUY' ? '📈 LONG' : '📉 SHORT';
-      // AUTO-CONFIRM: om watch är från auto-fill och session har autoConfirm-flagga
-      // → exekvera direkt utan att vänta på Mike
-      const autoConfirm = w.fromAutoFill && STATE.session?.autoConfirm;
-      if(autoConfirm){
-        // Säkerhetsnät INNAN auto-execute
-        const safety = checkSafetyGates(w.amount);
-        if(!safety.ok){
-          // STOPP — flytta till pending så Mike kan se varning
-          STATE.pendingConfirms.push(confirm);
-          const stopMsg = `🛡 <b>SÄKERHETSREGEL TRIGGRAD</b>\n${safety.reason}\n\nSetup väntar i bekräftelse — du måste manuellt godkänna eller avbryta.`;
-          pushInAppAlert(`🛡 Säkerhetsstopp: ${safety.reason}`, 10000);
-          sendTelegramMessage(stopMsg).catch(()=>{});
-        } else {
-          // Auto-execute direkt
-          const successMsg = `⚡ <b>AUTO-EXECUTED</b> · ${w.sym} ${sideLabel} $${w.amount}\nScore: <b>${score}/10</b> · ${setupMeta.label}\nEntry: ${formatPrice(entry, w.sym)} · SL ${formatPrice(confirm.suggestedSL, w.sym)} · TP ${formatPrice(confirm.suggestedTP, w.sym)}`;
-          pushInAppAlert(`⚡ Auto: ${w.sym} ${sideLabel} score ${score}/10 (${setupMeta.label})`, 5000);
-          sendTelegramMessage(successMsg).catch(()=>{});
-          executeConfirmedTrade(confirm);
-          continue; // skip normal pending-confirm flow
-        }
-      } else {
-        // Manuell flow: lägg till pending för bekräftelse
-        STATE.pendingConfirms.push(confirm);
-        const msg = `🎯 <b>A+ Setup hittad!</b>\n${w.sym} ${sideLabel} $${w.amount}\nScore: <b>${score}/10</b> · ${setupMeta.label}\nEntry: ${formatPrice(entry, w.sym)}\nSL: ${formatPrice(confirm.suggestedSL, w.sym)} (-1.2%)\nTP: ${formatPrice(confirm.suggestedTP, w.sym)} (+2.4%)\n⏱ Bekräfta inom 5 min på dashboard`;
-        pushInAppAlert(`🎯 A+ Setup! ${w.sym} ${sideLabel} score ${score}/10 (${setupMeta.label}). Bekräfta inom 5 min.`, 12000);
-        sendTelegramMessage(msg).catch(()=>{});
-      }
-    } else {
-      // Inte A+, fortsätt bevaka
-      remaining.push(w);
-    }
-  }
-  STATE.pendingWatches = remaining;
-  scanConfirms();
-  saveWatchState();
-  renderTradesPage();
+  // Borttaget (granskning 2, M3): webbläsarsimulering med slumpade värden. Inga påhittade data visas.
+  return;
 }
 
 // Auto-expire pending confirms efter 5 min
@@ -4560,52 +4301,8 @@ function rejectSetup(confirmId){
 
 // Execute pre-confirmed trade — bypass session-filter (vi vet redan score är ≥ threshold)
 function executeConfirmedTrade(c){
-  const acc = loadPaperAccount();
-  if(c.amount > acc.cash){
-    pushInAppAlert(`❌ Inte nog cash: $${acc.cash.toFixed(2)} < $${c.amount}`, 5000);
-    return;
-  }
-  const tf = c.timeframeSec || SCALP_DEFAULT_SEC;
-  const payoutMult = randomPayout();
-  const trade = {
-    id: "trade-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
-    sym: c.sym, side: c.side, amount: c.amount, entry: c.entry,
-    qty: c.amount / c.entry,
-    openedAt: Date.now(),
-    expiresAt: Date.now() + tf * 1000,
-    timeframeSec: tf,
-    payoutMultiplier: payoutMult,
-    payoutPct: Math.round((payoutMult - 1) * 100),
-    score: c.score,
-    setupType: c.setupType,
-    setupLabel: c.setupLabel,
-    suggestedSL: c.suggestedSL,
-    suggestedTP: c.suggestedTP,
-    inSession: !!STATE.session,
-    sessionNum: STATE.session?.sessionNum,
-    confirmed: true,
-    status: "open",
-    type: "scalp",
-    source: "Watch-confirm"
-  };
-  if(!STATE.tradePositions) STATE.tradePositions = [];
-  if(!STATE.tradeDecisions) STATE.tradeDecisions = [];
-  STATE.tradePositions.push(trade);
-  STATE.tradeDecisions.unshift({
-    timestamp: Date.now(),
-    action: c.side, sym: c.sym, amount: c.amount,
-    score: c.score, setupType: c.setupType,
-    timeframeSec: tf,
-    reasoning: `Bekräftad A+ setup · ${c.setupLabel} · score ${c.score}/10`,
-    source: "watch-confirm"
-  });
-  acc.cash -= c.amount;
-  acc.totalTrades++;
-  savePaperAccount();
-  saveTradeData();
-  renderTradesPage();
-  renderPaperBadge();
-  pushInAppAlert(`🧪 SIMULERAD order (ingen riktig order lades): ${c.sym} ${c.side==='BUY'?'LONG':'SHORT'} $${c.amount} · påhittad score ${c.score}/10`, 6000);
+  // Borttaget (granskning 2, M3): webbläsarsimulering med slumpade värden. Inga påhittade data visas.
+  return;
 }
 
 // Trade-router (IG): allt blir ett förslag i Väntande ordrar. Ingen order skickas
@@ -5002,9 +4699,8 @@ function tick(){
     const vol = VOL[cat];
     if(useRealPrices(sym)) return; // IG-priser kommer från servern (ström + kvoter)
     if(BASE_PRICES[sym] == null && STATE.livePrices[sym] == null) return; // inga påhittade priser
-    const cur = STATE.livePrices[sym] ?? BASE_PRICES[sym];
-    const next = cur * (1 + (Math.random()-.5)*vol*0.15);
-    STATE.livePrices[sym] = next;
+    // Borttaget (granskning 2): slumpad prisrörelse. Priser kommer bara från IG.
+    return;
   });
 
   const key = STATE.symbol+"|"+STATE.tf;
@@ -5187,103 +4883,8 @@ const AGENT_DEFS = [
 ];
 
 function genSimAgents(){
-  const regimes=["RISK_ON","RISK_OFF","NEUTRAL"];
-  const sentiments=["extreme_fear","fear","neutral","greed","extreme_greed"];
-  const risks=["low","medium","high","critical"];
-
-  const symbols = ["BTCUSDT","ETHUSDT","SOLUSDT"];
-  const pick = a=>a[Math.floor(Math.random()*a.length)];
-  const score = ()=> (Math.random()*10-5).toFixed(1);
-
-  return {
-    research:{
-      summary:"BTC bröt 67k motstånd efter ETF-inflöden. Fed-möte tor. Mellanöstern lugnt senaste 12h.",
-      cryptoNews:["BlackRock IBIT +$280M inflöde igår","SOL-ekosystem aktivitet +18% WoW","BTC dominans 56.4%"],
-      macroEvents:["Fed-möte torsdag (FOMC)","ECB håller på 4.5%","CPI under förväntningar (3.1%)"],
-      geopolitical:["Ukraina-Ryssland status quo","Mellanöstern lugnt","Taiwan-spänningar minskat"],
-      riskAlerts:[],
-      sources:["bloomberg.com","coindesk.com","reuters.com"]
-    },
-    macro:{
-      regime: pick(regimes), confidence: 0.6+Math.random()*0.35,
-      vix: (15+Math.random()*15).toFixed(1),
-      oil: (70+Math.random()*15).toFixed(1),
-      dollar: (102+Math.random()*4).toFixed(2),
-      fng: Math.round(20+Math.random()*60),
-      keyFactors:["Fed-möte nästa vecka","ECB håller räntan","CPI lägre än väntat"],
-      recommendation:"Lätt risk-on bias, övervakta VIX <16"
-    },
-    technical:{
-      topPick:"BTCUSDT",
-      bias:"bullish",
-      symbols: symbols.map(s=>({sym:s, bias:pick(["bullish","bearish","neutral"]), score:score(), entry:(BASE_PRICES[s]*0.99).toFixed(2), target:(BASE_PRICES[s]*1.04).toFixed(2)})),
-      keySignals:["BTC: bryter 200-EMA","ETH: testar pivot","SOL: konsoliderar"]
-    },
-    sentiment:{
-      sentiment: pick(sentiments),
-      narratives:["AI-rally fortsätter","Halving-effekt avtar","ETF-inflöden positiva"],
-      politicians:[{name:"Pelosi",sym:"NVDA",dir:"BUY"},{name:"Tuberville",sym:"TSLA",dir:"BUY"}],
-      contrary: Math.random()>0.6
-    },
-    risk:{
-      level: pick(risks),
-      heat: Math.round(20+Math.random()*60),
-      correlation: 0.4+Math.random()*0.4,
-      maxDrawdown: -(2+Math.random()*8).toFixed(1),
-      warnings:["BTC-ETH korrelation 0.92","Override exposure i SOL"],
-      sizing:"Reducera positionsstorlek 30% idag"
-    },
-    quant:{
-      volRegime: pick(["low","medium","high"]),
-      sharpe: (0.8+Math.random()*1.2).toFixed(2),
-      winRate: Math.round(48+Math.random()*15),
-      symbols: symbols.map(s=>({sym:s, trend:score(), meanRev:score(), regime:pick(["trending","ranging","volatile"])}))
-    },
-    portfolio:{
-      diversification: Math.round(40+Math.random()*45),
-      sectorConc: {"Crypto":62,"Tech":24,"Other":14},
-      rebalance:["Reducera BTC -10%","Lägg till ETH +5%"],
-      cashPct: Math.round(10+Math.random()*30)
-    },
-    execution:{
-      urgency: pick(["low","medium","high"]),
-      symbols: symbols.slice(0,2).map(s=>({sym:s, type:pick(["limit","market","TWAP"]), timing:"open+15m", style:"DCA 3x", split:3, slippage:"<0.1%"}))
-    },
-    advisor:{
-      outlook:"Risk-on med försiktighet — credit spreads tightenar, men VIX-term struktur backwardation",
-      cycle: pick(["accumulation","markup","distribution","decline"]),
-      insights:["Fed-balansräkning krymper men retail inflöden absorberar","Crypto cycle 18 mån från top — tidigt"],
-      blindSpots:["Geopol risk underprissatt","FX-stress kan smitta crypto"],
-      behavioral:["FOMO-tendens efter senaste rallyt — sänk size"],
-      contrarian:"Roteshort övervärderad large-cap tech-sektor",
-      portfolioAdvice:"Behåll 30% cash, fokusera kvalitet"
-    },
-    head:{
-      decision: pick(["BUY","SELL","HOLD"]),
-      actions:[
-        {type:"buy",text:"Köp BTCUSDT 0.005 @ market"},
-        {type:"buy",text:"DCA ETH 33% av plan"},
-        {type:"sell",text:"Trim SOL +12% mark"}
-      ],
-      rule3:["Regim: risk-on med VIX <17","Action: 2 nya positioner, 1 trim","Bevaka: Fed-möte tor 14:00 UTC"]
-    },
-    forex:{
-      // Viktor — Forex-Specialist (centralbanker, räntor, DXY, carry)
-      dxy: (102+Math.random()*4).toFixed(2),
-      bias: pick(["USD-stark","USD-svag","NEUTRAL","EUR-stark","JPY-svag"]),
-      topPair: pick(["EUR/USD","GBP/USD","USD/JPY","AUD/USD","USD/CHF"]),
-      cbWatch: pick([
-        "Fed Powell talar 14:00 UTC — väntat hökigt",
-        "ECB Lagarde imorgon — håll stilla 4.5%",
-        "BoJ kan intervenera USD/JPY > 152",
-        "BoE Bailey signalerar pause i juni",
-        "RBA håller 4.35%, AUD svag på Kina-data"
-      ]),
-      carryTrades:["AUD/JPY: +3.6% APY","NZD/JPY: +3.9% APY"],
-      eventsToday:["US PCE 14:30 UTC","EU CPI imorgon"],
-      recommendation:"USD-svag bias kortsiktigt — long EUR/USD vid 1.0820 retest"
-    }
-  };
+  // Borttaget (granskning 2, M3): webbläsarsimulering med slumpade värden. Inga påhittade data visas.
+  return {};
 }
 
 // Kompakt signal per agent — visas i tile
@@ -5601,8 +5202,7 @@ async function sendChat(){
       const r = await apiPost("/api/ask-agent", {agent:key, question:q});
       answer = r?.response || JSON.stringify(r);
     } else {
-      // simulated answer (skicka history för kontext)
-      await sleep(600 + Math.random()*900);
+      // Ingen simulerad agent: ett ärligt besked (granskning 2, M3)
       answer = simulateAgentAnswer(key, q, chatLogs[key] || []);
     }
     chatLogs[key][chatLogs[key].length-1].a = answer;
@@ -5614,79 +5214,8 @@ async function sendChat(){
 }
 // Naturlig demo-konversation — agent förstår intent + svarar konkret
 function simulateAgentAnswer(key, q, history){
-  const lower = (q||"").toLowerCase();
-  const prevTurns = (history || []).length;
-  const pick = a => a[Math.floor(Math.random()*a.length)];
-
-  // Intent-detektion (prefix-matchning för att fånga böjda former: väljer, lägger, köper, etc.)
-  const wantsDecision = /\b(välj|bestäm|plock|kör|gör|lägg|köp|sälj|stäng|välja)/.test(lower);
-  const challenging = /\b(varför|säker|men |istället|riskabelt|fel|smart|verkligen)/.test(lower);
-  const askingOpinion = /\b(tyck|tänk|tror|åsikt|vy|view)/.test(lower);
-  const wantsAnalysis = /\b(analys|hur ser|vad ser|status|situation|läge)/.test(lower);
-
-  const symbols = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT"];
-  const randSym = pick(symbols);
-  const randPrice = (BASE_PRICES[randSym] || 100).toFixed(2);
-  const amount = pick([30, 50, 75]);
-
-  // ── HEAD TRADER (Hanna) ──
-  if(key === "head"){
-    if(wantsDecision){
-      const action = Math.random() > 0.4 ? "BUY" : (Math.random() > 0.5 ? "HOLD" : "SELL");
-      if(action === "HOLD") return `Jag väljer att avvakta just nu. Tomas signal är svag på top-pickarna och Rasmus heat ligger på ${30+Math.floor(Math.random()*20)}% — inget akut tryck att öppna nytt.\n\nFöreslår vi väntar 1-2 sessioner till. Vill du att jag kör ändå?`;
-      const reasons = pick([
-        `${randSym} bröt 4h-motståndet i morse, Tomas score +3`,
-        `${randSym} har bästa risk/reward — Karin kalibrerar 1.0x sizing`,
-        `${randSym} ligger nära 200-EMA stöd, Albert ser uppstuds-setup`
-      ]);
-      return `OK. Jag tar **${action} ${randSym}** för $${amount} (price ~${randPrice}).\n\nGrund: ${reasons}. Stop -2% från entry.\n\n${CFG.mode==="live"?"Ska jag köra ordern direkt?":"⚠️ Du är i TEST-läge — ordern går till testnet, inte real Binance."}`;
-    }
-    if(challenging){
-      return `Schysst utmaning. ${pick([
-        `Det stämmer att alternativet skulle vara mindre risk. Min läsning byggde på Tomas signal — om du ser nåt jag missar, säg.`,
-        `Du har en poäng. Jag kan ompröva — vill du jag tar ${pick(symbols)} istället?`,
-        `Ärligt: jag är inte 100% säker. Men ${randSym} har bättre likviditet just nu. Vad är ditt skäl mot?`
-      ])}`;
-    }
-    if(askingOpinion){
-      return pick([
-        `Jag är ${pick(["försiktigt positiv","neutral","lite skeptisk"])} just nu. ${pick(["Volymen är OK men inte explosiv","Tekniskt OK men makro skvalpar","Bredd försämrad — selektiv läge"])}.`,
-        `Min tanke: ${pick(["små positioner i top-3","håll cash 30%","lägga 1 swing-trade"])}. Inget att hetsa med.`
-      ]);
-    }
-    return `Sammanfattat: regim ${STATE.agents.macro?.regime||"NEUTRAL"}, vol medium, Albert i ${STATE.agents.advisor?.cycle||"accumulation"}-fas. Inget akut beslut just nu — vill du jag tar något specifikt?`;
-  }
-
-  // ── ALBERT (Advisor) ──
-  if(key === "advisor"){
-    if(challenging) return pick([
-      `Bra invändning. Mitt argument byggde på cykel-positionering, men du kan ha rätt — kortsiktigt sentiment kan trumfa.`,
-      `Jag står fast vid huvudthesis, men erkänner: blind spot är geopolitisk eskalering. Vad ser du?`
-    ]);
-    if(wantsDecision) return `Jag rekommenderar ${pick(["lätt risk-on","selektiv approach","defensivt läge"])} just nu. Konkret: ${pick(["BTC core + lite SOL","behåll cash, vänta dip","trim toppen, addera på dipp"])}.`;
-    return pick([
-      `Tankar: marknaden är i ${STATE.agents.advisor?.cycle||"accumulation"}. ${pick(["FOMO börjar krypa in","retail entusiasm sval","institutional flöden positiva"])}. Var disciplinerad.`,
-      `Jag ser ${pick(["för mycket optimism","skön balans","underliggande svaghet"])} i sentimentet. Min läsning: ${pick(["trim 20%","håll","lägg till på rött"])}.`,
-      `Långsiktigt: ${pick(["BTC cycle-mid","alts börjar lyfta","makro-rotation pågår"])}. Behavioral risk: ${pick(["overconfidence","FOMO","disposition effect"])}.`
-    ]);
-  }
-
-  // ── ÖVRIGA SPECIALISTER ──
-  const replies = {
-    research: pick([
-      `Senaste 12h: ${pick(["BlackRock IBIT-inflöden","Fed-tal idag 14:00","ETH-uppgradering live"])}. Inga akuta risk-alerts.`,
-      `Färska nyheter: ${pick(["BTC bröt 67k","Ethereum gas låg","Solana DePIN trend"])}. Geopolitik lugnt.`,
-    ]),
-    macro:`Regim är ${STATE.agents.macro?.regime||"NEUTRAL"}. ${pick(["Fed hawkish-bias","ECB håller","CPI under förväntan"])} är drivkraft. ${challenging?"Du ifrågasätter — fair, alternativet vore om dollar svartnar och guld lyfter":"Konkret: lite risk-on bias om VIX < 17"}.`,
-    technical:`${wantsAnalysis?`Top-pick: ${STATE.agents.technical?.topPick||randSym}, score +${(2+Math.random()*3).toFixed(1)}. Stöd vid 50-EMA, motstånd förra veckans high.`:`${pick(["bullish setup","mixed","ranging"])} på huvudpariteter. ${pick(["Volymen bekräftar","Volymen tunn","Divergens i RSI"])}.`}`,
-    sentiment:`Sentiment ${STATE.agents.sentiment?.sentiment||"neutral"}. ${pick(["Reddit börjar bli FOMO-igt","Politiker köpte tech","Crypto-twitter sval"])}. ${challenging?"Min contrary-läsning kan vara fel om institutionella flöden fortsätter":"Inga extreme-zoner just nu"}.`,
-    risk:`Heat ${STATE.agents.risk?.heat||0}%, korrelation ${(STATE.agents.risk?.correlation||0.5).toFixed(2)}. ${wantsDecision?`Får du köpa ${randSym} för $${amount}? Ja, inom MAX_POSITION_USD.`:`${pick(["Inom acceptabel risk","Vill se ner till 50% heat","Diversifiera mer"])}.`}`,
-    quant:`Vol ${STATE.agents.quant?.volRegime||"medium"}, Sharpe ${STATE.agents.quant?.sharpe||"0.9"}. ${pick(["Trend > mean-rev just nu","Mean-rev signal i SOL","Volcluster ovanligt"])}.`,
-    options:`IV ${STATE.agents.options?.ivEnv||"normal"}. ${pick(["Sell-premium attraktivt","Köp riktning bättre","Iron condor-zon"])}. (OBS: irrelevant för crypto-spot, vi behåller mig som backup.)`,
-    portfolio:`Diversifiering ${STATE.agents.portfolio?.diversification||60}/100. ${pick(["Crypto för tungt — trim","Lägg till FX-hedge","OK balans nu"])}. Cash ${STATE.agents.portfolio?.cashPct||25}%.`,
-    execution:`Urgency ${STATE.agents.execution?.urgency||"medium"}. För ${randSym}: ${pick(["TWAP 3 splits","limit -0.1%","market OK"])}. Slippage <0.05%.`,
-  };
-  return replies[key] || "Hej! Vad vill du veta?";
+  // Borttaget (granskning 2, M3): webbläsarsimulering med slumpade värden. Inga påhittade data visas.
+  return "Agenten kan inte svara: servern är inte ansluten. Inga simulerade svar visas.";
 }
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
@@ -6313,270 +5842,7 @@ function classifyIntent(text){
 }
 
 // Returnerar { text, executedTrade?: {...} }
-async function simulateTeamResponse(instr){
-  const i = (instr||"").toLowerCase();
-  const pick = a => a[Math.floor(Math.random()*a.length)];
-  const isTest = CFG.mode !== "live";
-  const testNote = isTest ? `\n\n_(${currentUiMode === "live" ? "💚 LIVE — RIKTIGA PENGAR via Binance Mainnet" : "🧪 TESTNET — riktig API mot Binance Testnet, demo-pengar"})_` : "";
-
-  // Klassa intent — för att kunna respondera mänskligt
-  const { intent, contextual, lastTeamMsg } = classifyIntent(instr);
-
-  // Korta confirm-svar ("ja", "kör på") — agera på SENASTE förslag i historiken
-  if(intent === "confirm"){
-    // Hitta senaste user-message som hade ett konkret förslag
-    const lastUserDecide = (teamChatLog||[]).filter(m=>m.role==="user")
-      .map(m=>m.text)
-      .reverse()
-      .find(t=>{
-        const c = classifyIntent(t).intent;
-        return c === "decide" || c === "execute" || c === "analyze";
-      });
-    if(lastUserDecide){
-      // Återanvänd senaste decide-instruktion
-      return simulateTeamResponse(lastUserDecide);
-    }
-    return { text: pick([
-      "OK, kör på vad? Säg vilken symbol/belopp/timeframe så drar jag igång.",
-      "Säkert, men du behöver berätta vad — köp BTC? Sälj ETH? 4 forex-trades? Säg så fixar jag.",
-      "Yep. Vill du att jag tar det senaste förslaget eller nåt nytt?"
-    ])};
-  }
-  if(intent === "cancel"){
-    return { text: pick([
-      "OK, hoppar över. Säg när du är redo.",
-      "Avbryter. Inget händer. Vad vill du göra istället?",
-      "Yep, jag väntar."
-    ])};
-  }
-  if(intent === "chat"){
-    return { text: pick([
-      "Hej! Vad vill du göra? Säg t.ex. 'kör 4 forex-trades på $500' eller 'vad tycker ni om BTC?'",
-      "Tjena — jag är här. Vill du analys, trades, eller bara prata marknad?",
-      "Yo. Säg vad du tänker så hjälper jag till."
-    ])};
-  }
-  if(intent === "opinion"){
-    return { text: pick([
-      `Marknaden är i ${pick(["accumulation","early-markup","konsolidering"])}-fas just nu. ${pick(["Försiktigt positiv","Neutral","Lite skeptisk"])}.\nAlbert flaggar inga akuta blind spots. Vad vill du jag tar?`,
-      `${pick(["Tomas pekar på BTC bullish setup","Karin säger volatiliteten är medium","Markus regim risk-on"])}. Ge mig en konkret instruktion så fixar jag.`,
-      `Status: ${pick(["risk-on","neutral","sval"])}. Sharpe ${(0.8+Math.random()*0.7).toFixed(2)}, win-rate ${Math.round(55+Math.random()*15)}%. Vad behöver du?`
-    ])};
-  }
-  if(intent === "analyze"){
-    return { text: `Vi har just nu:\n- Markus: regim ${pick(["RISK_ON","NEUTRAL","RISK_OFF"])}\n- Tomas: top-pick ${pick(["BTCUSDT","ETHUSDT","EUR/USD"])} score +${(2+Math.random()*2).toFixed(1)}\n- Karin: vol medium, Sharpe ${(0.8+Math.random()*0.7).toFixed(2)}\n- Rasmus: heat ${Math.round(20+Math.random()*30)}%, OK för nya trades\n- Albert: ${pick(["accumulation","early-markup"])}-fas, inga FOMO-warnings\n\nSäg vad du vill att jag tar — t.ex. "kör 3 forex-scalpar på $500".${testNote}` };
-  }
-
-  // Plocka ut antal trades — flera mönster: "4 trades", "4 olika trades", "kör 4", "ha 4"
-  const tradeCountMatch =
-    i.match(/(\d+)\s*(?:st|stycken|olika|nya)?\s*(?:trades?|valuta|köp|order|positioner)/) ||
-    i.match(/(?:kör|ha|gör|ta|lägg)\s+(\d+)/) ||
-    i.match(/^(\d+)\s+/);
-  const tradeCount = tradeCountMatch ? parseInt(tradeCountMatch[1],10) : 1;
-  // Belopp: föredra $-prefixed (\$500), undvik procent-tal som "80-90%"
-  // Tillåt 1+ siffror så "$1" / "$5" funkar (LIVE-säkerhetslås $5/trade)
-  const amtMatch =
-    i.match(/\$\s?(\d{1,5})/) ||           // "$1", "$500", "$ 500"
-    i.match(/(\d{1,5})\s*(?:dollar|usd)/) || // "1 dollar"
-    i.match(/(?:per|för)\s+(\d{1,5})/) ||   // "per 1" / "för 1"
-    i.match(/(?<![-%\d])(\d{3,5})(?![-%])/); // 3+ siffror utan $ (ambiguity-skydd)
-  const amount = amtMatch ? parseInt(amtMatch[1],10) : 50;
-  // Forex-mode? Trigger på "valuta", "forex", eller specifika valutapar
-  const isForex = /valuta|forex|fx\b|eur|usd\/|gbp|jpy|chf|aud|cad/.test(i);
-
-  // Konkreta ordrar i text (köp/sälj med belopp/symbol)
-  const buyMatch = i.match(/(köp|buy)\s+([a-z]{3,5})/i);
-  if(buyMatch){
-    const sym = buyMatch[2].toUpperCase()+(buyMatch[2].endsWith("usdt")?"":"USDT");
-    const result = requestTradeExecution(sym, "BUY", amount);
-    if(STATE.session){
-      return {
-        text: `Hanna: 🔍 Bevakning startad — ${sym} LONG $${amount}.\nTomas: Söker A+ setup (score ≥${STATE.session.scoreThreshold}). Skannar var 30s i upp till 15 min.\nKarin: Inga trades körs förrän confluence är hög nog.\n\n→ Du får push så fort A+ setup hittas. Bekräfta inom 5 min så executas trade.`,
-        executedTrades: []
-      };
-    }
-    const symType = getSymbolType(sym);
-    if(symType === "forex"){
-      return {
-        text: `Viktor: OK, ${sym} LONG $${amount} — ${pick(["DXY 102.4 + Fed-möte denna vecka","Räntedifferential talar för köpet","Carry-spread positiv","Riskon-flöde efter CPI"])}.\nRasmus: Forex-pos räknas in i daily heat.\nHanna: Order placerad.\n\n✓ Forex-order placerad — se Trades-sidan.${testNote}`,
-        executedTrades: [result]
-      };
-    }
-    return {
-      text: `Hanna: OK, köper **${sym}** för $${amount}.\nRasmus: Inom risk-ramen, godkänner.\nKarin: Vol-regim medium.\nAlbert: Cykel-fas ${pick(["accumulation","early-markup"])} — passar in.\n\n✓ Order placerad — se Trades-sidan.${testNote}`,
-      executedTrades: [result]
-    };
-  }
-  if(/(sälj|sell|stäng|close)/.test(i)){
-    const closed = closeAllPositions();
-    return {
-      text: `Hanna: Stänger ${closed.length} ${closed.length===1?'position':'positioner'}. ${pick(["Realiserad vinst loggad","Tar hem för att frigöra cash","Reducerar exponering"])}.\nRasmus: Heat sänks. Bra disciplin.${testNote}`,
-      closedCount: closed.length
-    };
-  }
-  if(/stop[- ]?loss|sl /.test(i)){
-    return { text:`Hanna: Trailing stop justerad. Påverkar alla öppna positioner.\nRasmus: Bra — tightare stop minskar drawdown om det vänder.` };
-  }
-
-  // Plocka ut timeframe — fångar "1min", "1 min", "1minuts", "1minute", "30 sek", "1h"
-  const tfMatch = i.match(/(\d+)\s*(minute|minutes|minuts?|mins?|min\b|sek|sec|seconds?|tim|hour|hr|h\b|m\b)/i);
-  let timeframeSec = SCALP_DEFAULT_SEC;
-  if(tfMatch){
-    const n = parseInt(tfMatch[1],10);
-    const unit = tfMatch[2].toLowerCase();
-    if(unit.startsWith("s")) timeframeSec = n;
-    else if(unit.startsWith("h") || unit.startsWith("t")) timeframeSec = n * 3600;
-    else timeframeSec = n * 60; // min är default
-  }
-  const tfLabel = timeframeSec < 60 ? `${timeframeSec}s` : timeframeSec < 3600 ? `${Math.round(timeframeSec/60)}m` : `${Math.round(timeframeSec/3600)}h`;
-
-  // Frågor / utmaningar (prefix-matchning för böjda former)
-  if(/\b(välj|bestäm|plock|kör|lägg|ta)\b/.test(i)){
-    // BINANCE-RIKTIG SYMBOL-UNIVERSUM: hämtas dynamiskt från /api/binance/symbols (cachad 1h)
-    // Mike har USDC på LIVE → använd USDC-pairs där det finns (BTCUSDC, ETHUSDC, ...)
-    // På TESTNET har Mike USDT → använd USDT-pairs
-    const modeForSyms = currentUiMode === "live" ? "live" : "testnet";
-    const userQuotePref = /usdc|usd-c/i.test(i) ? "USDC" : (modeForSyms === "live" ? "USDC" : "USDT");
-    let allSyms = [];
-    try {
-      const symR = await fetch(`/api/binance/symbols?mode=${modeForSyms}`);
-      const symData = await symR.json();
-      if(symData.ok) allSyms = symData.symbols;
-    } catch {}
-    if(!allSyms.length){
-      return { text: `❌ Kunde inte hämta symbol-lista från Binance ${modeForSyms}. Försök igen om 5s.`, executedTrades: [] };
-    }
-
-    const trades = [];
-    const usedSyms = new Set();
-    // Riktnings-specifika kommentarer som låter mänskliga
-    const longTalk = [
-      sym => `${sym} bryter precis 50-EMA på 5m, RSI 38 — klassisk oversold-rebound`,
-      sym => `Bullish engulfing på senaste candle, volym 2x snitt = köpare står på linjen`,
-      sym => `${sym} testar förra veckans support och håller — vi hänger på en bounce`,
-      sym => `MACD-cross på 5m + price action ovanför 21-EMA, momentum är åt vårt håll`,
-      sym => `Karin pekade på Q1-säsongs-edge för ${sym}, 64% historisk win-rate på måndagar`,
-    ];
-    const shortTalk = [
-      sym => `${sym} har bear-flag breakdown, RSI 72 = overbought + svaghet`,
-      sym => `Bearish divergence MACD/pris — köpare orkar inte trots high`,
-      sym => `${sym} trillar genom 200-EMA på volym, trend-flip nedåt`,
-      sym => `Tomas flaggar säljvolym ovanligt hög, Albert ser sentiment-extremitet`,
-      sym => `Resistance håller hård, smart money fördelar — vi följer med ner`,
-    ];
-    const macroComments = [
-      "Markus säger Fed-sentiment risk-off ikväll, så jag tar tighter stops",
-      "Risk-on regim enligt Markus, men Albert flaggar FOMO-zon — håller sizing kontrollerad",
-      "Lars-research nämner CPI imorgon, så jag undviker EUR/USD just nu",
-      "Karin vol-regim medium = standard-sizing 1.0x, inget att tweaka",
-      "Rasmus heat 25%, har gott om utrymme för dessa trades",
-      "Albert i accumulation-fas, passar in att lägga long-bias här",
-    ];
-
-    // BINANCE-RIKTIGT FLÖDE: lägger faktiska MARKET-orders via /api/binance/order
-    // Forex routas inte (Binance stöder inte forex) — kasta felmeddelande
-    if(isForex){
-      return {
-        text: `❌ Forex är inte aktiverat ännu — Oanda-integrationen kräver konfiguration. Vi kör bara krypto via Binance just nu.\n\nVill du köra ${tradeCount} krypto-trades á $${amount} istället? Säg "kör ${tradeCount} krypto-trades på $${amount}".`,
-        executedTrades: []
-      };
-    }
-    const mode = modeForSyms;
-    // Filtrera symboler: Mike's quote-preferens + amount >= MIN_NOTIONAL + MARKETABLE
-    // På LIVE har Mike USDC → välj USDC-pairs. På TESTNET → USDT-pairs (han har $50K USDT där).
-    const eligibleSyms = allSyms.filter(s =>
-      s.quoteAsset === userQuotePref &&
-      amount >= s.minNotional &&
-      // Skippa stables-mot-stables (USDCUSDT etc) och fiat-pairs som ger "OCO_NOT_ALLOWED"
-      !["EUR","GBP","JPY","TRY","BRL","ARS","RON","ZAR","UAH","NGN"].includes(s.baseAsset)
-    );
-    if(eligibleSyms.length === 0){
-      // Hitta lägsta MIN_NOTIONAL för quote-preferensen så vi kan föreslå rätt belopp
-      const sameQuote = allSyms.filter(s => s.quoteAsset === userQuotePref);
-      const lowestMin = sameQuote.length ? Math.min(...sameQuote.map(s => s.minNotional)) : 5;
-      return {
-        text: `❌ Inga **${userQuotePref}**-pairs på Binance ${mode.toUpperCase()} accepterar $${amount}/trade.\n\nLägsta minimum för ${userQuotePref}-pairs: **$${lowestMin.toFixed(2)}**.\n\nFöreslår: "kör ${tradeCount} trades på $${Math.ceil(lowestMin)}".${testNote}`,
-        executedTrades: []
-      };
-    }
-    // Säkerhetslås LIVE
-    if(mode === "live" && amount > 5){
-      return {
-        text: `🛡 LIVE-säkerhetslås: max **$5/trade**. Du försökte $${amount}/trade. Sänk beloppet eller byt till TEST-mode.`,
-        executedTrades: []
-      };
-    }
-    // Bygg lista av (symbol, side) parallellt
-    const plan = [];
-    for(let n = 0; n < Math.min(tradeCount, 10); n++){
-      let symInfo;
-      do { symInfo = pick(eligibleSyms); } while(usedSyms.has(symInfo.symbol) && usedSyms.size < eligibleSyms.length);
-      usedSyms.add(symInfo.symbol);
-      // SHORT kräver margin — på spot kör vi BUY-only
-      plan.push({ sym: symInfo.symbol, side: "BUY", isLong: true, minNotional: symInfo.minNotional });
-    }
-    // Lägg ordrarna parallellt med riktig Binance API
-    const fillResults = await Promise.all(plan.map(p => executeBinanceOrder(p.sym, p.side, amount, mode)));
-    const filled = [];
-    let pendingCount = 0;
-    plan.forEach((p, idx) => {
-      const fill = fillResults[idx];
-      if(fill && fill.pending){ pendingCount++; return; }
-      if(fill){
-        const fillPrice = parseFloat(fill.cummulativeQuoteQty) / parseFloat(fill.executedQty);
-        filled.push({
-          sym: p.sym, side: p.side, amount,
-          fillPrice, qty: parseFloat(fill.executedQty),
-          orderId: fill.orderId,
-          reasoning: pick(longTalk)(p.sym)
-        });
-      }
-    });
-    const failed = plan.length - filled.length - pendingCount;
-    const macroComment = pick(macroComments);
-    if(pendingCount > 0 && filled.length === 0){
-      return {
-        text: `⏳ ${pendingCount} order${pendingCount>1?"ar":""} á $${amount} väntar på ditt godkännande. **Ingen order är lagd än.**\n\nTryck Godkänn eller Avvisa under "Väntande ordrar" på Trade-sidan.${failed > 0 ? ` (${failed} stoppades, se notiser.)` : ""}`,
-        executedTrades: []
-      };
-    }
-
-    if(filled.length === 0){
-      const symList = plan.map(p => `${p.sym} (min $${p.minNotional.toFixed(2)})`).join(", ");
-      return {
-        text: `❌ Ingen av de ${plan.length} ordrarna gick igenom på Binance ${mode.toUpperCase()}.\n\nFörsökta symboler: ${symList}\n\nMöjliga orsaker:\n• För lågt belopp ($${amount}) — höj till lägst $${Math.max(...plan.map(p => p.minNotional)).toFixed(2)}\n• Insufficient ${userQuotePref}-saldo\n• Symbol pausad / illikvid på testnet\n\nDetaljer i notiser (övre högra hörnet).${testNote}`,
-        executedTrades: []
-      };
-    }
-    let openingLine = filled.length === 1
-      ? `OK, ${filled.length} riktig **Binance ${mode.toUpperCase()}**-order placerad á $${amount}.`
-      : `OK, ${filled.length} riktiga **Binance ${mode.toUpperCase()}**-orders á $${amount}.${failed > 0 ? ` (${failed} failade — se notiser)` : ""} Här är fillsen:`;
-    const tradeProse = filled.map((t, idx) =>
-      `${idx+1}. **${t.sym}** BUY $${t.amount} → fyllt ${t.qty.toFixed(6)} @ $${t.fillPrice.toFixed(2)} (orderId ${t.orderId}). Symbolen valdes slumpmässigt bland de som klarar beloppet, inte av en analys.`
-    ).join("\n");
-    const totalSpent = filled.reduce((s,t) => s + t.amount, 0);
-    return {
-      text: `${openingLine}\n\n${tradeProse}\n\nTotal kostnad: **$${totalSpent.toFixed(2)}**. Speglat 1:1 med Binance ${mode === "live" ? "Mainnet" : "Testnet"} — se Trades-sidan + binance.com.${testNote}`,
-      executedTrades: filled
-    };
-  }
-  if(/(varför|säker|men |istället|fel|verkligen)/.test(i)){
-    return { text: `Hanna: Schysst utmaning. ${pick([
-      "Min logik byggde på Tomas signal — om du ser nåt jag missar, säg så ändrar jag.",
-      "Du har en poäng. Alternativet vore att avvakta. Jag ompröver om du vill.",
-      "Ärligt: jag är inte 100% säker. Vad är ditt skäl mot?"
-    ])}` };
-  }
-  if(/(tyck|tänk|status|läge|hur är|vad ser)/.test(i)){
-    return { text: pick([
-      `Albert: Marknaden i ${pick(["accumulation","konsolidering","early-markup"])}-fas. ${pick(["Måttlig optimism","Sval entusiasm","Underliggande styrka"])}.\nHanna: Inget akut beslut — vill du jag tar nåt specifikt?`,
-      `Karin: Sharpe ${(0.8+Math.random()*0.7).toFixed(2)}, vol medium.\nTomas: Top-pick BTC (score +${(2+Math.random()*2).toFixed(1)}).\nHanna: Avvaktar.`,
-      `Lars: ${pick(["BlackRock IBIT-inflöden","Fed-tal ikväll","ETH-uppgradering live"])}.\nMarkus: Regim ${pick(["RISK_ON","NEUTRAL"])}, försiktig optimism.\nHanna: Lutar mot ${pick(["BTC core position","SOL momentum-trade","vänta på dipp"])}.`
-    ])};
-  }
-  // Fallback — direkt fråga teamet
-  return { text: `Albert: ${pick(["Bra fråga","Värt att överväga","Intressant"])}. ${pick(["Cykel-fas accumulation","Marknaden ser ok ut","Sentiment skvalpar"])}.\nHanna: ${pick(["Inget aktion just nu","Kan kolla närmare om du vill","Ge mig konkret order så kör jag"])}.${testNote}` };
-}
+// simulateTeamResponse borttagen (granskning 2): död kod med påhittade Binance-svar.
 
 // Test-konto (paper money) — startsaldo $10 000, persisteras i localStorage
 const PAPER_START_BALANCE = 10000;
@@ -6628,71 +5894,15 @@ function loadSessionData(){
 }
 
 function startSession(){
-  const completed = (STATE.sessionReports || []).length;
-  STATE.session = {
-    sessionNum: completed + 1,
-    totalSessions: SESSION_TARGET_TOTAL,
-    tradeNum: 0,
-    totalTrades: SESSION_TRADES,
-    wins: 0,
-    losses: 0,
-    scoreThreshold: SESSION_SCORE_THRESHOLD,
-    startedAt: Date.now(),
-    trades: [],
-    skipped: 0
-  };
-  saveSessionData();
-  renderTradesPage();
-  // Toast
-  pushInAppAlert(`🎯 Session ${STATE.session.sessionNum}/${SESSION_TARGET_TOTAL} startad — bara setups med score ≥${SESSION_SCORE_THRESHOLD} körs. Mål: ${SESSION_TARGET_WINRATE*100}% winrate på ${SESSION_TRADES} trades.`);
+  // Borttaget (granskning 2, M3): webbläsarsimulering med slumpade värden. Inga påhittade data visas.
+  return;
 }
 
 // Auto-fyll session: skapa watches för alla återstående trades automatiskt
 // Auto-confirm = trades exekveras direkt utan bekräftelse (men med säkerhetsregler)
 function autoFillSession(){
-  if(!STATE.session) { alert("Ingen aktiv session"); return; }
-  const remaining = STATE.session.totalTrades - STATE.session.tradeNum;
-  if(remaining <= 0){ alert("Sessionen är redan full"); return; }
-
-  // Säkerhetsnät innan auto-fyll
-  const stake = calcAutoPositionSize(); // 2% av equity
-  const safety = checkSafetyGates(stake);
-  if(!safety.ok){
-    alert(`🛡 Säkerhetsregel triggrad:\n\n${safety.reason}`);
-    return;
-  }
-
-  // IG: bara riktiga EPICs ur IG-katalogen/bevakningslistan (aldrig påhittade symboler)
-  const cryptoSyms = (SYMBOLS.crypto && SYMBOLS.crypto.length ? SYMBOLS.crypto : SYMBOLS.watch).filter(IG.isEpic).slice(0, 8);
-  const forexSyms = (SYMBOLS.forex && SYMBOLS.forex.length ? SYMBOLS.forex : SYMBOLS.watch).filter(IG.isEpic).slice(0, 8);
-  const tf = STATE.betTf || SCALP_DEFAULT_SEC;
-
-  // Confirm med Mike (förklara säkerhetsreglerna)
-  const eq = calcTotalEquity();
-  const lossCap = (eq * SAFETY_DAILY_LOSS_CAP_PCT).toFixed(0);
-  const confirmMsg = `⚡ AUTO-FYLL Session ${STATE.session.sessionNum}\n\n${remaining} watches startar:\n• Stake: $${stake} (2% av equity)\n• Tid: ${formatTfHuman(tf)} per scalp\n• Mix: 70% crypto + 30% forex\n• A+ tröskel: score ≥${STATE.session.scoreThreshold}\n\n🛡 SÄKERHETSREGLER (auto-stopp):\n• Daglig loss-cap: -$${lossCap} (5% av equity)\n• Max ${SAFETY_MAX_OPEN_POSITIONS} samtidiga positioner\n• Max ${SAFETY_MAX_DAILY_TRADES} trades/dag\n• A+ setups exekveras AUTOMATISKT (ingen bekräftelse behövs)\n\nFortsätta?`;
-  if(!confirm(confirmMsg)) return;
-
-  // Aktivera auto-confirm för session
-  STATE.session.autoConfirm = true;
-  saveSessionData();
-
-  // Sätt upp watches med autoFill-flagga
-  let placed = 0;
-  for(let i = 0; i < remaining; i++){
-    const useForex = (i % 3 === 2); // var 3:e = forex
-    const pool = useForex ? forexSyms : cryptoSyms;
-    const sym = pool[i % pool.length];
-    const side = Math.random() > 0.4 ? "BUY" : "SELL"; // 60% long bias
-    const w = createWatch(sym, side, stake, tf);
-    if(w){
-      w.fromAutoFill = true; // Flagga: auto-confirm gäller för denna watch
-      placed++;
-    }
-  }
-  saveWatchState();
-  pushInAppAlert(`⚡ Auto-fyll: ${placed} watches startade · stake $${stake} · A+ exekveras direkt · säkerhetsregler aktiva`, 7000);
-  renderTradesPage();
+  // Borttaget (granskning 2, M3): webbläsarsimulering med slumpade värden. Inga påhittade data visas.
+  return;
 }
 
 function abortSession(){
@@ -6774,22 +5984,23 @@ function pushInAppAlert(msg, durationMs, opts){
   }
 }
 
+// Granskning 2 (mindre 12): webbläsarens kopia hålls separat per miljö (IG Demo / IG Live).
+function tradeKey(k){ let m = "demo"; try { if(currentUiMode === "live") m = "live"; } catch(_){} return k + ":" + m; }
 function saveTradeData(){
   // Trigger cross-device sync (debounced)
   if(typeof syncDebounced === "function") syncDebounced();
   try {
-    localStorage.setItem("trading_positions", JSON.stringify(STATE.tradePositions || []));
+    localStorage.setItem(tradeKey("trading_positions"), JSON.stringify(STATE.tradePositions || []));
     // Cap history och decisions på 1000 för att undvika oändlig tillväxt
-    localStorage.setItem("trading_history", JSON.stringify((STATE.tradeHistory || []).slice(0, 1000)));
-    localStorage.setItem("trading_decisions", JSON.stringify((STATE.tradeDecisions || []).slice(0, 500)));
+    localStorage.setItem(tradeKey("trading_history"), JSON.stringify((STATE.tradeHistory || []).slice(0, 1000)));
+    localStorage.setItem(tradeKey("trading_decisions"), JSON.stringify((STATE.tradeDecisions || []).slice(0, 500)));
   } catch(_){}
 }
 
 function loadTradeData(){
-  // PAPER-DATA RENSAS: alla siffror speglas nu från Binance via /api/binance/*
-  // Gammalt paper-state i localStorage rensas vid first-load med ny version-tag
+  // Gammalt delat state (före uppdelning per miljö) rensas vid first-load med ny version-tag
   const PAPER_DATA_VERSION_KEY = "trading_data_version";
-  const CURRENT_DATA_VERSION = "binance-only-v1";
+  const CURRENT_DATA_VERSION = "ig-per-env-v2";
   if(localStorage.getItem(PAPER_DATA_VERSION_KEY) !== CURRENT_DATA_VERSION){
     localStorage.removeItem("trading_positions");
     localStorage.removeItem("trading_history");
@@ -6797,9 +6008,9 @@ function loadTradeData(){
     localStorage.setItem(PAPER_DATA_VERSION_KEY, CURRENT_DATA_VERSION);
   }
   try {
-    const pos = localStorage.getItem("trading_positions");
-    const hist = localStorage.getItem("trading_history");
-    const dec = localStorage.getItem("trading_decisions");
+    const pos = localStorage.getItem(tradeKey("trading_positions"));
+    const hist = localStorage.getItem(tradeKey("trading_history"));
+    const dec = localStorage.getItem(tradeKey("trading_decisions"));
     if(pos) STATE.tradePositions = JSON.parse(pos);
     if(hist) STATE.tradeHistory = JSON.parse(hist);
     if(dec) STATE.tradeDecisions = JSON.parse(dec);
@@ -6901,7 +6112,6 @@ const SCALP_PAYOUT_MIN = 1.60;   // 60% marginal = $500 → $800
 const SCALP_PAYOUT_MAX = 1.90;   // 90% marginal = $500 → $950
 const SCALP_DEFAULT_SEC = 60;    // 1 min default — snabb testning + scalping
 const DEMO_AGENT_SKILL = 0.65;   // 65% win-rate i demo (simulerar agenter med edge)
-function randomPayout(){ return SCALP_PAYOUT_MIN + Math.random() * (SCALP_PAYOUT_MAX - SCALP_PAYOUT_MIN); }
 
 // Risk per trade — 2% av total equity (paper + öppna positioner + unrealized PnL)
 const RISK_PCT_PER_TRADE = 0.02; // 2% — Mikes regel för LIVE-mode start
@@ -7090,7 +6300,6 @@ function forceSyncFromServer(){
 }
 
 // Global random-pick helper (används i flera scopes)
-function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 
 // Human-readable timeframe (60 → "1m", 47 → "47s", 270 → "4m 30s")
 function formatTfHuman(sec){
@@ -7109,121 +6318,16 @@ function formatTfHuman(sec){
 
 // Simulera exekvering av en scalp-trade — drar från test-konto + auto-resolve efter timeframe
 function simulateExecuteTrade(sym, side, amount, timeframeSec){
-  const acc = loadPaperAccount();
-  if(amount > acc.cash){
-    log_warn(`Inte nog cash i paper-account: $${acc.cash.toFixed(2)} < $${amount}`);
-    return null;
-  }
-  // Confluence-score för denna setup (Tomas + Karin + Petra inputs simulerade)
-  const score = generateConfluenceScore(side, sym);
-  const setupType = generateSetupType(score);
-  const setupMeta = SETUP_TYPES[setupType] || {label:setupType, icon:"•"};
-  // Session Mode — strikt filter: hoppa över setups under tröskel
-  if(STATE.session && score < STATE.session.scoreThreshold){
-    STATE.session.skipped = (STATE.session.skipped || 0) + 1;
-    saveSessionData();
-    pushInAppAlert(`⏸ Setup score ${score}/10 (${setupMeta.label}) — under tröskel (${STATE.session.scoreThreshold}). Väntar på A+ setup.`, 4000);
-    if(!STATE.tradeDecisions) STATE.tradeDecisions = [];
-    STATE.tradeDecisions.unshift({
-      timestamp: Date.now(),
-      action: "SKIP", sym, amount, score, setupType,
-      reasoning: `Setup ${setupMeta.label} score ${score}/10 < session-tröskel ${STATE.session.scoreThreshold}. Väntar på A+ setup.`,
-      source: "session-filter"
-    });
-    saveTradeData();
-    syncDebounced();
-    renderTradesPage();
-    return null;
-  }
-  const tf = timeframeSec || SCALP_DEFAULT_SEC;
-  const entry = STATE.livePrices[sym] ?? BASE_PRICES[sym] ?? 100;
-  const qty = amount / entry;
-  const payoutMult = randomPayout();
-  const trade = {
-    id: "trade-"+Date.now()+"-"+Math.random().toString(36).slice(2,5),
-    sym, side, amount, entry, qty,
-    openedAt: Date.now(),
-    expiresAt: Date.now() + tf * 1000,
-    timeframeSec: tf,
-    payoutMultiplier: payoutMult,
-    payoutPct: Math.round((payoutMult - 1) * 100),
-    score,                                  // Confluence-score 4-10 (träningsdata)
-    setupType,                              // Setup-typ-tag (träningsdata)
-    setupLabel: setupMeta.label,
-    inSession: !!STATE.session,
-    sessionNum: STATE.session?.sessionNum,
-    status: "open",
-    type: "scalp",
-    source: "Hanna (chat)"
-  };
-  if(!STATE.tradePositions) STATE.tradePositions = [];
-  if(!STATE.tradeDecisions) STATE.tradeDecisions = [];
-  STATE.tradePositions.push(trade);
-  STATE.tradeDecisions.unshift({
-    timestamp: Date.now(),
-    action: side, sym, amount,
-    timeframeSec: tf,
-    reasoning: "Vald av Hanna efter team-analys via chat",
-    source: "chat"
-  });
-  // Drag från cash
-  acc.cash -= amount;
-  acc.totalTrades++;
-  savePaperAccount();
-  saveTradeData();
-  renderTradesPage();
-  renderPaperBadge();
-  return trade;
+  // Borttaget (granskning 2, M3): webbläsarsimulering med slumpade värden. Inga påhittade data visas.
+  return null;
 }
 
 // Resolve scalp-trade: WIN → +90% av amount, LOSS → -100% av amount
 // Demo-läge: använd DEMO_AGENT_SKILL (65%) istället för pure random walk,
 // simulerar agenter med edge. Pris-rörelsen anpassas till outcome för konsistens.
 function resolveScalpTrade(p){
-  // Score-baserad winrate: högre confluence = bättre odds (ärlig modellering)
-  const winrate = p.score ? scoreToWinrate(p.score) : DEMO_AGENT_SKILL;
-  const won = Math.random() < winrate;
-  // Sätt exit-pris så det matchar outcome (visuellt korrekt på chart)
-  const moveAmount = 0.005 + Math.random() * 0.015; // 0.5-2% rörelse
-  let cur;
-  if(won){
-    cur = p.side === "BUY" ? p.entry * (1 + moveAmount) : p.entry * (1 - moveAmount);
-  } else {
-    cur = p.side === "BUY" ? p.entry * (1 - moveAmount) : p.entry * (1 + moveAmount);
-  }
-  // Uppdatera live-pris så chart matchar — men ALDRIG när priset är riktigt
-  // (då skulle en påhittad utgång synas som ett riktigt pris i diagrammet).
-  if(!useRealPrices(p.sym)) STATE.livePrices[p.sym] = cur;
-  const pnl = won ? p.amount * (p.payoutMultiplier - 1) : -p.amount;
-  const acc = loadPaperAccount();
-  // Stake redan dragen vid open. Returnera stake + pnl
-  acc.cash += p.amount + pnl;
-  acc.realizedPnl += pnl;
-  if(won) acc.winningTrades++; else acc.losingTrades++;
-  if(!STATE.tradeHistory) STATE.tradeHistory = [];
-  STATE.tradeHistory.unshift({...p, exit:cur, pnl, won, status:"closed", closedAt:Date.now()});
-  const scoreTag = p.score ? ` · score ${p.score}/10` : "";
-  const setupTag = p.setupLabel ? ` · ${p.setupLabel}` : "";
-  STATE.tradeDecisions.unshift({
-    timestamp: Date.now(),
-    action: won ? "WIN" : "LOSS",
-    sym: p.sym, amount: p.amount, score: p.score, setupType: p.setupType,
-    reasoning: `Scalp ${p.side === "BUY" ? "📈 LONG" : "📉 SHORT"} ${formatPrice(p.entry,p.sym)}→${formatPrice(cur,p.sym)} · PnL ${pnl>=0?'+':''}$${pnl.toFixed(2)}${scoreTag}${setupTag}`,
-    source: "auto"
-  });
-  // Spara balanceAfter på trade för audit-trail
-  STATE.tradeHistory[0].balanceAfter = acc.cash;
-  STATE.tradeHistory[0].equityAfter = acc.cash + (STATE.tradePositions||[]).reduce((s,pp)=>s+pp.amount,0);
-  savePaperAccount();
-  saveTradeData();
-  // Session-tracking: registrera resultat om trade tillhör pågående session
-  if(p.inSession && STATE.session && STATE.session.sessionNum === p.sessionNum){
-    recordSessionTrade(p.score || 0, won, pnl, p.sym, p.side);
-  }
-  // KRITISKT: Push omedelbart till sync-server (inte vänta på debounce)
-  // Detta säkerställer att andra devices får uppdaterad balance utan delay
-  localLastChangeAt = Date.now();
-  pushSyncToServer().catch(()=>{});
+  // Borttaget (granskning 2, M3): slumpat vinst/förlust-utfall. Riktiga utfall kommer från IG.
+  return;
 }
 
 // Tick-loop kallar denna för att auto-stänga utgångna trades
@@ -7454,97 +6558,8 @@ function renderLifetimeStats(){
 
 // Render Trades-sidan (kallas vid trade-events + från tick för live PnL)
 function renderSession(){
-  const card = document.getElementById("session-card");
-  const body = document.getElementById("session-body");
-  if(!card || !body) return;
-  const s = STATE.session;
-  const reports = STATE.sessionReports || [];
-  const completed = reports.length;
-
-  if(!s){
-    // Inaktiv: visa start-knapp + tidigare sessioner
-    card.classList.remove("active","warning");
-    const reportsHtml = reports.length ? `
-      <div class="reports-list">
-        <h4>Tidigare sessioner (${reports.length})</h4>
-        ${reports.slice(0,10).map(r=>{
-          const wr = (r.winrate*100).toFixed(0);
-          const cls = r.targetMet ? "win" : (r.winrate >= 0.6 ? "" : "loss");
-          const status = r.aborted ? "AVBR" : (r.targetMet ? "✓" : "✗");
-          const d = new Date(r.endedAt).toLocaleString().slice(0,-3);
-          return `<div class="report-row">
-            <span class="badge ${cls}">${status}</span>
-            <span>Session ${r.sessionNum} · ${d}</span>
-            <span>${r.wins}/${r.totalTrades}</span>
-            <span class="${cls}" style="font-weight:700">${wr}%</span>
-            <span class="${r.totalPnl>=0?'':''}" style="color:${r.totalPnl>=0?'var(--green)':'var(--red)'};font-weight:700">${r.totalPnl>=0?'+':''}$${r.totalPnl.toFixed(0)}</span>
-          </div>`;
-        }).join("")}
-      </div>` : "";
-    const aggregated = reports.length ? (() => {
-      const totalT = reports.reduce((a,r)=>a+r.totalTrades, 0);
-      const totalW = reports.reduce((a,r)=>a+r.wins, 0);
-      const totalP = reports.reduce((a,r)=>a+r.totalPnl, 0);
-      const wr = totalT ? (totalW/totalT*100).toFixed(1) : "0";
-      return `<div class="sess-grid" style="margin-bottom:14px">
-        <div class="sess-cell"><div class="sl">Total Sessioner</div><div class="sv">${reports.length}/${SESSION_TARGET_TOTAL}</div></div>
-        <div class="sess-cell"><div class="sl">Total Trades</div><div class="sv">${totalT}</div></div>
-        <div class="sess-cell"><div class="sl">Win-rate Snitt</div><div class="sv ${parseFloat(wr)>=75?'up':'down'}">${wr}%</div></div>
-        <div class="sess-cell"><div class="sl">Total PnL</div><div class="sv ${totalP>=0?'up':'down'}">${totalP>=0?'+':''}$${totalP.toFixed(0)}</div></div>
-      </div>`;
-    })() : "";
-    body.innerHTML = `
-      <div class="sess-head">
-        <div style="font-size:22px">🎯</div>
-        <div>
-          <div class="sess-title">Träningssession ${completed >= SESSION_TARGET_TOTAL ? "— mål uppnått!" : (completed+1)+"/"+SESSION_TARGET_TOTAL+" redo att starta"}</div>
-          <div class="sess-sub">${SESSION_TRADES} trades · bara setups med score ≥${SESSION_SCORE_THRESHOLD} · mål ${SESSION_TARGET_WINRATE*100}% winrate</div>
-        </div>
-      </div>
-      ${aggregated}
-      <div class="sess-actions">
-        <button class="sess-btn" onclick="startSession()">▶ Starta Session ${completed+1}</button>
-      </div>
-      ${reportsHtml}
-    `;
-    return;
-  }
-
-  // Aktiv session
-  const tradeNum = s.tradeNum;
-  const total = s.totalTrades;
-  const winrate = tradeNum ? s.wins/tradeNum : 0;
-  const pct = (tradeNum/total) * 100;
-  const onTarget = tradeNum === 0 ? true : winrate >= SESSION_TARGET_WINRATE * 0.8; // 60%+ = ok
-  card.classList.toggle("active", onTarget);
-  card.classList.toggle("warning", !onTarget);
-  const totalPnl = (s.trades||[]).reduce((a,t)=>a+t.pnl, 0);
-
-  body.innerHTML = `
-    <div class="sess-head">
-      <div style="font-size:22px">${onTarget?'🎯':'⚠'}</div>
-      <div style="flex:1">
-        <div class="sess-title">Session ${s.sessionNum}/${s.totalSessions} pågår</div>
-        <div class="sess-sub">Tröskel: score ≥${s.scoreThreshold} · Mål: ${SESSION_TARGET_WINRATE*100}% winrate</div>
-      </div>
-      <button class="sess-btn" onclick="autoFillSession()" style="background:#22c55e;border-color:#22c55e;color:#0a0e14">⚡ Auto-fyll resten</button>
-      <button class="sess-btn danger" onclick="abortSession()">Avbryt</button>
-    </div>
-    <div class="sess-bar"><div class="sess-bar-fill" style="width:${pct}%"></div></div>
-    <div class="sess-grid">
-      <div class="sess-cell"><div class="sl">Trade</div><div class="sv">${tradeNum}/${total}</div></div>
-      <div class="sess-cell"><div class="sl">Wins / Losses</div><div class="sv"><span class="up">${s.wins}</span> / <span class="down">${s.losses}</span></div></div>
-      <div class="sess-cell"><div class="sl">Win-rate</div><div class="sv ${winrate>=SESSION_TARGET_WINRATE?'up':(winrate>=0.6?'':'down')}">${(winrate*100).toFixed(0)}%</div></div>
-      <div class="sess-cell"><div class="sl">PnL Session</div><div class="sv ${totalPnl>=0?'up':'down'}">${totalPnl>=0?'+':''}$${totalPnl.toFixed(2)}</div></div>
-      <div class="sess-cell"><div class="sl">Skippade</div><div class="sv">${s.skipped||0}</div></div>
-    </div>
-    <div class="sess-sub" style="font-size:11px;color:var(--dim);line-height:1.5">
-      💡 <b>Tre sätt att lägga trades:</b><br>
-      ⚡ <b>Auto-fyll resten</b> — startar ${total - tradeNum} watches på 1 klick<br>
-      ✍ Skriv i chatten: <code>"köp BTC $${calcAutoPositionSize()}"</code><br>
-      🎯 Snabb-trade-panel: välj symbol + tid + CALL/PUT
-    </div>
-  `;
+  // Borttaget (granskning 2, M3): "Träningssession" med slumpade poäng. Agentsessioner finns på sidan Sessioner.
+  for(const id of ["session-card","confirm-card","watch-card"]){ const el=document.getElementById(id); if(el) el.style.display="none"; }
 }
 
 function renderWatchesAndConfirms(){
@@ -8328,6 +7343,7 @@ function setActiveMode(uiMode){
   STATE.tradePositions = [];
   STATE.tradeDecisions = [];
   STATE.tradeHistory = [];
+  try { loadTradeData(); } catch(_){} // läs den nya miljöns egna kopia (aldrig den andra miljöns rader)
   // Force-bypass alla throttles så ny mode laddas direkt
   if(typeof _lastBinTrades !== "undefined") _lastBinTrades.ts = 0;
   if(typeof _lastPtFetch !== "undefined") { _lastPtFetch.testnet = 0; _lastPtFetch.live = 0; }
@@ -8664,12 +7680,10 @@ function wire(){
       if(CFG.mode==="live"){
         await apiPost("/api/run-agent",{});
       } else {
-        await sleep(1200);
-        STATE.agents = genSimAgents();
-        STATE.agentsSimulated = true;
+        // Ingen simulerad turn (granskning 2): utan server finns inga agentdata.
+        STATE.agents = {}; STATE.agentsSimulated = false; STATE.agentsEmpty = true;
         renderAgents();
-        document.getElementById("last-turn").textContent = "Demo-turn "+new Date().toLocaleTimeString();
-        updateTiming({specialists:5.4, exec:1.1, head:2.7, total:9.2});
+        document.getElementById("last-turn").textContent = "Servern är inte ansluten – ingen analys körd";
       }
     }catch(e){ alert("Fel: "+e.message); }
     finally{ btn.disabled=false; btn.textContent="▶ Kör analys"; }
@@ -9048,8 +8062,13 @@ async function refreshBinanceSync(){
     const lbEq = document.getElementById("lb-equity");
     const pbEq = document.getElementById("pb-equity");
     const pbPnl = document.getElementById("pb-pnl");
-    if(lbEq) lbEq.textContent = acct("live") && acct("live").balance != null ? IG.money(acct("live").balance, acct("live").currency) : (envs.live && envs.live.status === "connected" ? "–" : "ej ansluten");
-    if(pbEq) pbEq.textContent = acct("demo") && acct("demo").balance != null ? IG.money(acct("demo").balance, acct("demo").currency) : (envs.demo && envs.demo.status === "connected" ? "–" : "ej ansluten");
+    // M4 (granskning 2): rubriken visar belopp bara för AKTIV miljö. Den andra visar status (låst/ansluten).
+    const pill = (e) => { const x = envs[e] || {}, a = acct(e);
+      if(e === "live" && (x.locked || st.liveLocked)) return "låst";
+      if(a && !a.hidden && a.balance != null && st.activeEnv === e) return IG.money(a.balance, a.currency);
+      return x.status === "connected" ? "ansluten" : "ej ansluten"; };
+    if(lbEq) lbEq.textContent = pill("live");
+    if(pbEq) pbEq.textContent = pill("demo");
     if(pbPnl){ pbPnl.textContent = "IG DEMO"; pbPnl.className = ""; }
     if(modeTag){
       const d = envs.demo && envs.demo.status === "connected", l = envs.live && envs.live.status === "connected";
@@ -9073,7 +8092,7 @@ async function refreshBinanceSync(){
     const modeLbl = document.getElementById("pc-mode-label");
     if(modeLbl) modeLbl.textContent = isLive ? "💚 SALDO · IG LIVE" : "🧪 SALDO · IG DEMO";
     const a = acct(isLive ? "live" : "demo");
-    if(a){
+    if(a && !a.hidden){
       setText("pc-equity", IG.money(a.balance, a.currency));
       setText("pc-cash", IG.money(a.available, a.currency));
       setText("pc-unrealized", IG.money(res.totals ? res.totals.unrealized : null, a.currency, true));
@@ -9120,27 +8139,12 @@ function startBinanceSync(){
   if(binanceSyncInterval) return;
   refreshBinanceSync();
   binanceSyncInterval = setInterval(refreshBinanceSync, 15000); // IG-konton + positioner (servern respekterar IG:s läskvot)
-  // Bybit överallt: Binance-strömmarna i webbläsaren startas inte längre
-  // (priserna kommer från Bybits WebSocket och /api/bybit/prices).
+  // IG: priserna kommer via serverns ström (/api/market/stream).
 }
 
-// ─── BINANCE MARKET WEBSOCKET — realtid-priser för aktiva positioner ───
-// Mike's krav: 'event-driven, inte manuell'. Binance public WS ger millisekund-precision.
-let binanceMarketWS = null;
-let binanceMarketSyms = new Set();
-let binanceMarketReconnect = null;
+// (Binance-websocketen är borttagen, granskning 2: IG-priser kommer via serverns ström.)
 
-function buildMarketStreamUrl(symbols){
-  // Combined stream: en connection för alla symbols
-  const streams = symbols.map(s => s.toLowerCase() + "@ticker").join("/");
-  return `wss://stream.binance.com:9443/stream?streams=${streams}`;
-}
 
-function startBinanceMarketStream(){
-  // Byggs upp dynamiskt baserat på aktiva positioner
-  setTimeout(updateMarketStreamSubs, 5000); // efter första balans-poll
-  setInterval(updateMarketStreamSubs, 30000); // re-sync var 30s om positions ändras
-}
 
 // IG: ingen direkt marknadsström från webbläsaren. Positionernas instrument följs via servern (IG.want).
 function updateMarketStreamSubs(){
@@ -9312,11 +8316,10 @@ function initApp(){
   fillBetSymbols();
   initChart();
   loadCandles(STATE.symbol, STATE.tf);
-  STATE.agents = genSimAgents();
-  STATE.agentsSimulated = true;
+  STATE.agents = {}; STATE.agentsSimulated = false; STATE.agentsEmpty = true;
   renderAgents();
   updateTiming({specialists:0, exec:0, head:0, total:0});
-  document.getElementById("last-turn").textContent = "Demo-data laddad";
+  document.getElementById("last-turn").textContent = "Ingen analys än";
   document.querySelector("#bet-tf button[data-tf='300']")?.classList.add("active");
   document.getElementById("bet-win").textContent = "$"+(STATE.betAmt*0.85).toFixed(2);
   wire();
@@ -9514,7 +8517,7 @@ document.addEventListener("DOMContentLoaded", boot);
   };
   function renderLibrary(){
     const list = SL.strategies;
-    $("sl-lib-meta").textContent = `${list.filter(s=>s.enabled).length} av ${list.length} påslagna · par i ${SL.meta?.quote||"USDC"} på Bybit EU`;
+    $("sl-lib-meta").textContent = `${list.filter(s=>s.enabled).length} av ${list.length} påslagna · IG-instrument (EPIC) i aktiv miljö`;
     if(!list.length){ $("sl-list").innerHTML = `<div class="sl-sub">Biblioteket är tomt. Tryck "+ Ny strategi".</div>`; return; }
     $("sl-list").innerHTML = list.map(s=>{
       const state = s.coins.map(c=>{
@@ -9577,7 +8580,7 @@ document.addEventListener("DOMContentLoaded", boot);
       j.results.map(r=> r.error ? `<tr><td>${esc(r.coin)}</td><td colspan="6" class="sl-fail">${esc(r.error)}</td></tr>` :
         `<tr><td><b>${esc(r.coin)}</b></td><td>${r.candles} × ${esc(j.interval)}</td><td>${r.trades}</td><td>${r.winRatePct.toFixed(0)}%</td>
          <td class="${r.totalReturnPct>=0?"sl-pass":"sl-fail"}">${r.totalReturnPct.toFixed(2)}%</td><td class="sl-sub">${r.buyAndHoldPct.toFixed(2)}%</td><td>${r.maxDrawdownPct.toFixed(2)}%</td></tr>`).join("") +
-      `</table><div class="sl-note">Bybits riktiga historiska ljus, ${j.results[0]?.feePctPerSide ?? 0.1}% avgift per köp och sälj. Historik garanterar inget framåt, men visar om reglerna alls har haft en fördel.</div>`;
+      `</table><div class="sl-note">Stängda IG-ljus (mid, aktiv miljö), ${j.results[0]?.feePctPerSide ?? 0.1}% avgift per köp och sälj som approximation; IG:s spread och finansiering ingår inte. Historik garanterar inget framåt, men visar om reglerna alls har haft en fördel.</div>`;
   }
 
   // ── Träning ─────────────────────────────────────────────────
@@ -9642,7 +8645,7 @@ document.addEventListener("DOMContentLoaded", boot);
       delete SL.outs[id];
       await loadLibrary(); loadScoreboard(); return;
     }
-    btn.disabled = true; out.innerHTML = `<span class="sl-sub">${act==="bt"?"Hämtar upp till 1000 ljus per coin från Bybit och kör…":act==="train"?"Hämtar 3000 ljus per coin från Bybit och provar 300 varianter… (några sekunder)":"Räknar på senaste stängda ljuset…"}</span>`;
+    btn.disabled = true; out.innerHTML = `<span class="sl-sub">${act==="bt"?"Hämtar stängda IG-ljus per instrument och kör…":act==="train"?"Hämtar stängda IG-ljus per instrument och provar 300 varianter… (några sekunder)":"Räknar på senaste stängda ljuset…"}</span>`;
     try{
       if(act === "test") renderTest(out, await api("/api/strategies/"+id+"/test", {}));
       if(act === "bt") renderBacktest(out, await api("/api/strategies/backtest", { id }));
@@ -9745,14 +8748,14 @@ document.addEventListener("DOMContentLoaded", boot);
   });
   $("sl-ed-save")?.addEventListener("click", async ()=>{
     const body = readEditor();
-    if(body.venue === "live" && !confirm("Signalerna köas mot Bybit LIVE (riktiga pengar). Varje order väntar fortfarande på att du trycker Godkänn. Fortsätt?")) return;
+    if(body.venue === "live" && !confirm("Signalerna köas mot IG Live (riktiga pengar). Varje order väntar fortfarande på att du trycker Godkänn. Fortsätt?")) return;
     const j = await api(SL.editing ? "/api/strategies/"+SL.editing : "/api/strategies", body);
     if(!j.ok){ $("sl-ed-msg").textContent = j.error; return; }
     $("sl-editor").style.display = "none";
     await loadLibrary(); loadStatus();
   });
   $("sl-ed-bt")?.addEventListener("click", async ()=>{
-    const out = $("sl-ed-out"); out.innerHTML = `<span class="sl-sub">Hämtar ljus från Bybit och kör…</span>`;
+    const out = $("sl-ed-out"); out.innerHTML = `<span class="sl-sub">Hämtar stängda IG-ljus och kör…</span>`;
     renderBacktest(out, await api("/api/strategies/backtest", { strategy: readEditor() }));
   });
 
@@ -10249,6 +9252,7 @@ document.addEventListener("DOMContentLoaded", boot);
       if(q.moneyAtTp != null) lines.push(`<div style="color:#3fb950"><b>Vinst vid TP</b> ${IG.px(q.takeProfit)}: +${IG.money(q.moneyAtTp, c)}</div>`);
       lines.push(`<div><b>Kostnad</b> spread ${M.spreadCost != null ? IG.money(M.spreadCost, mc) : "–"} <span style="color:var(--dim)" title="${esc(M.costsNote || "")}">ⓘ</span></div>`);
       lines.push(`<div style="color:var(--dim)">${esc(M.pctMeaning || "")} Gäller KÖP (lång); SÄLJ (kort) räknas från bid. ${esc(q.basis || "")}</div>`);
+      if(q.fxNote) lines.push(`<div style="color:${/senaste växelkurs/.test(q.fxNote) ? "#f0b90b" : "var(--dim)"}">💱 ${esc(q.fxNote)}</div>`);
     }
     if(!q.executionEnabled) lines.push(`<div style="color:#f0b90b">Orderläget är avstängt för ${esc(IG.envLabel())}: GODKÄNN skickar inget till IG.</div>`);
     el.innerHTML = lines.join("");
