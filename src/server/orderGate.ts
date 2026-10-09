@@ -100,19 +100,32 @@ export interface GateInput {
   /** IG/CFD: ordern öppnar en ny position (även SÄLJ = kort). Kill switch stoppar då även sälj. */
   opening?: boolean;
   source: string;
+  /** IG-EPIC (för sessionens försökslista) */
+  symbol?: string;
 }
 
-export type GateResult = { ok: true } | { ok: false; error: string };
+/** Krav E5: försök som räknats mot agentsessionens tak (följer den väntande ordern). */
+export interface SessionAttemptTag { env: "demo" | "live"; sessionId: string; no: number }
+export type SessionAttemptOutcome = "föreslagen" | "accepterad" | "avvisad" | "okänd" | "stoppad" | "nekad" | "utgick";
+export type GateResult = { ok: true; sessionAttempt?: SessionAttemptTag } | { ok: false; error: string };
 
 // Agentsessioner (igSessions): räknar/spärrar agenternas nya orderförsök, och schemalagda
 // omgångar tvingar alltid fram Godkänn. Sätts av run.ts; null = ingen session-logik.
-let sessionHook: ((input: GateInput) => string | null) | null = null;
+type SessionHookResult = string | null | { attempt: SessionAttemptTag };
+let sessionHook: ((input: GateInput) => SessionHookResult) | null = null;
+let attemptOutcome: ((tag: SessionAttemptTag, outcome: SessionAttemptOutcome, note?: string | null) => boolean) | null = null;
 let approvalOverride: (() => boolean) | null = null;
 // Tillfälliga spärrar (t.ex. medan agentteamet granskar en inklistrad signal: granskning ≠ order).
 const blocks = new Set<(input: GateInput) => string | null>();
 export function addOrderGateBlock(fn: (input: GateInput) => string | null): () => void { blocks.add(fn); return () => { blocks.delete(fn); }; }
-export function setOrderGateSessionHook(hook: ((input: GateInput) => string | null) | null, forceApproval: (() => boolean) | null = null): void {
-  sessionHook = hook; approvalOverride = forceApproval;
+export function setOrderGateSessionHook(hook: ((input: GateInput) => SessionHookResult) | null, forceApproval: (() => boolean) | null = null,
+  outcome: ((tag: SessionAttemptTag, outcome: SessionAttemptOutcome, note?: string | null) => boolean) | null = null): void {
+  sessionHook = hook; approvalOverride = forceApproval; attemptOutcome = outcome;
+}
+/** Skriver utfallet för ett sessionsförsök (accepterad/avvisad/okänd/stoppad/nekad/utgick). Räkningen står kvar. */
+export function reportSessionAttempt(tag: SessionAttemptTag | null | undefined, outcome: SessionAttemptOutcome, note: string | null = null): void {
+  if (!tag || !attemptOutcome) return;
+  try { attemptOutcome(tag, outcome, note); } catch { /* utfallet är bara visning; räkningen är redan gjord */ }
 }
 
 /** Öppnar ordern en ny position (eller ökar en)? IG/CFD anger det uttryckligen med `opening`:
@@ -141,13 +154,17 @@ export async function checkOrderGate(input: GateInput): Promise<GateResult> {
   if (opening && !input.source.startsWith("godkänd:")) {
     for (const b of blocks) { const why = b(input); if (why) return deny(why); }
   }
+  let sessionAttempt: SessionAttemptTag | undefined;
   if (sessionHook) {
     const why = sessionHook(input);
-    if (why) return deny(why);
+    if (typeof why === "string") return deny(why);
+    if (why && typeof why === "object") sessionAttempt = why.attempt;
   }
+  // Ett försök som redan räknats och sedan stoppas av en senare spärr är fortfarande ett försök.
+  const denyCounted = (error: string): GateResult => { reportSessionAttempt(sessionAttempt, "stoppad", error); return deny(error); };
 
   if (input.live && !liveAllowedByServer()) {
-    return deny(
+    return denyCounted(
       "LIVE (riktiga pengar) är låst. Det slås bara på i .env (MODE=live och LIVE_TRADING_CONFIRMED=true) och omstart, aldrig från webbläsaren.",
     );
   }
@@ -155,20 +172,20 @@ export async function checkOrderGate(input: GateInput): Promise<GateResult> {
   if (input.side === "BUY" && !input.unitsOrder) {
     const amt = Number(input.quoteUsd);
     if (!Number.isFinite(amt) || amt <= 0) {
-      return deny("Beloppet saknas eller är ogiltigt.");
+      return denyCounted("Beloppet saknas eller är ogiltigt.");
     }
     const cap = input.live ? MAX_LIVE_STAKE_USD : testStakeCapUsd();
     if (amt > cap) {
-      return deny(`Max $${cap} per order i ${input.live ? "LIVE" : "TEST"}. Du försökte $${amt}.`);
+      return denyCounted(`Max $${cap} per order i ${input.live ? "LIVE" : "TEST"}. Du försökte $${amt}.`);
     }
     if (input.live && getLiveSpentTodayUsd() + amt > MAX_LIVE_DAILY_SPEND_USD) {
-      return deny(
+      return denyCounted(
         `Dagens LIVE-gräns är $${MAX_LIVE_DAILY_SPEND_USD}. Redan köpt för $${getLiveSpentTodayUsd().toFixed(2)} i dag.`,
       );
     }
   }
 
-  return { ok: true };
+  return sessionAttempt ? { ok: true, sessionAttempt } : { ok: true };
 }
 
 /** Ska ordern vänta på Mikes godkännande? */
@@ -195,6 +212,8 @@ export interface PendingOrder {
   limitPrice?: number;
   takeProfit?: number;
   stopLoss?: number;
+  /** Krav E5: försöket som räknats mot agentsessionens tak (utfallet skrivs dit) */
+  sessionAttempt?: SessionAttemptTag;
   /** Pris när ordern föreslogs (för att visa möjlig vinst/förlust) */
   refPrice?: number;
   /** Sälj hela innehavet (antalet räknas fram när ordern godkänns) */
@@ -279,6 +298,9 @@ export async function updatePendingOrder(id: string, patch: Partial<PendingOrder
   if (!p) return undefined;
   Object.assign(p, patch, { decidedAt: new Date().toISOString() });
   await save();
+  // Krav E5: nekad eller utgången räknas ändå som förbrukat försök; utfallet visas i sessionen.
+  if (patch.status === "rejected") reportSessionAttempt(p.sessionAttempt, "nekad", "Nekad i Väntande ordrar");
+  if (patch.status === "expired") reportSessionAttempt(p.sessionAttempt, "utgick", "Förslaget gick ut utan Godkänn");
   return p;
 }
 
@@ -293,7 +315,7 @@ export async function expireStalePendingOrders(): Promise<number> {
   const now = Date.now();
   let n = 0;
   for (const p of list) {
-    if (isExpired(p, now)) { p.status = "expired"; p.decidedAt = new Date(now).toISOString(); n++; }
+    if (isExpired(p, now)) { p.status = "expired"; p.decidedAt = new Date(now).toISOString(); n++; reportSessionAttempt(p.sessionAttempt, "utgick", "Förslaget gick ut utan Godkänn"); }
   }
   if (n) await save();
   return n;

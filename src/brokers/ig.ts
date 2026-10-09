@@ -336,8 +336,8 @@ export class IgBroker implements BrokerAdapter {
       executedQty: done.status === "accepted" ? size! : 0, cummulativeQuoteQty: done.status === "accepted" ? draft.margin ?? 0 : 0,
       avgFillPrice: draft.entry ?? 0, timestamp: this.d.now(), dealId: done.dealId, dealReference: done.dealReference, error: done.error,
     };
-    if (done.status === "unknown") throw new Error(`IG-orderutfallet är okänt (${done.error ?? "ingen bekräftelse"}). Ordern skickas INTE om. Kontrollera i IG.`);
-    if (done.status === "rejected") throw new Error(done.error || "IG avvisade ordern");
+    if (done.status === "unknown") throw Object.assign(new Error(`IG-orderutfallet är okänt (${done.error ?? "ingen bekräftelse"}). Ordern skickas INTE om. Kontrollera i IG.`), { igOutcome: "unknown" as const });
+    if (done.status === "rejected") throw Object.assign(new Error(done.error || "IG avvisade ordern"), { igOutcome: "rejected" as const });
     return result;
   }
 

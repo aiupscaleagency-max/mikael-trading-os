@@ -148,7 +148,7 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
   assert.equal(isOpeningOrder({ side: "BUY", opening: false, unitsOrder: true }), false);
   (s as any).killSwitchActive = false; await store.saveState(s);
 
-  const seen: Array<string | null> = [];
+  const seen: Array<unknown> = [];
   let sess: ReturnType<typeof createIgSessions>;
   sess = createIgSessions({ binding: (e) => `${e}-g1`, activeEnv: () => "demo", guard: async () => null, now: () => NOW0, directory: path.join(tmp, "m1-sess"),
     runBatch: async () => {
@@ -163,7 +163,7 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
   sess.start("demo", { epics: [EPIC], durationMinutes: 15 });
   await sess.runNext("demo");
   assert.deepEqual(seen.slice(0, 3), [null, null, null], "stängningar och Mikes egna ordrar räknas inte");
-  assert.equal(seen.slice(3).filter((x) => x === null).length, 5, "5 nya agentordrar släpps");
+  assert.equal(seen.slice(3).filter((x) => x !== null && typeof x === "object").length, 5, "5 nya agentordrar släpps (och räknas)");
   assert.match(String(seen.at(-1)), /5 orderförsök/, "den sjätte nya agentordern stoppas");
   sess.stop("demo");
   ok("M1 kill switch släpper alla stängningar (båda riktningar); sessionen räknar bara agenternas nya positioner");
@@ -303,6 +303,62 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
   ok("H1 order (granskning, skick/stopp), pengar (SEK) och resultat körs i båda miljöerna; Live skickar inget med orderläget av");
 }
 
+// ══ Krav E5: varje orderförsök som öppnar en ny position räknas mot taket 5, oavsett utfall ══
+{
+  const { createIgPendingOrder, executeApprovedOrder } = await import("../src/server/api.js");
+  const { setOrderGateSessionHook, updatePendingOrder } = await import("../src/server/orderGate.js");
+  const EPIC2 = "CS.D.GBPUSD.MINI.IP";
+  const status = () => ({ environments: { demo: { environment: "demo", status: "connected", credentialsComplete: true, connectionGeneration: "demo-e5", account: { accountId: "D", accountType: "CFD", currency: "SEK", balance: 10_000, available: 8_000, profitLoss: 0 } }, live: { environment: "live", status: "disconnected", account: null } } }) as never;
+  const confirms = ["accepted", "rejected", "unknown"]; let previews = 0;
+  const b = new IgBroker("demo", { status, connect: (async () => ({})) as never, accounts: (async () => ({ status: "ready" })) as never, market: fixtureMarket(() => NOW0) as never,
+    positions: (async () => ({ status: "ready", positions: [{ dealId: "L1", epic: EPIC2, direction: "BUY", size: 1, level: 1.1, currency: "SEK", bid: 1.1, offer: 1.1 }] })) as never,
+    preview: (async () => { previews++; if (previews === 4) throw new Error("IG begränsade antal läsningar; försök igen om en minut"); return { id: `dr-${previews}` }; }) as never,
+    confirm: (async (_e: string, id: string) => { const st = confirms.shift() ?? "accepted"; return { id, status: st, dealId: st === "accepted" ? `DEAL-${id}` : undefined, error: st === "rejected" ? "IG avvisade ordern (MARKET_CLOSED)" : st === "unknown" ? "ingen bekräftelse" : undefined }; }) as never,
+    enabled: () => true, now: () => NOW0, observe: () => {} } as never);
+  const results: any[] = [];
+  const sess = createIgSessions({ binding: (e) => `${e}-e5`, activeEnv: () => "demo", guard: async () => null, now: () => NOW0, directory: path.join(tmp, "e5-sess"),
+    runBatch: async () => {
+      const prop = (extra: Record<string, unknown> = {}) => createIgPendingOrder({ symbol: EPIC, side: "BUY", stakePct: 1, source: "agent", stopLoss: 1.09, takeProfit: 1.12, ...extra }, b);
+      results.push(await prop()); // 1 → accepterad
+      results.push(await prop()); // 2 → avvisad av IG
+      results.push(await prop()); // 3 → okänt utfall
+      results.push(await prop({ quantity: 1_000_000 })); // 4 → stoppad redan av insats/budget
+      results.push(await prop()); // 5 → stoppad efter Godkänn (IG-läsgräns)
+      results.push(await createIgPendingOrder({ symbol: EPIC2, side: "SELL", stakePct: 1, source: "agent" }, b)); // stängning: räknas inte
+      results.push(await prop()); // 6 → taket nått
+      return { picks: [] };
+    } });
+  setOrderGateSessionHook((i) => sess.orderGateHook(i), null, (tag, o, note) => sess.recordAttemptOutcome(tag as never, o, note ?? null));
+  sess.start("demo", { epics: [EPIC], durationMinutes: 15 });
+  await sess.runNext("demo");
+  assert.equal(results[3].ok, false, "försök 4 stoppas av insats/budget");
+  assert.equal(results[5].ok, true, results[5].error); assert.equal(results[5].pendingOrder.closeDealId, "L1", "stängningen släpps");
+  assert.equal(results[6].ok, false); assert.match(results[6].error, /5\/5 orderförsök/, "sjätte försöket stoppas av taket");
+  for (const i of [0, 1, 2, 4]) { assert.equal(results[i].ok, true, results[i].error); assert.ok(results[i].pendingOrder.sessionAttempt, "väntande order bär sitt försök"); }
+  // Godkänn: accepterad, avvisad, okänd, stoppad. Inget av dem lämnar tillbaka ett försök.
+  for (const i of [0, 1, 2, 4]) await executeApprovedOrder(results[i].pendingOrder, { "ig-demo": b } as never);
+  const x = sess.state("demo").session!;
+  assert.equal(x.orderAttempts, 5, "5 försök räknade");
+  assert.deepEqual(x.attempts!.map((a) => a.outcome), ["accepterad", "avvisad", "okänd", "stoppad", "stoppad"]);
+  assert.ok(x.attempts!.every((a) => a.epic === EPIC), "stängningen finns inte i listan");
+  assert.match(String(x.attempts![4]!.note), /begränsade/);
+  sess.stop("demo");
+  // Nekad i Väntande ordrar räknas också (egen session).
+  let pend: any = null;
+  const sess2Batch = createIgSessions({ binding: (e) => `${e}-e5b`, activeEnv: () => "demo", guard: async () => null, now: () => NOW0, directory: path.join(tmp, "e5-sess2"),
+    runBatch: async () => { pend = await createIgPendingOrder({ symbol: EPIC, side: "BUY", stakePct: 1, source: "agent", stopLoss: 1.09, takeProfit: 1.12 }, b); return { picks: [] }; } });
+  setOrderGateSessionHook((i) => sess2Batch.orderGateHook(i), null, (tag, o, note) => sess2Batch.recordAttemptOutcome(tag as never, o, note ?? null));
+  sess2Batch.start("demo", { epics: [EPIC], durationMinutes: 15 }); await sess2Batch.runNext("demo");
+  assert.equal(pend.ok, true, pend.error);
+  await updatePendingOrder(pend.pendingOrder.id, { status: "rejected" });
+  const y = sess2Batch.state("demo").session!;
+  assert.equal(y.orderAttempts, 1); assert.equal(y.attempts![0]!.outcome, "nekad");
+  sess2Batch.stop("demo"); setOrderGateSessionHook(null);
+  const html = fs.readFileSync(new URL("../dashboard.html", import.meta.url), "utf8");
+  assert.ok(html.includes("${x.orderAttempts}/${x.maxOrderAttempts} orderförsök"), "sessionen visar x/5 orderförsök");
+  ok("E5 accepterad, avvisad, okänd, stoppad (före och efter Godkänn) och nekad räknas; stängningar räknas inte; sjätte försöket stoppas; UI visar x/5 orderförsök");
+}
+
 // ══ TradingView-analysdiagram: säker symbolmappning, intervall, etikett; ingen orderkoppling ══
 {
   const vm = await import("node:vm");
@@ -331,3 +387,4 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("Granskning 2: alla tester godkända (endast mocks, inga nätverksanrop)");
+process.exit(0); // api.ts startar timers vid import

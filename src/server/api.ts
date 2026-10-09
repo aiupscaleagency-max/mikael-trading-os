@@ -41,7 +41,7 @@ import { getResultsCached, recordLiveFill } from "./results.js";
 import { CATEGORIES, getCategory, type Category } from "./movers.js";
 import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
 import { addTimedExit, cancelTimedExit, cancelTimedExitForDeal, getHorizonMin, HORIZON_CHOICES, listTimedExits, listConfirmedExits, rollOverTimedExit, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
-import { adjustLiveSpend, addOrderGateBlock, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
+import { reportSessionAttempt, adjustLiveSpend, addOrderGateBlock, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
@@ -197,7 +197,7 @@ const approvingIds = new Set<string>();
 // ─── Godkänd väntande order → lägg den på riktigt (TEST eller LIVE) ───
 // Kör hela order-grinden IGEN vid godkännandet: kill switch eller LIVE-lås kan
 // ha ändrats sedan ordern skapades.
-async function executeApprovedOrder(
+export async function executeApprovedOrder(
   p: PendingOrder,
   brokers: Record<string, BrokerAdapter>,
 ): Promise<{ ok: true; result: unknown } | { ok: false; error: string; keepPending?: boolean }> {
@@ -360,26 +360,30 @@ export async function createIgPendingOrder(b: Record<string, unknown>, broker: I
     }
     if (sellAll) return { ok: false, error: `Ingen lång position i ${igMarketData.nameOf(symbol) ?? symbol} att stänga` };
   }
+  // Krav E5: grinden (och sessionens försöksräkning) körs FÖRE insats- och budgetkontrollen. Ett försök
+  // som sedan stoppas (insats, budget, kurs) är förbrukat och märks "stoppad"; det kringgår aldrig taket.
+  const gate = await checkOrderGate({ live: broker.mode === "live", side, unitsOrder: true, opening: true, source: String(b.source || "dashboard"), symbol });
+  if (!gate.ok) return { ok: false, error: gate.error };
+  const sessionAttempt = gate.sessionAttempt;
+  const fail = <T extends { ok: false; error: string }>(r: T): T => { reportSessionAttempt(sessionAttempt, "stoppad", r.error); return r; };
   let account, ticker;
   try { [account, ticker] = await Promise.all([broker.getAccount(), broker.getTicker(symbol)]); }
-  catch (err) { return { ok: false, status: 409, error: err instanceof Error ? err.message : String(err) }; }
+  catch (err) { return fail({ ok: false, status: 409, error: err instanceof Error ? err.message : String(err) }); }
   if (takeProfit === undefined || stopLoss === undefined) {
     const lv = await broker.defaultLevels(symbol, side).catch(() => null);
     if (lv) { takeProfit ??= lv.takeProfit; stopLoss ??= lv.stopLoss; }
   }
   const ref = limitPrice ?? ticker.price;
   const sign = side === "BUY" ? 1 : -1;
-  if (takeProfit !== undefined && sign * (takeProfit - ref) <= 0) return { ok: false, error: side === "BUY" ? `Målpris ska vara över priset (${ref})` : `Vid SÄLJ (kort) ska målpriset vara under priset (${ref})` };
-  if (stopLoss !== undefined && sign * (ref - stopLoss) <= 0) return { ok: false, error: side === "BUY" ? `Stop-loss ska vara under priset (${ref})` : `Vid SÄLJ (kort) ska stop-loss vara över priset (${ref})` };
+  if (takeProfit !== undefined && sign * (takeProfit - ref) <= 0) return fail({ ok: false, error: side === "BUY" ? `Målpris ska vara över priset (${ref})` : `Vid SÄLJ (kort) ska målpriset vara under priset (${ref})` });
+  if (stopLoss !== undefined && sign * (ref - stopLoss) <= 0) return fail({ ok: false, error: side === "BUY" ? `Stop-loss ska vara under priset (${ref})` : `Vid SÄLJ (kort) ska stop-loss vara över priset (${ref})` });
   const pct = Math.min(3, Math.max(0.1, Number(b.stakePct) || currentStake()?.pct || 1));
   const quantity = num(b.quantity);
   const stakeAmount = Math.round(((account.balance ?? 0) * pct / 100) * 100) / 100;
   // Fast antal (quantity) prissätts och måste klara samma budget (≤ 3 % marginal) som en insats
-  if (quantity !== undefined && !(Number.isFinite(quantity) && quantity > 0)) return { ok: false, error: "Antalet måste vara över 0" };
+  if (quantity !== undefined && !(Number.isFinite(quantity) && quantity > 0)) return fail({ ok: false, error: "Antalet måste vara över 0" });
   const q = await broker.stakeQuote({ epic: symbol, direction: side, stake: stakeAmount, stopLoss, takeProfit, ...(quantity !== undefined ? { size: quantity } : {}) }).catch((e) => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }) as { ok: boolean; reason?: string });
-  if (!q.ok) return { ok: false, error: q.reason ?? "Storleken kunde inte räknas fram", quote: q };
-  const gate = await checkOrderGate({ live: broker.mode === "live", side, unitsOrder: true, opening: true, source: String(b.source || "dashboard") });
-  if (!gate.ok) return { ok: false, error: gate.error };
+  if (!q.ok) return fail({ ok: false, error: q.reason ?? "Storleken kunde inte räknas fram", quote: q });
   const hz = Number(b.horizonSec);
   const horizonSec = Number.isFinite(hz) && hz > 0 ? Math.round(Math.min(hz, 30 * 86400)) : undefined;
   const p = await addPendingOrder({
@@ -390,6 +394,7 @@ export async function createIgPendingOrder(b: Record<string, unknown>, broker: I
     ...(takeProfit !== undefined ? { takeProfit } : {}), ...(stopLoss !== undefined ? { stopLoss } : {}),
     refPrice: ref, reason: b.reason ? String(b.reason).slice(0, 200) : undefined,
     ...(horizonSec ? { horizonSec } : {}),
+    ...(sessionAttempt ? { sessionAttempt } : {}),
     ...(q.ok && "size" in q ? { quoteInfo: { size: q.size, unit: q.unit, contractSize: q.contractSize, margin: q.margin, exposure: q.exposure, moneyAtTp: q.moneyAtTp, moneyAtSl: q.moneyAtSl, minSize: q.minSize, basis: q.basis } } : {}),
   });
   return { ok: true, pendingOrder: p, quote: q };
@@ -461,10 +466,14 @@ async function executeIgOrder(p: PendingOrder, broker: IgBroker): Promise<{ ok: 
       addTimedExit({ broker: broker.name, symbol: p.symbol, qty: order.executedQty, live: p.live, horizonSec: p.horizonSec, baseline: 0, dealId: order.dealId });
     }
     log.trade(`[GODKÄND] ${p.side} ${p.symbol} via ${broker.name} · ${order.status}${order.dealId ? ` · deal ${order.dealId}` : ""}`);
+    reportSessionAttempt(p.sessionAttempt, order.status === "accepted" || order.dealId ? "accepterad" : "okänd", order.dealId ? `deal ${order.dealId}` : String(order.status));
     return { ok: true, result: order };
   } catch (err) {
     const msg = (err instanceof Error ? err.message : String(err)).slice(0, 400);
-    return { ok: false, error: msg, keepPending: msg.startsWith(IG_EXECUTION_OFF) };
+    const keep = msg.startsWith(IG_EXECUTION_OFF);
+    // Krav E5: avvisad, okänd eller stoppad (insats/budget/kurs efter Godkänn) — försöket är förbrukat.
+    if (!keep) { const o = (err as { igOutcome?: string })?.igOutcome; reportSessionAttempt(p.sessionAttempt, o === "unknown" ? "okänd" : o === "rejected" ? "avvisad" : "stoppad", msg); }
+    return { ok: false, error: msg, keepPending: keep };
   }
 }
 

@@ -3024,7 +3024,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     <div class="xp-card">
       <h3>Session <span data-ig-env class="tag" style="font-size:10px"></span>
         <button type="button" data-igs-start-saved class="xp-btn" style="margin-left:auto;border-color:#fbbf24;color:#fbbf24">▶ Starta agentsession</button></h3>
-      <div class="xp-note">Instrumenten väljs på <a href="#markets" style="color:var(--cyan)">Valutapar</a> (sparas på servern). Agenterna analyserar: JEV-förkontroll → teknisk analytiker → Hanna. Sessionen får avstå. Högst 5 nya orderförsök; allt kräver Godkänn.</div>
+      <div class="xp-note">Instrumenten väljs på <a href="#markets" style="color:var(--cyan)">Valutapar</a> (sparas på servern). Agenterna analyserar: JEV-förkontroll → teknisk analytiker → Hanna. Sessionen får avstå. Högst 5 orderförsök som öppnar nya positioner (accepterade, avvisade, okända och stoppade räknas; stängningar räknas inte); allt kräver Godkänn.</div>
       <div data-igs-session style="margin-top:8px;font-size:12px"></div>
     </div>
     <div class="xp-card"><h3>Schema</h3><div data-igs-schedule></div></div>
@@ -10114,11 +10114,13 @@ window.IGS = (function(){
       <span>${esc(x.env === "live" ? "IG Live" : "IG Demo")} · ${x.trigger === "schema" ? "schemalagd" : "manuell"} · ${x.epics.length} instrument (fryst) · ${esc(x.analysisInterval)} · ${x.durationMinutes} min${x.strategy ? " · strategi " + esc(x.strategy) : ""}</span>
       <span style="color:var(--dim)">${hm(x.startedAt)}–${hm(x.endsAt)}</span>
       <span>analyserade ${n("analyserad")} · väntar ${n("väntar")} · analyseras ${n("analyseras")} · misslyckade ${n("misslyckad")}${n("hoppad") ? " · hoppade " + n("hoppad") : ""}</span>
-      <span title="Avvisade och okända räknas">orderförsök ${x.orderAttempts}/${x.maxOrderAttempts}</span>
+      <span id="igs-attempts" title="Varje försök att öppna en ny position räknas: accepterad, avvisad av IG, okänt utfall, stoppad (insats/budget) eller nekad. Stängningar räknas inte." style="font-weight:700;color:${x.orderAttempts >= x.maxOrderAttempts ? "#f85149" : "var(--text, #e2e8f0)"}">${x.orderAttempts}/${x.maxOrderAttempts} orderförsök</span>
       ${x.status === "running" ? '<button type="button" data-igs="stop" style="margin-left:auto;padding:4px 10px;border:1px solid #f85149;background:#2a1215;color:#f85149;border-radius:6px;font-weight:700;cursor:pointer">■ Stoppa session</button>' : ""}
     </div>${x.reason ? `<div style="color:#fbbf24;margin-top:4px">${esc(x.reason)}</div>` : ""}`;
     const rows = x.items.slice(0, 500).map(i=>`<tr><td style="padding:2px 6px;white-space:nowrap" title="${esc(i.epic)}">${esc(IG.label(i.epic))}</td><td style="padding:2px 6px;color:${ST_COL[i.status]}">${esc(i.status)}</td><td style="padding:2px 6px;font-weight:700;color:${i.action === "buy" ? "#3fb950" : i.action === "sell" ? "#f85149" : "#8b95a7"}">${esc(ACT[i.action] || i.action || "")}</td><td style="padding:2px 6px;color:var(--dim)">${esc(i.result || "")}</td></tr>`).join("");
-    return head + `<details ${x.status === "running" ? "open" : ""} style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--dim)">Kö per instrument</summary><div style="max-height:260px;overflow:auto"><table style="width:100%;font-size:11px;border-collapse:collapse">${rows}</table></div></details>`;
+    const OC = { "föreslagen":"#fbbf24", "accepterad":"#3fb950", "avvisad":"#f85149", "okänd":"#f0b90b", "stoppad":"#f85149", "nekad":"#8b95a7", "utgick":"#8b95a7" };
+    const att = (x.attempts || []).length ? `<div class="igs-attempt-list" style="margin-top:6px;font-size:11px">${(x.attempts || []).map(a=>`<div><b>#${a.no}</b> ${esc(a.side === "SELL" ? "SÄLJ" : "KÖP")} ${esc(a.epic ? IG.label(a.epic) : "–")} · <span style="color:${OC[a.outcome] || "#8b95a7"}">${esc(a.outcome)}</span>${a.note ? ` <span style="color:var(--dim)">(${esc(a.note)})</span>` : ""}</div>`).join("")}</div>` : "";
+    return head + att + `<details ${x.status === "running" ? "open" : ""} style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--dim)">Kö per instrument</summary><div style="max-height:260px;overflow:auto"><table style="width:100%;font-size:11px;border-collapse:collapse">${rows}</table></div></details>`;
   }
   function scheduleHtml(d){
     const cap = d.capacity || {};
@@ -10275,7 +10277,7 @@ window.IGS = (function(){
   function history(){
     const el = $("ses-history"); if(!el || !window.IGS) return;
     const st = IGS.state(); if(!st) return;
-    el.innerHTML = (st.history || []).length ? st.history.map(h=>`<div class="xp-row"><span>${new Date(h.startedAt).toLocaleString("sv-SE").slice(0,16)}</span><span>${h.trigger === "schema" ? "schema" : "manuell"}${h.slot ? " · " + esc(h.slot) : ""}</span><b>${esc({completed:"klar",stopped:"stoppad",interrupted:"avbruten",running:"pågår"}[h.status] || h.status)}</b><span>${h.analysed}/${h.total} analyserade</span><span>orderförsök ${h.orderAttempts}</span><span class="xp-note">${esc(h.reason || "")}</span></div>`).join("") : "Inga avslutade sessioner än.";
+    el.innerHTML = (st.history || []).length ? st.history.map(h=>`<div class="xp-row"><span>${new Date(h.startedAt).toLocaleString("sv-SE").slice(0,16)}</span><span>${h.trigger === "schema" ? "schema" : "manuell"}${h.slot ? " · " + esc(h.slot) : ""}</span><b>${esc({completed:"klar",stopped:"stoppad",interrupted:"avbruten",running:"pågår"}[h.status] || h.status)}</b><span>${h.analysed}/${h.total} analyserade</span><span>${h.orderAttempts}/5 orderförsök</span><span class="xp-note">${esc(h.reason || "")}</span></div>`).join("") : "Inga avslutade sessioner än.";
   }
 
   // ── Verktyg ──

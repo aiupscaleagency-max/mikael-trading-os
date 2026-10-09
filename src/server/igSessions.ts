@@ -36,9 +36,16 @@ export interface IgAgentSession {
   startedAt: number; endsAt: number; nextRunAt: number;
   status: "running" | "stopped" | "completed" | "interrupted"; reason: string | null;
   items: IgSessionItem[]; orderAttempts: number; maxOrderAttempts: number; batches: number; batchInFlight: boolean;
+  /** Krav E5: varje orderförsök som öppnar en ny position, med utfall. Räknas när försöket görs och
+   *  släpps aldrig: accepterad, avvisad av IG, okänt utfall, stoppad (insats/budget) eller nekad räknas lika. */
+  attempts?: IgSessionAttempt[];
 }
+export type IgAttemptOutcome = "föreslagen" | "accepterad" | "avvisad" | "okänd" | "stoppad" | "nekad" | "utgick";
+export interface IgSessionAttempt { no: number; epic: string | null; side: string; source: string; at: number; outcome: IgAttemptOutcome; note: string | null; updatedAt: number }
+/** Följer en väntande order så att utfallet kan skrivas på rätt försök, även efter att sessionen slutat. */
+export interface IgSessionAttemptTag { env: IgEnvironment; sessionId: string; no: number }
 export interface IgScheduleSlot { id: "morning" | "lunch" | "afternoon" | "evening"; label: string; time: string; enabled: boolean; lastOccurrence: string | null; lastResult: string | null }
-interface EnvState { selection: { epics: string[]; updatedAt: number | null }; schedule: IgScheduleSlot[]; session: IgAgentSession | null; history: Array<Pick<IgAgentSession, "id" | "trigger" | "slot" | "startedAt" | "status" | "reason" | "orderAttempts"> & { analysed: number; total: number }> }
+interface EnvState { selection: { epics: string[]; updatedAt: number | null }; schedule: IgScheduleSlot[]; session: IgAgentSession | null; history: Array<Pick<IgAgentSession, "id" | "trigger" | "slot" | "startedAt" | "status" | "reason" | "orderAttempts" | "attempts"> & { analysed: number; total: number }> }
 
 export const DEFAULT_SCHEDULE: IgScheduleSlot[] = [
   { id: "morning", label: "Morgon", time: "08:00", enabled: false, lastOccurrence: null, lastResult: null },
@@ -173,7 +180,7 @@ export function createIgSessions(deps: IgSessionDeps) {
       startedAt: t, endsAt: t + durationMinutes * 60_000, nextRunAt: t,
       status: "running", reason: null,
       items: epics.map((epic) => ({ epic, status: "väntar", action: null, result: null, at: null })),
-      orderAttempts: 0, maxOrderAttempts: SESSION_MAX_ORDER_ATTEMPTS, batches: 0, batchInFlight: false,
+      orderAttempts: 0, maxOrderAttempts: SESSION_MAX_ORDER_ATTEMPTS, batches: 0, batchInFlight: false, attempts: [],
     };
     s.session = session;
     save(env);
@@ -185,7 +192,7 @@ export function createIgSessions(deps: IgSessionDeps) {
     if (!x || x.status !== "running") return;
     x.status = status; x.reason = reason;
     for (const it of x.items) if (it.status === "väntar") { it.status = "hoppad"; it.result = reason ?? "Sessionen slutade innan instrumentet hann analyseras"; }
-    s.history = [{ id: x.id, trigger: x.trigger, slot: x.slot, startedAt: x.startedAt, status: x.status, reason: x.reason, orderAttempts: x.orderAttempts, analysed: x.items.filter((i) => i.status === "analyserad").length, total: x.items.length }, ...s.history].slice(0, 10);
+    s.history = [{ id: x.id, trigger: x.trigger, slot: x.slot, startedAt: x.startedAt, status: x.status, reason: x.reason, orderAttempts: x.orderAttempts, attempts: x.attempts ?? [], analysed: x.items.filter((i) => i.status === "analyserad").length, total: x.items.length }, ...s.history].slice(0, 10);
     save(env);
   }
 
@@ -266,7 +273,7 @@ export function createIgSessions(deps: IgSessionDeps) {
   }
 
   /** Orderhook (orderGate): räknar agenternas nya orderförsök under en omgång; spärrar efter 5. */
-  function orderGateHook(input: { live: boolean; opening?: boolean; side: string; source: string }): string | null {
+  function orderGateHook(input: { live: boolean; opening?: boolean; side: string; source: string; symbol?: string }): string | null | { attempt: IgSessionAttemptTag } {
     if (input.source.startsWith("godkänd:")) return null;
     // M1: bara agenternas/strategiernas NYA positioner räknas. Stängningar, Sälj allt och Mikes egna
     // manuella ordrar under en omgång är inga orderförsök från sessionen.
@@ -275,15 +282,28 @@ export function createIgSessions(deps: IgSessionDeps) {
     const env: IgEnvironment = input.live ? "live" : "demo";
     const x = load(env).session;
     if (!x || x.status !== "running" || !x.batchInFlight) return null;
-    if (x.orderAttempts >= x.maxOrderAttempts) return `Agentsessionen har redan gjort ${x.maxOrderAttempts} orderförsök (avvisade och okända räknas). Inga fler nya ordrar i den här sessionen.`;
+    if (x.orderAttempts >= x.maxOrderAttempts) return `Agentsessionen har redan gjort ${x.orderAttempts}/${x.maxOrderAttempts} orderförsök (accepterade, avvisade, okända och stoppade räknas). Inga fler nya ordrar i den här sessionen.`;
     x.orderAttempts++;
+    const t = now();
+    (x.attempts ??= []).push({ no: x.orderAttempts, epic: input.symbol ?? null, side: input.side, source: input.source.slice(0, 60), at: t, outcome: "föreslagen", note: null, updatedAt: t });
     save(env);
-    return null;
+    return { attempt: { env, sessionId: x.id, no: x.orderAttempts } };
+  }
+  /** Skriver utfallet på ett försök. Räkningen ändras aldrig: ett försök är förbrukat oavsett utfall. */
+  function recordAttemptOutcome(tag: IgSessionAttemptTag | null | undefined, outcome: IgAttemptOutcome, note: string | null = null): boolean {
+    if (!tag || (tag.env !== "demo" && tag.env !== "live")) return false;
+    const s = load(tag.env);
+    const lists = [s.session?.id === tag.sessionId ? s.session.attempts : undefined, ...s.history.filter((h) => h.id === tag.sessionId).map((h) => h.attempts)];
+    const a = lists.find((l) => l?.some((x) => x.no === tag.no))?.find((x) => x.no === tag.no);
+    if (!a) return false;
+    a.outcome = outcome; a.note = note ? note.slice(0, 200) : null; a.updatedAt = now();
+    save(tag.env);
+    return true;
   }
   /** Schemalagd omgång pågår → ordrar kräver alltid Godkänn (även i AUTO-läge). */
   function forcesApproval(): boolean {
     return (["demo", "live"] as const).some((e) => { const x = load(e).session; return !!x && x.status === "running" && x.trigger === "schema" && x.batchInFlight; });
   }
 
-  return { state, setSelection, setSchedule, start, stop, tick, runNext, orderGateHook, forcesApproval };
+  return { state, setSelection, setSchedule, start, stop, tick, runNext, orderGateHook, recordAttemptOutcome, forcesApproval };
 }

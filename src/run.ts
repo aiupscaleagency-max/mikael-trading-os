@@ -467,7 +467,7 @@ async function main(): Promise<void> {
     onChange: (env) => broadcastEvent("ig-session", { env }),
   });
   setIgSessions(sessions);
-  setOrderGateSessionHook((i) => sessions.orderGateHook(i), () => sessions.forcesApproval());
+  setOrderGateSessionHook((i) => sessions.orderGateHook(i), () => sessions.forcesApproval(), (tag, outcome, note) => sessions.recordAttemptOutcome(tag, outcome, note ?? null));
   setInterval(() => { void sessions.tick(); }, 15_000).unref?.();
 
   // Serve-läge: bara dashboard och strömmar. Ingen agent-körning, inga
