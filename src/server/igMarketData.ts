@@ -329,7 +329,8 @@ export function createIgMarketData(deps: {
     timer = setInterval(run, 15_000); timer.unref?.();
     slow = setInterval(() => {
       void withIgPriority(() => tickIgOrders()).catch(() => log.warn("[ig] orderavstämningen misslyckades"));
-      void tickIgCatalogues().catch(() => {});
+      // Katalogen körs 7 s efter orderavstämningen så att de inte slåss om samma minutbudget.
+      setTimeout(() => void tickIgCatalogues().catch(() => {}), 7_000).unref?.();
     }, 15_000); slow.unref?.();
   }
   function stop(): void {

@@ -4487,7 +4487,9 @@ function stopBybitChartStream(){ IG.want("main", []); }
 // Instrumentlistor från IG: bevakningslistan + Forex/Krypto ur IG:s katalog (aktiv miljö).
 let _igSymAt = 0;
 async function refreshIgSymbols(force){
-  if(!force && Date.now() - _igSymAt < 240000) return;
+  // Medan katalogen fortfarande fylls hämtas listan var 30:e sekund, annars var 4:e minut.
+  const filling = !SYMBOLS.forex.length || !SYMBOLS.crypto.length || SYMBOLS._forexStatus || SYMBOLS._cryptoStatus;
+  if(!force && Date.now() - _igSymAt < (filling ? 30000 : 240000)) return;
   _igSymAt = Date.now();
   try{
     const w = await (await fetch("/api/market/watchlist")).json();
@@ -4706,11 +4708,23 @@ function formatVol(v){
 function fillSymbols(keep){
   const cat = document.getElementById("cat-select").value;
   const sel = document.getElementById("sym-select");
-  const list = SYMBOLS[cat] || [];
   const status = SYMBOLS["_" + cat + "Status"];
-  sel.innerHTML = list.length
-    ? list.map(s=>`<option value="${IG.esc(s)}">${IG.esc(IG.label(s))}${IG.label(s) !== s ? "" : ""}</option>`).join("")
-    : `<option value="">${cat === "watch" ? "Bevakningslistan är tom (lägg till under Valutapar)" : IG.esc(status || "Hämtar IG-katalogen…")}</option>`;
+  const opt = s=>`<option value="${IG.esc(s)}">${IG.esc(IG.label(s))}</option>`;
+  let list;
+  if(cat === "watch"){
+    // Bevakade först, sedan ALLA valutapar och all krypto från IG-katalogen i samma lista.
+    const seen = new Set(SYMBOLS.watch);
+    const fx = SYMBOLS.forex.filter(s=>!seen.has(s)); fx.forEach(s=>seen.add(s));
+    const cr = SYMBOLS.crypto.filter(s=>!seen.has(s));
+    list = [...SYMBOLS.watch, ...fx, ...cr];
+    const grp = (label, arr, st)=>`<optgroup label="${IG.esc(label)}">${arr.length ? arr.map(opt).join("") : `<option value="" disabled>${IG.esc(st || "Hämtar IG-katalogen…")}</option>`}</optgroup>`;
+    sel.innerHTML = grp("Bevakade", SYMBOLS.watch, "Inga bevakade än")
+      + grp(`Alla valutapar (${SYMBOLS.forex.length})`, fx, SYMBOLS._forexStatus)
+      + grp(`All krypto (${SYMBOLS.crypto.length})`, cr, SYMBOLS._cryptoStatus);
+  } else {
+    list = SYMBOLS[cat] || [];
+    sel.innerHTML = list.length ? list.map(opt).join("") : `<option value="">${IG.esc(status || "Hämtar IG-katalogen…")}</option>`;
+  }
   const pick = keep && list.includes(keep) ? keep : (typeof keep === "string" && keep ? "" : list[0] || "");
   if(pick){ sel.value = pick; STATE.symbol = pick; }
   else if(!keep){ STATE.symbol = list[0] || ""; }

@@ -48,12 +48,16 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
   const cache=new Map<string,{at:number,value:any}>(),pending=new Map<string,Promise<any>>();
   const fixtureReads:{environment:IgEnvironment;at:number}[]=[];
   const catalogueReads:{environment:IgEnvironment;at:number;category:'forex'|'crypto'|null}[]=[];
+  let lastBudgetWarn=0;
   function catalogueBudget(mode:IgEnvironment,category:'forex'|'crypto'|null=null){
     while(catalogueReads.length&&now()-catalogueReads[0]!.at>=60000)catalogueReads.shift();
     const global=readBudget(mode);
-    // Katalogen lämnar alltid 2 bakgrundsläsningar per minut åt diagram och prisuppslag, så att de inte svälter medan katalogen fylls.
+    // Katalogen får alltid en egen liten andel (högst 10 läsningar per minut) så länge det finns bakgrundsutrymme utöver orderreserven.
+    // Tidigare krav (fler än 2 lediga + under 36 i hela appen) gjorde att katalogen aldrig kom igång när orderavstämningen låg på samma sekund.
     const bg=(global as {backgroundRemaining?:number}).backgroundRemaining;
-    return global.remaining>6&&(bg===undefined||bg>2)&&global.appUsed<36&&catalogueReads.filter(r=>r.environment===mode).length<10&&(category===null||catalogueReads.filter(r=>r.environment===mode&&r.category===category).length<4);
+    const ok=global.remaining>0&&(bg===undefined||bg>0)&&catalogueReads.filter(r=>r.environment===mode).length<10&&(category===null||catalogueReads.filter(r=>r.environment===mode&&r.category===category).length<5);
+    if(!ok&&!deps.call&&now()-lastBudgetWarn>60000){lastBudgetWarn=now();console.warn(`[ig] katalog ${mode} väntar på läsutrymme: kvar ${global.remaining}, bakgrund ${bg??'?'}, appen ${global.appUsed}, katalog ${catalogueReads.filter(r=>r.environment===mode).length}/min`);}
+    return ok;
   }
   // Fyra sökläsningar per kategori reserverar plats åt den andra även när HTTP-klienter kommer först.
   async function catalogueReadFor(category:'forex'|'crypto'|null,...args:Parameters<typeof call>){if(!catalogueBudget(args[0],category))throw Error("Katalogens läsutrymme är slut för denna minut");catalogueReads.push({environment:args[0],at:now(),category});return read(...args);}
@@ -172,7 +176,8 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     const discovery=mode==='demo'&&category==='crypto'?await cached('demodiscovery:demo',15000,discoverDemoCrypto):null;
     const enabled=await accountCatalogue(mode,category);
     // Tomt eller oklassificerat kategorisvar bevisar inte att kontot saknar marknader.
-    if(!discovery&&enabled&&(!enabled.traversalComplete&&enabled.progress.failures<2||enabled.traversalComplete&&enabled.markets.length>0&&enabled.unclassifiedInstruments===0))return enabled;
+    // Tom kategorilista medan den hämtas visas aldrig ensam: då körs sökningen också, så att listan fylls direkt.
+    if(!discovery&&enabled&&enabled.markets.length>0&&(!enabled.traversalComplete&&enabled.progress.failures<2||enabled.traversalComplete&&enabled.unclassifiedInstruments===0))return enabled;
     const identity=connectionIdentity(mode),key=`${mode}:${identity}:${category}`;
     let progress=catalogProgress.get(key);const terms=category==='forex'?['Forex',...fiatCodes,'Weekend']:cryptoTerms; // 'Weekend': IG:s helgmarknader (t.ex. Weekend EUR/USD) är öppna lör–sön
     if(!progress||progress.cursor===terms.length&&progress.failed.size===0&&now()-progress.updatedAt>300000){progress={cursor:0,markets:progress?.markets??new Map(),updatedAt:now(),failed:new Map(),reason:null};catalogProgress.set(key,progress);}
