@@ -83,7 +83,7 @@ window.IG = (function () {
   async function refresh() {
     try {
       var w = await getJson("/api/market/watchlist");
-      if (w.env && w.env !== st.env) { st.env = w.env; st.label = envLabel(w.env); emit("env", st.env); }
+      if (w.env && w.env !== st.env) { st.env = w.env; st.label = envLabel(w.env); /* nollställ förra miljöns saldo så Demo-siffror aldrig syns under LIVE (eller tvärtom) */ st.connected = false; st.balance = null; st.currency = null; st.available = null; st.profitLoss = null; emit("env", st.env); }
       st.watchlist = (w.watchlist || []).map(function (x) { return x.epic; });
       remember(w.watchlist);
       emit("watchlist", w.watchlist || []);

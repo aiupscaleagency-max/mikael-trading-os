@@ -2577,7 +2577,7 @@ Regler:
             maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD,
             liveSpentTodayUsd: getLiveSpentTodayUsd(),
             liveAllowed: liveAllowedByServer(),
-            executionMode: config.executionMode,
+            executionMode: effectiveExecutionMode(),
           },
         });
         return;
