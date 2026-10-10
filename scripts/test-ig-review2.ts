@@ -307,7 +307,7 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
     assert.equal(draft.status, "draft", "granskning (läsning) fungerar i Live");
     await assert.rejects(withIgPriority(() => orders.confirm("live", draft.id)), /order låsta/);
     await assert.rejects(withIgPriority(() => orders.close("live", "OWN1")), /order låsta/, "egen position i IG:s app stängs aldrig");
-    assert.equal(orders.snapshot("live").plans?.length ?? 0, 0, "ingen stängningsplan/adoption skapas för Live");
+    assert.equal(orders.snapshot("live").exitPlans.length, 0, "ingen stängningsplan/adoption skapas för Live");
     // 3) Mäklaren (placeOrder/closePosition: Godkänn, Sälj nu, Sälj allt, liveTpSl, strategier, chattens stängning)
     const live = new IgBroker("live", { status: conn.getStatus as never, connect: conn.testConnection as never, accounts: conn.getAccounts as never, positions: conn.getPositions as never,
       market: fixtureMarket(Date.now) as never, preview: orders.preview as never, confirm: orders.confirm as never, close: orders.close as never });
@@ -341,6 +341,27 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
     process.env.IG_ORDER_EXECUTION_ENABLED_LIVE = "false";
     await assert.rejects(conn.callAuthenticated("live", "positions/otc", "POST", "1", { dealId: "OWN1" }, { _method: "DELETE" }), (e: Error) => e.message === IG_LIVE_WRITE_LOCKED);
     assert.equal(liveWrites().length, 1);
+    // Lager B (runt själva fetch): även om lager A skulle släppa igenom stoppar backstoppet, med oförvanskat fel
+    process.env.IG_ORDER_EXECUTION_ENABLED_LIVE = "true";
+    const onlyFirst = (() => { let n = 0; return () => n++ === 0; })(); // lager A får "ja", lager B får "nej"
+    const connB = createIgConnection({ loadCredentials: () => ({ live: { apiKey: "k", identifier: "i", password: "p" } }) as never, fetch: fake, liveWritesUnlocked: onlyFirst });
+    assert.equal((await connB.testConnection("live")).status, "connected");
+    await assert.rejects(connB.callAuthenticated("live", "positions/otc", "POST", "2", { epic: EPIC, direction: "BUY", size: 1 }), (e: Error) => e.message === IG_LIVE_WRITE_LOCKED, "backstoppet stoppar, felet blir inte 'okänt utfall'");
+    assert.equal(liveWrites().length, 1, "backstoppet: inget nytt skrivande Live-anrop");
+    // Bakgrundsslingan (tidsplan i igOrders.tick): en Live-plan skapad medan Live var upplåst stängs INTE när Live låsts igen
+    let clock = Date.now();
+    const ordersT = createIgOrders({ status: conn.getStatus as never, accounts: conn.getAccounts as never, positions: conn.getPositions as never, call: conn.callAuthenticated as never,
+      market: fixtureMarket(() => clock) as never, guard: async () => ({ killSwitchActive: false }), now: () => clock, directory: path.join(tmp, "m4b-tick"), enabled: () => true });
+    const dT = await withIgPriority(() => ordersT.preview("live", { ...TICKET, autoClose: true } as never));
+    const rT = await withIgPriority(() => ordersT.confirm("live", dT.id));
+    assert.equal(rT.status, "accepted", `upplåst: Live-order accepterad (${rT.error ?? ""})`);
+    assert.ok(ordersT.snapshot("live").exitPlans.some((p: any) => p.status === "scheduled"), "tidsplan skapad");
+    const writesBefore = liveWrites().length;
+    delete process.env.MODE; delete process.env.LIVE_TRADING_CONFIRMED; // Live låst igen
+    clock += 16 * 60_000; // tidsplanens stängningstid har passerat
+    await ordersT.tick();
+    assert.equal(liveWrites().length, writesBefore, "låst: bakgrundsslingan skickade ingen stängning till IG Live");
+    assert.ok(!ordersT.snapshot("live").exitPlans.some((p: any) => ["submitted", "confirmed"].includes(p.status)), "ingen stängning begärd");
   } finally { restore(); }
   ok("M4b skrivstopp: Live aktiv + order låsta → 0 skrivande Live-anrop från igConnection, Godkänn/confirm, stängning (Sälj nu/Sälj allt/TP/SL), mäklaren, tidsstängning, bakgrundsslingan och AUTO; Demo opåverkad; upplåst .env släpper igenom");
 }

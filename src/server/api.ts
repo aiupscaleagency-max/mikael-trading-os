@@ -919,6 +919,8 @@ export function setActiveBrokerName(name: string | null): void {
 }
 /** Visas IG Live just nu (aktiv mäklare = Live)? Då kräver varje agentorder Godkänn, även om AUTO valts. */
 export function activeBrokerIsLive(): boolean { return activeBrokerName === "ig"; }
+/** Läget som faktiskt gäller för agenternas ordrar just nu (visning): Live visas → alltid Godkänn. Sparat val ändras inte. */
+function effectiveExecutionMode(): string { return activeBrokerIsLive() ? "approve" : config.executionMode; }
 /** Aktiv mäklare: IG Live bara när den uttryckligen valts, annars IG Demo. */
 function activeName(brokers: Record<string, BrokerAdapter>): string | undefined {
   return activeBrokerName && brokers[activeBrokerName] ? activeBrokerName : brokers["ig-demo"] ? "ig-demo" : Object.keys(brokers)[0];
@@ -1367,7 +1369,7 @@ export function startServer(
       if (url.pathname === "/api/mode" && method === "GET") {
         json(res, {
           mode: config.mode,
-          executionMode: config.executionMode,
+          executionMode: effectiveExecutionMode(),
           // Härled UI-läge från kombination
           // IG Live visas (även bara läsning) → LIVE-knappen tänds, så att en omladdning aldrig visar TEST över Live-data.
           uiMode: activeBrokerName === "ig" ? "live" :
@@ -1412,14 +1414,14 @@ export function startServer(
             setActiveBrokerName("ig");
             log.info("Dashboard visar IG Live (bara läsning, Live-order låsta)");
             broadcastEvent("broker-changed", { activeBroker: "ig", env: igMarketData.getActiveEnv(), ordersLocked: true });
-            broadcastEvent("mode-changed", { uiMode: "live", mode: config.mode, executionMode: config.executionMode, ordersLocked: true });
-            json(res, { ok: true, uiMode: "live", mode: config.mode, executionMode: config.executionMode, activeBroker: "ig", ordersLocked: true });
+            broadcastEvent("mode-changed", { uiMode: "live", mode: config.mode, executionMode: effectiveExecutionMode(), ordersLocked: true });
+            json(res, { ok: true, uiMode: "live", mode: config.mode, executionMode: effectiveExecutionMode(), activeBroker: "ig", ordersLocked: true });
             return;
           }
           log.warn("Dashboard bad om LIVE-vy (servern är redan startad i LIVE)");
           if (brokers.ig) setActiveBrokerName("ig");
-          broadcastEvent("mode-changed", { uiMode: "live", mode: config.mode, executionMode: config.executionMode });
-          json(res, { ok: true, uiMode: "live", mode: config.mode, executionMode: config.executionMode, ordersLocked: !liveOrdersAllowed() });
+          broadcastEvent("mode-changed", { uiMode: "live", mode: config.mode, executionMode: effectiveExecutionMode() });
+          json(res, { ok: true, uiMode: "live", mode: config.mode, executionMode: effectiveExecutionMode(), ordersLocked: !liveOrdersAllowed() });
           return;
         }
 
@@ -1433,8 +1435,8 @@ export function startServer(
         }
         // TEST-knappen byter tillbaka till TEST-mäklaren (låtsaskontot)
         if (activeBrokerName === "ig" || !activeBrokerName) setActiveBrokerName("ig-demo");
-        broadcastEvent("mode-changed", { uiMode, mode: config.mode, executionMode: config.executionMode });
-        json(res, { ok: true, uiMode, mode: config.mode, executionMode: config.executionMode, activeBroker: activeBrokerName });
+        broadcastEvent("mode-changed", { uiMode, mode: config.mode, executionMode: effectiveExecutionMode() });
+        json(res, { ok: true, uiMode, mode: config.mode, executionMode: effectiveExecutionMode(), activeBroker: activeBrokerName });
         return;
       }
 
@@ -1477,8 +1479,8 @@ export function startServer(
         setExecutionMode(executionMode);
         await saveExecutionMode(executionMode).catch((e) => log.warn(`Kunde inte spara auto/manuellt: ${(e as Error).message}`));
         log.warn(`Agenternas ordrar: ${executionMode === "auto" ? "AUTO (läggs direkt inom gränserna, TEST)" : "MANUELL (varje order väntar på Godkänn)"} — valt på Trade-sidan`);
-        broadcastEvent("mode-changed", { mode: config.mode, executionMode: config.executionMode });
-        json(res, { ok: true, executionMode: config.executionMode, autoAllowed: autoAllowed() });
+        broadcastEvent("mode-changed", { mode: config.mode, executionMode: effectiveExecutionMode() });
+        json(res, { ok: true, executionMode: effectiveExecutionMode(), autoAllowed: autoAllowed() && !activeBrokerIsLive() });
         return;
       }
 
@@ -1533,7 +1535,7 @@ export function startServer(
 
       // ── Väntande ordrar (EXECUTION_MODE=approve) ──
       if (url.pathname === "/api/pending-orders" && method === "GET") {
-        json(res, { orders: await listPendingOrders(), executionMode: config.executionMode });
+        json(res, { orders: await listPendingOrders(), executionMode: effectiveExecutionMode() });
         return;
       }
 
