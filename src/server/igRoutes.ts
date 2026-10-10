@@ -302,7 +302,7 @@ export async function handleIgRoutes(
       const category = url.searchParams.get("category") === "crypto" ? "crypto" : "forex";
       try {
         const d = await getIgMarketDirectory(env, category);
-        for (const m of d.markets) igMarketData.rememberName(env, m.epic, m.name, m.category);
+        for (const m of d.markets) { igMarketData.rememberName(env, m.epic, m.name, m.category); igMarketData.rememberScale(env, m.epic, (m as { scalingFactor?: unknown }).scalingFactor); }
         // Demo: Live-EPICs som saknas här visas som katalogreferens ("ej tillgänglig på Demo"), utan Live-priser
         const liveReferences = env === "demo" ? igLiveOnlyReferences(d.markets, peekIgMarketDirectory("live", category)?.markets) : [];
         send(res, 200, { env, label: envLabel(env), ...d, liveReferences, catalogue: catalogueProgress(d) });
@@ -360,7 +360,7 @@ export async function handleIgRoutes(
     if (p === "/api/market/search" && method === "GET") {
       try {
         const r = await searchIgMarkets(env, String(url.searchParams.get("q") ?? ""));
-        for (const m of r.markets) igMarketData.rememberName(env, m.epic, m.name, m.category);
+        for (const m of r.markets) { igMarketData.rememberName(env, m.epic, m.name, m.category); igMarketData.rememberScale(env, m.epic, (m as { scalingFactor?: unknown }).scalingFactor); }
         send(res, 200, { env, markets: r.markets });
       } catch (e) { send(res, 200, { env, markets: [], error: e instanceof Error ? e.message : String(e) }); }
       return true;

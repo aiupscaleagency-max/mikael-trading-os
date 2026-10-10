@@ -51,7 +51,9 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
   function catalogueBudget(mode:IgEnvironment,category:'forex'|'crypto'|null=null){
     while(catalogueReads.length&&now()-catalogueReads[0]!.at>=60000)catalogueReads.shift();
     const global=readBudget(mode);
-    return global.remaining>6&&global.appUsed<36&&catalogueReads.filter(r=>r.environment===mode).length<10&&(category===null||catalogueReads.filter(r=>r.environment===mode&&r.category===category).length<4);
+    // Katalogen lämnar alltid 2 bakgrundsläsningar per minut åt diagram och prisuppslag, så att de inte svälter medan katalogen fylls.
+    const bg=(global as {backgroundRemaining?:number}).backgroundRemaining;
+    return global.remaining>6&&(bg===undefined||bg>2)&&global.appUsed<36&&catalogueReads.filter(r=>r.environment===mode).length<10&&(category===null||catalogueReads.filter(r=>r.environment===mode&&r.category===category).length<4);
   }
   // Fyra sökläsningar per kategori reserverar plats åt den andra även när HTTP-klienter kommer först.
   async function catalogueReadFor(category:'forex'|'crypto'|null,...args:Parameters<typeof call>){if(!catalogueBudget(args[0],category))throw Error("Katalogens läsutrymme är slut för denna minut");catalogueReads.push({environment:args[0],at:now(),category});return read(...args);}
@@ -77,7 +79,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     const promise=job();pending.set(key,promise);try{const value=await promise;if(connectionIdentity(environment)!==identity)throw Error("IG-kontosessionen ändrades under hämtningen");cache.set(key,{at:now(),value});return clone(value);}finally{if(pending.get(key)===promise)pending.delete(key);}
   }
   function connected(mode:IgEnvironment){modeGuard(mode);if(status().environments[mode].status!=="connected")throw Error("IG-miljön är inte ansluten; verifiera credentials och anslut först");}
-  function marketRow(m:any){return {epic:m.epic,name:str(m.instrumentName)??m.epic,type:str(m.instrumentType),category:igMarketCategory(m),expiry:str(m.expiry),bid:num(m.bid),offer:num(m.offer),percentageChange:num(m.percentageChange),netChange:num(m.netChange),high:num(m.high),low:num(m.low),updateTimeUTC:str(m.updateTimeUTC),observedAt:igQuoteTimestamp(m.updateTimeUTC,now()),receivedAt:now(),marketStatus:str(m.marketStatus),streamingPricesAvailable:m.streamingPricesAvailable===true,delayTime:num(m.delayTime)};}
+  function marketRow(m:any){return {epic:m.epic,name:str(m.instrumentName)??m.epic,type:str(m.instrumentType),category:igMarketCategory(m),expiry:str(m.expiry),bid:num(m.bid),offer:num(m.offer),percentageChange:num(m.percentageChange),netChange:num(m.netChange),high:num(m.high),low:num(m.low),updateTimeUTC:str(m.updateTimeUTC),observedAt:igQuoteTimestamp(m.updateTimeUTC,now()),receivedAt:now(),marketStatus:str(m.marketStatus),streamingPricesAvailable:m.streamingPricesAvailable===true,delayTime:num(m.delayTime),scalingFactor:num(m.scalingFactor)};}
   async function searchMarkets(mode:IgEnvironment,term:string,catalogueRequest:false|'forex'|'crypto'=false) {
     connected(mode);if(typeof term!=="string"||term.trim().length<2||term.length>80)throw Error("Ogiltig IG-sökning");
     return cached(`search:${mode}:${term}`,60000,async()=>{
