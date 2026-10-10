@@ -1453,7 +1453,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   <span data-ig-env style="font-size:11px;font-weight:800;padding:3px 8px;border:1px solid #f0b90b;border-radius:6px;color:#f0b90b;white-space:nowrap">TEST · IG Demo</span>
   <span data-ig-exec style="font-size:11px;font-weight:700;white-space:nowrap;color:#f0b90b">Orderläget är avstängt</span>
   <button class="kill" id="kill-btn">⏻ KILL SWITCH</button>
-  <span class="pnl up" id="pnl" title="Resultat idag/totalt på IG i kontovalutan">—</span>
+  <span class="pnl up" id="pnl" title="Resultat på IG (stängda + öppna affärer) i kontovalutan. Saldot står i TEST/LIVE-rutan.">—</span>
   <button class="run-btn" id="run-btn">▶ Kör analys</button>
   <button class="paper-balance" id="paper-balance" title="TEST-saldo (klicka för Trades-sidan)">📊 TEST <b id="pb-equity">—</b> <span id="pb-pnl">TEST</span></button>
   <button class="paper-balance" id="live-balance" style="background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(16,185,129,.08));border-color:rgba(34,197,94,.5)" title="Saldo på IG Live (riktiga pengar)">💚 LIVE <b id="lb-equity" style="color:var(--green)">—</b></button>
@@ -8193,7 +8193,8 @@ async function refreshBinanceSync(){
       const pnlEl = document.getElementById("pnl");
       if(pnlEl && res.totals){
         const tot = (Number(res.totals.realized)||0) + (Number(res.totals.unrealized)||0);
-        pnlEl.textContent = IG.money(tot, a.currency, true) + (isLive ? " · Live" : " · Demo");
+        // Detta är resultat (stängda + öppna affärer), inte saldot. Saldot står i TEST/LIVE-rutan.
+        pnlEl.textContent = "Resultat " + IG.money(tot, a.currency, true) + (isLive ? " · Live" : " · Demo");
         pnlEl.className = "pnl " + (tot >= 0 ? "up" : "down");
         STATE.igPnlSet = true;
       }
