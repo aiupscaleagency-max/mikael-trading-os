@@ -16,9 +16,11 @@ const pending = new Map<string, Promise<HistoricalContext>>();
 let cooldownUntil = 0;
 
 /** Endast uttryckligt angiven nyckel eller kursens befintliga lokala nyckelfil läses. */
-function key(): string | null {
+/** Tiingo-nyckeln: .env först, annars kursens keys.json (samma källa för dagshistorik och minidiagram). */
+export function tiingoKey(): string | null {
   const env = process.env.TIINGO_API_KEY?.trim();
   if (env) return env;
+  if (process.env.TIINGO_NO_FILE_KEY === "1") return null; // testerna: aldrig en riktig nyckel
   const homes = [process.env.PTQ_ACADEMY_HOME, path.join(os.homedir(), ".ptq-academy"),
     process.env.PTQA_COURSE_HOME || path.join(os.homedir(), "ai_upscale_work/projects/ptqa-trading/ptqa-local-environment")].filter((p): p is string => !!p);
   for (const home of homes) {
@@ -29,6 +31,7 @@ function key(): string | null {
   }
   return null;
 }
+const key = tiingoKey;
 export function getTiingoStatus() {
   const configured = !!key();
   return { provider: "Tiingo", configured, purpose: "historical_reference_only", quote: "USD", interval: "1day", years: 3,

@@ -13,9 +13,10 @@
 //   - Forex:  GET https://api.tiingo.com/tiingo/fx/<ticker>/prices?startDate=YYYY-MM-DD&resampleFreq=5min
 //             → [{ date, ticker, open, high, low, close }]  (en ticker per anrop; bara /fx/top tar tickers=)
 //  Nyckeln skickas som header (Authorization: Token …), aldrig i URL:en, så den inte hamnar i loggar/fel.
-//  Nyckeln läses ENDAST från process.env.TIINGO_API_KEY.
+//  Nyckeln läses som för dagshistoriken: TIINGO_API_KEY i .env, annars kursens keys.json (tiingoKey).
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { tiingoKey } from "../data/tiingoHistory.js";
 export const TIINGO_SPARK_LABEL = "Tiingo-diagram (ej IG-pris)";
 export const TIINGO_TTL_MS = 45 * 60_000;        // lyckad hämtning återanvänds i 45 min per ticker (delas Demo/Live: inte kontodata)
 export const TIINGO_FAIL_TTL_MS = 15 * 60_000;   // fel/saknat par: samma ticker provas inte om på 15 min
@@ -116,7 +117,7 @@ export function createTiingoIntraday(deps: {
   batchMs?: number;
 } = {}) {
   const doFetch: FetchFn = deps.fetch ?? ((url, init) => fetch(url, init) as unknown as ReturnType<FetchFn>);
-  const key = deps.key ?? (() => process.env.TIINGO_API_KEY?.trim() || null);
+  const key = deps.key ?? tiingoKey;
   const now = deps.now ?? Date.now;
   const batchMs = deps.batchMs ?? 150;
   const cache = new Map<string, TiingoSeries>();

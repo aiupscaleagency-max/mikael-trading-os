@@ -428,6 +428,8 @@ export class IgBroker implements BrokerAdapter {
       const t = await this.d.sim.close(dealId, "stängd");
       return { orderId: dealId, symbol: symbol || t.epic, side: t.direction === "BUY" ? "SELL" : "BUY", type: "MARKET", status: "confirmed", executedQty: t.size, cummulativeQuoteQty: 0, avgFillPrice: t.closeLevel, timestamp: this.d.now(), dealId };
     }
+    // Extra skydd: en simuleringsposition (SIM-) får aldrig skickas till IG, oavsett miljö
+    if (isSimDealId(dealId)) throw new Error("Demo-simuleringens position kan inte stängas via IG (" + this.env + "). Inget skickades.");
     await this.ensureConnected();
     const plan = await withIgPriority(() => this.d.close(this.env, dealId)).finally(() => this.invalidatePositions());
     if (plan.status === "unknown") throw new Error(`IG-stängningens utfall är okänt (${plan.error ?? ""}). Skickas inte om; kontrollera i IG.`);
