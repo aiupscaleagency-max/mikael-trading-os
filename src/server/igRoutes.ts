@@ -1,7 +1,7 @@
 import type http from "node:http";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
-import { getIgStatus, testIgConnection, getIgReadBudget, withIgPriority, isIgTemporaryRateError, type IgEnvironment } from "../integrations/igConnection.js";
+import { getIgStatus, testIgConnection, getIgReadBudget, withIgPriority, isIgTemporaryRateError, igOrderExecutionEnabled, type IgEnvironment } from "../integrations/igConnection.js";
 import { localIgCredentialRequest, saveIgCredentials } from "../integrations/igCredentialStore.js";
 import { igChanged } from "../integrations/igEvents.js";
 import { getIgMarket, getIgHistory, searchIgMarkets } from "../integrations/igMarkets.js";
@@ -56,7 +56,17 @@ async function body(req: http.IncomingMessage, readBody: (r: http.IncomingMessag
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
 }
 const envLabel = (e: IgEnvironment) => (e === "live" ? "IG Live" : "IG Demo");
-export const LIVE_LOCKED = "IG Live är låst på servern (MODE=live och LIVE_TRADING_CONFIRMED=true krävs i .env). Ingen inloggning eller läsning mot Live görs.";
+export const LIVE_LOCKED = "IG Live: order är låsta på servern (MODE=live, LIVE_TRADING_CONFIRMED=true och IG_ORDER_EXECUTION_ENABLED_LIVE=true krävs i .env). Läsning (saldo, kurser, positioner, historik) är tillåten; inget skickas till IG.";
+/** Live får läsas men inloggningsuppgifterna saknas: då görs ingen inloggning eller läsning mot Live. */
+export const LIVE_READ_MISSING = "IG Live saknar inloggningsuppgifter (~/.config/aiupscale/trading-ig.json). Ingen inloggning eller läsning mot Live görs.";
+/** Får IG Live LÄSAS (inloggning, saldo, kurser, katalog, positioner, historik)? Ja när Live-uppgifterna är kompletta.
+ *  Påverkar aldrig order: de kräver fortfarande liveAllowedByServer() + IG_ORDER_EXECUTION_ENABLED_LIVE. */
+export function liveReadAllowed(): boolean {
+  if (liveAllowedByServer()) return true;
+  try { return getIgStatus().environments.live.credentialsComplete === true; } catch { return false; }
+}
+/** Får IG Live ta emot order just nu? (Server-upplåst OCH Live-orderflaggan.) */
+export function liveOrdersAllowed(): boolean { return liveAllowedByServer() && igOrderExecutionEnabled("live"); }
 /** M4: belopp visas bara för aktiv miljö; den andra miljön visar bara valuta/kontotyp. */
 export function accountView<T extends { currency: string | null; accountType: string | null }>(a: T | null, active: boolean): T | { currency: string | null; accountType: string | null; hidden: true } | null {
   if (!a) return null;
@@ -146,12 +156,14 @@ export async function handleIgRoutes(
     if (p === "/api/ig/status" && method === "GET") {
       const st = getIgStatus();
       send(res, 200, {
-        activeEnv: env, label: envLabel(env), liveLocked: !liveAllowedByServer(),
+        // liveLocked/locked = Live-ORDER låsta (oförändrade fält). liveRead = Live får läsas, orderAllowed = Live-order möjliga.
+        activeEnv: env, label: envLabel(env), liveLocked: !liveAllowedByServer(), liveRead: liveReadAllowed(), orderAllowed: liveOrdersAllowed(),
         environments: Object.fromEntries((["demo", "live"] as const).map((e) => [e, {
           ...st.environments[e], connectionGeneration: undefined,
           // M4 (granskning 2): bara aktiv miljö visar belopp. Den andra miljöns saldo lämnar aldrig servern.
           account: accountView(st.environments[e].account, e === env),
           locked: e === "live" && !liveAllowedByServer(),
+          ...(e === "live" ? { liveRead: liveReadAllowed(), orderAllowed: liveOrdersAllowed() } : {}),
           executionEnabled: (brokers[e === "live" ? "ig" : "ig-demo"] as IgBroker | undefined)?.executionEnabled() ?? false,
           readBudget: getIgReadBudget(e), stream: igMarketData.streamStatus(e),
         }])),
@@ -161,7 +173,7 @@ export async function handleIgRoutes(
     if (p === "/api/ig/connect" && method === "POST") {
       const b = await body(req, readBody);
       if (b.environment !== "demo" && b.environment !== "live") { send(res, 400, { error: "Välj demo eller live" }); return true; }
-      if (b.environment === "live" && !liveAllowedByServer()) { send(res, 403, { status: "locked", error: LIVE_LOCKED }); return true; }
+      if (b.environment === "live" && !liveReadAllowed()) { send(res, 403, { status: "locked", error: LIVE_READ_MISSING }); return true; }
       const r = await testIgConnection(b.environment);
       igChanged(b.environment);
       send(res, 200, { ...r, connectionGeneration: undefined });
@@ -173,7 +185,7 @@ export async function handleIgRoutes(
       }
       try {
         const saved = saveIgCredentials(await body(req, readBody));
-        if (saved.environment === "live" && !liveAllowedByServer()) { send(res, 200, { saved: true, environment: "live", ok: false, error: `Sparat. ${LIVE_LOCKED}` }); return true; }
+        if (saved.environment === "live" && !liveReadAllowed()) { send(res, 200, { saved: true, environment: "live", ok: false, error: `Sparat. ${LIVE_READ_MISSING}` }); return true; }
         const r = await testIgConnection(saved.environment);
         send(res, 200, { saved: true, environment: saved.environment, ok: r.status === "connected", error: r.error });
       } catch (e) { send(res, 400, { error: e instanceof Error && e.message.startsWith("IG") ? e.message : "IG-uppgifterna kunde inte sparas säkert" }); }
@@ -221,7 +233,7 @@ export async function handleIgRoutes(
     }
     if (p === "/api/ig/history" && method === "GET") {
       const e = url.searchParams.get("env") === "live" ? "live" : url.searchParams.get("env") === "demo" ? "demo" : env;
-      if (e === "live" && !liveAllowedByServer()) { send(res, 403, { env: e, status: "locked", error: LIVE_LOCKED }); return true; }
+      if (e === "live" && !liveReadAllowed()) { send(res, 403, { env: e, status: "locked", error: LIVE_READ_MISSING }); return true; }
       try { send(res, 200, { env: e, ...(await getIgHistory(e)) }); } catch (err) { send(res, 200, { env: e, status: "unavailable", error: err instanceof Error ? err.message : String(err) }); }
       return true;
     }

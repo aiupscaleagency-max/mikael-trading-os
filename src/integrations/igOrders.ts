@@ -3,7 +3,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {callIgAuthenticated,getIgStatus,getIgAccounts,getIgPositions,getIgAccountIdentity,isIgTemporaryRateError,IG_READ_RATE_ERROR,type IgEnvironment} from './igConnection.js';
 import {getIgMarket,getIgAccountFx} from './igMarkets.js';
-import {igOrderExecutionEnabled} from './igConnection.js';
+import {igWritesEnabled,igLiveWritesUnlocked,IG_LIVE_WRITE_LOCKED} from './igConnection.js';
 import {dataPath} from '../dataDir.js';
 // Vår version har inga IG-agentsessioner i ordermodulen: ingen sessionspolicy, positionsgräns från config.
 const getIgSessionPolicy=(_mode:IgEnvironment):{id:string;marginPercent:number;maxTrades:number;riskPercent:number;holdingMinutes:number}|null=>null;
@@ -18,6 +18,8 @@ interface ExitPlan {accountRef?:string|null;nextCheckAt?:number;submittedAt?:num
 interface OrderState {drafts:Draft[];plans:ExitPlan[]}
 const finite=(v:unknown):v is number=>typeof v==='number'&&Number.isFinite(v);
 function modeGuard(mode:unknown):asserts mode is IgEnvironment {if(mode!=='demo'&&mode!=='live')throw Error('Ogiltig IG-miljö');};
+// Live-order låsta (.env): order och stängningar mot Live stoppas innan något markeras som skickat (inget "okänt utfall").
+function liveLock(mode:IgEnvironment){if(mode==='live'&&!igLiveWritesUnlocked())throw Error(IG_LIVE_WRITE_LOCKED);}
 /** B1 (granskning 2): en order som först blev "okänd" och senare stäms av som accepterad ska ändå få sin
  *  tidsstängning. api.ts registrerar hooken; igOrders anropar den bara vid sen avstämning (tick/resolve). */
 export type IgLateAccepted=(mode:IgEnvironment,d:{dealId:string;epic:string;size:number;timedExitSec:number;submittedAt:number})=>void;
@@ -30,7 +32,7 @@ let lateDealHook:IgLateDeal|null=null;
 export function setIgLateDealHook(fn:IgLateDeal|null){lateDealHook=fn;}
 /** Servern räknar om varje bekräftad order. UI-belopp är aldrig säkerhetsunderlag. */
 export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof getIgAccounts;positions?:typeof getIgPositions;market?:(mode:IgEnvironment,epic:string)=>Promise<any>;call?:typeof callIgAuthenticated;guard?:()=>Promise<{killSwitchActive:boolean}>;now?:()=>number;directory?:string;enabled?:(mode:IgEnvironment)=>boolean;limits?:{maxPositionUsd:number;maxTotalExposureUsd:number;maxDailyLossUsd:number;maxOpenPositions:number};sessionPolicy?:typeof getIgSessionPolicy;positionLimit?:(mode:IgEnvironment)=>number;fx?:(mode:IgEnvironment)=>Promise<IgAccountFx|null>;identity?:(mode:IgEnvironment)=>{accountId:string}|null}={}) {
-  const status=deps.status??getIgStatus,accounts=deps.accounts??getIgAccounts,positions=deps.positions??getIgPositions,market=deps.market??getIgMarket,call=deps.call??callIgAuthenticated,guard=deps.guard??loadState,now=deps.now??Date.now,enabled=deps.enabled??igOrderExecutionEnabled;
+  const status=deps.status??getIgStatus,accounts=deps.accounts??getIgAccounts,positions=deps.positions??getIgPositions,market=deps.market??getIgMarket,call=deps.call??callIgAuthenticated,guard=deps.guard??loadState,now=deps.now??Date.now,enabled=deps.enabled??igWritesEnabled;
   // Utan injicerade USD-gränser (tester) gäller gränser i kontovalutan, härledda ur saldot (igRiskLimits).
   const accountMode=!deps.limits;
   const limits=deps.limits??config.risk,directory=deps.directory??dataPath('ig-orders'),states=new Map<IgEnvironment,OrderState>(),busy=new Set<IgEnvironment>();
@@ -135,7 +137,7 @@ export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof
   }
   async function preview(mode:IgEnvironment,input:Record<string,any>){modeGuard(mode);if(!/^[A-Za-z0-9._-]{1,100}$/.test(input.epic??''))throw Error('Ogiltig IG-epic');if(![1,2,3,4,5,15,30,60,120].includes(input.holdingMinutes)||typeof input.autoClose!=='boolean')throw Error('Ogiltig IG-innehavstid');if(input.orderType==='LIMIT'&&input.autoClose)throw Error('IG limitorder kräver manuell stängning tills fyllnad kan följas entydigt');const id=binding(mode),calc=await validate(mode,input,id);
     const tes=Number(input.timedExitSec);const draft:Draft={...calc,accountRef:accountRef(mode),...(Number.isFinite(tes)&&tes>0&&tes<=7200?{timedExitSec:tes}:{}),epic:input.epic,direction:input.direction,size:input.size,orderType:input.orderType,stopLevel:input.stopLevel,targetLevel:input.targetLevel,holdingMinutes:input.holdingMinutes,autoClose:input.autoClose,id:randomUUID(),environment:mode,binding:id,createdAt:now(),expiresAt:now()+30000,status:'draft'};state(mode).drafts.push(draft);persist(mode);return {...pub(draft),execution:execution(mode)};}
-  async function confirm(mode:IgEnvironment,draftId:string){modeGuard(mode);if(!enabled(mode))throw Error(execution(mode).reason);if(busy.has(mode))throw Error('IG-order behandlas redan');busy.add(mode);
+  async function confirm(mode:IgEnvironment,draftId:string){modeGuard(mode);liveLock(mode);if(!enabled(mode))throw Error(execution(mode).reason);if(busy.has(mode))throw Error('IG-order behandlas redan');busy.add(mode);
     try{const d=state(mode).drafts.find(d=>d.id===draftId);if(!d||d.status!=='draft'||now()>d.expiresAt)throw Error('IG-utkastet är utgånget eller redan behandlat');stable(mode,d.binding);if(d.sessionId!==(deps.sessionPolicy??getIgSessionPolicy)(mode)?.id)throw Error('Granska nytt orderutkast för aktuell agentsession');const checked=await validate(mode,d,d.binding,true);if(checked.risk>d.risk*1.02||checked.margin>d.margin*1.02)throw Error('IG-kurs/risk ändrades; granska nytt underlag');
       if(now()>d.expiresAt)throw Error('IG-utkastet hann gå ut; granska nytt underlag');
       // Reservation och revisionsunderlag måste motsvara den omvaliderade order som faktiskt skickas.
@@ -197,7 +199,7 @@ export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof
     const offer=exitOffer(d);fireLateExit(mode,d,sec);
     return {added:true,dealId:d.dealId,note:`Tidsstängning tillagd: stängs om cirka ${Math.round((offer?.remainingSec??30)/60)} min.`};
   }
-  async function close(mode:IgEnvironment,dealId:string,expectedBinding?:string){modeGuard(mode);if(!enabled(mode))throw Error(execution(mode).reason);if(busy.has(mode))throw Error('IG-order behandlas redan');busy.add(mode);
+  async function close(mode:IgEnvironment,dealId:string,expectedBinding?:string){modeGuard(mode);liveLock(mode);if(!enabled(mode))throw Error(execution(mode).reason);if(busy.has(mode))throw Error('IG-order behandlas redan');busy.add(mode);
     try{const id=binding(mode),s=state(mode);if(expectedBinding&&expectedBinding!==id)throw Error('IG-kontot ändrades sedan granskningen');if(s.plans.some(p=>p.dealId===dealId&&['submitted','unknown'].includes(p.status)))throw Error('IG tidigare stängningsutfall måste avstämmas');let plan=s.plans.find(p=>p.dealId===dealId&&p.binding===id);if(plan&&['submitted','unknown','confirmed'].includes(plan.status))throw Error('IG-stängning är redan begärd; invänta bekräftelse');
       const ps=await positions(mode),p=ps.positions?.find((p:any)=>p.dealId===dealId);if(ps.status!=='ready'&&isIgTemporaryRateError(ps.error))throw Error(IG_READ_RATE_ERROR);if(ps.status!=='ready'||!p||!finite(p.size)||p.size<=0||!['BUY','SELL'].includes(p.direction??''))throw Error('IG-positionen kunde inte verifieras');const m=await market(mode,p.epic!);if(!fresh(m))throw Error('IG-stängning kräver färsk ofördröjd kvot');stable(mode,id);
       if(!plan){plan={dealId,binding:id,closeAt:now(),status:'scheduled'};s.plans.push(plan);}plan.status='submitted';plan.submittedAt=now();plan.accountRef=accountRef(mode);plan.retryAt=undefined;plan.dealReference=undefined;plan.error=undefined;persist(mode);

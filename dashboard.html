@@ -99,8 +99,9 @@ window.IG = (function () {
   }
   function renderEnvChips() {
     document.querySelectorAll("[data-ig-env]").forEach(function (el) {
-      var live = st.env === "live";
-      el.textContent = (live ? "LIVE · IG Live" : "TEST · IG Demo") + (st.currency ? " · " + st.currency : "");
+      var live = st.env === "live", locked = live && !(st.execution && st.execution.live);
+      // Live som bara visas: säg aldrig att live-handel är på
+      el.textContent = (live ? (locked ? "LIVE · bara läsning, order låsta · IG Live" : "LIVE · IG Live") : "TEST · IG Demo") + (st.currency ? " · " + st.currency : "");
       el.style.color = live ? "#22c55e" : "#f0b90b"; el.style.borderColor = live ? "#22c55e" : "#f0b90b";
     });
     document.querySelectorAll("[data-ig-exec]").forEach(function (el) {
@@ -2578,7 +2579,8 @@ body.app-state-onboard .fc-panel{display:none !important}
       var sm = document.getElementById("sigMode");
       if (sm) {
         var isLive = brokerInfo && brokerInfo.mode === "live";
-        sm.textContent = (isLive ? "LIVE — IG LIVE, RIKTIGA PENGAR" : "TEST — IG DEMO")
+        var liveLocked = isLive && !(window.IG && IG.st.execution && IG.st.execution.live);
+        sm.textContent = (isLive ? (liveLocked ? "LIVE · BARA LÄSNING, ORDER LÅSTA" : "LIVE — IG LIVE, RIKTIGA PENGAR") : "TEST — IG DEMO")
           + (d.executionMode === "approve" ? " · VARJE ORDER KRÄVER GODKÄNN" : " · AUTO-LÄGE");
         sm.style.color = isLive ? "#22c55e" : "#f0b90b";
       }
@@ -7374,6 +7376,38 @@ function stopBinancePolling(){
   }
 }
 
+// Live-order låsta? Serverns svar (/api/mode execution.live = .env-upplåst Live OCH Live-orderflaggan). Okänt = låst.
+function liveOrdersLocked(){ return !(window.IG && IG.st && IG.st.execution && IG.st.execution.live === true); }
+// Byt VY mellan IG Demo och IG Live (ingen handelsbekräftelse: att visa Live låser inte upp några order).
+// Uppdaterar allt: väljaren, knapparna, IG-modulen (env → kurser, katalog, saldo, plats), konton, resultat och affärer.
+function applyBrokerView(name){
+  const bs = document.getElementById("broker-select");
+  if(bs && name) bs.value = name;
+  setActiveMode(name === "ig" ? "live" : "paper");
+  if(window.IG && IG.refresh) IG.refresh().then(()=>{ if(typeof updateChatModeTag === "function") updateChatModeTag(); setActiveModeTag(); }).catch(()=>{});
+  if(typeof refreshBinanceSync === "function") refreshBinanceSync();
+  if(typeof syncBrokers === "function") syncBrokers();
+}
+// Märk LIVE-knappen när Live bara visas
+function setActiveModeTag(){
+  const b = document.querySelector('.mode-btn[data-mode="live"] .mode-sub');
+  if(b) b.textContent = currentUiMode === "live" && liveOrdersLocked() ? "bara läsning" : "IG Live";
+  const tag = document.getElementById("trades-mode-tag");
+  if(tag && currentUiMode === "live") tag.textContent = liveOrdersLocked() ? "💚 LIVE · bara läsning, order låsta" : "💚 LIVE — RIKTIGA PENGAR";
+}
+// Byt mäklare på servern och visa felet tydligt; väljaren återställs om bytet nekas
+async function switchBroker(name){
+  const bs = document.getElementById("broker-select");
+  const prev = currentUiMode === "live" ? "ig" : "ig-demo";
+  try{
+    const r = await fetch(CFG.url + "/api/active-broker", { method:"POST", headers:{ "Content-Type":"application/json", ...(CFG.key?{"x-api-key":CFG.key}:{}) }, body: JSON.stringify({broker:name}) });
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok || !d.ok){ if(bs) bs.value = prev; alert("Mäklaren byttes inte.\n\n" + (d.error || ("HTTP " + r.status))); return false; }
+    applyBrokerView(d.activeBroker || name);
+    return true;
+  }catch(e){ if(bs) bs.value = prev; alert("Mäklaren byttes inte: " + e.message); return false; }
+}
+
 function setActiveMode(uiMode){
   currentUiMode = uiMode;
   document.querySelectorAll(".mode-btn").forEach(b=>{
@@ -7383,7 +7417,7 @@ function setActiveMode(uiMode){
   const tag = document.getElementById("trades-mode-tag");
   if(tag){
     if(uiMode === "live"){
-      tag.textContent = "💚 LIVE — RIKTIGA PENGAR";
+      tag.textContent = liveOrdersLocked() ? "💚 LIVE · bara läsning, order låsta" : "💚 LIVE — RIKTIGA PENGAR";
       tag.style.background = "rgba(34,197,94,.18)";
       tag.style.color = "#22c55e";
       tag.style.border = "1px solid rgba(34,197,94,.4)";
@@ -7426,7 +7460,7 @@ function updateChatModeTag(){
   // Floating chat-panelens header
   const subEl = document.querySelector(".fc-sub");
   if(subEl){
-    subEl.textContent = isLive ? "💚 LIVE — IG Live (riktiga pengar)" : "🧪 TEST — IG Demo";
+    subEl.textContent = isLive ? (liveOrdersLocked() ? "💚 LIVE · bara läsning, order låsta" : "💚 LIVE — IG Live (riktiga pengar)") : "🧪 TEST — IG Demo";
     subEl.style.color = isLive ? "#22c55e" : "#f0b90b";
     subEl.style.fontWeight = "700";
   }
@@ -7540,8 +7574,8 @@ function startSSE(){
         else if(ev.type === "turn-complete"){ document.getElementById("last-turn").textContent = "Klar "+new Date().toLocaleTimeString(); if(ev.payload && ev.payload.total != null) updateTiming(ev.payload); }
         else if(ev.type === "trade"){ /* could prepend to a trade log */ }
         else if(ev.type === "kill-switch"){ STATE.killActive = !!ev.payload?.active; document.getElementById("kill-btn").classList.toggle("active", STATE.killActive); }
-        else if(ev.type === "broker-changed"){ const bs = document.getElementById("broker-select"); if(bs && ev.payload?.broker) bs.value = ev.payload.broker; }
-        else if(ev.type === "mode-changed"){ setActiveMode(ev.payload?.uiMode || "paper"); }
+        else if(ev.type === "broker-changed"){ if(ev.payload?.broker) applyBrokerView(ev.payload.broker); }
+        else if(ev.type === "mode-changed"){ if(ev.payload?.uiMode) setActiveMode(ev.payload.uiMode); /* auto/manuellt-byte saknar uiMode: vyn ändras inte */ }
       }catch(_){}
     };
     // Servern skickar NAMNGIVNA händelser (event: namn). onmessage tar bara emot
@@ -7745,9 +7779,7 @@ function wire(){
   });
 
   document.getElementById("broker-select").addEventListener("change", async e=>{
-    if(CFG.mode==="live"){
-      try{ await apiPost("/api/active-broker",{broker:e.target.value}); }catch(_){}
-    }
+    await switchBroker(e.target.value);
   });
 
   // Mode-switcher (Paper / Propose / Live)
@@ -7756,12 +7788,15 @@ function wire(){
       const target = b.dataset.mode;
       if(target === currentUiMode) return;
       if(target === "live"){
-        openLiveConfirm();
+        // Handelsbekräftelsen bara när servern faktiskt tillåter Live-order. Annars är LIVE bara en vy.
+        let m = null; try{ m = await (await fetch(CFG.url + "/api/mode", { headers: CFG.key ? {"x-api-key":CFG.key} : {} })).json(); }catch(_){}
+        if(m && m.liveOrdersAllowed){ openLiveConfirm(); return; }
+        await switchBroker("ig");
         return;
       }
       try{
         await requestMode(target);
-        setActiveMode(target);
+        applyBrokerView("ig-demo");
       }catch(e){ alert("Fel: "+e.message); }
     });
   });
@@ -8119,7 +8154,7 @@ async function refreshBinanceSync(){
     const pbPnl = document.getElementById("pb-pnl");
     // M4 (granskning 2): rubriken visar belopp bara för AKTIV miljö. Den andra visar status (låst/ansluten).
     const pill = (e) => { const x = envs[e] || {}, a = acct(e);
-      if(e === "live" && (x.locked || st.liveLocked)) return "låst";
+      if(e === "live" && !(x.liveRead ?? st.liveRead)) return "låst";
       if(a && !a.hidden && a.balance != null && st.activeEnv === e) return IG.money(a.balance, a.currency);
       return x.status === "connected" ? "ansluten" : "ej ansluten"; };
     if(lbEq) lbEq.textContent = pill("live");
@@ -8190,6 +8225,8 @@ async function refreshBinanceSync(){
   }
 }
 
+// Demo ↔ Live: konton, positioner och resultat för den nya miljön direkt (anropar aldrig IG.refresh, ingen slinga)
+IG.on("env", ()=>{ refreshBinanceSync(); });
 function startBinanceSync(){
   if(binanceSyncInterval) return;
   refreshBinanceSync();
@@ -8875,6 +8912,8 @@ document.addEventListener("DOMContentLoaded", boot);
     startStream();
     setInterval(()=>{ if(isActive()) loadStatus(); }, 3000);
     setInterval(()=>{ loadBalance(false); }, 60000);
+    // Byte Demo ↔ Live: saldot för den nya miljön direkt
+    IG.on("env", ()=>loadBalance(false));
     $("sl-bal-refresh")?.addEventListener("click", ()=>loadBalance(true));
     try{ const v = localStorage.getItem("sl-min-per-day"); if(v !== null && $("sl-min-per-day")) $("sl-min-per-day").value = v; }catch(_){}
     $("sl-min-per-day")?.addEventListener("change", e=>{ try{ localStorage.setItem("sl-min-per-day", e.target.value); }catch(_){} });
@@ -9432,6 +9471,7 @@ document.addEventListener("DOMContentLoaded", boot);
   syncType(); syncAmt();
   setInterval(()=>{ renderQuote(); if(Date.now() - quoteT > 3000){ quoteT = Date.now(); renderEst(); } }, 500);
   setInterval(syncVenue, 10000); syncVenue();
+  IG.on("env", syncVenue); // Demo ↔ Live: platsen uppdateras direkt
 })();
 </script>
 

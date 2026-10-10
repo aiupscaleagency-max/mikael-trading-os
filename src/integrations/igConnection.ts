@@ -34,6 +34,15 @@ const endpoints = {demo:"https://demo-api.ig.com/gateway/deal",live:"https://api
 /** Orderexekvering per miljö: Demo och Live har var sin flagga, båda av som standard.
  *  Den gamla gemensamma IG_ORDER_EXECUTION_ENABLED slår inte på något här. */
 export function igOrderExecutionEnabled(mode:IgEnvironment):boolean{return process.env[mode==="live"?"IG_ORDER_EXECUTION_ENABLED_LIVE":"IG_ORDER_EXECUTION_ENABLED_DEMO"]==="true";}
+/** Samma regel som liveAllowedByServer() (src/server/orderGate.ts), läst direkt ur miljön för att undvika cirkulära importer:
+ *  servern är startad för riktiga pengar bara med MODE=live och LIVE_TRADING_CONFIRMED=true i .env. */
+export function igLiveConfirmedByServer():boolean{return process.env.MODE?.trim()==="live"&&process.env.LIVE_TRADING_CONFIRMED?.trim().toLowerCase()==="true";}
+/** Får IG Live ta emot skrivande anrop (order, stängning, ändring)? Kräver BÅDE live-läget i .env och Live-orderflaggan. */
+export function igLiveWritesUnlocked():boolean{return igLiveConfirmedByServer()&&igOrderExecutionEnabled("live");}
+/** Orderläget per miljö som det faktiskt gäller: Demo = Demo-flaggan, Live = Live-flaggan OCH live-läget i .env.
+ *  Används som standard av mäklaren och orderflödet så att Live aldrig visas eller körs som "på" när Live bara läses. */
+export function igWritesEnabled(mode:IgEnvironment):boolean{return igOrderExecutionEnabled(mode)&&(mode!=="live"||igLiveConfirmedByServer());}
+export const IG_LIVE_WRITE_LOCKED="IG Live: order låsta. Live får bara läsas (saldo, kurser, positioner, historik); inget skickades till IG. Order kräver MODE=live, LIVE_TRADING_CONFIRMED=true och IG_ORDER_EXECUTION_ENABLED_LIVE=true i .env och omstart.";
 const budgetPerEnv=()=>Math.max(1,Number(process.env.IG_READ_BUDGET_PER_ENV)||24),budgetTotal=()=>Math.max(1,Number(process.env.IG_READ_BUDGET_TOTAL)||48);
 function validMode(mode: unknown): asserts mode is IgEnvironment {if(mode!=="demo"&&mode!=="live") throw Error("Ogiltig IG-miljö");}
 function number(value:unknown):number|null {return typeof value==="number"&&Number.isFinite(value)?value:null;}
@@ -51,8 +60,27 @@ export const IG_HISTORY_RATE_ERROR="IG:s veckokvot för historiska priser är sl
 export const IG_HISTORY_BLOCK_MS=60*60*1000;
 export const IG_READ_RATE_ERROR="IG begränsade antal läsanrop; försök igen om en minut";
 export function isIgTemporaryRateError(error:unknown){const message=error instanceof Error?error.message:error;return message===IG_READ_RATE_ERROR||message==="IG begränsade antal anrop"||message==="IG svarade HTTP 429"||message==="IG-läsbudgeten är slut för denna minut";}
-export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fetch?:typeof fetch;now?:()=>number}={}) {
-  const load=deps.loadCredentials ?? readCredentials, request=deps.fetch ?? ((...args:Parameters<typeof fetch>)=>fetch(...args)), now=deps.now ?? Date.now;
+export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fetch?:typeof fetch;now?:()=>number;liveWritesUnlocked?:()=>boolean}={}) {
+  const load=deps.loadCredentials ?? readCredentials, rawRequest=deps.fetch ?? ((...args:Parameters<typeof fetch>)=>fetch(...args)), now=deps.now ?? Date.now;
+  const liveWritesUnlocked=deps.liveWritesUnlocked ?? igLiveWritesUnlocked;
+  // ── Hårt skrivstopp för IG Live (sista utgången ur processen) ──
+  // Varje anrop mot IG går genom request(). Mot Live släpps bara GET utan _method-huvud och sessionsinloggningen
+  // (POST /session) igenom, om inte Live-order är upplåsta i .env. Täcker alla vägar: orderpanel, Godkänn, Sälj allt,
+  // Sälj nu, AUTO-agenten, tidsstängning, TP/SL, strategier, chatten, Double Up/Roll-Over och avstämning.
+  function liveWriteBlocked(url:string,init:RequestInit|undefined):boolean{
+    if(!url.startsWith(endpoints.live+"/")&&url!==endpoints.live)return false;
+    const method=String(init?.method??"GET").toUpperCase(),headers=(init?.headers??{}) as Record<string,string>;
+    const override=Object.keys(headers).some(k=>k.toLowerCase()==="_method");
+    if(method==="GET"&&!override)return false;
+    // Undantag: sessionens inloggning/utloggning/förnyelse (inte kontobyte via PUT, inte order).
+    if((method==="POST"||method==="DELETE")&&!override&&(url===`${endpoints.live}/session`||url===`${endpoints.live}/session/refresh-token`))return false;
+    return !liveWritesUnlocked();
+  }
+  const request=((input:Parameters<typeof fetch>[0],init?:Parameters<typeof fetch>[1])=>{
+    const url=typeof input==="string"?input:input instanceof URL?input.href:(input as Request).url;
+    if(liveWriteBlocked(url,init)){console.warn(`[ig] live ${String(init?.method??"GET")} stoppad: ${IG_LIVE_WRITE_LOCKED}`);return Promise.reject(Error(IG_LIVE_WRITE_LOCKED));}
+    return rawRequest(input,init);
+  }) as typeof fetch;
   const sessions=new Map<IgEnvironment,Session>(), states=new Map<IgEnvironment,IgEnvironmentStatus>();
   const inFlight=new Map<IgEnvironment,Promise<IgEnvironmentStatus>>();
   // Samtliga GET-vägar delar rullande minutbudget, även orderkontroller och kontopollning.
@@ -175,6 +203,9 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
   }
   async function authenticated(mode:IgEnvironment,route:string,method:"GET"|"POST"="GET",version="1",body?:Record<string,unknown>,extra?:Record<string,string>):Promise<Record<string,any>> {
     validMode(mode);
+    // Skrivstopp lager A: Live-order låsta → inget skrivande anrop byggs ens (före läsbudget och utanför try,
+    // så att det aldrig blir ett "okänt utfall" för något som aldrig skickades).
+    if(mode==="live"&&(method!=="GET"||extra?._method!==undefined)&&!liveWritesUnlocked()){console.warn(`[ig] live ${method} ${route.replace(/[^A-Za-z0-9._/-]/g,'')} stoppad: ${IG_LIVE_WRITE_LOCKED}`);throw Error(IG_LIVE_WRITE_LOCKED);}
     const readOnly = route === "categories" || /^categories\/[A-Za-z0-9._-]{1,100}\/instruments$/.test(route) || /^client-sentiment\/[A-Za-z0-9._-]{1,100}$/.test(route) || route === "accounts" || route === "positions" || route === "workingorders" || route === "markets" || route === "history/activity" || route === "history/transactions" || /^(markets|prices)\/[A-Za-z0-9._-]{1,100}$/.test(route) || /^confirms\/[A-Za-z0-9_-]{1,100}$/.test(route);
     const write = (route === "positions/otc" || route === "workingorders/otc") && method === "POST";
     if((method === "GET" && !readOnly) || (method === "POST" && !write) || !( ["1","2","3"].includes(version) || (version==="4"&&method==="GET"&&/^markets\/[A-Za-z0-9._-]{1,100}$/.test(route)) )) throw Error("IG-anropet ingår inte i tillåtna endpoints");
@@ -210,7 +241,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
       if(!data || typeof data!=="object" || Array.isArray(data)) throw Error("format");
       if(sessions.get(mode)!==session || fingerprint(credentials(mode))!==session.fingerprint)throw Error("session changed");
       return data;
-    } catch(error) {throw Error(error instanceof Error && (error.message===IG_HISTORY_RATE_ERROR||/^(?:IG svarade HTTP [1-5][0-9]{2}|IG begränsade antal läsanrop; försök igen om en minut)$/.test(error.message))?error.message:"IG-anropet kunde inte verifieras; utfallet kan vara okänt");}
+    } catch(error) {throw Error(error instanceof Error && (error.message===IG_HISTORY_RATE_ERROR||error.message===IG_LIVE_WRITE_LOCKED||/^(?:IG svarade HTTP [1-5][0-9]{2}|IG begränsade antal läsanrop; försök igen om en minut)$/.test(error.message))?error.message:"IG-anropet kunde inte verifieras; utfallet kan vara okänt");}
   }
   // Endast serverintern åtkomst. Returneras aldrig av status-/HTTP-rutterna.
   function streamingSession(mode:IgEnvironment){const current=status(mode),s=sessions.get(mode);if(current.status!=="connected"||!s?.streamingEndpoint)return null;let endpoint:URL;try{endpoint=new URL(s.streamingEndpoint);}catch{return null;}if(endpoint.protocol!=="https:"||!/(^|\.)(ig\.com|marketdatasystems\.com)$/.test(endpoint.hostname))return null;return {endpoint:endpoint.href,accountId:s.accountId,password:`CST-${s.cst}|XST-${s.xst}`,generation:current.connectionGeneration!};}

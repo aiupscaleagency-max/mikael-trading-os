@@ -306,7 +306,9 @@ export const TOOLS: Record<string, ToolDef> = {
 
       // I approve-läge lägger vi INTE ordern nu — vi bara förbereder den för
       // mänsklig bekräftelse. I auto-läge skickar vi direkt.
-      if (ctx.config.executionMode === "approve") {
+      // LIVE (riktiga pengar, även när Live bara visas och order är låsta) skickas aldrig i AUTO: alltid till Godkänn-kön.
+      const liveBroker: boolean = ctx.broker.mode === "live";
+      if (ctx.config.executionMode === "approve" || liveBroker) {
         log.agent(
           `[APPROVE-LÄGE] Claude vill lägga order: ${finalOrder.side} ${finalOrder.symbol} — ${reasoning}`,
         );
