@@ -9691,6 +9691,11 @@ document.addEventListener("DOMContentLoaded", boot);
     finally{ x.loading = false; }
     draw(e);
   }
+  // Kort på skärmen som fick "väntar" (läsgräns/minuttak) försöker igen var 20:e s, utan att man behöver rulla
+  setInterval(()=>{
+    if(!active() || document.hidden) return;
+    onScreen.forEach(e=>{ const x = P[e]; if(x && !x.loading && !(x.bars && x.bars.length) && /väntar|läsgräns/i.test(x.missing || "") && Date.now() - (x.tried || 0) > 20000){ x.tried = Date.now(); x.at = 0; want(e); } });
+  }, 20000);
   // Livekvoter bara för korten på skärmen (servern + IG-strömmen har ett tak)
   let wantT = null;
   function wantStream(){

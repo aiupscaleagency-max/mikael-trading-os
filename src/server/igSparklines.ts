@@ -24,7 +24,7 @@ import { igMarketData } from "./igMarketData.js";
 export const SPARK_TTL_MS = 45 * 60_000;          // lyckad hämtning återanvänds i 45 min
 export const SPARK_FAIL_TTL_MS = 30 * 60_000;     // kvotfel: samma EPIC provas inte om på 30 min (miljön spärras dessutom)
 export const SPARK_RETRY_MS = 5 * 60_000;         // andra fel (t.ex. IG ej anslutet): nytt försök tidigast om 5 min
-export const SPARK_MAX_PER_MIN = 3;               // högst 3 IG-hämtningar per minut och miljö, oavsett antal flikar
+export const SPARK_MAX_PER_MIN = 6;               // högst 6 IG-hämtningar per minut och miljö, oavsett antal flikar
 export const SPARK_ALLOWANCE_RESERVE = 3000;      // lämna minst så många historikpunkter åt huvuddiagram/signaler
 export const SPARK_ALLOWANCE_SHARE = 0.5;         // och minst halva veckokvoten när IG anger totalen
 export const SPARK_INTERVAL = "5m";
