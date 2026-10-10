@@ -191,6 +191,40 @@ const mkSim = (file: string) => createIgDemoSim({ market: liveMarket as never, g
   ok("hela flödet (förslag → Godkänn → sim → Sälj/motsatt → tidsstängning) gör 0 skrivande IG-anrop; Demo-resultat märkta sim; Live orörd");
 }
 
+// ══ 4b) IG Demo-strömmen avvisade prisposten: prislös Demo-sökträff ersätts av märkt Live-rad ══
+{
+  let rejectedNow = new Set<string>([SIM]);
+  const demoCat = { markets: [{ epic: FX }, { epic: SIM, name: "Bitcoin ($0.1)", bid: null, offer: null }], complete: false, searchCompletedAt: null };
+  const live = { markets: [{ epic: FX, category: "forex", bid: 1.1, offer: 1.1 }, { epic: SIM, name: "Bitcoin ($0.1)", category: "crypto", bid: 60_000, offer: 60_010 }] };
+  const r = createDemoSimRouter({ live: (c) => ({ markets: live.markets.filter((m) => m.category === c) }) as never, demo: () => demoCat as never, demoRejected: (e) => rejectedNow.has(e), now });
+  assert.equal(r.known(SIM), true, "IG:s avvisade Demo-prisström = positivt belägg");
+  assert.equal(r.liveOnly(SIM), true);
+  assert.equal(await r.route(SIM), "sim");
+  rejectedNow = new Set(); // Demo-prenumerationen avslutad: felet raderas hos strömmen
+  assert.equal(r.known(SIM), true, "belägget minns (ingen växling fram och tillbaka)");
+  assert.equal(r.known(FX), false); assert.equal(await r.route(FX), "ig", "Demo-instrument påverkas inte");
+  const sp = r.split("crypto", demoCat.markets);
+  assert.deepEqual([...sp.sim, ...sp.unproven].map((m) => m.epic), [SIM], "den avvisade Demo-raden ersätts av Live-raden");
+  ok("IG Demo-strömmens avvisning av prisposten är belägg; minns; Demo-instrument orörda; raden ersätts (inga dubbletter)");
+}
+
+// ══ 4c) Alla par: en kvot från strömmen uppdaterar kortets pris, idag % och minidiagrammets sista punkt ══
+{
+  const vm = await import("node:vm");
+  const html = fs.readFileSync(path.resolve("dashboard.html"), "utf8");
+  const src = ["ppApplyQuote", "ppSparkSeries"].map((n) => { const m = new RegExp(`function ${n}\\([\\s\\S]*?\\n}\\n`).exec(html); assert.ok(m, `${n} finns i dashboard.html`); return m![0]; }).join("\n");
+  const ctx: any = { Date, isFinite };
+  vm.createContext(ctx); vm.runInContext(src + "\nthis.ppApplyQuote = ppApplyQuote; this.ppSparkSeries = ppSparkSeries;", ctx);
+  const card: any = { price: 60_000, chg: 1.0, bars: [59_900, 60_000], to: 1000 };
+  assert.equal(ctx.ppApplyQuote(card, { epic: SIM, mid: 60_123, changePct: 1.4, observedAt: 2000 }), true);
+  assert.equal(card.price, 60_123, "priset följer kvoten"); assert.equal(card.chg, 1.4, "idag % följer kvoten"); assert.equal(card.dirty, true, "kortet ritas om");
+  assert.deepEqual(ctx.ppSparkSeries(card.bars, card.livePx, card.liveAt, card.to), [59_900, 60_000, 60_123], "minidiagrammets sista punkt = livepriset");
+  assert.deepEqual(ctx.ppSparkSeries([], 1, 2, 0), [], "inget diagram hittas på från ett enda pris");
+  assert.ok(/IG\.on\("quote", q=>\{ ppApplyQuote\(P\[q\.epic\], q\); \}\)/.test(html), "Alla par lyssnar på strömmens kvoter");
+  assert.ok(/IG\.want\("allpairs", active\(\) \? \[\.\.\.onScreen\]\.slice\(0, 20\)/.test(html), "högst 20 kort på skärmen prenumererar");
+  ok("Alla par livesynk: kvot uppdaterar pris, idag % och sista punkten; högst 20 kort i strömmen");
+}
+
 // ══ 6) Statisk: simuleringen har inga IG-skrivvägar ══
 {
   const src = fs.readFileSync(path.resolve("src/integrations/igDemoSim.ts"), "utf8");

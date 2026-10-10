@@ -22,9 +22,15 @@ export const igDemoSimRouter = createDemoSimRouter({
   live: (c) => peekIgMarketDirectory("live", c),
   demo: (c) => peekIgMarketDirectory("demo", c),
   probeDemo: (epic) => withoutIgPriority(async () => {
-    try { const m = await getIgMarket("demo", epic); return m.epic === epic ? "exists" : "unknown"; }
+    // "finns" kräver ett riktigt Demo-pris; en prislös träff är inget belägg åt något håll
+    try { const m = await getIgMarket("demo", epic); return m.epic === epic && Number.isFinite(m.quote?.bid) && Number.isFinite(m.quote?.offer) ? "exists" : "unknown"; }
     catch (e) { return e instanceof Error && e.message === "IG svarade HTTP 404" ? "missing" : "unknown"; }
   }),
+  // IG Demo-strömmen avvisade prisposten (t.ex. Bitcoin ($0.1) på Demo): IG:s eget besked att Demo saknar priset
+  demoRejected: (epic) => {
+    const failed = (igMarketData.streamStatus("demo") as { failed?: unknown }).failed;
+    return Array.isArray(failed) && failed.includes(`price:${epic}`);
+  },
 });
 
 // Bevakade simulerade instrument i Demo läses från Live (pris, ljus, ström), aldrig från IG Demo.

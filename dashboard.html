@@ -9562,6 +9562,23 @@ document.addEventListener("DOMContentLoaded", boot);
   load(); setInterval(load, 15000);
 })();
 
+// ── Alla par: livesynk från IG-strömmen (rena funktioner, testas i scripts/test-ig-demo-sim.ts) ──
+// En kvot (SSE "quote") uppdaterar kortets pris, "idag %" och minidiagrammets sista punkt. Bara visning.
+function ppApplyQuote(x, q) {
+  if (!x || !q) return false;
+  var changed = false;
+  if (q.mid != null && isFinite(q.mid)) { if (x.price !== q.mid) changed = true; x.price = q.mid; x.livePx = q.mid; x.liveAt = q.observedAt || Date.now(); }
+  if (q.changePct != null && isFinite(q.changePct)) { if (x.chg !== q.changePct) changed = true; x.chg = q.changePct; }
+  x.dirty = true;
+  return changed;
+}
+// Minidiagrammets punkter: stängda ljus + det senaste livepriset som pågående punkt (om det är nyare än sista ljuset).
+function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
+  var out = (bars || []).slice();
+  if (out.length && livePx != null && isFinite(livePx) && (!lastBarAt || !liveAt || liveAt >= lastBarAt)) out.push(livePx);
+  return out;
+}
+
 // ── Sidan Alla par (IG): hela katalogen för aktiv miljö ──
 // Katalogen (namn, EPIC, kvot) delas med Valutapar (MK). Urvalet är samma Set som Valutapar (MK.sel) och
 // sparas på servern per miljö (IGS.saveSelection via MK.onSelect), så Agentsessioner visar samma antal.
@@ -9620,7 +9637,8 @@ document.addEventListener("DOMContentLoaded", boot);
   function render(force){
     items = filtered();
     const vis = items.slice(0, shown);
-    const key = IG.st.env + "|" + vis.map(m=>m.epic).join(",");
+    // Demo-simulering ingår i nyckeln: en rad som blir "sim" ritas om med etikett och Live-pris
+    const key = IG.st.env + "|" + vis.map(m=>m.epic + (m.sim ? "*" : "")).join(",");
     counts();
     const more = $("pp-more");
     more.style.display = items.length > shown ? "" : "none";
@@ -9725,7 +9743,9 @@ document.addEventListener("DOMContentLoaded", boot);
     const c = el.querySelector(".pp-chg");
     if(x.chg != null){ c.textContent = `idag ${x.chg >= 0 ? "+" : ""}${Number(x.chg).toFixed(2)} %`; c.style.color = x.chg >= 0 ? "#3fb950" : "#f85149"; }
     else c.textContent = "idag –";
-    const cv = el.querySelector(".pp-canvas"), lbl = el.querySelector(".pp-cv"); const bars = x.bars || [];
+    const cv = el.querySelector(".pp-canvas"), lbl = el.querySelector(".pp-cv"); const closedBars = x.bars || [];
+    // Livesynk: sista punkten följer IG-strömmens pris (pågående, bara visning)
+    const bars = ppSparkSeries(closedBars, x.livePx, x.liveAt, x.to);
     if(lbl) lbl.style.color = x.src && bars.length ? "#f0b90b" : "";
     if(lbl) lbl.textContent = bars.length ? (x.src ? x.src + " · " : "") + spanText(x) + (x.missing ? " · " + x.missing : "")
       : x.missing ? x.missing : x.loading ? "hämtar diagram…" : "diagram hämtas när kortet syns";
@@ -9741,7 +9761,7 @@ document.addEventListener("DOMContentLoaded", boot);
     ctx.lineTo(w-1,h); ctx.lineTo(1,h); ctx.closePath();
     ctx.fillStyle = up ? "rgba(63,185,80,.10)" : "rgba(248,81,73,.10)"; ctx.fill();
   }
-  IG.on("quote", q=>{ const x = P[q.epic]; if(!x) return; if(q.mid != null){ x.price = q.mid; } if(q.changePct != null) x.chg = q.changePct; x.dirty = true; });
+  IG.on("quote", q=>{ ppApplyQuote(P[q.epic], q); });
   IG.on("env", ()=>{ Object.keys(P).forEach(k=>delete P[k]); localSel.clear(); renderedKey = ""; notes = {}; signals = []; render(true); if(active() && window.MK) MK.load().then(()=>render()); });
 
   // ── Signal ──

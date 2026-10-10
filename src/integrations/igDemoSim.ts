@@ -309,6 +309,9 @@ export interface DemoSimRouterDeps {
   demo: (category: "forex" | "crypto") => SimCatalogue | null;
   /** Läser instrumentet på IG Demo: finns, saknas (HTTP 404) eller okänt (annat fel). */
   probeDemo?: (epic: string) => Promise<"exists" | "missing" | "unknown">;
+  /** IG Demo-strömmen avvisade prisposten för EPIC:en (Lightstreamer-fel): IG säger att Demo saknar priset.
+   *  Positivt belägg även om Demo-sökningen listar EPIC:en (prislösa katalograder). */
+  demoRejected?: (epic: string) => boolean;
   now?: () => number;
 }
 export function createDemoSimRouter(deps: DemoSimRouterDeps) {
@@ -336,7 +339,16 @@ export function createDemoSimRouter(deps: DemoSimRouterDeps) {
   }
   const catOf = (row: Record<string, unknown>) => (row.category === "crypto" || row.category === "forex" ? row.category : null);
   function liveRow(epic: string) { return idx().live.get(epic) ?? null; }
-  function inDemo(epic: string): boolean { const i = idx(); return present.has(epic) || CATS.some((c) => i.demo[c]?.has(epic) === true); }
+  /** IG har sagt att Demo saknar instrumentet (404 eller avvisad prisström). Minns för processen, så att
+   *  avslutad Demo-prenumeration (som raderar felet) inte får instrumentet att växla fram och tillbaka. */
+  function rejected(epic: string): boolean {
+    if (present.has(epic)) return false;
+    if (missing.has(epic)) return true;
+    let r = false; try { r = !!deps.demoRejected?.(epic); } catch { r = false; }
+    if (r) missing.add(epic);
+    return r;
+  }
+  function inDemo(epic: string): boolean { const i = idx(); return present.has(epic) || (!rejected(epic) && CATS.some((c) => i.demo[c]?.has(epic) === true)); }
   /** Synkront: simuleras EPIC:en (positivt belägg)? */
   function known(epic: string): boolean {
     if (typeof epic !== "string" || inDemo(epic)) return false;
@@ -382,7 +394,8 @@ export function createDemoSimRouter(deps: DemoSimRouterDeps) {
     const have = new Set(demoMarkets.map((m) => m.epic));
     const sim: Array<Record<string, unknown> & { epic: string }> = [], unproven: Array<Record<string, unknown> & { epic: string }> = [];
     for (const m of deps.live(category)?.markets ?? []) {
-      if (typeof m.epic !== "string" || have.has(m.epic) || present.has(m.epic)) continue;
+      // Demo-rader som IG avvisat (prislösa sökträffar) ersätts av Live-raden
+      if (typeof m.epic !== "string" || present.has(m.epic) || (have.has(m.epic) && !rejected(m.epic))) continue;
       (known(m.epic) ? sim : unproven).push(m);
     }
     return { sim, unproven };

@@ -354,7 +354,8 @@ export async function handleIgRoutes(
           liveReferences = liveReferences.filter((r) => !simSet.has(r.epic));
           // Obevisade: högst två Demo-läsningar per anrop i bakgrunden (ger belägg; läsgräns räknas aldrig som belägg)
           for (const r of split.unproven.slice(0, 2)) void igDemoSimRouter.probe(r.epic).catch(() => undefined);
-          const markets = [...d.markets, ...simRows];
+          // Demo-rader som IG avvisat (prislösa sökträffar) ersätts av den märkta Live-raden; inga dubbletter
+          const markets = [...d.markets.filter((m: { epic: string }) => !simSet.has(m.epic)), ...simRows];
           send(res, 200, { env, label: envLabel(env), ...d, markets, liveReferences, simulated: simRows.length, simLabel: DEMO_SIM_LABEL, catalogue: catalogueProgress({ ...d, markets }) });
           return true;
         }
