@@ -142,6 +142,71 @@ function broker(e: "demo" | "live", over: Record<string, unknown> = {}) {
   console.log("PASS: historikfel (400) behåller namn/kvot med varning, inga ljus/tidsstämplar hittas på, Demo/Live blandas aldrig, fel EPIC avvisas");
 }
 
+// 5b. Datastatus vid okänd fördröjning (DELAY saknas i strömmen) + REST-reserv för instrument utan strömtickar
+{
+  let t = NOW, gen: string | null = "g1", failed: string[] = [], bg = 10, calls: string[] = [];
+  let restQuote: any = { bid: 1.1, offer: 1.1002, observedAt: NOW - 1_000, delayTime: 0, marketStatus: "TRADEABLE" };
+  const stream = { events: new EventEmitter(), summary: () => ({ status: "CONNECTED:WS-STREAMING", generation: gen, failed }), ensure: () => {} };
+  const E1 = "CS.D.ETHUSD.CFD.IP";
+  // Egen bevakningslista så att start() inte söker standardinstrument; md:s mockar räknas inte i calls.
+  fs.writeFileSync(path.join(tmp, "wl-delay1-demo.json"), JSON.stringify({ epics: [{ epic: E1, name: "Ether ($1)" }] }));
+  const md = createIgMarketData({ status, now: () => t, stream: stream as never, file: (e) => path.join(tmp, `wl-delay1-${e}.json`),
+    budget: () => ({ backgroundRemaining: 0 }),
+    candles: (async () => ({ status: "ready", candles: [] })) as never,
+    market: (async (_e: string, epic: string) => ({ epic, name: epic, category: "crypto", quote: {} })) as never });
+  const tickQ = (delayTime: number | null) => stream.events.emit("quote", "demo", { epic: E1, bid: 2495, offer: 2497, observedAt: t, receivedAt: t, delayTime, delayFlag: delayTime === null ? null : String(delayTime), marketStatus: "TRADEABLE" });
+  // Ström utan DELAY och utan REST-belägg → "okänd fördröjning" (inte "fördröjt")
+  md.start(); t += 1; tickQ(null); t += 1;
+  assert.equal(md.dataState(E1, "demo").state, "okänd fördröjning");
+  assert.equal(md.quote(E1, "demo")!.delayTime, null, "visningsbelägg skrivs aldrig in i kvoten (ordergrinden ser fortfarande null)");
+  // REST-snapshot delayTime 0 i samma strömsession → live
+  md.setRestQuote("demo", E1, { ...restQuote, observedAt: t - 60_000 }, true);
+  assert.equal(md.dataState(E1, "demo").state, "live"); assert.match(md.dataState(E1, "demo").note!, /delayTime 0/);
+  assert.equal(md.quote(E1, "demo")!.source, "stream", "äldre REST-pris ersätter inte strömpriset");
+  assert.equal(md.quote(E1, "demo")!.delayTime, null);
+  // Ny strömsession → belägget gäller inte längre
+  gen = "g2"; assert.equal(md.dataState(E1, "demo").state, "okänd fördröjning", "generationsbyte återkallar belägget");
+  // Senare REST säger fördröjt → fördröjt
+  md.setRestQuote("demo", E1, { ...restQuote, delayTime: 1, observedAt: t - 60_000 }, true);
+  assert.equal(md.dataState(E1, "demo").state, "fördröjt", "REST delayTime 1 återkallar och visar fördröjt");
+  md.setRestQuote("demo", E1, { ...restQuote, delayTime: 0, observedAt: t - 60_000 }, false);
+  assert.equal(md.dataState(E1, "demo").state, "okänd fördröjning", "streamingPricesAvailable false räknas inte som belägg");
+  // Strömmens egen flagga gäller alltid
+  t += 1; tickQ(1); assert.equal(md.dataState(E1, "demo").state, "fördröjt");
+  t += 1; tickQ(0); assert.equal(md.dataState(E1, "demo").state, "live");
+  assert.equal(md.quote(E1, "demo")!.delayFlag, "0", "rå DELAY-flagga följer med för felsökning");
+  md.stop();
+
+  // REST-reserv: helgmarknad utan strömtickar
+  const SUN = "IX.D.SUNEURUSD.CEE.IP";
+  fs.writeFileSync(path.join(tmp, "wl-delay-demo.json"), JSON.stringify({ epics: [{ epic: SUN, name: "Weekend EUR/USD" }, { epic: "CS.D.EURUSD.CEEM.IP", name: "EUR/USD Mini" }] }));
+  const md2 = createIgMarketData({ status, now: () => t, stream: stream as never, file: (e) => path.join(tmp, `wl-delay-${e}.json`),
+    budget: () => ({ backgroundRemaining: bg }),
+    market: (async (_e: string, epic: string) => { calls.push(epic); return { epic, name: epic, category: "forex", quote: { ...restQuote, marketStatus: epic === SUN ? "TRADEABLE" : "EDIT", observedAt: t - 1_000 }, instrument: { streamingPricesAvailable: true } }; }) as never });
+  const seen: any[] = []; md2.events.on("quote", (_e: string, q: any) => seen.push(q));
+  calls = []; bg = 0; await md2.restFallback("demo"); assert.equal(calls.length, 0, "ingen läsning när bakgrundsbudgeten är slut");
+  bg = 2; await md2.restFallback("demo"); assert.equal(calls.length, 0, "marginal kvar åt order/konto/katalog");
+  bg = 10; await md2.restFallback("demo"); assert.deepEqual(calls, [SUN], "högst en läsning per varv");
+  assert.equal(md2.quote(SUN, "demo")!.source, "rest"); assert.equal(seen.at(-1)?.epic, SUN, "REST-kvoten skickas vidare till webbläsaren");
+  assert.equal(md2.dataState(SUN, "demo").state, "live", "REST-kvot med delayTime 0 och färsk IG-tid");
+  await md2.restFallback("demo"); assert.deepEqual(calls, [SUN, "CS.D.EURUSD.CEEM.IP"], "nästa varv tar nästa instrument");
+  await md2.restFallback("demo"); assert.equal(calls.length, 2, "inget nytt inom en minut");
+  t += 61_000; await md2.restFallback("demo"); assert.deepEqual(calls.slice(2), [SUN], "handelsbar marknad igen efter 60 s");
+  await md2.restFallback("demo"); assert.equal(calls.length, 3, "stängd marknad (EDIT) frågas inte varje minut");
+  t += 300_000; await md2.restFallback("demo"); await md2.restFallback("demo"); assert.ok(calls.slice(3).includes("CS.D.EURUSD.CEEM.IP"), "stängd marknad efter 5 min");
+  // IG avvisade strömmen för instrumentet → sägs i klartext
+  failed = [`price:${SUN}`]; t += 120_000;
+  assert.match(md2.dataState(SUN, "demo").note ?? "", /ingen ström/);
+  failed = [];
+  // Dashboarden: nya statusen har färg och åldras som live; rubrikens resultat säger att det är dagens (inte saldot)
+  const html = fs.readFileSync(new URL("../dashboard.html", import.meta.url), "utf8");
+  assert.ok(html.includes('"okänd fördröjning": "#d29922"'), "STATE_COL har den nya statusen");
+  assert.ok(html.includes('(s === "live" || s === "okänd fördröjning") && a != null && a > 60000'), "okänd fördröjning blir inaktuellt efter 60 s");
+  assert.ok(html.includes('pnlEl.textContent = "Idag " + IG.money(tot, a.currency, true)'), "rubrikens resultat märks Idag");
+  assert.ok(html.includes("Number(res.totals.today)"), "rubriken räknar dagens stängda affärer, inte 30 dagar");
+  console.log("PASS: okänd DELAY visas som \"okänd fördröjning\" eller live med REST-belägg (session), REST-reserv inom bakgrundsbudget, avvisad ström sägs i klartext");
+}
+
 // 6. Resultat: IG-historik + positioner per miljö, P/L i kontovalutan
 {
   assert.equal(parseIgMoney("SEK12.50"), 12.5); assert.equal(parseIgMoney("SEK-3,20"), -3.2); assert.equal(parseIgMoney("-kr3.20"), -3.2); assert.equal(parseIgMoney("x"), null);

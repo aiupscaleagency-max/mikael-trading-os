@@ -27,7 +27,7 @@
    - Marknadsdata kommer från servern: /api/market/* (REST-historik med stängda
      ljus) och /api/market/stream (IG Lightstreamer vidare via servern, SSE).
      Webbläsaren pratar aldrig direkt med IG, Bybit eller Binance.
-   - Datastatus: live · fördröjt · historiskt · inaktuellt · frånkopplat.
+   - Datastatus: live · fördröjt · okänd fördröjning · historiskt · inaktuellt · frånkopplat.
    ══════════════════════════════════════════════════════════════════════ */
 /* B1 (granskning 2): dold flik → polling glesas ut. GET mot pollade endpoints återanvänder senaste svar
    upp till 120 s medan fliken är dold (servern cachar dessutom IG-läsningar oberoende av antal flikar). */
@@ -65,19 +65,19 @@ window.IG = (function () {
   // IG anger vissa forexpriser i punkter (EUR/USD Mini 11201 = kurs 1,1201). Visar vanlig kurs bredvid; order använder IG:s punkter.
   function plain(q) { return q && q.plainRate != null && isFinite(q.plainRate) ? " (kurs " + Number(q.plainRate).toFixed(5).replace(".", ",") + ")" : ""; }
   function px(v) { if (v == null || isNaN(v)) return "–"; var n = Number(v); return n >= 1000 ? n.toFixed(2) : n >= 10 ? n.toFixed(3) : n >= 0.1 ? n.toFixed(5) : n.toPrecision(5); }
-  var STATE_COL = { live: "#3fb950", "fördröjt": "#f0b90b", historiskt: "#8b95a7", inaktuellt: "#f0b90b", "frånkopplat": "#f85149" };
+  var STATE_COL = { live: "#3fb950", "fördröjt": "#f0b90b", "okänd fördröjning": "#d29922", historiskt: "#8b95a7", inaktuellt: "#f0b90b", "frånkopplat": "#f85149" };
   function age(ms) { if (ms == null) return ""; var s = Math.round(ms / 1000); return s < 60 ? s + " s" : s < 3600 ? Math.round(s / 60) + " min" : Math.round(s / 3600) + " h"; }
   function stateOf(q) {
     if (!q) return { state: "frånkopplat", ageMs: null };
     var a = q.observedAt ? Date.now() - q.observedAt : q.ageMs;
     var s = q.state || "frånkopplat";
-    if (s === "live" && a != null && a > 60000) s = "inaktuellt";
-    if (!lastMsgAt || Date.now() - lastMsgAt > 45000) { if (s === "live") s = "inaktuellt"; }
+    if ((s === "live" || s === "okänd fördröjning") && a != null && a > 60000) s = "inaktuellt";
+    if (!lastMsgAt || Date.now() - lastMsgAt > 45000) { if (s === "live" || s === "okänd fördröjning") s = "inaktuellt"; }
     return { state: s, ageMs: a };
   }
   function badge(q) {
     var s = stateOf(q), col = STATE_COL[s.state] || "#8b95a7";
-    return '<span class="ig-state" title="Datastatus från IG (ålder = tid sedan IG:s senaste pris)" style="display:inline-flex;gap:4px;align-items:center;font-size:11px;font-weight:700;color:' + col + '">● ' + esc(s.state) + (s.ageMs != null ? ' <span style="font-weight:400;color:#8b95a7">' + age(s.ageMs) + '</span>' : "") + "</span>";
+    return '<span class="ig-state" title="' + esc("Datastatus från IG (ålder = tid sedan IG:s senaste pris)" + (q && q.note ? ". " + q.note : "")) + '" style="display:inline-flex;gap:4px;align-items:center;font-size:11px;font-weight:700;color:' + col + '">● ' + esc(s.state) + (s.ageMs != null ? ' <span style="font-weight:400;color:#8b95a7">' + age(s.ageMs) + '</span>' : "") + "</span>";
   }
   async function getJson(u, opt) { var r = await fetch(u, opt); var d = await r.json().catch(function () { return {}; }); if (!r.ok && !d.error) d.error = "HTTP " + r.status; return d; }
   async function refresh() {
@@ -1453,7 +1453,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   <span data-ig-env style="font-size:11px;font-weight:800;padding:3px 8px;border:1px solid #f0b90b;border-radius:6px;color:#f0b90b;white-space:nowrap">TEST · IG Demo</span>
   <span data-ig-exec style="font-size:11px;font-weight:700;white-space:nowrap;color:#f0b90b">Orderläget är avstängt</span>
   <button class="kill" id="kill-btn">⏻ KILL SWITCH</button>
-  <span class="pnl up" id="pnl" title="Resultat idag/totalt på IG i kontovalutan">—</span>
+  <span class="pnl up" id="pnl" title="Dagens resultat på IG i kontovalutan (inte saldot)">—</span>
   <button class="run-btn" id="run-btn">▶ Kör analys</button>
   <button class="paper-balance" id="paper-balance" title="TEST-saldo (klicka för Trades-sidan)">📊 TEST <b id="pb-equity">—</b> <span id="pb-pnl">TEST</span></button>
   <button class="paper-balance" id="live-balance" style="background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(16,185,129,.08));border-color:rgba(34,197,94,.5)" title="Saldo på IG Live (riktiga pengar)">💚 LIVE <b id="lb-equity" style="color:var(--green)">—</b></button>
@@ -2037,7 +2037,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         var entry = Number(x.entry);
         // Priset JUST NU från IG (servern), annars signalens pris från senaste stängda ljuset
         var qt = window.IG && IG.quote(x.symbol), qs = qt ? IG.stateOf(qt).state : "";
-        if (qt && qt.bid > 0 && qt.offer > 0 && (qs === "live" || qs === "fördröjt")) entry = (Number(qt.bid) + Number(qt.offer)) / 2;
+        if (qt && qt.bid > 0 && qt.offer > 0 && (qs === "live" || qs === "fördröjt" || qs === "okänd fördröjning")) entry = (Number(qt.bid) + Number(qt.offer)) / 2;
         return { symbol: x.symbol, name: nm(x.symbol), side: side, score: x.score, reasons: (x.reasons || []).slice(0, 2), entry: entry,
           tp: Number(x.target) > 0 ? Number(x.target) : null, sl: Number(x.stopLoss) > 0 ? Number(x.stopLoss) : null, hz: hz };
       } catch (_) { return null; }
@@ -8192,8 +8192,10 @@ async function refreshBinanceSync(){
       setText("pc-winrate", t.trades ? Math.round((t.wins / t.trades) * 100) + "%" : "—");
       const pnlEl = document.getElementById("pnl");
       if(pnlEl && res.totals){
-        const tot = (Number(res.totals.realized)||0) + (Number(res.totals.unrealized)||0);
-        pnlEl.textContent = IG.money(tot, a.currency, true) + (isLive ? " · Live" : " · Demo");
+        // Dagens resultat: affärer stängda idag + öppna positioners resultat just nu (inte saldot, inte 30 dagar)
+        const tot = (Number(res.totals.today)||0) + (Number(res.totals.unrealized)||0);
+        pnlEl.textContent = "Idag " + IG.money(tot, a.currency, true) + (isLive ? " · Live" : " · Demo");
+        pnlEl.title = "Dagens resultat på IG: stängda affärer idag + öppna positioner just nu. Saldot visas i saldorutan.";
         pnlEl.className = "pnl " + (tot >= 0 ? "up" : "down");
         STATE.igPnlSet = true;
       }

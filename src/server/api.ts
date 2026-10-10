@@ -1984,7 +1984,7 @@ export function startServer(
                 const snap = await getMarketSnapshot();
                 if (snap) {
                   const marketBlock = formatSnapshotForPrompt(snap);
-                  systemPrompt = `${profile.system}\n\n---\n\n${marketBlock}\n\n**VIKTIGT:** Använd alltid datan ovan när du svarar — det är IG-data (se datastatus per instrument: live/fördröjt/inaktuellt). Hänvisa till specifika nivåer, RSI-värden, trender. Du HAR realtidsdata. Vägra inte ge konkreta rekommendationer.`;
+                  systemPrompt = `${profile.system}\n\n---\n\n${marketBlock}\n\n**VIKTIGT:** Använd alltid datan ovan när du svarar — det är IG-data (se datastatus per instrument: live/fördröjt/okänd fördröjning/inaktuellt). Hänvisa till specifika nivåer, RSI-värden, trender. Du HAR realtidsdata. Vägra inte ge konkreta rekommendationer.`;
                 }
               } catch (err) {
                 log.warn(`Market snapshot misslyckades: ${err instanceof Error ? err.message : String(err)}`);
