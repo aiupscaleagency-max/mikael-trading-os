@@ -47,7 +47,7 @@ const CRYPTO_BY_EPIC: Record<string, string> = {
   DOT: "dot", LNK: "link", UNI: "uni", POL: "pol", TON: "ton", TRX: "trx", ATOM: "atom", NEA: "near", SUI: "sui",
   ARB: "arb", SHI: "shib", AAVE: "aave", AVX: "avax", XBT: "btc",
 };
-const FIAT = new Set(["AUD", "CAD", "CHF", "CNH", "CZK", "DKK", "EUR", "GBP", "HKD", "HUF", "ILS", "INR", "JPY", "KRW", "MXN", "NOK", "NZD", "PHP", "PLN", "SEK", "SGD", "TRY", "TWD", "USD", "ZAR"]);
+const FIAT = new Set(["AUD", "BRL", "CAD", "CHF", "CNH", "CZK", "DKK", "EUR", "GBP", "HKD", "HUF", "IDR", "ILS", "INR", "JPY", "KRW", "MXN", "NOK", "NZD", "PHP", "PLN", "SEK", "SGD", "THB", "TRY", "TWD", "USD", "ZAR"]);
 
 /** Kvotvaluta ur IG:s kontraktsangivelse: "(E1)" = euro, "($1)" = dollar, "(£1)" = pund. */
 function quoteFromContract(name: string): string {
@@ -65,7 +65,8 @@ function quoteFromContract(name: string): string {
 export function tiingoTickerFor(epic: string, name?: string | null): TiingoTicker | null {
   const raw = String(name ?? "").trim();
   if (raw) {
-    if (/index/i.test(raw)) return null;
+    // Index och IG:s helgmarknader (Weekend EUR/USD m.fl., egen IG-prissättning) har ingen Tiingo-motsvarighet
+    if (/index|weekend/i.test(raw)) return null;
     const plain = raw.replace(/\([^)]*\)/g, "").replace(/\bmini\b/ig, "").trim().toLowerCase();
     const [basePart, quotePart] = plain.split("/").map((s) => s.trim());
     const base = CRYPTO_BY_NAME[basePart ?? ""];
@@ -81,10 +82,13 @@ export function tiingoTickerFor(epic: string, name?: string | null): TiingoTicke
     if (fx && FIAT.has(fx[1]!) && FIAT.has(fx[2]!)) return { ticker: (fx[1]! + fx[2]!).toLowerCase(), kind: "fx" };
   }
   // Inget användbart namn: försök med EPIC:ens instrumentdel (CS.D.EURUSD.MINI.IP, CS.D.ETHUSD.CFD.IP, CS.D.BITCOIN.CEE.IP)
-  const seg = /^[A-Z]{2}\.D\.([A-Z0-9]+)\./.exec(epic)?.[1] ?? "";
-  if (CRYPTO_BY_EPIC[seg]) return { ticker: CRYPTO_BY_EPIC[seg] + "usd", kind: "crypto" };
+  const parts = /^[A-Z]{2}\.D\.([A-Z0-9]+)\.([A-Z0-9]+)\./.exec(epic);
+  const seg = parts?.[1] ?? "";
+  // IG:s euro-kontrakt för krypto (CFE, CNE, CNEM = "(E1)"/"(E0.1)") prissätts i euro
+  const eurContract = /^(CFE|CNE|CNEM)$/.test(parts?.[2] ?? "");
+  if (CRYPTO_BY_EPIC[seg]) return { ticker: CRYPTO_BY_EPIC[seg] + (eurContract ? "eur" : "usd"), kind: "crypto" };
   const m = /^([A-Z]+?)(USD|EUR|XBT)$/.exec(seg);
-  if (m && CRYPTO_BY_EPIC[m[1]!] && !FIAT.has(m[1]!)) return { ticker: CRYPTO_BY_EPIC[m[1]!] + (m[2] === "XBT" ? "btc" : m[2]!.toLowerCase()), kind: "crypto" };
+  if (m && CRYPTO_BY_EPIC[m[1]!] && !FIAT.has(m[1]!)) return { ticker: CRYPTO_BY_EPIC[m[1]!] + (m[2] === "XBT" ? "btc" : eurContract ? "eur" : m[2]!.toLowerCase()), kind: "crypto" };
   if (/^[A-Z]{6}$/.test(seg) && FIAT.has(seg.slice(0, 3)) && FIAT.has(seg.slice(3))) return { ticker: seg.toLowerCase(), kind: "fx" };
   return null;
 }
