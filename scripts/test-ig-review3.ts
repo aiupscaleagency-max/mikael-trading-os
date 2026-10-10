@@ -372,7 +372,7 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
 // ══ Alla par: hela katalogen, delat urval, agenternas besked vid HOLD, skonsamma minidiagram ══
 {
   const html = fs.readFileSync(path.resolve("dashboard.html"), "utf8");
-  const a = html.indexOf("// ── Sidan Alla par (IG): hela katalogen"), b = html.indexOf("})();", html.indexOf('setInterval(()=>{ if(active()) onScreen.forEach(want); }, 60000);', a));
+  const a = html.indexOf("// ── Sidan Alla par (IG): hela katalogen"), b = html.indexOf("})();", html.indexOf("Ingen periodisk omhämtning av diagram", a));
   assert.ok(a > 0 && b > a, "Alla par-skriptet finns");
   const pp = html.slice(a, b);
   // 1. Katalogen (inte bara bevakningslistan): Krypto som standard + Forex/Bevakade/Alla + sökning + Visa fler
@@ -386,6 +386,7 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   assert.match(pp, /new IntersectionObserver/, "diagram laddas bara för synliga kort");
   assert.match(pp, /const CONC = 6/, "högst 6 diagram åt gången");
   assert.match(pp, /\/api\/market\/sparkline\?epic=/, "minidiagram via sparkline-cachen");
+  assert.ok(!pp.includes("setInterval(()=>{ if(active()) onScreen.forEach(want)"), "ingen periodisk omhämtning av diagram");
   assert.ok(!pp.includes("/api/market/klines") && !pp.includes("IG.klines(") && !pp.includes("IG.prices("), "ingen klines/prices-hämtning per kort");
   // 2. Urvalsknappar använder samma server-endpoints/funktioner som Valutapar
   assert.match(pp, /MK\.onSelect\(\)/, "urvalet sparas via Valutaparens MK.onSelect → /api/ig/selection");
@@ -446,6 +447,12 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   });
   const m1 = await sp.get("live", ETH);
   assert.equal(m1.source, "minne"); assert.equal(calls, 0, "serverns minne används utan IG-läsning");
+  // Låg kvot (under halva veckokvoten): inga fler minidiagram
+  const low = SP.createIgSparklines({ now: () => clock, budget: () => ({ backgroundRemaining: 5 }), signalInterval: () => "1m", persist: false, memory: () => [],
+    candles: async () => { calls++; return { candles: [{ close: 1, openTime: 1 }, { close: 2, openTime: 2 }], allowance: { remainingAllowance: 4000, totalAllowance: 10000 } }; } });
+  const l1 = await low.get("live", "CS.D.L1.CFD.IP"); assert.equal(l1.from, 1); assert.equal(l1.to, 2, "ljusens verkliga tider följer med");
+  const l2 = await low.get("live", "CS.D.L2.CFD.IP"); assert.equal(l2.error, SP.SPARK_QUOTA_TEXT, "under halva veckokvoten stoppas minidiagrammen");
+  calls = 0;
   const c1 = await sp.get("live", BTC); assert.equal(c1.source, "ig"); assert.equal(calls, 1);
   clock += 29 * 60_000;
   const c2 = await sp.get("live", BTC); assert.equal(c2.source, "cache"); assert.equal(calls, 1, "inom TTL ingen ny IG-hämtning");

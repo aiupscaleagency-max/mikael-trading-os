@@ -15,7 +15,7 @@ import { igMarketData } from "./igMarketData.js";
 //   3. Först därefter EN IG-hämtning (5m × 72 = 6 timmar), och bara om:
 //      - bakgrundsutrymme finns i läsbudgeten,
 //      - serverns egen minutgräns för minidiagram inte är nådd (gäller alla flikar),
-//      - senast kända återstående historikkvot ligger över reserven (huvuddiagram och signaler går först),
+//      - senast kända återstående historikkvot ligger över reserven OCH över halva veckokvoten (huvuddiagram och signaler går först),
 //      - miljön inte är spärrad efter att IG sagt att kvoten är slut (spärren gäller alla EPICs).
 //  Fel cachas också (negativ cache), så samma EPIC inte provas om och om igen.
 //  Detta modul anropar aldrig ensureSeries/touchSeries: inget börjar följas i bakgrunden.
@@ -25,7 +25,8 @@ export const SPARK_TTL_MS = 45 * 60_000;          // lyckad hämtning återanvä
 export const SPARK_FAIL_TTL_MS = 30 * 60_000;     // kvotfel: samma EPIC provas inte om på 30 min (miljön spärras dessutom)
 export const SPARK_RETRY_MS = 5 * 60_000;         // andra fel (t.ex. IG ej anslutet): nytt försök tidigast om 5 min
 export const SPARK_MAX_PER_MIN = 3;               // högst 3 IG-hämtningar per minut och miljö, oavsett antal flikar
-export const SPARK_ALLOWANCE_RESERVE = 1500;      // lämna minst så många historikpunkter åt huvuddiagram/signaler
+export const SPARK_ALLOWANCE_RESERVE = 3000;      // lämna minst så många historikpunkter åt huvuddiagram/signaler
+export const SPARK_ALLOWANCE_SHARE = 0.5;         // och minst halva veckokvoten när IG anger totalen
 export const SPARK_INTERVAL = "5m";
 export const SPARK_POINTS = 72;                   // 72 × 5 min = 6 timmar
 export const SPARK_QUOTA_TEXT = "diagram ej hämtat (IG:s historikkvot)";
@@ -33,14 +34,16 @@ export const SPARK_QUOTA_TEXT = "diagram ej hämtat (IG:s historikkvot)";
 export interface Sparkline {
   epic: string; env: IgEnvironment; closes: number[]; interval: string; at: number;
   source: "minne" | "cache" | "ig" | "ingen"; error: string | null; note?: string; retryAt?: number;
+  /** Första och sista ljusets öppningstid (ms), så att etiketten visar verklig period (t.ex. helg = fredagens ljus) */
+  from?: number | null; to?: number | null;
 }
 
-type CandlesFn = (env: IgEnvironment, epic: string, tf: any, limit: number) => Promise<{ candles: Array<{ close: number }>; allowance?: any; error?: string | null; status?: string }>;
+type CandlesFn = (env: IgEnvironment, epic: string, tf: any, limit: number) => Promise<{ candles: Array<{ close: number; openTime?: number }>; allowance?: any; error?: string | null; status?: string }>;
 
 export function createIgSparklines(deps: {
   candles?: CandlesFn;
   budget?: (env: IgEnvironment) => { backgroundRemaining?: number; remaining?: number };
-  memory?: (epic: string, iv: string, env: IgEnvironment) => Array<{ close: number }>;
+  memory?: (epic: string, iv: string, env: IgEnvironment) => Array<{ close: number; openTime?: number }>;
   signalInterval?: () => string;
   now?: () => number;
   file?: (env: IgEnvironment) => string;
@@ -57,7 +60,7 @@ export function createIgSparklines(deps: {
   const pending = new Map<string, Promise<Sparkline>>();
   const fetches = new Map<IgEnvironment, number[]>();
   const blockedUntil = new Map<IgEnvironment, number>();
-  const allowance = new Map<IgEnvironment, number>();
+  const allowance = new Map<IgEnvironment, { left: number; total: number | null }>(); // senast kända historikkvot
   let stats = { igFetches: 0 };
 
   function store(env: IgEnvironment): Map<string, Sparkline> {
@@ -86,8 +89,8 @@ export function createIgSparklines(deps: {
     for (const iv of [SPARK_INTERVAL, signalInterval()]) {
       const bars = memory(epic, iv, env) ?? [];
       if (bars.length >= 12) {
-        const per = iv === "1m" ? 360 : SPARK_POINTS;
-        return { epic, env, closes: bars.slice(-per).map((b) => b.close), interval: iv, at: now(), source: "minne", error: null };
+        const per = iv === "1m" ? 360 : SPARK_POINTS, use = bars.slice(-per);
+        return { epic, env, closes: use.map((b) => b.close), interval: iv, at: now(), source: "minne", error: null, from: use[0]?.openTime ?? null, to: use[use.length - 1]?.openTime ?? null };
       }
     }
     return null;
@@ -96,7 +99,7 @@ export function createIgSparklines(deps: {
   function blockReason(env: IgEnvironment): string | null {
     if (now() < (blockedUntil.get(env) ?? 0)) return SPARK_QUOTA_TEXT;
     const a = allowance.get(env);
-    if (a !== undefined && a < SPARK_ALLOWANCE_RESERVE) return SPARK_QUOTA_TEXT;
+    if (a !== undefined && (a.left < SPARK_ALLOWANCE_RESERVE || (a.total !== null && a.left < a.total * SPARK_ALLOWANCE_SHARE))) return SPARK_QUOTA_TEXT;
     const b = budget(env);
     if ((b.backgroundRemaining ?? b.remaining ?? 0) <= 0) return "diagram väntar (IG:s läsgräns denna minut)";
     const list = (fetches.get(env) ?? []).filter((t) => now() - t < 60_000);
@@ -123,10 +126,11 @@ export function createIgSparklines(deps: {
       let out: Sparkline;
       try {
         const r = await candles(env, epic, SPARK_INTERVAL, SPARK_POINTS);
-        const left = Number(r.allowance?.remainingAllowance);
-        if (Number.isFinite(left)) allowance.set(env, left);
-        const closes = (r.candles ?? []).map((c) => c.close).filter((v) => Number.isFinite(v));
-        out = { epic, env, closes, interval: SPARK_INTERVAL, at: now(), source: "ig", error: closes.length ? null : (r.error ?? "historik saknas"), ...(closes.length ? {} : { retryAt: now() + SPARK_RETRY_MS }) };
+        const left = Number(r.allowance?.remainingAllowance), total = Number(r.allowance?.totalAllowance);
+        if (Number.isFinite(left)) allowance.set(env, { left, total: Number.isFinite(total) && total > 0 ? total : null });
+        const bars = (r.candles ?? []).filter((c) => Number.isFinite(c.close));
+        const closes = bars.map((c) => c.close);
+        out = { epic, env, closes, interval: SPARK_INTERVAL, at: now(), source: "ig", error: closes.length ? null : (r.error ?? "historik saknas"), from: bars[0]?.openTime ?? null, to: bars[bars.length - 1]?.openTime ?? null, ...(closes.length ? {} : { retryAt: now() + SPARK_RETRY_MS }) };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         const quota = msg === IG_HISTORY_RATE_ERROR || /historikkvot/i.test(msg);

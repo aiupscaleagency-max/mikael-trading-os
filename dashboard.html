@@ -9604,7 +9604,7 @@ document.addEventListener("DOMContentLoaded", boot);
     return `<div class="pp-col${S().has(e) ? " pp-sel" : ""}" data-b="${esc(e)}">
       <div class="pp-top"><input type="checkbox" class="pp-chk" ${S().has(e) ? "checked" : ""} title="Ta med i Analysera valda / agentsession"><span class="pp-name" title="${esc(e)}">${esc(m.name || IG.label(e))}</span><span class="pp-px">–</span></div>
       <div class="pp-chg">–</div>
-      <canvas class="pp-canvas"></canvas><div class="pp-sub"><span class="pp-cv">senaste 6 timmarna · 5-minutersljus</span> · ${esc(IG.envLabel())} · <span class="pp-st"></span></div>
+      <canvas class="pp-canvas"></canvas><div class="pp-sub"><span class="pp-cv">diagram hämtas när kortet syns</span> · ${esc(IG.envLabel())} · <span class="pp-st"></span></div>
       <div class="pp-row pp-sig"><span class="pp-k">Signal (indikatorer)</span>–</div>
       <div class="pp-row pp-pick"><span class="pp-k">Agenterna (senaste analys)</span>Inte analyserad än</div>
       <div class="pp-ctrl">
@@ -9685,7 +9685,7 @@ document.addEventListener("DOMContentLoaded", boot);
     try{
       const d = await (await fetch("/api/market/sparkline?epic=" + encodeURIComponent(e))).json();
       if(d.env && d.env !== env) return; // svar för fel miljö kastas
-      if(d.closes && d.closes.length){ x.bars = d.closes; x.iv = d.interval; x.missing = d.note || null; x.at = Date.now(); }
+      if(d.closes && d.closes.length){ x.bars = d.closes; x.iv = d.interval; x.from = d.from; x.to = d.to; x.missing = d.note || null; x.at = Date.now(); }
       else { x.missing = d.error || "diagram ej hämtat"; x.at = Date.now() - CHART_TTL + 120000; } // nytt försök tidigast om 2 min
     }catch(err){ x.missing = "diagram ej hämtat: " + err.message; x.at = Date.now() - CHART_TTL + 120000; }
     finally{ x.loading = false; }
@@ -9698,6 +9698,15 @@ document.addEventListener("DOMContentLoaded", boot);
     wantT = setTimeout(()=>{ IG.want("allpairs", active() ? [...onScreen].slice(0, 20) : []); }, 300);
   }
 
+  // Etikett från ljusens verkliga tider: "senaste 6 h" bara när det stämmer, annars t.ex. "t.o.m. fre 22:55" (helg)
+  function spanText(x){
+    const iv = x.iv === "1m" ? "1-minutersljus" : x.iv === "5m" ? "5-minutersljus" : (x.iv || "") + "-ljus";
+    if(!x.from || !x.to) return iv;
+    const h = Math.max(1, Math.round((x.to - x.from) / 3600000));
+    const fresh = Date.now() - x.to < 30 * 60000;
+    const end = new Date(x.to).toLocaleString("sv-SE", { weekday:"short", hour:"2-digit", minute:"2-digit" });
+    return (fresh ? `senaste ${h} h` : `${h} h t.o.m. ${end}`) + " · " + iv;
+  }
   function draw(e){
     const x = P[e]; if(!x || !x.el || !x.el.isConnected) return;
     const el = x.el, q = IG.quote(e);
@@ -9709,7 +9718,7 @@ document.addEventListener("DOMContentLoaded", boot);
     if(x.chg != null){ c.textContent = `idag ${x.chg >= 0 ? "+" : ""}${Number(x.chg).toFixed(2)} %`; c.style.color = x.chg >= 0 ? "#3fb950" : "#f85149"; }
     else c.textContent = "idag –";
     const cv = el.querySelector(".pp-canvas"), lbl = el.querySelector(".pp-cv"); const bars = x.bars || [];
-    if(lbl) lbl.textContent = bars.length ? (x.iv === "1m" ? "senaste 6 timmarna · 1-minutersljus" : "senaste 6 timmarna · 5-minutersljus") + (x.missing ? " · " + x.missing : "")
+    if(lbl) lbl.textContent = bars.length ? spanText(x) + (x.missing ? " · " + x.missing : "")
       : x.missing ? x.missing : x.loading ? "hämtar diagram…" : "diagram hämtas när kortet syns";
     const w = cv.clientWidth || 220, h = 70, dpr = window.devicePixelRatio || 1;
     if(cv.width !== w*dpr){ cv.width = w*dpr; cv.height = h*dpr; }
@@ -9824,7 +9833,7 @@ document.addEventListener("DOMContentLoaded", boot);
     if(analysisRunning){ alert("En analys pågår redan. Vänta tills den är klar."); return; }
     if(epics.length > 10){ alert("Direktanalys tar högst 10 instrument. Starta en agentsession för fler."); return; }
     try{
-      if(window.MK && typeof MK.analyze === "function") await MK.analyze(epics); // /api/run-agent, samma som Valutapar
+      if(window.MK && typeof MK.analyze === "function"){ if(await MK.analyze(epics) === false) return; } // /api/run-agent, samma som Valutapar
       else {
         const r = await fetch("/api/run-agent", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ symbols: epics, instruction: `Analysera bara dessa IG-instrument (EPIC): ${epics.join(", ")}. Ge för varje köp (lång), sälj (kort) eller avstå med kort motivering.` }) });
         if(!r.ok){ alert("Analysen kunde inte startas (" + r.status + ")."); return; }
@@ -9917,8 +9926,7 @@ document.addEventListener("DOMContentLoaded", boot);
   setInterval(()=>{ if(active()) loadAnalysis(); }, 3000);
   setInterval(()=>{ if(active()) loadNotes(); }, 20000);
   setInterval(()=>{ if(active() && window.MK) MK.load(); }, 60000);
-  // Synliga kort vars diagram blivit äldre än 30 min hämtas om (servern svarar oftast från cache)
-  setInterval(()=>{ if(active()) onScreen.forEach(want); }, 60000);
+  // Ingen periodisk omhämtning av diagram: ett kort hämtas igen först när det åter rullas in och är äldre än 30 min.
 })();
 </script>
 <script>
@@ -10445,11 +10453,12 @@ window.IGS = (function(){
   $("mk-sel-vis").addEventListener("click", ()=>{ ["forex","crypto"].forEach(c=>MK.visible(c).forEach(m=>MK.sel.add(m.epic))); MK.render(); MK.onSelect(); });
   $("mk-sel-none").addEventListener("click", ()=>{ MK.sel.clear(); MK.render(); MK.onSelect(); });
   MK.analyze = async (epics)=>{
-    if(epics.length > 10){ alert("Direktanalys tar högst 10 instrument. Starta en agentsession för fler."); return; }
+    if(epics.length > 10){ alert("Direktanalys tar högst 10 instrument. Starta en agentsession för fler."); return false; }
     const r = await fetch("/api/run-agent", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ symbols: epics, instruction: `Analysera bara dessa IG-instrument (EPIC): ${epics.join(", ")}. Ge för varje köp (lång), sälj (kort) eller avstå med kort motivering.` }) });
     const d = await r.json().catch(()=>({}));
-    if(!r.ok || d.ok === false){ alert(d.error || ("HTTP " + r.status)); return; }
+    if(!r.ok || d.ok === false){ alert(d.error || ("HTTP " + r.status)); return false; }
     if(typeof pushInAppAlert === "function") pushInAppAlert(`▶ Agenterna analyserar ${epics.length} instrument. Följ dem i fliken Träd.`, 5000);
+    return true;
   };
   $("mk-analyze").addEventListener("click", ()=>MK.analyze([...MK.sel]));
   $("mk-session").addEventListener("click", ()=>IGS.startSession([...MK.sel]));
