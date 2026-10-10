@@ -130,6 +130,37 @@ const deal = (o: Record<string, unknown>) => tagStrategyDeal({ env: "demo", stra
   ok("Granskning M1: kräver öppningskurs, riktning, öppningstid nära ordern, fylld limitorder, full historik; 7 dagar → borttagen");
 }
 
+// ══ Granskning 2 (A, B): utgång från senast sedd öppen; limitorderns kurs = verklig fyllnad ══
+{
+  const S5 = listIgStrategies()[4]!.id;
+  const t0 = Date.parse("2026-09-01T10:00:00Z"), DAY = 86_400_000;
+  // A: positionen hålls i 20 dagar (horisont upp till 30 d) och räknas ändå när den stängs
+  assert.equal(deal({ dealId: "LONGHOLD", strategyId: S5, openLevel: 4.2, openedAt: t0 }), true);
+  for (const dd of [1, 6, 12, 19]) rec("demo", [{ dealId: "LONGHOLD", name: NAME, quantity: 1, avgEntryPrice: 4.2 }], [], t0 + dd * DAY);
+  assert.equal(listStrategyDeals("demo").find((x) => x.dealId === "LONGHOLD")!.lastSeenOpenAt, t0 + 19 * DAY);
+  rec("demo", [], [], t0 + 20 * DAY);
+  assert.ok(listStrategyDeals("demo").some((x) => x.dealId === "LONGHOLD"), "ingen utgång 20 dagar efter ordern när positionen sågs öppen dag 19");
+  rec("demo", [], [tx({ date: "2026-09-20T12:00:00", size: "+1", openLevel: "4.2", profitAndLoss: "SEK11", reference: "LH" })], t0 + 20 * DAY);
+  assert.equal(lib("demo", S5).trades, 1, "långt innehav räknas");
+  // A: utgång räknas från senast sedd öppen
+  assert.equal(deal({ dealId: "GONE", strategyId: S5, openLevel: 4.3, openedAt: t0 }), true);
+  rec("demo", [{ dealId: "GONE", name: NAME, quantity: 1, avgEntryPrice: 4.3 }], [], t0 + 10 * DAY);
+  rec("demo", [], [], t0 + 16 * DAY);
+  assert.ok(listStrategyDeals("demo").some((x) => x.dealId === "GONE"), "6 dagar efter senast sedd: kvar");
+  rec("demo", [], [], t0 + 17 * DAY + 1);
+  assert.equal(listStrategyDeals("demo").some((x) => x.dealId === "GONE"), false, "7 dagar efter senast sedd: borttagen");
+  // B: limitorder – arbetsorderns nivå ersätts av positionens verkliga fyllnadskurs
+  const t1 = Date.parse("2026-10-08T15:00:00Z");
+  assert.equal(deal({ dealId: "LIM2", strategyId: S5, openLevel: 1.5, orderType: "LIMIT", openedAt: t1 }), true);
+  rec("demo", [{ dealId: "LIM2", name: NAME, quantity: 1, avgEntryPrice: 1.4995 }], [], t1 + 60_000);
+  assert.equal(listStrategyDeals("demo").find((x) => x.dealId === "LIM2")!.openLevel, 1.4995, "fyllnadskursen ur positionen");
+  rec("demo", [], [tx({ date: "2026-10-08T15:30:00", size: "+1", openLevel: "1.5", profitAndLoss: "SEK1" })], t1 + 40 * 60_000);
+  assert.equal(lib("demo", S5).trades, 1, "rad med arbetsorderns nivå räknas inte");
+  rec("demo", [], [tx({ date: "2026-10-08T15:31:00", size: "+1", openLevel: "1.4995", profitAndLoss: "SEK2" })], t1 + 41 * 60_000);
+  assert.equal(lib("demo", S5).trades, 2, "rad med verklig fyllnadskurs räknas");
+  ok("Granskning 2: utgång räknas från senast sedd öppen; limitorderns öppningskurs = positionens fyllnad");
+}
+
 // ══ Granskning mindre 2: delstängningar summeras, registreras när positionen är helt stängd ══
 {
   const S3 = listIgStrategies()[2]!.id;

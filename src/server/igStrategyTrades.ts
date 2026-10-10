@@ -12,7 +12,8 @@
 //
 // Ingen gissning: utan strategi-id registreras inget. Raderna måste ha samma instrument,
 // samma riktning, samma öppningskurs, (om IG anger den) öppningstid nära orderns och tillsammans
-// exakt den ursprungliga storleken. Annars väntar affären; efter 7 dagar utan träff tas den bort
+// exakt den ursprungliga storleken. Annars väntar affären; 7 dagar efter att positionen senast sågs öppen
+// (eller efter ordern, om den aldrig sågs) utan träff tas den bort
 // utan att registreras.
 // ═════════════════════════════════════════════════════════════════════
 import fs from "node:fs";
@@ -41,6 +42,8 @@ export interface StrategyDeal {
   /** Limitorder: väntar tills en öppen position med samma dealId syns */
   awaitingFill?: boolean;
   filledSeenAt?: number;
+  /** Senast positionen sågs öppen hos IG. Utgång (7 dagar utan säker träff) räknas härifrån. */
+  lastSeenOpenAt?: number;
   /** Transaktionsraderna som räknades (så samma rad aldrig används för två affärer) */
   txKeys?: string[];
   recordedAt?: number;
@@ -130,14 +133,17 @@ export function reconcileStrategyDeals(env: LibraryEnv, positions: ObservedPosit
   for (const d of list.filter((x) => x.env === env && !x.recordedAt)) {
     const p = positions.find((x) => x.dealId === d.dealId);
     if (p) {
-      if (d.awaitingFill) { d.awaitingFill = false; d.filledSeenAt = now; changed = true; }
-      // Kursen ur bekräftelsen gäller; saknas den tas den ur IG-positionen. Storleken ändras aldrig (delstängningar).
       const lvl = pos(num(p.avgEntryPrice));
-      if (d.openLevel === null && lvl) { d.openLevel = lvl; changed = true; }
+      // Limitorder: bekräftelsens kurs är arbetsorderns nivå, inte fyllnaden. Fyllnadskursen tas ur IG-positionen.
+      if (d.awaitingFill) { d.awaitingFill = false; d.filledSeenAt = now; if (lvl) d.openLevel = lvl; changed = true; }
+      // Marknadsorder: kursen ur bekräftelsen gäller; saknas den tas den ur IG-positionen. Storleken ändras aldrig (delstängningar).
+      else if (d.openLevel === null && lvl) { d.openLevel = lvl; changed = true; }
+      // 7-dagarsgränsen räknas från senast positionen sågs öppen (innehav kan vara upp till 30 dagar).
+      d.lastSeenOpenAt = now; changed = true;
       if (!d.name && p.name) { d.name = p.name; changed = true; }
       continue;
     }
-    if (now - d.openedAt > STRATEGY_DEAL_MAX_AGE_MS) { expired.add(d); continue; }
+    if (now - (d.lastSeenOpenAt ?? d.openedAt) > STRATEGY_DEAL_MAX_AGE_MS) { expired.add(d); continue; }
     if (d.awaitingFill || d.openLevel === null || !d.name) continue;
     const from = d.openedAt - OPEN_TIME_WINDOW_MS, to = (d.filledSeenAt ?? d.openedAt) + OPEN_TIME_WINDOW_MS;
     const rows = transactions.filter((t) => {
