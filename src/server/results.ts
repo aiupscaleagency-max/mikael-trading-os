@@ -134,8 +134,9 @@ export async function getResults(
     const pnls = trades.filter((t) => t.pnl !== undefined).sort((a, b) => a.at - b.at).map((t) => t.pnl!);
     setStakeHistory(pnls, balance, currency, env);
   }
-  // F1: strategins stängda affärer registreras bara när positioner OCH historik lästes utan fel (samma miljö).
-  if (!errors.length && livePositions) {
+  // F1: strategins stängda affärer registreras bara när positioner OCH hela historiken lästes utan fel (samma miljö).
+  // Ofullständig historik (fler sidor än lästes) → vänta, så att en delstängning aldrig räknas som hela affären.
+  if (!errors.length && livePositions && !partial) {
     try { reconcileStrategyDeals(env, livePositions, rawTx, parseIgMoney, currency); }
     catch (e) { log.warn(`[strategi-resultat] avstämningen misslyckades: ${e instanceof Error ? e.message : String(e)}`); }
   }

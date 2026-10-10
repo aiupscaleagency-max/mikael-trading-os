@@ -33,6 +33,7 @@ const TOOLS: Anthropic.Tool[] = [
         side: { type: "string", enum: ["BUY", "SELL"] },
         stake_pct: { type: "number", description: "Insats i % av saldot (0.1–3)" },
         reason: { type: "string" },
+        strategy_id: { type: "string", description: "Valfritt: id för strategin i Strategibiblioteket som förslaget bygger på. Ange BARA om förslaget faktiskt följer den strategin; annars utelämna." },
       },
       required: ["epics", "side"],
     },
@@ -79,7 +80,9 @@ export async function executeIgChatTool(name: string, input: Record<string, unkn
     const results = [];
     for (const epic of epics) {
       if (!allowed.has(epic)) { results.push({ epic, ok: false, error: "Finns inte i bevakningslistan — inga påhittade EPICs" }); continue; }
-      const r = await deps.createPending({ symbol: epic, side, stakePct: pct, source: "chat", reason: input.reason ? String(input.reason) : "Från chatten" }, broker);
+      // F1: strategin följer med bara när modellen uttryckligen anger den; servern tar bara med kända id:n.
+      const strategyId = typeof input.strategy_id === "string" && input.strategy_id ? input.strategy_id : undefined;
+      const r = await deps.createPending({ symbol: epic, side, stakePct: pct, source: "chat", reason: input.reason ? String(input.reason) : "Från chatten", ...(strategyId ? { strategyId } : {}) }, broker);
       results.push(r.ok ? { epic, ok: true, queued: r.pendingOrder?.id, stake: r.pendingOrder?.stakeAmount, currency: r.pendingOrder?.currency } : { epic, ok: false, error: r.error });
     }
     return { ok: true, executed: false, results, message: "Inga ordrar är lagda än. De väntar på Mikes godkännande under Väntande ordrar." };

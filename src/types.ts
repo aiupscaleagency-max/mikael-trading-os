@@ -96,6 +96,8 @@ export interface OrderResult {
   /** IG */
   dealId?: string;
   dealReference?: string;
+  /** IG: verklig öppningskurs ur IG:s bekräftelse (confirms.level), när den finns */
+  fillLevel?: number;
   error?: string;
 }
 

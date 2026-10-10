@@ -13,7 +13,7 @@ import {config} from '../config.js';
 import {igFxIsFresh,type IgAccountFx} from './igRules.js';
 import {igAccountLimits,igPositionLimitReason} from './igRiskLimits.js';
 
-interface Draft {accountRef?:string|null;nextCheckAt?:number;timedExitSec?:number;lateExitAdded?:boolean;lateExitOffer?:boolean;lateExitDeclined?:boolean;submittedAt?:number;sessionId?:string;id:string;environment:IgEnvironment;binding:string;epic:string;direction:'BUY'|'SELL';size:number;orderType:'MARKET'|'LIMIT';entry:number;stopLevel:number;targetLevel:number;holdingMinutes:number;autoClose:boolean;createdAt:number;expiresAt:number;status:'draft'|'submitted'|'accepted'|'rejected'|'unknown';dealReference?:string;dealId?:string;error?:string;positionObserved?:boolean;body:Record<string,unknown>;risk:number;exposure:number;margin:number;currency:string;executionCurrency:string}
+interface Draft {accountRef?:string|null;nextCheckAt?:number;timedExitSec?:number;lateExitAdded?:boolean;lateExitOffer?:boolean;lateExitDeclined?:boolean;submittedAt?:number;sessionId?:string;id:string;environment:IgEnvironment;binding:string;epic:string;direction:'BUY'|'SELL';size:number;orderType:'MARKET'|'LIMIT';entry:number;stopLevel:number;targetLevel:number;holdingMinutes:number;autoClose:boolean;createdAt:number;expiresAt:number;status:'draft'|'submitted'|'accepted'|'rejected'|'unknown';dealReference?:string;dealId?:string;error?:string;positionObserved?:boolean;fillLevel?:number;body:Record<string,unknown>;risk:number;exposure:number;margin:number;currency:string;executionCurrency:string}
 interface ExitPlan {accountRef?:string|null;nextCheckAt?:number;submittedAt?:number;dealId:string;binding:string;closeAt:number;status:'scheduled'|'interrupted'|'submitted'|'confirmed'|'failed'|'unknown';dealReference?:string;error?:string;retryAt?:number}
 interface OrderState {drafts:Draft[];plans:ExitPlan[]}
 const finite=(v:unknown):v is number=>typeof v==='number'&&Number.isFinite(v);
@@ -23,6 +23,11 @@ function modeGuard(mode:unknown):asserts mode is IgEnvironment {if(mode!=='demo'
 export type IgLateAccepted=(mode:IgEnvironment,d:{dealId:string;epic:string;size:number;timedExitSec:number;submittedAt:number})=>void;
 let lateAcceptedHook:IgLateAccepted|null=null;
 export function setIgLateAcceptedHook(fn:IgLateAccepted|null){lateAcceptedHook=fn;}
+/** F1: varje sent accepterad order (automatisk eller manuell avstämning) meddelas med utkastets id, så att
+ *  servern kan koppla affären till strategin som ordern kom från. Påverkar aldrig tidsstängningen. */
+export type IgLateDeal=(mode:IgEnvironment,d:{draftId:string;dealId:string;epic:string;size:number;direction:'BUY'|'SELL';orderType:'MARKET'|'LIMIT';fillLevel:number|null;submittedAt:number})=>void;
+let lateDealHook:IgLateDeal|null=null;
+export function setIgLateDealHook(fn:IgLateDeal|null){lateDealHook=fn;}
 /** Servern räknar om varje bekräftad order. UI-belopp är aldrig säkerhetsunderlag. */
 export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof getIgAccounts;positions?:typeof getIgPositions;market?:(mode:IgEnvironment,epic:string)=>Promise<any>;call?:typeof callIgAuthenticated;guard?:()=>Promise<{killSwitchActive:boolean}>;now?:()=>number;directory?:string;enabled?:(mode:IgEnvironment)=>boolean;limits?:{maxPositionUsd:number;maxTotalExposureUsd:number;maxDailyLossUsd:number;maxOpenPositions:number};sessionPolicy?:typeof getIgSessionPolicy;positionLimit?:(mode:IgEnvironment)=>number;fx?:(mode:IgEnvironment)=>Promise<IgAccountFx|null>;identity?:(mode:IgEnvironment)=>{accountId:string}|null}={}) {
   const status=deps.status??getIgStatus,accounts=deps.accounts??getIgAccounts,positions=deps.positions??getIgPositions,market=deps.market??getIgMarket,call=deps.call??callIgAuthenticated,guard=deps.guard??loadState,now=deps.now??Date.now,enabled=deps.enabled??igOrderExecutionEnabled;
@@ -140,7 +145,7 @@ export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof
     }finally{busy.delete(mode);}}
   async function reconcile(mode:IgEnvironment,d:Draft,late=false,manual=false){if(!d.dealReference)return;if(!late)stable(mode,d.binding);const result=await call(mode,`confirms/${d.dealReference}`,'GET','1');if(!late)stable(mode,d.binding);
     if(result.dealStatus==='REJECTED'){d.status='rejected';d.error='IG avvisade ordern';}
-    else if(result.dealStatus==='ACCEPTED'&&typeof result.dealId==='string'){d.status='accepted';d.dealId=result.dealId;d.error=undefined;if(!manual&&d.autoClose&&d.orderType==='MARKET'&&!state(mode).plans.some(p=>p.dealId===d.dealId&&p.binding===d.binding))state(mode).plans.push({dealId:d.dealId!,binding:d.binding,closeAt:(d.sessionId?(d.submittedAt??d.createdAt):now())+d.holdingMinutes*60000,status:'scheduled'});}
+    else if(result.dealStatus==='ACCEPTED'&&typeof result.dealId==='string'){d.status='accepted';d.dealId=result.dealId;d.error=undefined;if(finite(result.level)&&result.level>0)d.fillLevel=result.level;if(!manual&&d.autoClose&&d.orderType==='MARKET'&&!state(mode).plans.some(p=>p.dealId===d.dealId&&p.binding===d.binding))state(mode).plans.push({dealId:d.dealId!,binding:d.binding,closeAt:(d.sessionId?(d.submittedAt??d.createdAt):now())+d.holdingMinutes*60000,status:'scheduled'});}
     else{d.status='unknown';d.error='IG-bekräftelsen har inget verifierat avslut';}persist(mode);if(late)lateAccepted(mode,d,manual);}
   /** M2 (granskning 2): avstämning av okänd order MED dealReference, även efter IG:s timvisa omloggning
    *  (ny connectionGeneration) så länge kontot är detsamma. Först confirms/{ref}; svarar IG inte längre
@@ -173,6 +178,7 @@ export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof
   /** Automatisk sen avstämning (tick, dealReference) lägger till tidsstängningen. N1 (granskning 3): en MANUELL
    *  avstämning lägger aldrig till den själv; ordern markeras "tidsstängning saknas – lägg till?" och Mike avgör. */
   function lateAccepted(mode:IgEnvironment,d:Draft,manual=false){
+    if(d.status==='accepted'&&d.dealId&&lateDealHook){try{lateDealHook(mode,{draftId:d.id,dealId:d.dealId,epic:d.epic,size:d.size,direction:d.direction,orderType:d.orderType,fillLevel:finite(d.fillLevel)?d.fillLevel:null,submittedAt:d.submittedAt??d.createdAt});}catch{/* bara strategiresultat */}}
     if(d.status!=='accepted'||!d.dealId||d.lateExitAdded||d.lateExitDeclined)return;
     if(manual){const sec=exitSec(d);if(sec){d.lateExitOffer=true;persist(mode);}return;}
     if(!d.timedExitSec)return;fireLateExit(mode,d,d.timedExitSec);

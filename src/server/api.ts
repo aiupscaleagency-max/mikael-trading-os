@@ -15,7 +15,7 @@ import { config } from "../config.js";
 import { getCostSummary } from "../cost/tracker.js";
 import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
 import { igMarketData } from "./igMarketData.js";
-import { setIgLateAcceptedHook } from "../integrations/igOrders.js";
+import { setIgLateAcceptedHook, setIgLateDealHook } from "../integrations/igOrders.js";
 import { handleIgRoutes } from "./igRoutes.js";
 import { getIgTimes, setIgTimes, ANALYSIS_INTERVALS, SESSION_MINUTES } from "./igTimes.js";
 import { type createIgSessions, DIRECT_ANALYSIS_MAX } from "./igSessions.js";
@@ -43,7 +43,7 @@ import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, sta
 import { addTimedExit, cancelTimedExit, cancelTimedExitForDeal, getHorizonMin, HORIZON_CHOICES, listTimedExits, listConfirmedExits, rollOverTimedExit, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
 import { reportSessionAttempt, adjustLiveSpend, addOrderGateBlock, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 import { isLibraryStrategy } from "./igStrategyLibrary.js";
-import { tagStrategyDeal } from "./igStrategyTrades.js";
+import { rememberUnknownStrategyOrder, tagStrategyDeal, takeUnknownStrategyOrder } from "./igStrategyTrades.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
 let binanceLiveCreds: BinanceCredentials | null = null;
@@ -444,6 +444,15 @@ setIgLateAcceptedHook((mode, d) => {
   log.trade(`[horisont] sen avstämning: ${d.epic} (${d.dealId}) fick sin tidsstängning`);
 });
 
+// F1 (granskning): en strategiorder med okänt utfall som IG senare bekräftar kopplas till sin strategi.
+setIgLateDealHook((mode, d) => {
+  const env = mode === "live" ? "live" : "demo";
+  const m = takeUnknownStrategyOrder(env, d.draftId);
+  if (!m) return;
+  tagStrategyDeal({ env, dealId: d.dealId, strategyId: m.strategyId, epic: d.epic, name: m.name ?? igMarketData.nameOf(d.epic, env) ?? null,
+    direction: d.direction, size: d.size, openLevel: d.fillLevel, orderType: d.orderType, openedAt: d.submittedAt });
+});
+
 // ─── IG: godkänd order → IG (granskning + bekräftelse i Codex igOrders) ───
 // Orderläget AV (standard): inget skickas, ordern ligger kvar med ett tydligt besked.
 // Okänt utfall: markeras som misslyckad och skickas ALDRIG om automatiskt.
@@ -471,7 +480,11 @@ async function executeIgOrder(p: PendingOrder, broker: IgBroker): Promise<{ ok: 
     }
     // F1: affären från en strategi märks med strategins id (per miljö) så att resultatet räknas när den stängs.
     if (order.dealId && p.strategyId) {
-      tagStrategyDeal({ env: broker.env === "live" ? "live" : "demo", dealId: order.dealId, strategyId: p.strategyId, epic: p.symbol, name: p.name ?? null, size: order.executedQty || p.quantity || null });
+      tagStrategyDeal({
+        env: broker.env === "live" ? "live" : "demo", dealId: order.dealId, strategyId: p.strategyId, epic: p.symbol,
+        name: p.name ?? igMarketData.nameOf(p.symbol, broker.env === "live" ? "live" : "demo") ?? null, direction: p.side, size: order.executedQty || p.quantity || null,
+        openLevel: order.fillLevel ?? null, orderType: p.orderType === "LIMIT" ? "LIMIT" : "MARKET",
+      });
     }
     log.trade(`[GODKÄND] ${p.side} ${p.symbol} via ${broker.name} · ${order.status}${order.dealId ? ` · deal ${order.dealId}` : ""}`);
     reportSessionAttempt(p.sessionAttempt, order.status === "accepted" || order.dealId ? "accepterad" : "okänd", order.dealId ? `deal ${order.dealId}` : String(order.status));
@@ -480,6 +493,11 @@ async function executeIgOrder(p: PendingOrder, broker: IgBroker): Promise<{ ok: 
     const msg = (err instanceof Error ? err.message : String(err)).slice(0, 400);
     const keep = msg.startsWith(IG_EXECUTION_OFF);
     // Krav E5: avvisad, okänd eller stoppad (insats/budget/kurs efter Godkänn) — försöket är förbrukat.
+    // F1: okänt utfall → kom ihåg strategin för utkastet; kopplas om IG senare bekräftar ordern (setIgLateDealHook).
+    const draftId = (err as { igDraftId?: string })?.igDraftId;
+    if ((err as { igOutcome?: string })?.igOutcome === "unknown" && draftId && p.strategyId) {
+      rememberUnknownStrategyOrder({ env: broker.env === "live" ? "live" : "demo", draftId, strategyId: p.strategyId, epic: p.symbol, name: p.name ?? igMarketData.nameOf(p.symbol, broker.env === "live" ? "live" : "demo") ?? null });
+    }
     if (!keep) { const o = (err as { igOutcome?: string })?.igOutcome; reportSessionAttempt(p.sessionAttempt, o === "unknown" ? "okänd" : o === "rejected" ? "avvisad" : "stoppad", msg); }
     return { ok: false, error: msg, keepPending: keep };
   }
@@ -2276,8 +2294,8 @@ export function startServer(
               const { igChat } = await import("./igChat.js");
               const { sanitizeChatContext } = await import("./igChatContext.js");
               const ctx = sanitizeChatContext(context, igb.env === "live" ? "live" : "demo");
-              // F1: en strategi som Mike valt i chattens kontext följer med chattens förslag (bara om den finns i biblioteket).
-              const out = await igChat(message, history || [], igb, { llm: createLlmClient(), createPending: (pb, pbk) => createIgPendingOrder(ctx.used.strategy ? { ...pb, strategyId: ctx.used.strategy } : pb, pbk), contextPrompt: ctx.prompt });
+              // F1: chattens förslag bär en strategi bara om modellen uttryckligen anger den (strategy_id); kontexten ärvs inte.
+              const out = await igChat(message, history || [], igb, { llm: createLlmClient(), createPending: createIgPendingOrder, contextPrompt: ctx.prompt });
               if (out.ok && out.toolCall) broadcastEvent("pending-orders", { from: "chat" });
               json(res, { ...out, contextUsed: ctx.used });
             } catch (err) {

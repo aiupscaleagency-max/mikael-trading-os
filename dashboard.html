@@ -2017,6 +2017,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         + ' <span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + (o.live ? "#22c55e" : "#f0b90b") + ";color:" + (o.live ? "#22c55e" : "#f0b90b") + '">' + (o.live ? "IG Live" : "IG Demo") + "</span></div>"
         + '<div style="margin-top:2px;color:#8b95a7">Pris nu ~' + esc(o.refPrice) + (o.takeProfit ? " · målpris " + esc(o.takeProfit) : "") + (o.stopLoss ? " · stop-loss " + esc(o.stopLoss) : "") + (hz ? " · håll " + hz : "") + "</div>"
         + outcome(o)
+        + (o.strategyId && window.strategyTag ? '<div style="margin-top:4px">' + strategyTag(o) + "</div>" : "")
         + (o.expiresAt ? '<div style="margin-top:4px">Giltig i <span class="am-cd" data-exp="' + esc(o.expiresAt) + '"></span></div>' : "")
         + (o.reason ? '<div style="margin-top:4px;font-size:12px;color:#8b95a7">' + esc(o.reason) + "</div>" : "")
         + (window.IG && !IG.execOn() ? '<div style="margin-top:4px;font-size:12px;color:#fbbf24">Orderläget är avstängt — GODKÄNN skickar inget till IG.</div>' : "")
@@ -2616,6 +2617,7 @@ body.app-state-onboard .fc-panel{display:none !important}
           + (o.takeProfit ? '<span style="font-size:12px;color:#3fb950">TP ' + esc(o.takeProfit) + '</span>' : "")
           + (o.stopLoss ? '<span style="font-size:12px;color:#f85149">SL ' + esc(o.stopLoss) + '</span>' : "")
           + payoutHtml(o)
+          + (window.strategyTag ? strategyTag(o) : "")
           + (withButtons && o.expiresAt ? '<span style="font-size:12px;color:#fbbf24">giltig <span class="pend-cd" data-exp="' + esc(o.expiresAt) + '"></span></span>' : "")
           + (o.horizonSec ? '<span style="font-size:12px">håll ' + Math.round(o.horizonSec / 60) + ' min</span>' : "")
           + '<span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid ' + col + ';color:' + col + '">' + (o.live ? "LIVE · IG Live" : "TEST · IG Demo") + '</span>'
@@ -3507,6 +3509,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         <b style="color:#e6e6e6">${IG.esc(o.name || IG.label(o.symbol))}</b>
         <span>${o.stakeAmount ? IG.money(o.stakeAmount, o.currency) : o.quantity != null ? IG.esc(o.quantity) + " st" : ""}</span>
         <span style="color:${o.live ? "#22c55e" : "#f0b90b"}">${o.live ? "IG Live" : "IG Demo"}</span>
+        ${window.strategyTag ? strategyTag(o) : ""}
         <span style="color:var(--dim)">${IG.esc(o.source || "")} · ${new Date(o.createdAt).toLocaleTimeString("sv-SE").slice(0,5)}</span>
       </div>`).join("") : '<div style="font-size:12px;color:var(--dim)">Inga väntande ordrar.</div>';
     }catch(_){}
@@ -10624,6 +10627,13 @@ window.IGS = (function(){
 </script>
 <script>
 // F1: valfri strategi för nya ordrar (orderpanelen och "Köp ändå" i popupen). Senaste val sparas per miljö.
+// Kortens text "Strategi: X" (visas innan du godkänner). Fungerar även innan listan laddats (visar id).
+window.strategyTag = function (o, style) {
+  if (!o || !o.strategyId) return "";
+  var n = window.OT_STRATEGY && OT_STRATEGY.nameOf ? OT_STRATEGY.nameOf(o.strategyId) : o.strategyId;
+  var e = (window.IG && IG.esc) || function (t) { return String(t); };
+  return '<span class="strategy-tag" style="' + (style || "font-size:12px;color:#a78bfa") + '">Strategi: ' + e(n) + '</span>';
+};
 window.OT_STRATEGY = (function(){
   var list = [];
   function env(){ return (window.IG && IG.st && IG.st.env) === "live" ? "live" : "demo"; }
@@ -10645,7 +10655,8 @@ window.OT_STRATEGY = (function(){
   document.addEventListener("change", function (e) { if (e.target && e.target.id === "ot-strategy") save(e.target.value); });
   if (window.IG && IG.on) IG.on("env", render);
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", load); else load();
-  return { get: get, reload: load };
+  function nameOf(id){ var x = list.filter(function (y) { return y.id === id; })[0]; return x ? (x.name || x.id) : id; }
+  return { get: get, reload: load, nameOf: nameOf };
 })();
 </script>
 </body>
