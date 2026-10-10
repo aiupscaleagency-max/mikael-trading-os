@@ -89,6 +89,10 @@ export function createIgMarketData(deps: {
     events.emit("watchlist", env, [...list]);
   }
   function nameOf(epic: string, env = activeEnv): string | null { return names.get(k(env, epic))?.name ?? null; }
+  // IG anger vissa forexkurser i punkter (EUR/USD Mini 11201 = kurs 1,1201). Skalan sparas så att UI kan visa vanlig kurs bredvid.
+  const scales = new Map<string, number>();
+  function rememberScale(env: IgEnvironment, epic: string, factor: unknown): void { const f = Number(factor); if (Number.isFinite(f) && f > 0) scales.set(k(env, epic), f); }
+  function scaleOf(epic: string, env = activeEnv): number | null { return scales.get(k(env, epic)) ?? null; }
   function rememberName(env: IgEnvironment, epic: string, name: unknown, category?: string | null): void {
     if (typeof name === "string" && name.trim()) names.set(k(env, epic), { name: name.slice(0, 120), category: category ?? names.get(k(env, epic))?.category ?? null });
   }
@@ -101,7 +105,7 @@ export function createIgMarketData(deps: {
     if (list.length >= MAX_WATCH) throw new Error(`Högst ${MAX_WATCH} instrument följs samtidigt. Ta bort ett först.`);
     const m = await market(env, epic); // kastar om EPIC inte finns på kontot
     if (m.epic !== epic) throw new Error("IG svarade för fel instrument");
-    rememberName(env, epic, m.name, m.category);
+    rememberName(env, epic, m.name, m.category); rememberScale(env, epic, m.instrument?.scalingFactor);
     list.push(epic);
     saveWatch(env);
     if (env === activeEnv) { void ensureSeries(env, epic, signalInterval); syncStream(env); }
@@ -164,7 +168,7 @@ export function createIgMarketData(deps: {
     } catch (err) {
       s.historyError = `historik saknas: ${err instanceof Error ? err.message : String(err)}`;
       // Kvot/metadata behålls: hämta bara kvoten (cachad) så att priset fortfarande syns.
-      try { const m = await market(env, epic); if (m.epic === epic) { rememberName(env, epic, m.name, m.category); setRestQuote(env, epic, m.quote); } } catch { /* visas som frånkopplat */ }
+      try { const m = await market(env, epic); if (m.epic === epic) { rememberName(env, epic, m.name, m.category); rememberScale(env, epic, m.instrument?.scalingFactor); setRestQuote(env, epic, m.quote); } } catch { /* visas som frånkopplat */ }
     }
   }
   function touchSeries(env: IgEnvironment, epic: string, iv: string): void {
@@ -333,7 +337,7 @@ export function createIgMarketData(deps: {
     getSignalInterval: () => signalInterval,
     watchlist: (env = activeEnv) => [...loadWatch(env)],
     watchlistDetailed: (env = activeEnv) => loadWatch(env).map((epic) => ({ epic, name: nameOf(epic, env), category: names.get(k(env, epic))?.category ?? null })),
-    addWatch, removeWatch, seedDefaultWatch, nameOf, rememberName,
+    addWatch, removeWatch, seedDefaultWatch, nameOf, rememberName, rememberScale, scaleOf,
     ensureSeries, refreshHistory, requestStream,
     closed: (epic: string, iv: string, env = activeEnv) => series.get(k(env, epic, iv))?.closed ?? [],
     forming: (epic: string, iv: string, env = activeEnv) => series.get(k(env, epic, iv))?.forming ?? null,

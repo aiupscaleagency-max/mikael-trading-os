@@ -298,4 +298,16 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   ok("FX-rimlighet: > 20 % från senaste verifierade kurs, direkt mot omvänt och direkt mot kors avvisas med tydligt besked; ingen storlek, ingen fallback");
 }
 
+{
+  // Lördagskontrollen på dator 1: EUR/USD Mini kom som 11201,05 (IG-punkter). UI visar vanlig kurs bredvid; krypto och skala 1 lämnas orörda.
+  const { igPlainRate } = await import("../src/server/igRoutes.js");
+  const { isIgTemporaryRateError, IG_READ_RATE_ERROR } = await import("../src/integrations/igConnection.js");
+  assert.ok(Math.abs((igPlainRate(11201.05, 10000, "forex") ?? 0) - 1.120105) < 1e-9);
+  assert.equal(igPlainRate(62000, 1, "forex"), null);
+  assert.equal(igPlainRate(62000, 10000, "crypto"), null);
+  assert.equal(igPlainRate(null, 10000, "forex"), null);
+  assert.ok(isIgTemporaryRateError(new Error(IG_READ_RATE_ERROR)), "läsgränsen ska ge 429 med begripligt besked, inte 500");
+  ok("Forex i IG-punkter visas med vanlig kurs bredvid; IG:s läsgräns känns igen som tillfällig (429, försök igen om en minut)");
+}
+
 console.log("Granskning 3: alla tester godkända (endast mocks, inga nätverksanrop)");

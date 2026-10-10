@@ -1,7 +1,7 @@
 import type http from "node:http";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
-import { getIgStatus, testIgConnection, getIgReadBudget, withIgPriority, type IgEnvironment } from "../integrations/igConnection.js";
+import { getIgStatus, testIgConnection, getIgReadBudget, withIgPriority, isIgTemporaryRateError, type IgEnvironment } from "../integrations/igConnection.js";
 import { localIgCredentialRequest, saveIgCredentials } from "../integrations/igCredentialStore.js";
 import { igChanged } from "../integrations/igEvents.js";
 import { getIgMarket, getIgHistory, searchIgMarkets } from "../integrations/igMarkets.js";
@@ -63,9 +63,16 @@ export function accountView<T extends { currency: string | null; accountType: st
   return active ? a : { currency: a.currency, accountType: a.accountType, hidden: true };
 }
 
+/** Vanlig kurs när IG anger forexpriset i punkter (scalingFactor > 1), annars null. Order och nivåer använder fortfarande IG:s punkter. */
+export function igPlainRate(price: number | null | undefined, scalingFactor: number | null | undefined, category: string | null | undefined): number | null {
+  if (typeof price !== "number" || !Number.isFinite(price) || !scalingFactor || scalingFactor <= 1 || category !== "forex") return null;
+  return price / scalingFactor;
+}
 function quoteView(q: IgQuote | null, epic: string, env: IgEnvironment = igMarketData.getActiveEnv()) {
   const ds = igMarketData.dataState(epic, env);
-  return q ? { epic, name: igMarketData.nameOf(epic, env), bid: q.bid, offer: q.offer, mid: q.mid, changePct: q.changePct, high: q.high, low: q.low, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, source: q.source, state: ds.state, ageMs: ds.ageMs }
+  const scale = igMarketData.scaleOf(epic, env), cat = igMarketData.watchlistDetailed(env).find((w) => w.epic === epic)?.category ?? (/^CS\.D\.[A-Z]{6}\./.test(epic) ? "forex" : null);
+  const plain = q ? { scalingFactor: scale, plainRate: igPlainRate(q.mid, scale, cat) } : {};
+  return q ? { ...plain, epic, name: igMarketData.nameOf(epic, env), bid: q.bid, offer: q.offer, mid: q.mid, changePct: q.changePct, high: q.high, low: q.low, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, source: q.source, state: ds.state, ageMs: ds.ageMs }
     : { epic, name: igMarketData.nameOf(epic, env), state: ds.state, ageMs: null };
 }
 /** Katalogframsteg i klartext: antal, komplett/delvis, fel och nästa försök (~60 s, singleflight i katalogen). */
@@ -364,7 +371,7 @@ export async function handleIgRoutes(
       const limit = Math.min(500, Math.max(10, Number(url.searchParams.get("limit")) || 300));
       if (!EPIC_RE.test(epic)) { send(res, 400, { error: "Välj ett IG-instrument (EPIC)", klines: [] }); return true; }
       let meta: Record<string, unknown> = {};
-      try { const m = await getIgMarket(env, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(env, epic, m.name, m.category); igMarketData.setRestQuote(env, epic, m.quote); meta = { name: m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
+      try { const m = await getIgMarket(env, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(env, epic, m.name, m.category); igMarketData.rememberScale(env, epic, m.instrument?.scalingFactor); igMarketData.setRestQuote(env, epic, m.quote); meta = { name: m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
       catch (e) { meta = { metaError: e instanceof Error ? e.message : String(e) }; }
       try { await igMarketData.ensureSeries(env, epic, iv); } catch { /* historyError visas nedan */ }
       igMarketData.requestStream([epic], env);
@@ -388,7 +395,7 @@ export async function handleIgRoutes(
       for (const s of symbols) {
         let q = igMarketData.quote(s, env);
         if (!q || q.observedAt === null || Date.now() - q.observedAt > 60_000) {
-          try { const m = await getIgMarket(env, s); igMarketData.setRestQuote(env, s, m.quote); igMarketData.rememberName(env, s, m.name, m.category); q = igMarketData.quote(s, env); } catch { /* visas som saknad */ }
+          try { const m = await getIgMarket(env, s); igMarketData.setRestQuote(env, s, m.quote); igMarketData.rememberName(env, s, m.name, m.category); igMarketData.rememberScale(env, s, m.instrument?.scalingFactor); q = igMarketData.quote(s, env); } catch { /* visas som saknad */ }
         }
         quotes[s] = quoteView(q, s, env);
         if (q) prices[s] = q.mid;
@@ -416,6 +423,8 @@ export async function handleIgRoutes(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.warn(`[ig-api] ${method} ${p}: ${msg}`);
+    // IG:s läsgräns är tillfällig: svara 429 med ett begripligt meddelande i stället för ett tekniskt 500-fel.
+    if (isIgTemporaryRateError(err)) { send(res, 429, { ok: false, rateLimited: true, retryAfterSeconds: 60, error: "IG:s läsgräns är nådd just nu. Försök igen om en minut." }); return true; }
     send(res, 500, { ok: false, error: msg.slice(0, 300) });
     return true;
   }

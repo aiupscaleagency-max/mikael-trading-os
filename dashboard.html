@@ -62,6 +62,8 @@ window.IG = (function () {
     var n = Number(v), s = Math.abs(n).toLocaleString("sv-SE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return (signed ? (n > 0 ? "+" : n < 0 ? "−" : "") : (n < 0 ? "−" : "")) + s + " " + (c || cur() || "");
   }
+  // IG anger vissa forexpriser i punkter (EUR/USD Mini 11201 = kurs 1,1201). Visar vanlig kurs bredvid; order använder IG:s punkter.
+  function plain(q) { return q && q.plainRate != null && isFinite(q.plainRate) ? " (kurs " + Number(q.plainRate).toFixed(5).replace(".", ",") + ")" : ""; }
   function px(v) { if (v == null || isNaN(v)) return "–"; var n = Number(v); return n >= 1000 ? n.toFixed(2) : n >= 10 ? n.toFixed(3) : n >= 0.1 ? n.toFixed(5) : n.toPrecision(5); }
   var STATE_COL = { live: "#3fb950", "fördröjt": "#f0b90b", historiskt: "#8b95a7", inaktuellt: "#f0b90b", "frånkopplat": "#f85149" };
   function age(ms) { if (ms == null) return ""; var s = Math.round(ms / 1000); return s < 60 ? s + " s" : s < 3600 ? Math.round(s / 60) + " min" : Math.round(s / 3600) + " h"; }
@@ -176,7 +178,7 @@ window.IG = (function () {
   setTimeout(refresh, 50);
   return {
     st: st, esc: esc, on: on, emit: emit, refresh: refresh, remember: remember, isEpic: isEpic, label: label, envLabel: envLabel,
-    money: money, px: px, badge: badge, stateOf: stateOf, age: age, want: want, prices: prices, klines: klines,
+    money: money, px: px, plain: plain, badge: badge, stateOf: stateOf, age: age, want: want, prices: prices, klines: klines,
     quote: function (e) { return quotes[e] || null; }, category: function (e) { return cats[e] || null; }, names: names,
     currency: cur, execOn: function () { return !!(st.execution && st.execution[st.env]); },
     rejectQuote: rejectQuote, rejectCandle: rejectCandle,
@@ -4441,7 +4443,7 @@ async function loadRealCandles(sym, tf){
   STATE.candleData[sym+"|"+tf] = bars;
   candleSeries.setData(bars.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
   if(bars.length){ applyIndicators(bars); updatePriceHeader(bars); }
-  else { clearPriceHeader(); if(d.quote && d.quote.mid != null) document.getElementById("cur-price").textContent = IG.px(d.quote.mid); }
+  else { clearPriceHeader(); if(d.quote && d.quote.mid != null) document.getElementById("cur-price").textContent = IG.px(d.quote.mid) + IG.plain(d.quote); }
   if(d.quote && d.quote.mid != null) STATE.livePrices[sym] = d.quote.mid;
   igMain.key = sym+"|"+tf; igMain.hist = d.historyError || (d.error && !bars.length ? d.error : null);
   IG.want("main", [sym], [sym+"|"+tf]);
@@ -4452,7 +4454,7 @@ IG.on("quote", q=>{
   STATE.livePrices[q.epic] = q.mid;
   if(q.epic !== STATE.symbol) return;
   const cp = document.getElementById("cur-price");
-  if(cp){ cp.textContent = IG.px(q.mid); tickFlash(cp, q.mid); }
+  if(cp){ cp.textContent = IG.px(q.mid) + IG.plain(q); tickFlash(cp, q.mid); }
   if(Date.now() - igMain.lastSrc > 1000){ igMain.lastSrc = Date.now(); showIgSource(); }
 });
 IG.on("candle", c=>{
@@ -4665,7 +4667,7 @@ function updatePriceHeader(data){
   const hi = Math.max(...data.slice(-24).map(c=>c.high));
   const lo = Math.min(...data.slice(-24).map(c=>c.low));
   const v = data.slice(-24).reduce((s,c)=>s+c.volume,0);
-  document.getElementById("cur-price").textContent = formatPrice(last.close, STATE.symbol);
+  document.getElementById("cur-price").textContent = formatPrice(last.close, STATE.symbol) + (window.IG && IG.plain ? IG.plain(IG.quote(STATE.symbol)) : "");
   const chgEl = document.getElementById("cur-chg");
   chgEl.textContent = (chg>=0?"+":"")+chg.toFixed(2)+"%";
   chgEl.style.color = chg>=0 ? "var(--green)" : "var(--red)";
@@ -9209,7 +9211,7 @@ document.addEventListener("DOMContentLoaded", boot);
     $("bk-bid").textContent = q && q.bid != null ? IG.px(q.bid) : "–";
     $("bk-offer").textContent = q && q.offer != null ? IG.px(q.offer) : "–";
     const spread = q && q.bid != null && q.offer != null ? q.offer - q.bid : null;
-    $("bk-mid").innerHTML = q ? `Spread ${spread == null ? "–" : IG.px(spread)} · IG idag ${q.changePct == null ? "–" : (q.changePct >= 0 ? '<b style="color:#3fb950">+' : '<b style="color:#f85149">') + Number(q.changePct).toFixed(2) + " %</b>"} · hög ${IG.px(q.high)} · låg ${IG.px(q.low)}${q.marketStatus && q.marketStatus !== "TRADEABLE" ? ' · <b style="color:#f0b90b">' + esc(q.marketStatus) + "</b>" : ""}` : "Ingen IG-kvot än";
+    $("bk-mid").innerHTML = q ? `${q.plainRate != null ? esc("Kurs" + IG.plain(q).replace(/^ \(kurs|\)$/g, "")) + " · " : ""}Spread ${spread == null ? "–" : IG.px(spread)} · IG idag ${q.changePct == null ? "–" : (q.changePct >= 0 ? '<b style="color:#3fb950">+' : '<b style="color:#f85149">') + Number(q.changePct).toFixed(2) + " %</b>"} · hög ${IG.px(q.high)} · låg ${IG.px(q.low)}${q.marketStatus && q.marketStatus !== "TRADEABLE" ? ' · <b style="color:#f0b90b">' + esc(q.marketStatus) + "</b>" : ""}` : "Ingen IG-kvot än";
     if(otType === "LIMIT" && !$("ot-price").value && q && q.mid != null) $("ot-price").value = String(q.mid);
   }
   function syncType(){
@@ -9256,7 +9258,7 @@ document.addEventListener("DOMContentLoaded", boot);
     sqBusy = true;
     try{
       const r = await fetch("/api/ig/stake-quote", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ epic: s, direction, pct: pct(), stake: Number($("ot-amt").value) || undefined, takeProfit: tp > 0 ? tp : undefined, stopLoss: sl > 0 ? sl : undefined }) });
-      sq = await r.json().catch(()=>null); sqKey = key;
+      sq = await r.json().catch(()=>null); sqKey = sq && !sq.error ? key : ""; // ett fel (t.ex. IG:s läsgräns) sparas inte, nästa försök frågar igen
     }catch(_){ sq = null; }
     finally{ sqBusy = false; }
     return sq;
