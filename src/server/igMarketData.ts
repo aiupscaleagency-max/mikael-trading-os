@@ -56,7 +56,7 @@ export function createIgMarketData(deps: {
   let activeEnv: IgEnvironment = "demo";
   const series = new Map<string, Series>();
   const quotes = new Map<string, IgQuote>();
-  const names = new Map<string, { name: string; category: string | null; scalingFactor?: number }>();
+  const names = new Map<string, { name: string; category: string | null }>();
   const watch = new Map<IgEnvironment, string[]>();
   const watchedSeries = new Map<IgEnvironment, Map<string, number>>(); // "epic|interval" → senast begärd
   const pins = new Map<string, Set<string>>(); // ägare → "env|epic|interval" som alltid följs (t.ex. strategier)
@@ -74,7 +74,6 @@ export function createIgMarketData(deps: {
       for (const e of raw.epics ?? []) if (typeof e.epic === "string" && /^[A-Za-z0-9._-]{1,100}$/.test(e.epic)) {
         list.push(e.epic);
         if (e.name) names.set(k(env, e.epic), { name: e.name, category: e.category ?? null });
-        rememberScale(env, e.epic, (e as { scalingFactor?: unknown }).scalingFactor);
       }
     } catch { list = []; }
     list = [...new Set(list)].slice(0, MAX_WATCH);
@@ -90,15 +89,6 @@ export function createIgMarketData(deps: {
     events.emit("watchlist", env, [...list]);
   }
   function nameOf(epic: string, env = activeEnv): string | null { return names.get(k(env, epic))?.name ?? null; }
-  // IG anger vissa forexkurser i punkter (EUR/USD Mini 11201 = kurs 1,1201). Skalan sparas så att UI kan visa vanlig kurs bredvid.
-  const scales = new Map<string, number>();
-  function rememberScale(env: IgEnvironment, epic: string, factor: unknown): void {
-    const f = Number(factor); if (factor == null || !Number.isFinite(f) || f <= 0) return;
-    const had = scales.get(k(env, epic)); scales.set(k(env, epic), f);
-    // Sparas i bevakningsfilen så att vanlig kurs syns direkt efter omstart, utan en ny IG-läsning.
-    const n = names.get(k(env, epic)); if (n && n.scalingFactor !== f) { n.scalingFactor = f; if (had !== f && (watch.get(env) ?? []).includes(epic)) saveWatch(env); }
-  }
-  function scaleOf(epic: string, env = activeEnv): number | null { return scales.get(k(env, epic)) ?? null; }
   function rememberName(env: IgEnvironment, epic: string, name: unknown, category?: string | null): void {
     if (typeof name === "string" && name.trim()) names.set(k(env, epic), { name: name.slice(0, 120), category: category ?? names.get(k(env, epic))?.category ?? null });
   }
@@ -111,7 +101,7 @@ export function createIgMarketData(deps: {
     if (list.length >= MAX_WATCH) throw new Error(`Högst ${MAX_WATCH} instrument följs samtidigt. Ta bort ett först.`);
     const m = await market(env, epic); // kastar om EPIC inte finns på kontot
     if (m.epic !== epic) throw new Error("IG svarade för fel instrument");
-    rememberName(env, epic, m.name, m.category); rememberScale(env, epic, m.instrument?.scalingFactor);
+    rememberName(env, epic, m.name, m.category);
     list.push(epic);
     saveWatch(env);
     if (env === activeEnv) { void ensureSeries(env, epic, signalInterval); syncStream(env); }
@@ -174,7 +164,7 @@ export function createIgMarketData(deps: {
     } catch (err) {
       s.historyError = `historik saknas: ${err instanceof Error ? err.message : String(err)}`;
       // Kvot/metadata behålls: hämta bara kvoten (cachad) så att priset fortfarande syns.
-      try { const m = await market(env, epic); if (m.epic === epic) { rememberName(env, epic, m.name, m.category); rememberScale(env, epic, m.instrument?.scalingFactor); setRestQuote(env, epic, m.quote); } } catch { /* visas som frånkopplat */ }
+      try { const m = await market(env, epic); if (m.epic === epic) { rememberName(env, epic, m.name, m.category); setRestQuote(env, epic, m.quote); } } catch { /* visas som frånkopplat */ }
     }
   }
   function touchSeries(env: IgEnvironment, epic: string, iv: string): void {
@@ -343,7 +333,7 @@ export function createIgMarketData(deps: {
     getSignalInterval: () => signalInterval,
     watchlist: (env = activeEnv) => [...loadWatch(env)],
     watchlistDetailed: (env = activeEnv) => loadWatch(env).map((epic) => ({ epic, name: nameOf(epic, env), category: names.get(k(env, epic))?.category ?? null })),
-    addWatch, removeWatch, seedDefaultWatch, nameOf, rememberName, rememberScale, scaleOf,
+    addWatch, removeWatch, seedDefaultWatch, nameOf, rememberName,
     ensureSeries, refreshHistory, requestStream,
     closed: (epic: string, iv: string, env = activeEnv) => series.get(k(env, epic, iv))?.closed ?? [],
     forming: (epic: string, iv: string, env = activeEnv) => series.get(k(env, epic, iv))?.forming ?? null,

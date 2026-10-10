@@ -63,15 +63,22 @@ export function accountView<T extends { currency: string | null; accountType: st
   return active ? a : { currency: a.currency, accountType: a.accountType, hidden: true };
 }
 
-/** Vanlig kurs när IG anger forexpriset i punkter (scalingFactor > 1), annars null. Order och nivåer använder fortfarande IG:s punkter. */
-export function igPlainRate(price: number | null | undefined, scalingFactor: number | null | undefined, category: string | null | undefined): number | null {
-  if (typeof price !== "number" || !Number.isFinite(price) || !scalingFactor || scalingFactor <= 1 || category !== "forex") return null;
-  return price / scalingFactor;
+/** Vanlig kurs när IG anger ett forexpris i punkter (EUR/USD Mini CEEM 11201,05 = 1,1201050), annars null.
+ *  IG:s scalingFactor säger inte om priset är i punkter (dator 1: GBP/USD Mini har 10000 men kurs 1,32), så paret i EPIC avgör:
+ *  pipstorlek 0,01 för JPY, annars 0,0001, och bara när priset är orimligt högt för en vanlig kurs. Order och nivåer använder IG:s pris. */
+const PIP4_QUOTES = new Set(["USD", "EUR", "GBP", "CHF", "CAD", "AUD", "NZD", "SGD", "SEK", "NOK", "DKK", "PLN", "ZAR", "MXN", "TRY", "CNH", "HKD"]);
+export function igPlainRate(price: number | null | undefined, epic: string): number | null {
+  if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) return null;
+  const m = /^CS\.D\.([A-Z]{3})([A-Z]{3})\./.exec(epic); if (!m) return null;
+  const [, base, quote] = m as unknown as [string, string, string];
+  if (!PIP4_QUOTES.has(base) && base !== "JPY") return null; // inte ett valutapar (t.ex. krypto)
+  if (quote === "JPY") return price >= 2000 ? price * 0.01 : null;
+  if (PIP4_QUOTES.has(quote)) return price >= 1000 ? price * 0.0001 : null;
+  return null;
 }
 function quoteView(q: IgQuote | null, epic: string, env: IgEnvironment = igMarketData.getActiveEnv()) {
   const ds = igMarketData.dataState(epic, env);
-  const scale = igMarketData.scaleOf(epic, env), cat = igMarketData.watchlistDetailed(env).find((w) => w.epic === epic)?.category ?? (/^CS\.D\.[A-Z]{6}\./.test(epic) ? "forex" : null);
-  const plain = q ? { scalingFactor: scale, plainRate: igPlainRate(q.mid, scale, cat) } : {};
+  const plain = q ? { plainRate: igPlainRate(q.mid, epic) } : {};
   return q ? { ...plain, epic, name: igMarketData.nameOf(epic, env), bid: q.bid, offer: q.offer, mid: q.mid, changePct: q.changePct, high: q.high, low: q.low, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, source: q.source, state: ds.state, ageMs: ds.ageMs }
     : { epic, name: igMarketData.nameOf(epic, env), state: ds.state, ageMs: null };
 }
@@ -302,7 +309,7 @@ export async function handleIgRoutes(
       const category = url.searchParams.get("category") === "crypto" ? "crypto" : "forex";
       try {
         const d = await getIgMarketDirectory(env, category);
-        for (const m of d.markets) { igMarketData.rememberName(env, m.epic, m.name, m.category); igMarketData.rememberScale(env, m.epic, (m as { scalingFactor?: unknown }).scalingFactor); }
+        for (const m of d.markets) igMarketData.rememberName(env, m.epic, m.name, m.category);
         // Demo: Live-EPICs som saknas här visas som katalogreferens ("ej tillgänglig på Demo"), utan Live-priser
         const liveReferences = env === "demo" ? igLiveOnlyReferences(d.markets, peekIgMarketDirectory("live", category)?.markets) : [];
         send(res, 200, { env, label: envLabel(env), ...d, liveReferences, catalogue: catalogueProgress(d) });
@@ -360,7 +367,7 @@ export async function handleIgRoutes(
     if (p === "/api/market/search" && method === "GET") {
       try {
         const r = await searchIgMarkets(env, String(url.searchParams.get("q") ?? ""));
-        for (const m of r.markets) { igMarketData.rememberName(env, m.epic, m.name, m.category); igMarketData.rememberScale(env, m.epic, (m as { scalingFactor?: unknown }).scalingFactor); }
+        for (const m of r.markets) igMarketData.rememberName(env, m.epic, m.name, m.category);
         send(res, 200, { env, markets: r.markets });
       } catch (e) { send(res, 200, { env, markets: [], error: e instanceof Error ? e.message : String(e) }); }
       return true;
@@ -371,7 +378,7 @@ export async function handleIgRoutes(
       const limit = Math.min(500, Math.max(10, Number(url.searchParams.get("limit")) || 300));
       if (!EPIC_RE.test(epic)) { send(res, 400, { error: "Välj ett IG-instrument (EPIC)", klines: [] }); return true; }
       let meta: Record<string, unknown> = {};
-      try { const m = await getIgMarket(env, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(env, epic, m.name, m.category); igMarketData.rememberScale(env, epic, m.instrument?.scalingFactor); igMarketData.setRestQuote(env, epic, m.quote); meta = { name: m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
+      try { const m = await getIgMarket(env, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(env, epic, m.name, m.category); igMarketData.setRestQuote(env, epic, m.quote); meta = { name: m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
       catch (e) { meta = { metaError: e instanceof Error ? e.message : String(e) }; }
       try { await igMarketData.ensureSeries(env, epic, iv); } catch { /* historyError visas nedan */ }
       igMarketData.requestStream([epic], env);
@@ -395,7 +402,7 @@ export async function handleIgRoutes(
       for (const s of symbols) {
         let q = igMarketData.quote(s, env);
         if (!q || q.observedAt === null || Date.now() - q.observedAt > 60_000) {
-          try { const m = await getIgMarket(env, s); igMarketData.setRestQuote(env, s, m.quote); igMarketData.rememberName(env, s, m.name, m.category); igMarketData.rememberScale(env, s, m.instrument?.scalingFactor); q = igMarketData.quote(s, env); } catch { /* visas som saknad */ }
+          try { const m = await getIgMarket(env, s); igMarketData.setRestQuote(env, s, m.quote); igMarketData.rememberName(env, s, m.name, m.category); q = igMarketData.quote(s, env); } catch { /* visas som saknad */ }
         }
         quotes[s] = quoteView(q, s, env);
         if (q) prices[s] = q.mid;

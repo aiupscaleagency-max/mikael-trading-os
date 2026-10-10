@@ -195,6 +195,8 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
       const response=await request(`${endpoints[mode]}/${route}${query.size?`?${query}`:""}`,{method,headers,signal:AbortSignal.timeout(8000),...(body?{body:JSON.stringify(body)}:{})});
       if(!response.ok) {
         let code:unknown;try{code=(await response.json() as Record<string,unknown>).errorCode;}catch{/* Okänt felsvar behandlas utan privata detaljer. */}
+        // Diagnostik: IG:s egen felkod (inga nycklar eller tokens) i serverloggen, så att läsgräns och historikkvot går att skilja åt.
+        console.warn(`[ig] ${mode} ${method} ${route.replace(/[^A-Za-z0-9._/-]/g,'')} → HTTP ${response.status} ${typeof code==='string'?code.slice(0,120):'utan felkod'}`);
         // Historiska datapunkter har en egen kvot och får inte stoppa katalog, konton eller prisverifiering.
         if(code==='error.public-api.exceeded-account-historical-data-allowance'&&route.startsWith('prices/')){historyBlockedUntil.set(mode,now()+60000);throw Error(IG_HISTORY_RATE_ERROR);}
         if(response.status===429||typeof code==='string'&&/^error\.public-api\.exceeded-[a-z-]+-allowance$/.test(code)){readBlockedUntil.set(mode,now()+60000);throw Error(IG_READ_RATE_ERROR);}
