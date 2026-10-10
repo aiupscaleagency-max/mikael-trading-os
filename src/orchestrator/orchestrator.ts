@@ -83,6 +83,8 @@ export async function runOrchestratedTurn(params: {
 }): Promise<OrchestratorResult> {
   const { config, state, broker, brokers, risk, engines, userInstruction } = params;
   const apiKey = config.anthropicApiKey;
+  // Miljön som analysen körs i (låst vid start): ett byte Demo↔Live mitt i turen får inte märka beskeden fel. Bara IG-mäklare sparar besked.
+  const notesEnv: "demo" | "live" | null = broker.name === "ig" ? "live" : broker.name === "ig-demo" ? "demo" : null;
 
   const totalStart = Date.now();
   // "Kör analys" har redan startat posten; annars är det schemat.
@@ -307,7 +309,8 @@ export async function runOrchestratedTurn(params: {
     try {
       const { igMarketData } = await import("../server/igMarketData.js");
       const { buildAgentNotes, agentNotes } = await import("../server/igAgentNotes.js");
-      const env = igMarketData.getActiveEnv();
+      if (!notesEnv) throw new Error("inte IG");
+      const env = notesEnv;
       notes = buildAgentNotes({
         env, symbols: allSymbols, picks, technical: technical.analyses ?? [], summary: headTrader.decision.briefingSummary,
         trigger: getAnalysis()?.trigger ?? null, nameOf: (e) => igMarketData.nameOf(e, env),
