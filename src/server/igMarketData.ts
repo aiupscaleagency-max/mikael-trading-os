@@ -310,7 +310,14 @@ export function createIgMarketData(deps: {
    * aldrig med prioritet, och bara när bakgrundsbudgeten har minst REST_FALLBACK_MIN_BACKGROUND kvar, så att
    * order, konto och katalog inte svälts. Stängda marknader frågas högst var 5:e minut.
    */
+  // Högst en REST-reservläsning åt gången per miljö (tick körs var 15:e s även om IG svarar långsamt)
+  const restFallbackBusy = new Set<IgEnvironment>();
   async function restFallback(env: IgEnvironment): Promise<void> {
+    if (restFallbackBusy.has(env)) return;
+    restFallbackBusy.add(env);
+    try { await restFallbackOnce(env); } finally { restFallbackBusy.delete(env); }
+  }
+  async function restFallbackOnce(env: IgEnvironment): Promise<void> {
     let b: { backgroundRemaining: number };
     try { b = budget(env); } catch { return; }
     if (!(b.backgroundRemaining >= REST_FALLBACK_MIN_BACKGROUND)) return;
