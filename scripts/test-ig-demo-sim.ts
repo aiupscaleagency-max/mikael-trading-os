@@ -104,18 +104,24 @@ const mkSim = (file: string) => createIgDemoSim({ market: liveMarket as never, g
   let demoCat: any = { markets: [{ epic: FX }], complete: false, searchCompletedAt: null };
   const live = { markets: [{ epic: FX, category: "forex" }, { epic: SIM, name: "Bitcoin ($0.1)", category: "crypto", bid: 60_000, offer: 60_010 }] };
   let probe: "exists" | "missing" | "unknown" = "unknown";
-  const r = createDemoSimRouter({ live: () => live as never, demo: () => demoCat, probeDemo: async () => probe });
+  const r = createDemoSimRouter({ live: () => live as never, demo: () => demoCat, probeDemo: async () => probe, now });
   assert.equal(r.known(SIM), false, "delvis Demo-katalog är inget belägg");
   assert.equal(r.liveOnly(SIM), true, "visas (läsning) som Live-instrument");
   await assert.rejects(r.route(SIM), /går inte att avgöra/, "läsgräns/okänt → nekas, aldrig tyst simulering");
   assert.equal(await r.route(FX), "ig", "Demo-instrument går IG Demo-vägen");
   probe = "missing";
+  await assert.rejects(r.route(SIM), /går inte att avgöra/, "okänt svar minns 60 s (ingen ny Demo-läsning per anrop)");
+  NOW += 61_000;
   assert.equal(await r.route(SIM), "sim", "IG Demo 404 = belägg");
   assert.equal(r.known(SIM), true);
   const r2 = createDemoSimRouter({ live: () => live as never, demo: () => ({ markets: [{ epic: FX }], searchCompletedAt: NOW }) as never });
   assert.equal(r2.known(SIM), true, "Demo-katalogens sökningar klara utan EPIC:en = belägg");
   const r3 = createDemoSimRouter({ live: () => live as never, demo: () => ({ markets: [{ epic: FX }], searchCompletedAt: NOW }) as never, probeDemo: async () => "exists" });
   assert.equal(await r3.route(FX), "ig");
+  // Demo-katalogen saknas (frånkopplad/omloggning): inget läses från Live, Demo-instrument förblir Demo
+  const r4 = createDemoSimRouter({ live: () => live as never, demo: () => null, now });
+  assert.equal(r4.liveOnly(FX), false, "Demo-instrument läses aldrig från Live när Demo-katalogen saknas");
+  assert.equal(r4.liveOnly(SIM), false); assert.equal(r4.known(SIM), false);
   const row = demoSimRow(live.markets[1] as never);
   assert.equal(row.sim, true); assert.equal(row.simLabel, DEMO_SIM_LABEL); assert.match(row.name, /Demo-simulering$/);
   ok("vägval: sim bara vid positivt belägg (sökning klar eller Demo-404); osäkert → nekas med klartext; raden märks");

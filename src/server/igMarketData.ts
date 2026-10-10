@@ -434,6 +434,8 @@ export function createIgMarketData(deps: {
     addWatch, removeWatch, seedDefaultWatch, nameOf, rememberName,
     /** Demo-simulering: vilka Demo-EPICs som läses från Live (sätts av servern). */
     setLiveSourced(fn: ((env: IgEnvironment, epic: string) => boolean) | null) { liveSourced = fn; },
+    /** Miljön som pris/ljus för EPIC:en läses från (Demo-simulering: Live). */
+    dataEnv: (env: IgEnvironment, epic: string): IgEnvironment => (isLiveSourced(env, epic) ? "live" : env),
     ensureSeries, refreshHistory, requestStream,
     closed: (epic: string, iv: string, env = activeEnv) => series.get(k(env, epic, iv))?.closed ?? [],
     forming: (epic: string, iv: string, env = activeEnv) => series.get(k(env, epic, iv))?.forming ?? null,

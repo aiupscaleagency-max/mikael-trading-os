@@ -309,35 +309,64 @@ export interface DemoSimRouterDeps {
   demo: (category: "forex" | "crypto") => SimCatalogue | null;
   /** Läser instrumentet på IG Demo: finns, saknas (HTTP 404) eller okänt (annat fel). */
   probeDemo?: (epic: string) => Promise<"exists" | "missing" | "unknown">;
+  now?: () => number;
 }
 export function createDemoSimRouter(deps: DemoSimRouterDeps) {
   const missing = new Set<string>(); // IG Demo svarade 404 (positivt belägg)
   const present = new Set<string>(); // IG Demo har instrumentet
   const probing = new Map<string, Promise<"exists" | "missing" | "unknown">>();
+  const unknownAt = new Map<string, number>(); // "okänt"-svar minns 60 s så att samma EPIC inte läses om hela tiden
   const CATS = ["forex", "crypto"] as const;
-  function liveRow(epic: string): (Record<string, unknown> & { epic: string }) | null {
-    for (const c of CATS) { const r = deps.live(c)?.markets.find((m) => m.epic === epic); if (r) return r; }
-    return null;
+  const clock = deps.now ?? Date.now;
+  // Katalogerna (kopior) läses högst var 5:e s till ett uppslagsindex: anropas för varje Live-kvot och i seriesorteringen.
+  type Index = { live: Map<string, Record<string, unknown> & { epic: string }>; demo: Record<"forex" | "crypto", Set<string> | null>; searched: Record<"forex" | "crypto", boolean> };
+  let index: { at: number; value: Index } | null = null;
+  function idx(): Index {
+    if (index && clock() - index.at < 5_000) return index.value;
+    const live = new Map<string, Record<string, unknown> & { epic: string }>();
+    const demo = { forex: null, crypto: null } as Index["demo"], searched = { forex: false, crypto: false };
+    for (const c of CATS) {
+      for (const m of deps.live(c)?.markets ?? []) if (typeof m.epic === "string") live.set(m.epic, { ...m, category: m.category ?? c });
+      const d = deps.demo(c);
+      demo[c] = d ? new Set(d.markets.map((m) => m.epic)) : null;
+      searched[c] = !!d && (d.complete === true || finite(d.searchCompletedAt));
+    }
+    index = { at: clock(), value: { live, demo, searched } };
+    return index.value;
   }
-  function inDemo(epic: string): boolean { return present.has(epic) || CATS.some((c) => deps.demo(c)?.markets.some((m) => m.epic === epic)); }
-  function demoSearched(category: "forex" | "crypto"): boolean { const d = deps.demo(category); return !!d && (d.complete === true || finite(d.searchCompletedAt)); }
+  const catOf = (row: Record<string, unknown>) => (row.category === "crypto" || row.category === "forex" ? row.category : null);
+  function liveRow(epic: string) { return idx().live.get(epic) ?? null; }
+  function inDemo(epic: string): boolean { const i = idx(); return present.has(epic) || CATS.some((c) => i.demo[c]?.has(epic) === true); }
   /** Synkront: simuleras EPIC:en (positivt belägg)? */
   function known(epic: string): boolean {
     if (typeof epic !== "string" || inDemo(epic)) return false;
     const row = liveRow(epic);
     if (!row) return false;
     if (missing.has(epic)) return true;
-    const cat = row.category === "crypto" || row.category === "forex" ? row.category : null;
-    return cat ? demoSearched(cat) : false;
+    const cat = catOf(row);
+    return cat ? idx().searched[cat] : false;
   }
-  /** Synkront, för LÄSNING/visning: Live har EPIC:en och Demo-katalogen saknar den (även om katalogen är delvis).
+  /** Synkront, för LÄSNING/visning: Live har EPIC:en och den inlästa Demo-katalogen (samma kategori) saknar den.
+   *  Saknas Demo-katalogen (frånkopplad/omloggning) är svaret nej, så att Demo-instrument aldrig läses från Live.
    *  Ger aldrig ordervägen; den avgörs av route() som kräver positivt belägg. */
-  function liveOnly(epic: string): boolean { return typeof epic === "string" && !inDemo(epic) && !!liveRow(epic); }
+  function liveOnly(epic: string): boolean {
+    if (typeof epic !== "string" || inDemo(epic)) return false;
+    const row = liveRow(epic);
+    if (!row) return false;
+    if (missing.has(epic)) return true;
+    const cat = catOf(row);
+    return !!cat && idx().demo[cat] !== null;
+  }
   async function probe(epic: string): Promise<"exists" | "missing" | "unknown"> {
     if (!deps.probeDemo) return "unknown";
+    if (clock() - (unknownAt.get(epic) ?? -Infinity) < 60_000) return "unknown";
     let job = probing.get(epic);
     if (!job) { job = deps.probeDemo(epic).catch(() => "unknown" as const); probing.set(epic, job); }
-    try { const r = await job; if (r === "missing") missing.add(epic); else if (r === "exists") present.add(epic); return r; } finally { probing.delete(epic); }
+    try {
+      const r = await job;
+      if (r === "missing") missing.add(epic); else if (r === "exists") present.add(epic); else unknownAt.set(epic, clock());
+      return r;
+    } finally { probing.delete(epic); }
   }
   /** Vid order/kvot: "ig" (vanliga IG Demo-vägen) eller "sim". Kastar om det inte går att avgöra. */
   async function route(epic: string): Promise<"ig" | "sim"> {
