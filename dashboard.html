@@ -2360,6 +2360,14 @@ body.app-state-onboard .fc-panel{display:none !important}
   (function () {
     function esc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
     var EXIT = { waiting: "väntar", "execution-off": "väntar – orderläget av", retrying: "försöker stänga igen", "needs-attention": "KRÄVER ÅTGÄRD – kontrollera i IG" };
+    async function postExit(id, add) {
+      try { var r = await (await fetch("/api/ig/orders/" + encodeURIComponent(id) + "/timed-exit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ add: add }) })).json(); alert(r.ok ? r.note : "Kunde inte spara: " + r.error); } catch (e) { alert("Fel: " + e.message); }
+    }
+    async function answerExit(id, dealId, remainingSec) {
+      var min = Math.max(1, Math.round((Number(remainingSec) || 30) / 60));
+      if (!confirm("Tidsstängning saknas – lägg till?\n\nPosition " + dealId + " stängs då automatiskt om cirka " + min + " min.\nKontrollera i IG att det verkligen är din order och inte en position du öppnat själv.\n\nOK = lägg till tidsstängning · Avbryt = bestäm senare")) return;
+      await postExit(id, true);
+    }
     async function load() {
       var box = document.getElementById("igOrderIssues"); if (!box) return;
       try {
@@ -2373,6 +2381,12 @@ body.app-state-onboard .fc-panel{display:none !important}
           html += '<div style="padding:6px 8px;margin-top:6px;border:1px solid #f0b90b;border-radius:6px;color:#fbbf24">⚠ Okänt stängningsutfall för ' + esc(p.dealId) + (p.dealReference ? " · referens " + esc(p.dealReference) : "")
             + ' <button type="button" data-igresolve="' + esc(p.dealId) + '" style="margin-left:6px;padding:2px 8px;border:1px solid #f0b90b;background:transparent;color:#f0b90b;border-radius:5px;cursor:pointer">Stäm av mot IG</button></div>';
         });
+        // N1 (granskning 3): efter manuell avstämning läggs ingen tidsstängning till utan Mikes uttryckliga OK.
+        (d.exitOffers || []).forEach(function (o) {
+          html += '<div style="padding:6px 8px;margin-top:6px;border:1px solid #f0b90b;border-radius:6px;color:#fbbf24">⏱ Tidsstängning saknas för ' + esc((window.IG && IG.names[o.epic]) || o.epic) + " " + esc(o.size) + " (" + esc(o.dealId) + ") – lägg till?"
+            + ' <button type="button" data-igexit="' + esc(o.id) + '" data-igexitsec="' + esc(o.remainingSec) + '" data-igexitdeal="' + esc(o.dealId) + '" style="margin-left:6px;padding:2px 8px;border:1px solid #f0b90b;background:transparent;color:#f0b90b;border-radius:5px;cursor:pointer">Lägg till…</button>'
+            + ' <button type="button" data-igexitno="' + esc(o.id) + '" style="margin-left:4px;padding:2px 8px;border:1px solid #2a3140;background:transparent;color:#8b95a7;border-radius:5px;cursor:pointer">Nej, stänger själv</button></div>';
+        });
         (d.timedExits || []).forEach(function (x) {
           var st = x.igState || "waiting", warn = st !== "waiting";
           var left = Math.round((x.exitAt - Date.now()) / 60000);
@@ -2384,8 +2398,22 @@ body.app-state-onboard .fc-panel{display:none !important}
           b.addEventListener("click", async function () {
             if (!confirm("Har du kontrollerat i IG? Servern läser nu IG:s positioner och aktivitet och markerar utfallet som avstämt. Inget skickas till IG.")) return;
             b.disabled = true;
-            try { var r = await (await fetch("/api/ig/orders/" + encodeURIComponent(b.dataset.igresolve) + "/resolve", { method: "POST" })).json(); alert(r.ok ? r.note : "Kunde inte stämma av: " + r.error); } catch (e) { alert("Fel: " + e.message); }
+            try {
+              var r = await (await fetch("/api/ig/orders/" + encodeURIComponent(b.dataset.igresolve) + "/resolve", { method: "POST" })).json();
+              alert(r.ok ? r.note : "Kunde inte stämma av: " + r.error);
+              // Tidsstängning bara efter ett eget, uttryckligt JA. Avbryt = frågan ligger kvar i listan.
+              if (r.ok && r.timedExitOffer) await answerExit(r.id || b.dataset.igresolve, r.timedExitOffer.dealId, r.timedExitOffer.remainingSec);
+            } catch (e) { alert("Fel: " + e.message); }
             load();
+          });
+        });
+        box.querySelectorAll("[data-igexit]").forEach(function (b) {
+          b.addEventListener("click", async function () { b.disabled = true; await answerExit(b.dataset.igexit, b.dataset.igexitdeal, Number(b.dataset.igexitsec)); load(); });
+        });
+        box.querySelectorAll("[data-igexitno]").forEach(function (b) {
+          b.addEventListener("click", async function () {
+            if (!confirm("Ingen tidsstängning: positionen stängs bara när du själv stänger den. Fortsätta?")) return;
+            b.disabled = true; await postExit(b.dataset.igexitno, false); load();
           });
         });
       } catch (_) {}

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {callIgAuthenticated,getIgStatus,getIgAccounts,getIgPositions,isIgTemporaryRateError,IG_READ_RATE_ERROR,type IgEnvironment} from './igConnection.js';
+import {callIgAuthenticated,getIgStatus,getIgAccounts,getIgPositions,getIgAccountIdentity,isIgTemporaryRateError,IG_READ_RATE_ERROR,type IgEnvironment} from './igConnection.js';
 import {getIgMarket,getIgAccountFx} from './igMarkets.js';
 import {igOrderExecutionEnabled} from './igConnection.js';
 import {dataPath} from '../dataDir.js';
@@ -13,7 +13,7 @@ import {config} from '../config.js';
 import {igFxIsFresh,type IgAccountFx} from './igRules.js';
 import {igAccountLimits,igPositionLimitReason} from './igRiskLimits.js';
 
-interface Draft {accountRef?:string|null;nextCheckAt?:number;timedExitSec?:number;lateExitAdded?:boolean;submittedAt?:number;sessionId?:string;id:string;environment:IgEnvironment;binding:string;epic:string;direction:'BUY'|'SELL';size:number;orderType:'MARKET'|'LIMIT';entry:number;stopLevel:number;targetLevel:number;holdingMinutes:number;autoClose:boolean;createdAt:number;expiresAt:number;status:'draft'|'submitted'|'accepted'|'rejected'|'unknown';dealReference?:string;dealId?:string;error?:string;positionObserved?:boolean;body:Record<string,unknown>;risk:number;exposure:number;margin:number;currency:string;executionCurrency:string}
+interface Draft {accountRef?:string|null;nextCheckAt?:number;timedExitSec?:number;lateExitAdded?:boolean;lateExitOffer?:boolean;lateExitDeclined?:boolean;submittedAt?:number;sessionId?:string;id:string;environment:IgEnvironment;binding:string;epic:string;direction:'BUY'|'SELL';size:number;orderType:'MARKET'|'LIMIT';entry:number;stopLevel:number;targetLevel:number;holdingMinutes:number;autoClose:boolean;createdAt:number;expiresAt:number;status:'draft'|'submitted'|'accepted'|'rejected'|'unknown';dealReference?:string;dealId?:string;error?:string;positionObserved?:boolean;body:Record<string,unknown>;risk:number;exposure:number;margin:number;currency:string;executionCurrency:string}
 interface ExitPlan {accountRef?:string|null;nextCheckAt?:number;submittedAt?:number;dealId:string;binding:string;closeAt:number;status:'scheduled'|'interrupted'|'submitted'|'confirmed'|'failed'|'unknown';dealReference?:string;error?:string;retryAt?:number}
 interface OrderState {drafts:Draft[];plans:ExitPlan[]}
 const finite=(v:unknown):v is number=>typeof v==='number'&&Number.isFinite(v);
@@ -24,7 +24,7 @@ export type IgLateAccepted=(mode:IgEnvironment,d:{dealId:string;epic:string;size
 let lateAcceptedHook:IgLateAccepted|null=null;
 export function setIgLateAcceptedHook(fn:IgLateAccepted|null){lateAcceptedHook=fn;}
 /** Servern räknar om varje bekräftad order. UI-belopp är aldrig säkerhetsunderlag. */
-export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof getIgAccounts;positions?:typeof getIgPositions;market?:(mode:IgEnvironment,epic:string)=>Promise<any>;call?:typeof callIgAuthenticated;guard?:()=>Promise<{killSwitchActive:boolean}>;now?:()=>number;directory?:string;enabled?:(mode:IgEnvironment)=>boolean;limits?:{maxPositionUsd:number;maxTotalExposureUsd:number;maxDailyLossUsd:number;maxOpenPositions:number};sessionPolicy?:typeof getIgSessionPolicy;positionLimit?:(mode:IgEnvironment)=>number;fx?:(mode:IgEnvironment)=>Promise<IgAccountFx|null>}={}) {
+export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof getIgAccounts;positions?:typeof getIgPositions;market?:(mode:IgEnvironment,epic:string)=>Promise<any>;call?:typeof callIgAuthenticated;guard?:()=>Promise<{killSwitchActive:boolean}>;now?:()=>number;directory?:string;enabled?:(mode:IgEnvironment)=>boolean;limits?:{maxPositionUsd:number;maxTotalExposureUsd:number;maxDailyLossUsd:number;maxOpenPositions:number};sessionPolicy?:typeof getIgSessionPolicy;positionLimit?:(mode:IgEnvironment)=>number;fx?:(mode:IgEnvironment)=>Promise<IgAccountFx|null>;identity?:(mode:IgEnvironment)=>{accountId:string}|null}={}) {
   const status=deps.status??getIgStatus,accounts=deps.accounts??getIgAccounts,positions=deps.positions??getIgPositions,market=deps.market??getIgMarket,call=deps.call??callIgAuthenticated,guard=deps.guard??loadState,now=deps.now??Date.now,enabled=deps.enabled??igOrderExecutionEnabled;
   // Utan injicerade USD-gränser (tester) gäller gränser i kontovalutan, härledda ur saldot (igRiskLimits).
   const accountMode=!deps.limits;
@@ -42,10 +42,16 @@ export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof
   function state(mode:IgEnvironment){modeGuard(mode);let s=states.get(mode);if(s)return s;try{s=JSON.parse(fs.readFileSync(path.join(directory,`${mode}.json`),'utf8'));if(!Array.isArray(s?.drafts)||!Array.isArray(s?.plans))throw Error('shape');for(const p of s!.plans)if(p.status==='scheduled')p.status='interrupted';}catch{s={drafts:[],plans:[]};}states.set(mode,s!);return s!;}
   function persist(mode:IgEnvironment){fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,`${mode}.json`),temp=`${file}.${process.pid}.tmp`;fs.writeFileSync(temp,JSON.stringify(state(mode)));fs.renameSync(temp,file);}
   function binding(mode:IgEnvironment){modeGuard(mode);const c=status().environments[mode];if(c.status!=='connected'||!c.connectionGeneration||c.account?.accountType!=='CFD')throw Error('IG kräver verifierad CFD-kontosession');return c.connectionGeneration;}
-  /** Maskerat konto-id (••••1234). Sen avstämning efter IG:s omloggning kräver SAMMA konto. */
-  function accountRef(mode:IgEnvironment){return status().environments[mode].account?.accountId??null;}
+  /** N4 (granskning 3): FULLT konto-id från den inloggade sessionen (serverinternt, aldrig i API-svar).
+   *  Sen avstämning efter IG:s omloggning kräver SAMMA konto, inte bara samma fyra sista siffror. */
+  // Tester som injicerar status utan identitet använder statusens konto-id (fixturerna har fulla id:n).
+  const identity=deps.identity??(deps.status?(mode:IgEnvironment)=>{const id=status().environments[mode].account?.accountId;return typeof id==='string'?{accountId:id}:null;}:getIgAccountIdentity);
+  function accountRef(mode:IgEnvironment){const id=identity(mode)?.accountId;return typeof id==='string'&&id?id:null;}
   // Utkast utan kontoreferens (äldre, eller konto utan id i svaret) kan inte bindas; då gäller sessionens egen generation.
-  function sameAccount(mode:IgEnvironment,ref:string|null|undefined){if(!ref)return true;return accountRef(mode)===ref;}
+  // Äldre utkast sparades med maskerat id (••••1234); de jämförs bara mot samma maskning av det fulla id:t.
+  function sameAccount(mode:IgEnvironment,ref:string|null|undefined){if(!ref)return true;const cur=accountRef(mode);if(!cur)return false;if(ref.startsWith('••••'))return `••••${cur.slice(-4)}`===ref;return cur===ref;}
+  /** Kontoreferensen lämnar aldrig servern. */
+  function pub<T extends {accountRef?:unknown}>(x:T){const {accountRef:_r,...rest}=x;return rest;}
   function stable(mode:IgEnvironment,id:string){if(binding(mode)!==id)throw Error('IG-kontosessionen ändrades; gör om orderunderlaget');}
   function execution(mode:IgEnvironment){return {enabled:enabled(mode),reason:enabled(mode)?'Manuell IG-order · verifieras på servern':'Orderläget är avstängt för IG '+(mode==='live'?'Live':'Demo')+' (IG_ORDER_EXECUTION_ENABLED_'+mode.toUpperCase()+'). Inget skickades.'};}
   function fresh(m:any){const q=m?.quote;return q&&q.marketStatus==='TRADEABLE'&&q.delayTime===0&&finite(q.receivedAt)&&finite(q.observedAt)&&now()-q.receivedAt>=0&&now()-q.receivedAt<=60000&&now()-q.observedAt>=0&&now()-q.observedAt<=60000&&finite(q.bid)&&finite(q.offer)&&q.bid>0&&q.offer>=q.bid;}
@@ -83,7 +89,7 @@ export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof
     // USD-gränser omräknas med bid; risk, exponering och marginal med ask. Det sänker aldrig säkerhetsmarginalen.
     const riskLimits={position:limits.maxPositionUsd*fx!.bid,total:limits.maxTotalExposureUsd*fx!.bid,loss:accountMode?acctLimits!.maxDailyLoss:limits.maxDailyLossUsd*fx!.bid};
     const m=await market(mode,input.epic);if(!fresh(m))throw Error('IG-order stoppad: inaktuell eller fördröjd kvot');
-    const r=m.calculationRules;if(!r?.verified||r.pointCurrency!==currency||!finite(r.pointValue)||r.pointValue<=0||!finite(r.marginRate)||r.marginRate<=0)throw Error('IG kontraktsvärde, valuta eller marginal kunde inte verifieras');
+    const r=m.calculationRules;if(r?.fxError)throw Error(r.fxError);if(!r?.verified||r.pointCurrency!==currency||!finite(r.pointValue)||r.pointValue<=0||!finite(r.marginRate)||r.marginRate<=0)throw Error('IG kontraktsvärde, valuta eller marginal kunde inte verifieras');
     const executionCurrency=r.executionCurrency??r.pointCurrency;
     if(!/^[A-Z]{3}$/.test(executionCurrency)||!Array.isArray(m.instrument?.currencies)||!m.instrument.currencies.some((c:any)=>c.code===executionCurrency))throw Error('IG exekveringsvaluta är inte verifierad som erbjuden instrumentvaluta');
     const direction=input.direction;if(direction!=='BUY'&&direction!=='SELL')throw Error('IG kräver Köp eller Sälj');
@@ -123,35 +129,35 @@ export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof
     return {sessionId:policy?.id,body,entry,risk,reward:Math.abs(target-entry)*size*(r.profitPointValue??r.pointValue),exposure,margin,currency,executionCurrency};
   }
   async function preview(mode:IgEnvironment,input:Record<string,any>){modeGuard(mode);if(!/^[A-Za-z0-9._-]{1,100}$/.test(input.epic??''))throw Error('Ogiltig IG-epic');if(![1,2,3,4,5,15,30,60,120].includes(input.holdingMinutes)||typeof input.autoClose!=='boolean')throw Error('Ogiltig IG-innehavstid');if(input.orderType==='LIMIT'&&input.autoClose)throw Error('IG limitorder kräver manuell stängning tills fyllnad kan följas entydigt');const id=binding(mode),calc=await validate(mode,input,id);
-    const tes=Number(input.timedExitSec);const draft:Draft={...calc,accountRef:accountRef(mode),...(Number.isFinite(tes)&&tes>0&&tes<=7200?{timedExitSec:tes}:{}),epic:input.epic,direction:input.direction,size:input.size,orderType:input.orderType,stopLevel:input.stopLevel,targetLevel:input.targetLevel,holdingMinutes:input.holdingMinutes,autoClose:input.autoClose,id:randomUUID(),environment:mode,binding:id,createdAt:now(),expiresAt:now()+30000,status:'draft'};state(mode).drafts.push(draft);persist(mode);return {...draft,execution:execution(mode)};}
+    const tes=Number(input.timedExitSec);const draft:Draft={...calc,accountRef:accountRef(mode),...(Number.isFinite(tes)&&tes>0&&tes<=7200?{timedExitSec:tes}:{}),epic:input.epic,direction:input.direction,size:input.size,orderType:input.orderType,stopLevel:input.stopLevel,targetLevel:input.targetLevel,holdingMinutes:input.holdingMinutes,autoClose:input.autoClose,id:randomUUID(),environment:mode,binding:id,createdAt:now(),expiresAt:now()+30000,status:'draft'};state(mode).drafts.push(draft);persist(mode);return {...pub(draft),execution:execution(mode)};}
   async function confirm(mode:IgEnvironment,draftId:string){modeGuard(mode);if(!enabled(mode))throw Error(execution(mode).reason);if(busy.has(mode))throw Error('IG-order behandlas redan');busy.add(mode);
     try{const d=state(mode).drafts.find(d=>d.id===draftId);if(!d||d.status!=='draft'||now()>d.expiresAt)throw Error('IG-utkastet är utgånget eller redan behandlat');stable(mode,d.binding);if(d.sessionId!==(deps.sessionPolicy??getIgSessionPolicy)(mode)?.id)throw Error('Granska nytt orderutkast för aktuell agentsession');const checked=await validate(mode,d,d.binding,true);if(checked.risk>d.risk*1.02||checked.margin>d.margin*1.02)throw Error('IG-kurs/risk ändrades; granska nytt underlag');
       if(now()>d.expiresAt)throw Error('IG-utkastet hann gå ut; granska nytt underlag');
       // Reservation och revisionsunderlag måste motsvara den omvaliderade order som faktiskt skickas.
       Object.assign(d,checked);d.status='submitted';d.submittedAt=now();persist(mode);
       try{const result=await call(mode,d.orderType==='MARKET'?'positions/otc':'workingorders/otc','POST','2',checked.body);stable(mode,d.binding);if(typeof result.dealReference!=='string'||!/^[A-Za-z0-9_-]{1,100}$/.test(result.dealReference))throw Error('confirmation');d.dealReference=result.dealReference;persist(mode);await reconcile(mode,d);}catch{d.status='unknown';d.error='IG-orderutfallet är okänt. Ingen automatisk omsändning.';persist(mode);}
-      return {...d};
+      return pub(d);
     }finally{busy.delete(mode);}}
-  async function reconcile(mode:IgEnvironment,d:Draft,late=false){if(!d.dealReference)return;if(!late)stable(mode,d.binding);const result=await call(mode,`confirms/${d.dealReference}`,'GET','1');if(!late)stable(mode,d.binding);
+  async function reconcile(mode:IgEnvironment,d:Draft,late=false,manual=false){if(!d.dealReference)return;if(!late)stable(mode,d.binding);const result=await call(mode,`confirms/${d.dealReference}`,'GET','1');if(!late)stable(mode,d.binding);
     if(result.dealStatus==='REJECTED'){d.status='rejected';d.error='IG avvisade ordern';}
-    else if(result.dealStatus==='ACCEPTED'&&typeof result.dealId==='string'){d.status='accepted';d.dealId=result.dealId;d.error=undefined;if(d.autoClose&&d.orderType==='MARKET'&&!state(mode).plans.some(p=>p.dealId===d.dealId&&p.binding===d.binding))state(mode).plans.push({dealId:d.dealId!,binding:d.binding,closeAt:(d.sessionId?(d.submittedAt??d.createdAt):now())+d.holdingMinutes*60000,status:'scheduled'});}
-    else{d.status='unknown';d.error='IG-bekräftelsen har inget verifierat avslut';}persist(mode);if(late)lateAccepted(mode,d);}
+    else if(result.dealStatus==='ACCEPTED'&&typeof result.dealId==='string'){d.status='accepted';d.dealId=result.dealId;d.error=undefined;if(!manual&&d.autoClose&&d.orderType==='MARKET'&&!state(mode).plans.some(p=>p.dealId===d.dealId&&p.binding===d.binding))state(mode).plans.push({dealId:d.dealId!,binding:d.binding,closeAt:(d.sessionId?(d.submittedAt??d.createdAt):now())+d.holdingMinutes*60000,status:'scheduled'});}
+    else{d.status='unknown';d.error='IG-bekräftelsen har inget verifierat avslut';}persist(mode);if(late)lateAccepted(mode,d,manual);}
   /** M2 (granskning 2): avstämning av okänd order MED dealReference, även efter IG:s timvisa omloggning
    *  (ny connectionGeneration) så länge kontot är detsamma. Först confirms/{ref}; svarar IG inte längre
    *  på den, används history/activity filtrerad på dealReference. Skickar aldrig något. */
-  async function reconcileLate(mode:IgEnvironment,d:Draft){
+  async function reconcileLate(mode:IgEnvironment,d:Draft,manual=false){
     if(!d.dealReference)return;if(!sameAccount(mode,d.accountRef))throw Error('Annat IG-konto är inloggat; avstämningen väntar');
-    try{await reconcile(mode,d,true);if(d.status!=='unknown')return;}catch(e){if(isIgTemporaryRateError(e))throw e;}
+    try{await reconcile(mode,d,true,manual);if(d.status!=='unknown')return;}catch(e){if(isIgTemporaryRateError(e))throw e;}
     const since=new Date((d.submittedAt??d.createdAt)-120000).toISOString().slice(0,19);
     const act=await call(mode,'history/activity','GET','3',undefined,{query:new URLSearchParams({from:since,detailed:'true',pageSize:'50'}).toString()});
     if(!Array.isArray(act.activities))throw Error('IG-aktiviteten kunde inte läsas');
     const hit=act.activities.find((a:any)=>a?.details?.dealReference===d.dealReference||a?.dealReference===d.dealReference);
     if(!hit)return;
     const st=String(hit.status??'').toUpperCase();
-    if(st==='ACCEPTED'&&typeof hit.dealId==='string'){d.status='accepted';d.dealId=hit.dealId;d.error='Avstämd i efterhand via IG-aktivitet (dealReference).';persist(mode);lateAccepted(mode,d);}
+    if(st==='ACCEPTED'&&typeof hit.dealId==='string'){d.status='accepted';d.dealId=hit.dealId;d.error='Avstämd i efterhand via IG-aktivitet (dealReference).';persist(mode);lateAccepted(mode,d,manual);}
     else if(st==='REJECTED'){d.status='rejected';d.error='IG-aktiviteten visar att ordern avvisades (dealReference).';persist(mode);}
   }
-  async function reconcileCloseLate(mode:IgEnvironment,p:ExitPlan){
+  async function reconcileCloseLate(mode:IgEnvironment,p:ExitPlan,manual=false){
     if(!sameAccount(mode,p.accountRef))throw Error('Annat IG-konto är inloggat; avstämningen väntar');
     if(p.dealReference){try{const result=await call(mode,`confirms/${p.dealReference}`,'GET','1');if(result.dealStatus==='ACCEPTED'&&result.affectedDeals?.some((x:any)=>x.dealId===p.dealId&&x.status==='DELETED')){p.status='confirmed';p.error=undefined;persist(mode);return;}if(result.dealStatus==='REJECTED'){p.status='failed';p.error='IG avvisade stängningen';persist(mode);return;}}catch(e){if(isIgTemporaryRateError(e))throw e;}}
     // Positionsläsning avgör: finns dealId inte längre är positionen stängd; finns den är stängningen inte gjord.
@@ -159,18 +165,42 @@ export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof
     const open=ps.positions.some((x:any)=>x.dealId===p.dealId);
     if(!open){p.status='confirmed';p.error='Avstämd i efterhand: positionen finns inte längre i IG.';persist(mode);}
     else if(now()-(p.submittedAt??0)>120000){p.status='failed';p.error='Avstämd i efterhand: positionen är fortfarande öppen i IG. Stäng den med Sälj nu.';persist(mode);}
+    // N2 (granskning 3): manuell avstämning skriver aldrig om sändtiden. Inom 2 min kan IG:s positionslista ligga efter.
+    else if(manual)throw Error('För tidigt att avgöra: positionen syns fortfarande i IG, men listan kan ligga efter en accepterad stängning. Försök igen om en minut (ingenting ändrades).');
   }
-  function lateAccepted(mode:IgEnvironment,d:Draft){if(d.status!=='accepted'||!d.dealId||!d.timedExitSec||d.lateExitAdded||!lateAcceptedHook)return;d.lateExitAdded=true;persist(mode);try{lateAcceptedHook(mode,{dealId:d.dealId,epic:d.epic,size:d.size,timedExitSec:d.timedExitSec,submittedAt:d.submittedAt??d.createdAt});}catch{/* tidsstängningen visas som saknad */}}
+  function exitSec(d:Draft){return d.timedExitSec??(d.autoClose&&d.orderType==='MARKET'?d.holdingMinutes*60:undefined);}
+  function fireLateExit(mode:IgEnvironment,d:Draft,sec:number){if(!lateAcceptedHook)return false;d.lateExitAdded=true;d.lateExitOffer=false;persist(mode);try{lateAcceptedHook(mode,{dealId:d.dealId!,epic:d.epic,size:d.size,timedExitSec:sec,submittedAt:d.submittedAt??d.createdAt});}catch{/* tidsstängningen visas som saknad */}return true;}
+  /** Automatisk sen avstämning (tick, dealReference) lägger till tidsstängningen. N1 (granskning 3): en MANUELL
+   *  avstämning lägger aldrig till den själv; ordern markeras "tidsstängning saknas – lägg till?" och Mike avgör. */
+  function lateAccepted(mode:IgEnvironment,d:Draft,manual=false){
+    if(d.status!=='accepted'||!d.dealId||d.lateExitAdded||d.lateExitDeclined)return;
+    if(manual){const sec=exitSec(d);if(sec){d.lateExitOffer=true;persist(mode);}return;}
+    if(!d.timedExitSec)return;fireLateExit(mode,d,d.timedExitSec);
+  }
+  function exitOffer(d:Draft){const sec=exitSec(d);if(!d.lateExitOffer||!sec||!d.dealId)return null;return {dealId:d.dealId,epic:d.epic,size:d.size,timedExitSec:sec,remainingSec:Math.max(30,Math.round(((d.submittedAt??d.createdAt)+sec*1000-now())/1000))};}
+  /** Mikes uttryckliga svar på "tidsstängning saknas – lägg till?". Läser bara (positionen måste finnas kvar). */
+  async function answerLateExit(mode:IgEnvironment,id:string,add:boolean){
+    modeGuard(mode);const d=state(mode).drafts.find(x=>x.id===id&&x.status==='accepted'&&x.lateExitOffer&&!x.lateExitAdded);
+    if(!d||!d.dealId)throw Error('Ingen tidsstängning att ta ställning till för den ordern');
+    if(!add){d.lateExitOffer=false;d.lateExitDeclined=true;persist(mode);return {added:false,dealId:d.dealId,note:'Ingen tidsstängning: positionen stängs bara manuellt.'};}
+    if(!sameAccount(mode,d.accountRef))throw Error('Ett annat IG-konto är inloggat; logga in på kontot där ordern gjordes');
+    const sec=exitSec(d);if(!sec)throw Error('Ordern saknar tidsstängningstid');
+    const ps=await positions(mode);if(ps.status!=='ready'||!Array.isArray(ps.positions)){if(isIgTemporaryRateError(ps.error))throw Error(IG_READ_RATE_ERROR);throw Error('IG-positionerna kunde inte läsas; ingen tidsstängning lades till');}
+    if(!ps.positions.some((x:any)=>x.dealId===d.dealId)){d.lateExitOffer=false;persist(mode);throw Error('Positionen finns inte längre i IG; ingen tidsstängning behövs');}
+    if(!lateAcceptedHook)throw Error('Tidsstängning är inte tillgänglig i den här processen');
+    const offer=exitOffer(d);fireLateExit(mode,d,sec);
+    return {added:true,dealId:d.dealId,note:`Tidsstängning tillagd: stängs om cirka ${Math.round((offer?.remainingSec??30)/60)} min.`};
+  }
   async function close(mode:IgEnvironment,dealId:string,expectedBinding?:string){modeGuard(mode);if(!enabled(mode))throw Error(execution(mode).reason);if(busy.has(mode))throw Error('IG-order behandlas redan');busy.add(mode);
     try{const id=binding(mode),s=state(mode);if(expectedBinding&&expectedBinding!==id)throw Error('IG-kontot ändrades sedan granskningen');if(s.plans.some(p=>p.dealId===dealId&&['submitted','unknown'].includes(p.status)))throw Error('IG tidigare stängningsutfall måste avstämmas');let plan=s.plans.find(p=>p.dealId===dealId&&p.binding===id);if(plan&&['submitted','unknown','confirmed'].includes(plan.status))throw Error('IG-stängning är redan begärd; invänta bekräftelse');
       const ps=await positions(mode),p=ps.positions?.find((p:any)=>p.dealId===dealId);if(ps.status!=='ready'&&isIgTemporaryRateError(ps.error))throw Error(IG_READ_RATE_ERROR);if(ps.status!=='ready'||!p||!finite(p.size)||p.size<=0||!['BUY','SELL'].includes(p.direction??''))throw Error('IG-positionen kunde inte verifieras');const m=await market(mode,p.epic!);if(!fresh(m))throw Error('IG-stängning kräver färsk ofördröjd kvot');stable(mode,id);
       if(!plan){plan={dealId,binding:id,closeAt:now(),status:'scheduled'};s.plans.push(plan);}plan.status='submitted';plan.submittedAt=now();plan.accountRef=accountRef(mode);plan.retryAt=undefined;plan.dealReference=undefined;plan.error=undefined;persist(mode);
-      try{const r=await call(mode,'positions/otc','POST','1',{dealId,direction:p.direction==='BUY'?'SELL':'BUY',size:p.size,orderType:'MARKET',timeInForce:'FILL_OR_KILL'},{_method:'DELETE'});stable(mode,id);if(typeof r.dealReference!=='string'||!/^[A-Za-z0-9_-]{1,100}$/.test(r.dealReference))throw Error('confirmation');plan.dealReference=r.dealReference;persist(mode);await reconcileClose(mode,plan);}catch{plan.status='unknown';plan.error='IG-stängningsutfallet är okänt; positionen antas fortsatt öppen';persist(mode);}return {...plan};
+      try{const r=await call(mode,'positions/otc','POST','1',{dealId,direction:p.direction==='BUY'?'SELL':'BUY',size:p.size,orderType:'MARKET',timeInForce:'FILL_OR_KILL'},{_method:'DELETE'});stable(mode,id);if(typeof r.dealReference!=='string'||!/^[A-Za-z0-9_-]{1,100}$/.test(r.dealReference))throw Error('confirmation');plan.dealReference=r.dealReference;persist(mode);await reconcileClose(mode,plan);}catch{plan.status='unknown';plan.error='IG-stängningsutfallet är okänt; positionen antas fortsatt öppen';persist(mode);}return pub(plan);
     }finally{busy.delete(mode);}}
   async function reconcileClose(mode:IgEnvironment,p:ExitPlan){if(!p.dealReference)return;stable(mode,p.binding);const result=await call(mode,`confirms/${p.dealReference}`,'GET','1');stable(mode,p.binding);if(result.dealStatus==='ACCEPTED'&&result.affectedDeals?.some((d:any)=>d.dealId===p.dealId&&d.status==='DELETED')){p.status='confirmed';p.error=undefined;}else if(result.dealStatus==='REJECTED'){p.status='failed';p.error='IG avvisade stängningen';}else{p.status='unknown';p.error='IG saknar verifierad stängningsbekräftelse';}persist(mode);}
-  async function rollover(mode:IgEnvironment,dealId:string,minutes:number,expectedBinding?:string){const id=binding(mode);if(expectedBinding&&id!==expectedBinding)throw Error('IG-kontot ändrades sedan granskningen');if(!enabled(mode))throw Error(execution(mode).reason);if(!finite(minutes)||minutes<=0||minutes>120)throw Error('Ogiltig IG-förlängning');const plan=state(mode).plans.find(p=>p.dealId===dealId&&p.binding===id);if(!plan||plan.status!=='scheduled')throw Error('IG-positionen har ingen aktiv tidsstängning att förlänga');if(state(mode).drafts.some(d=>d.dealId===dealId&&d.sessionId))throw Error('Sessionspositionens 1–5 minuters tidsgräns får inte förlängas');const ps=await positions(mode);if(!ps.positions?.some((p:any)=>p.dealId===dealId))throw Error('IG-positionen saknas');stable(mode,id);plan.closeAt=Math.max(now(),plan.closeAt)+minutes*60000;persist(mode);return {...plan};}
+  async function rollover(mode:IgEnvironment,dealId:string,minutes:number,expectedBinding?:string){const id=binding(mode);if(expectedBinding&&id!==expectedBinding)throw Error('IG-kontot ändrades sedan granskningen');if(!enabled(mode))throw Error(execution(mode).reason);if(!finite(minutes)||minutes<=0||minutes>120)throw Error('Ogiltig IG-förlängning');const plan=state(mode).plans.find(p=>p.dealId===dealId&&p.binding===id);if(!plan||plan.status!=='scheduled')throw Error('IG-positionen har ingen aktiv tidsstängning att förlänga');if(state(mode).drafts.some(d=>d.dealId===dealId&&d.sessionId))throw Error('Sessionspositionens 1–5 minuters tidsgräns får inte förlängas');const ps=await positions(mode);if(!ps.positions?.some((p:any)=>p.dealId===dealId))throw Error('IG-positionen saknas');stable(mode,id);plan.closeAt=Math.max(now(),plan.closeAt)+minutes*60000;persist(mode);return pub(plan);}
   async function tick(){for(const mode of ['demo','live'] as const){if(busy.has(mode))continue;const s=state(mode);for(const d of s.drafts.filter(d=>d.dealReference&&['submitted','unknown'].includes(d.status))){if(d.nextCheckAt&&now()<d.nextCheckAt)continue;try{await reconcileLate(mode,d);}catch{/* En okänd order skickas aldrig på nytt. */}if(['submitted','unknown'].includes(d.status)){d.nextCheckAt=now()+60000;persist(mode);}}for(const p of s.plans){try{if(p.dealReference&&['submitted','unknown'].includes(p.status)){if(p.nextCheckAt&&now()<p.nextCheckAt)continue;await reconcileCloseLate(mode,p).finally(()=>{if(['submitted','unknown'].includes(p.status)){p.nextCheckAt=now()+60000;persist(mode);}});}else if(p.status==='scheduled'){if(status().environments[mode].connectionGeneration!==p.binding){p.status='interrupted';p.error='Tidsplan avbruten av kontobyte';persist(mode);}else if(enabled(mode)&&now()>=p.closeAt&&(!p.retryAt||now()>=p.retryAt))await close(mode,p.dealId,p.binding);}}catch(error){if(p.status==='scheduled'){if(isIgTemporaryRateError(error)){p.retryAt=now()+60000;p.error='IG-läsgräns nådd · tidsstängning inväntar nytt verifierat underlag';}else{p.status='failed';p.error='Tidsstängning kunde inte verifieras; positionen lämnas öppen';}persist(mode);}}}}}
-  function snapshot(mode:IgEnvironment,verifiedPositions?:readonly {dealId:string|null}[]|null){let changed=false;for(const d of state(mode).drafts)if(d.status==='accepted'&&!d.positionObserved&&verifiedPositions?.some(p=>p.dealId===d.dealId)){d.positionObserved=true;changed=true;}if(changed)persist(mode);const id=status().environments[mode].connectionGeneration;const policy=(deps.sessionPolicy??getIgSessionPolicy)(mode);return {sessionOrdersUsed:policy?state(mode).drafts.filter(d=>d.sessionId===policy.id&&d.status!=='draft').length:0,execution:execution(mode),pendingOrders:state(mode).drafts.filter(d=>d.status!=='draft'&&!d.positionObserved&&(d.binding===id||['submitted','unknown'].includes(d.status)||d.status==='accepted')).map(({body,binding,...d})=>({...d,previousConnection:binding!==id})),exitPlans:state(mode).plans.filter(p=>p.binding===id||['submitted','unknown'].includes(p.status)).map(({binding,...p})=>({...p,previousConnection:binding!==id}))};}
+  function snapshot(mode:IgEnvironment,verifiedPositions?:readonly {dealId:string|null}[]|null){let changed=false;for(const d of state(mode).drafts)if(d.status==='accepted'&&!d.positionObserved&&verifiedPositions?.some(p=>p.dealId===d.dealId)){d.positionObserved=true;changed=true;}if(changed)persist(mode);const id=status().environments[mode].connectionGeneration;const policy=(deps.sessionPolicy??getIgSessionPolicy)(mode);return {sessionOrdersUsed:policy?state(mode).drafts.filter(d=>d.sessionId===policy.id&&d.status!=='draft').length:0,execution:execution(mode),pendingOrders:state(mode).drafts.filter(d=>d.status!=='draft'&&!d.positionObserved&&(d.binding===id||['submitted','unknown'].includes(d.status)||d.status==='accepted')).map(({body,binding,accountRef:_a,...d})=>({...d,previousConnection:binding!==id})),exitOffers:state(mode).drafts.map(d=>exitOffer(d)?{id:d.id,...exitOffer(d)!}:null).filter(Boolean),exitPlans:state(mode).plans.filter(p=>p.binding===id||['submitted','unknown'].includes(p.status)).map(({binding,accountRef:_a,...p})=>({...p,previousConnection:binding!==id}))};}
   async function brokerPending(mode:IgEnvironment,expectedBinding?:string){
     if(status().environments[mode].status!=='connected')return {orders:[],status:'unavailable'};
     const id=binding(mode);if(expectedBinding&&id!==expectedBinding)return {orders:[],status:'unavailable'};
@@ -185,9 +215,14 @@ export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof
     pendingDisplayJobs.set(key,job);try{return copy(await job);}finally{pendingDisplayJobs.delete(key);}
   }
   /** Manuell avstämning ("Stäm av") av ett okänt utfall, med eller utan IG-referens. Skickar aldrig något.
-   *  Med dealReference: confirms/ eller IG-aktivitet med samma referens avgör. Utan referens (t.ex. timeout på
-   *  POST): en position som öppnats efter att ordern skickades, med samma EPIC/riktning/storlek och som ingen
-   *  annan order äger. "Avvisad" sätts bara när IG-aktiviteten saknar ordern och det gått mer än 2 minuter. */
+   *  Med dealReference: confirms/ eller IG-aktivitet med samma referens avgör.
+   *  Utan referens (t.ex. timeout på POST), N1 (granskning 3): en position adopteras BARA om den öppnades inom
+   *  [sänt − 60 s, sänt + 30 s], har samma EPIC/riktning/storlek, inte ägs av någon annan order OCH bekräftas av
+   *  en ACCEPTED IG-aktivitet med samma dealId inom samma fönster. Saknas öppningstid frågar vi i stället för att
+   *  avvisa. En manuell avstämning lägger aldrig själv till en tidsstängning (se answerLateExit). */
+  const RESOLVE_BEFORE_MS=60000,RESOLVE_AFTER_MS=30000;
+  const utc=(v:unknown)=>typeof v==='string'?Date.parse(v.endsWith('Z')?v:v+'Z'):NaN;
+  function orderResult(mode:IgEnvironment,d:Draft){return {kind:'order' as const,status:d.status,dealId:d.dealId??null,note:d.error??null,timedExitOffer:exitOffer(d)};}
   async function resolveUnknown(mode:IgEnvironment,id:string){
     modeGuard(mode);const s=state(mode);
     if(busy.has(mode))throw Error('En IG-order behandlas just nu; stäm av när den är klar');
@@ -196,31 +231,38 @@ export function createIgOrders(deps:{status?:typeof getIgStatus;accounts?:typeof
     if(!d&&!p)throw Error('Inget okänt utfall med det id:t');
     if(p){
       if(!sameAccount(mode,p.accountRef))throw Error('Ett annat IG-konto är inloggat; logga in på kontot där stängningen gjordes');
-      // Manuell avstämning: positionsläsningen avgör direkt (ingen 2-minutersväntan).
-      p.submittedAt=Math.min(p.submittedAt??0,now()-120001);await reconcileCloseLate(mode,p);
+      // N2 (granskning 3): sändtiden ändras aldrig. Positionsläsningen avgör; inom 2 min frågar vi igen i stället.
+      await reconcileCloseLate(mode,p,true);
       return {kind:'close',status:p.status,note:p.error??null};
     }
     if(!sameAccount(mode,d!.accountRef))throw Error('Ett annat IG-konto är inloggat; logga in på kontot där ordern skickades');
     if(d!.dealReference){
-      await reconcileLate(mode,d!);
-      if(d!.status!=='unknown'&&d!.status!=='submitted')return {kind:'order',status:d!.status,dealId:d!.dealId??null,note:d!.error??null};
+      await reconcileLate(mode,d!,true);
+      if(d!.status!=='unknown'&&d!.status!=='submitted')return orderResult(mode,d!);
     }
     const ps=await positions(mode);if(ps.status!=='ready'||!Array.isArray(ps.positions)){if(isIgTemporaryRateError(ps.error))throw Error(IG_READ_RATE_ERROR);throw Error('IG-positionerna kunde inte läsas; avstämningen görs inte');}
-    const sent=d!.submittedAt??d!.createdAt;
+    const sent=d!.submittedAt??d!.createdAt,lo=sent-RESOLVE_BEFORE_MS,hi=sent+RESOLVE_AFTER_MS;
+    const inWindow=(t:number)=>Number.isFinite(t)&&t>=lo&&t<=hi;
     const since=new Date(sent-120000).toISOString().slice(0,19);
     const act=await call(mode,'history/activity','GET','3',undefined,{query:new URLSearchParams({from:since,detailed:'true',pageSize:'50'}).toString()});
     if(!Array.isArray(act.activities))throw Error('IG-aktiviteten kunde inte läsas; avstämningen görs inte');
-    const opened=(x:any)=>{const t=typeof x.createdDateUTC==='string'?Date.parse(x.createdDateUTC.endsWith('Z')?x.createdDateUTC:x.createdDateUTC+'Z'):NaN;return Number.isFinite(t)&&t>=sent-60000;};
-    const candidates=ps.positions.filter((x:any)=>x.epic===d!.epic&&x.direction===d!.direction&&Math.abs(Number(x.size)-d!.size)<1e-9&&opened(x)&&!s.drafts.some(o=>o!==d&&o.dealId===x.dealId));
-    const acts=act.activities.filter((a:any)=>a.epic===d!.epic&&String(a.details?.direction??a.direction??'')===d!.direction&&Date.parse(String(a.date).endsWith('Z')?a.date:a.date+'Z')>=sent-60000);
-    if(candidates.length===1){d!.status='accepted';d!.dealId=candidates[0]!.dealId??undefined;d!.positionObserved=true;d!.error='Manuellt avstämd: en ny position med samma EPIC, riktning och storlek hittades i IG.';persist(mode);lateAccepted(mode,d!);}
-    else if(candidates.length>1)throw Error('Flera nya positioner matchar ordern; stäm av själv i IG (ingenting ändrades)');
-    else if(acts.some((a:any)=>String(a.status).toUpperCase()==='REJECTED')){d!.status='rejected';d!.error='Manuellt avstämd: IG-aktiviteten visar att ordern avvisades.';persist(mode);}
-    else if(now()-sent<=120000)throw Error('För tidigt att avgöra: IG kan ligga efter. Försök igen om en minut.');
-    else{d!.status='rejected';d!.error=acts.length?'Manuellt avstämd: IG visar aktivitet men ingen ny öppen position (stängd eller avvisad).':'Manuellt avstämd: ingen ny position och ingen IG-aktivitet för ordern.';persist(mode);}
-    return {kind:'order',status:d!.status,dealId:d!.dealId??null,note:d!.error??null};
+    const matching=ps.positions.filter((x:any)=>x.epic===d!.epic&&x.direction===d!.direction&&Math.abs(Number(x.size)-d!.size)<1e-9&&!s.drafts.some(o=>o!==d&&o.dealId===x.dealId));
+    const acts=act.activities.filter((a:any)=>a&&a.epic===d!.epic&&String(a.details?.direction??a.direction??'')===d!.direction&&inWindow(utc(a.date)));
+    const acceptedIds=new Set(acts.filter((a:any)=>String(a.status).toUpperCase()==='ACCEPTED'&&typeof a.dealId==='string').map((a:any)=>a.dealId as string));
+    const windowed=matching.filter((x:any)=>inWindow(utc(x.createdDateUTC)));
+    const candidates=windowed.filter((x:any)=>typeof x.dealId==='string'&&acceptedIds.has(x.dealId));
+    const undated=matching.filter((x:any)=>!Number.isFinite(utc(x.createdDateUTC)));
+    if(candidates.length===1){d!.status='accepted';d!.dealId=candidates[0]!.dealId??undefined;d!.positionObserved=true;d!.error='Manuellt avstämd: en position med samma EPIC, riktning och storlek öppnades inom 60 s före / 30 s efter sändningen och bekräftas av en accepterad IG-aktivitet med samma dealId. Ingen tidsstängning läggs till utan ditt OK.';persist(mode);lateAccepted(mode,d!,true);return orderResult(mode,d!);}
+    if(candidates.length>1)throw Error('Flera nya positioner matchar ordern; stäm av själv i IG (ingenting ändrades)');
+    if(undated.length)throw Error('En position med samma EPIC, riktning och storlek saknar öppningstid i IG-svaret, så det går inte att avgöra om den är ordern. Kontrollera i IG (ingenting ändrades).');
+    if(windowed.length)throw Error('En position i tidsfönstret saknar en accepterad IG-aktivitet med samma dealId. Kontrollera i IG (ingenting ändrades).');
+    if(acts.some((a:any)=>String(a.status).toUpperCase()==='REJECTED')){d!.status='rejected';d!.error='Manuellt avstämd: IG-aktiviteten visar att ordern avvisades.';persist(mode);return orderResult(mode,d!);}
+    if(now()-sent<=120000)throw Error('För tidigt att avgöra: IG kan ligga efter. Försök igen om en minut.');
+    const own=matching.length?` Position ${matching.map((x:any)=>x.dealId).join(', ')} öppnades utanför tidsfönstret och räknas som din egen; den rörs inte.`:'';
+    d!.status='rejected';d!.error=(acts.length?'Manuellt avstämd: IG visar aktivitet men ingen ny öppen position (stängd eller avvisad).':'Manuellt avstämd: ingen ny position och ingen IG-aktivitet för ordern.')+own;persist(mode);
+    return orderResult(mode,d!);
   }
-  return {preview,confirm,close,rollover,tick,snapshot,brokerPending,resolveUnknown};
+  return {preview,confirm,close,rollover,tick,snapshot,brokerPending,resolveUnknown,answerLateExit};
 }
 const orders=createIgOrders();
-export const previewIgOrder=orders.preview,confirmIgOrder=orders.confirm,closeIgPosition=orders.close,rolloverIgPosition=orders.rollover,tickIgOrders=orders.tick,getIgOrderState=orders.snapshot,resolveIgUnknown=orders.resolveUnknown,getIgBrokerPending=orders.brokerPending;
+export const previewIgOrder=orders.preview,confirmIgOrder=orders.confirm,closeIgPosition=orders.close,rolloverIgPosition=orders.rollover,tickIgOrders=orders.tick,getIgOrderState=orders.snapshot,resolveIgUnknown=orders.resolveUnknown,answerIgLateExit=orders.answerLateExit,getIgBrokerPending=orders.brokerPending;

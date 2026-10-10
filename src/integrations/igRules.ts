@@ -12,6 +12,21 @@ export function igStaleFx(last:IgAccountFx,margin=FX_SAFETY_MARGIN):IgAccountFx{
   const day=WEEKDAYS[new Date(last.observedAt).getDay()]??'okänd dag';
   return {...last,bid:last.bid*(1-margin),offer:last.offer*(1+margin),stale:true,safetyMargin:margin,label:`senaste växelkurs (${day})`,source:`${last.source} · senaste verifierade kurs ±${Math.round(margin*100)} % säkerhetsmarginal`};
 }
+/** FX-rimlighet (granskning 3): en ny kurs får avvika högst 20 % från senaste verifierade kurs. */
+export const FX_MAX_DEVIATION=0.2;
+/** Direkt, omvänd och korsad väg (via USD) för samma par får skilja högst 3 % i mittkurs. */
+export const FX_PATH_TOLERANCE=0.03;
+/** Senaste verifierade kurs äldre än så används inte som jämförelse (då gäller bara vägarnas inbördes kontroll). */
+export const FX_REFERENCE_MAX_MS=30*86400000;
+const mid=(r:{bid:number;offer:number})=>(r.bid+r.offer)/2;
+/** Returnerar ett tydligt skäl när kursen inte är rimlig, annars null. Rör aldrig storleksberäkningen själv. */
+export function igFxPlausibility(base:string,quote:string,rate:{bid:number;offer:number;path?:string},others:readonly {bid:number;offer:number;path:string}[],last:{bid:number;offer:number;observedAt:number}|null|undefined,now:number):string|null{
+  if(![rate.bid,rate.offer].every(v=>Number.isFinite(v)&&v>0)||rate.offer<rate.bid)return `Växelkursen ${base}/${quote} är ogiltig; ingen storlek räknas.`;
+  const m=mid(rate);
+  for(const o of others){if(![o.bid,o.offer].every(v=>Number.isFinite(v)&&v>0))continue;const dev=Math.abs(mid(o)-m)/m;if(dev>FX_PATH_TOLERANCE)return `Växelkursen ${base}/${quote} stämmer inte mellan vägarna ${rate.path??'direkt'} (${m.toPrecision(6)}) och ${o.path} (${mid(o).toPrecision(6)}), ${Math.round(dev*100)} % skillnad. Ingen storlek räknas; kontrollera kursen i IG.`;}
+  if(last&&Number.isFinite(last.observedAt)&&now-last.observedAt<=FX_REFERENCE_MAX_MS&&last.bid>0&&last.offer>0){const ref=mid(last),dev=Math.abs(m-ref)/ref;if(dev>FX_MAX_DEVIATION)return `Växelkursen ${base}/${quote} (${m.toPrecision(6)}) avviker ${Math.round(dev*100)} % från senaste verifierade kurs (${ref.toPrecision(6)}). Mer än 20 % tyder på fel skalning eller fel par, så ingen storlek räknas; kontrollera kursen i IG.`;}
+  return null;
+}
 const numeric=(v:unknown)=>typeof v==='number'?v:typeof v==='string'&&/^[0-9]+(?:\.[0-9]+)?$/.test(v.trim())?Number(v):NaN;
 export function igFxIsFresh(fx:IgAccountFx|null|undefined,accountCurrency:string,now:number,baseCurrency='USD'){
   if(!fx||fx.baseCurrency!==baseCurrency||fx.accountCurrency!==accountCurrency||!Number.isFinite(fx.bid)||!Number.isFinite(fx.offer)||fx.bid<=0||fx.offer<fx.bid)return false;
@@ -23,6 +38,11 @@ export function igFxIsFresh(fx:IgAccountFx|null|undefined,accountCurrency:string
 export function igPairQuote(market:Record<string,any>,base:string,quote:string,now:number):{bid:number;offer:number;receivedAt:number;observedAt:number;epic:string}|null{
   const q=market?.quote;const name=String(market?.name??'');
   if(market?.type!=='CURRENCIES'||!new RegExp(`^${base}\\s*\\/\\s*${quote}(?:\\s+Mini)?\\s*$`,'i').test(name))return null;
+  // N3 (granskning 3): parets egna instrumentregler. Kvoten ska vara i parets kvotvaluta med en positiv skalning.
+  const inst=market?.instrument??{},cur=Array.isArray(inst.currencies)?inst.currencies:[];
+  const code=(cur.find((c:any)=>c?.isDefault===true)??(cur.length===1?cur[0]:null))?.code;
+  if(cur.length&&code!==quote)return null;
+  if(inst.scalingFactor!==undefined&&inst.scalingFactor!==null&&!(numeric(inst.scalingFactor)>0))return null;
   if(q?.marketStatus!=='TRADEABLE'||q.delayTime!==0||!(q.bid>0)||!(q.offer>=q.bid))return null;
   if(![q.receivedAt,q.observedAt].every((t:number)=>Number.isFinite(t)&&now-t>=0&&now-t<=60000))return null;
   return {bid:q.bid,offer:q.offer,receivedAt:q.receivedAt,observedAt:q.observedAt,epic:market.epic};

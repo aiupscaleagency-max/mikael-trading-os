@@ -6,7 +6,7 @@ import { localIgCredentialRequest, saveIgCredentials } from "../integrations/igC
 import { igChanged } from "../integrations/igEvents.js";
 import { getIgMarket, getIgHistory, searchIgMarkets } from "../integrations/igMarkets.js";
 import { getIgMarketDirectory, getIgDirectoryEnrichment, peekIgMarketDirectory, igLiveOnlyReferences } from "../integrations/igMarketDirectory.js";
-import { getIgOrderState, resolveIgUnknown } from "../integrations/igOrders.js";
+import { getIgOrderState, resolveIgUnknown, answerIgLateExit } from "../integrations/igOrders.js";
 import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
 import { currentStake } from "../risk/stakeLadder.js";
 import { igOrderMoneyView } from "../integrations/igRiskLimits.js";
@@ -219,6 +219,22 @@ export async function handleIgRoutes(
           const r = await withIgPriority(() => resolveIgUnknown(env, m[1]!));
           userAction(`stämde av okänt IG-utfall: ${r.note}`, { to: "orders" });
           onEvent("pending-orders", { resolved: m[1] });
+          send(res, 200, { ok: true, env, ...r });
+        } catch (e) { send(res, 200, { ok: false, env, error: e instanceof Error ? e.message : String(e) }); }
+        return true;
+      }
+    }
+    {
+      // N1 (granskning 3): Mikes uttryckliga svar på "tidsstängning saknas – lägg till?" efter manuell avstämning.
+      // Body {add:true} lägger till tidsstängningen, {add:false} avböjer. Läser bara positioner, skickar inget till IG.
+      const m = p.match(/^\/api\/ig\/orders\/([A-Za-z0-9_-]{1,100})\/timed-exit$/);
+      if (m && method === "POST") {
+        try {
+          const b = await body(req, readBody);
+          if (typeof b.add !== "boolean") throw new Error("Svara uttryckligen ja eller nej (add: true/false)");
+          const r = await withIgPriority(() => answerIgLateExit(env, m[1]!, b.add));
+          userAction(`tidsstängning efter avstämning: ${r.note}`, { to: "orders" });
+          onEvent("pending-orders", { timedExit: m[1] });
           send(res, 200, { ok: true, env, ...r });
         } catch (e) { send(res, 200, { ok: false, env, error: e instanceof Error ? e.message : String(e) }); }
         return true;

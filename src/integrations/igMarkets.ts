@@ -1,7 +1,7 @@
 // IG marknadsdata (katalog, instrument, kvot, historik, kontohistorik).
 // Utdrag ur Codex igWorkspace.ts (codex/ig-continuation-20261007): endast läsvägar.
 // Analys/sessioner ligger i vårt eget agentflöde (JEV → Teknisk + Risk → Hanna).
-import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igFxIsFresh,igPairQuote,igStaleFx,FX_STALE_MAX_MS,type IgAccountFx} from "./igRules.js";
+import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igFxIsFresh,igPairQuote,igStaleFx,igFxPlausibility,FX_STALE_MAX_MS,type IgAccountFx} from "./igRules.js";
 import {callIgAuthenticated,getIgReadBudget,isIgTemporaryRateError,getIgStatus,type IgEnvironment} from "./igConnection.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -67,6 +67,8 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
   const connectionIdentity=(mode:IgEnvironment)=>{const c=status().environments[mode];return c.status==="connected" ? c.connectionGeneration ?? `${c.checkedAt}:${c.account?.accountId}` : null;};
   function consumeRead(mode:IgEnvironment){if(!deps.call)return;if(readBudget(mode).remaining===0)throw Error("IG-läsbudgeten är slut för denna minut");fixtureReads.push({environment:mode,at:now()});}
   async function read(...args:Parameters<typeof call>){consumeRead(args[0]);return call(...args);}
+  /** Läser en cachad post utan att hämta något (ingen IG-läsning). */
+  function peek<T>(key:string,ttl:number):T|undefined{const environment=key.split(":")[1] as IgEnvironment,hit=cache.get(`${key}:account:${connectionIdentity(environment)}`);return hit&&now()-hit.at<ttl?clone(hit.value) as T:undefined;}
   async function cached<T>(key:string,ttl:number,job:()=>Promise<T>):Promise<T> {
     const environment=key.split(":")[1] as IgEnvironment,identity=connectionIdentity(environment);
     key=`${key}:account:${identity}`;
@@ -260,27 +262,52 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
       return rows[0]?.epic??null;
     });
   }
-  async function pairRate(mode:IgEnvironment,from:string,to:string):Promise<{bid:number;offer:number;receivedAt:number;observedAt:number;path:string}|null>{
-    const direct=await pairEpic(mode,from,to).catch(()=>null);
-    if(direct){const q=igPairQuote(await rawMarket(mode,direct),from,to,now());if(q)return {...q,path:`${from}/${to}`};}
-    const inverse=await pairEpic(mode,to,from).catch(()=>null);
-    if(inverse){const q=igPairQuote(await rawMarket(mode,inverse),to,from,now());if(q)return {bid:1/q.offer,offer:1/q.bid,receivedAt:q.receivedAt,observedAt:q.observedAt,path:`1/(${to}/${from})`};}
-    return null;
+  type Rate={bid:number;offer:number;receivedAt:number;observedAt:number;path:string;rejected?:string};
+  // Granskning 3 (FX-rimlighet): finns både direkt och omvänt par jämförs de; skiljer de mer än 3 % används ingen kurs.
+  async function pairRate(mode:IgEnvironment,from:string,to:string):Promise<Rate|null>{
+    return cached<Rate|null>(`fxrate:${mode}:${from}${to}`,15000,async()=>{
+      const paths:Rate[]=[];
+      const direct=await pairEpic(mode,from,to).catch(()=>null);
+      if(direct){const q=igPairQuote(await rawMarket(mode,direct),from,to,now());if(q)paths.push({bid:q.bid,offer:q.offer,receivedAt:q.receivedAt,observedAt:q.observedAt,path:`${from}/${to}`});}
+      const inverse=await pairEpic(mode,to,from).catch(()=>null);
+      if(inverse){const q=await rawMarket(mode,inverse).then(m=>igPairQuote(m,to,from,now())).catch(e=>{if(paths.length)return null;throw e;});if(q)paths.push({bid:1/q.offer,offer:1/q.bid,receivedAt:q.receivedAt,observedAt:q.observedAt,path:`1/(${to}/${from})`});}
+      if(!paths.length)return null;
+      const [first,...rest]=paths;const rejected=igFxPlausibility(from,to,first!,rest,null,now());
+      return rejected?{...first!,rejected}:first!;
+    });
   }
+  const cross=(a:Rate,b:Rate):Rate=>({bid:a.bid*b.bid,offer:a.offer*b.offer,receivedAt:Math.min(a.receivedAt,b.receivedAt),observedAt:Math.min(a.observedAt,b.observedAt),path:`${a.path} × ${b.path}`});
+  /** Senaste skäl till att en växelkurs inte godtogs (per miljö och par). Visas i stället för en storlek. */
+  const fxRejected=new Map<string,string>();
+  function accountFxError(mode:IgEnvironment,base:string):string|null{const currency=status().environments[mode].account?.currency;return currency?fxRejected.get(`${mode}:${base}:${currency}`)??null:null;}
   async function accountFx(mode:IgEnvironment,base='USD'):Promise<IgAccountFx|null> {
     connected(mode);const currency=status().environments[mode].account?.currency;
     if(!currency||!/^[A-Z]{3}$/.test(currency)||!/^[A-Z]{3}$/.test(base))return null;
     if(currency===base)return {baseCurrency:base,accountCurrency:currency,bid:1,offer:1,receivedAt:now(),observedAt:now(),source:`${base}-konto · ingen valutaomräkning`};
     const key=`${mode}:${base}:${currency}`;
-    let fresh:IgAccountFx|null=null;
+    let fresh:IgAccountFx|null=null,rejected:string|null=null;
     try{
-      fresh=await cached<IgAccountFx|null>(`fx:${mode}:${base}${currency}`,30000,async()=>{
-        let r=await pairRate(mode,base,currency);
-        if(!r&&base!=='USD'&&currency!=='USD'){const a=await pairRate(mode,base,'USD'),b2=a?await pairRate(mode,'USD',currency):null;if(a&&b2)r={bid:a.bid*b2.bid,offer:a.offer*b2.offer,receivedAt:Math.min(a.receivedAt,b2.receivedAt),observedAt:Math.min(a.observedAt,b2.observedAt),path:`${a.path} × ${b2.path}`};}
+      const got=await cached<{fx:IgAccountFx}|{rejected:string}|null>(`fx:${mode}:${base}${currency}`,30000,async()=>{
+        let r=await pairRate(mode,base,currency);const others:Rate[]=[];
+        if(r?.rejected)return {rejected:r.rejected};
+        if(base!=='USD'&&currency!=='USD'){
+          if(!r){const a=await pairRate(mode,base,'USD'),b2=a&&!a.rejected?await pairRate(mode,'USD',currency):null;if(a?.rejected)return {rejected:a.rejected};if(b2?.rejected)return {rejected:b2.rejected};if(a&&b2)r=cross(a,b2);}
+          else{
+            // Korsvägen jämförs när båda USD-benen redan finns i cachen (kostar inga extra IG-läsningar).
+            const a=peek<Rate|null>(`fxrate:${mode}:${base}USD`,15000),b2=peek<Rate|null>(`fxrate:${mode}:USD${currency}`,15000);
+            if(a&&b2&&!a.rejected&&!b2.rejected)others.push(cross(a,b2));
+          }
+        }
         if(!r)return null; // även "ingen färsk kurs" cachas 30 s så att en stängd FX-marknad inte kostar läsningar
-        return {baseCurrency:base,accountCurrency:currency,bid:r.bid,offer:r.offer,receivedAt:r.receivedAt,observedAt:r.observedAt,source:`IG ${r.path} · verifierad bid/ask`,path:r.path} as IgAccountFx;
+        const reason=igFxPlausibility(base,currency,r,others,loadFxLast()[key]??null,now());
+        if(reason)return {rejected:reason};
+        return {fx:{baseCurrency:base,accountCurrency:currency,bid:r.bid,offer:r.offer,receivedAt:r.receivedAt,observedAt:r.observedAt,source:`IG ${r.path} · verifierad bid/ask`,path:r.path} as IgAccountFx};
       });
+      if(got&&'rejected' in got)rejected=got.rejected;else fresh=got?.fx??null;
     }catch(e){if(e instanceof Error&&e.message.startsWith('IG begränsade antal'))fresh=null;}
+    // En orimlig kurs ersätts aldrig av en äldre: ingen storlek räknas förrän kurserna stämmer igen.
+    if(rejected){fxRejected.set(key,rejected);return null;}
+    fxRejected.delete(key);
     if(fresh&&igFxIsFresh(fresh,currency,now(),base)){saveFxLast(key,fresh);return fresh;}
     const last=loadFxLast()[key];
     if(last&&now()-last.observedAt<=FX_STALE_MAX_MS){const stale=igStaleFx(last);return igFxIsFresh(stale,currency,now(),base)?stale:null;}
@@ -291,7 +318,10 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     const currencies=detail.instrument.currencies;
     const execution=(currencies.find((c:any)=>c.isDefault===true)??(currencies.length===1?currencies[0]:null))?.code;
     const fx=execution&&currency&&execution!==currency?await accountFx(mode,execution):null;
-    return {...detail,calculationRules:{...igCalculationRules(detail.instrument,{scalingFactor:detail.instrument.scalingFactor},currency,fx,now()),minSize:detail.dealingRules.minDealSize?.value??null}};
+    const rules=igCalculationRules(detail.instrument,{scalingFactor:detail.instrument.scalingFactor},currency,fx,now());
+    // Orimlig växelkurs: tydligt besked i stället för en storlek (pointValue saknas då redan).
+    const fxError=execution&&currency&&execution!==currency&&!fx?accountFxError(mode,execution):null;
+    return {...detail,calculationRules:{...rules,...(fxError?{note:fxError,fxError}:{}),minSize:detail.dealingRules.minDealSize?.value??null}};
   }
   async function candles(mode:IgEnvironment,epic:string,timeframe:IgTimeframe,limit=100) {
     connected(mode);epicGuard(epic);if(!Object.hasOwn(frames,timeframe)||!Number.isInteger(limit)||limit<20||limit>200)throw Error("Ogiltiga IG-ljusparametrar");
@@ -326,7 +356,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
       return {status:hasMore?"partial":"ready",error:null,complete:!hasMore,periodDays:30,transactions:t.transactions.map((r:any)=>({date:str(r.dateUtc)??str(r.date),type:str(r.transactionType),instrumentName:str(r.instrumentName),reference:str(r.reference),profitAndLoss:str(r.profitAndLoss),currency:str(r.currency),openLevel:str(r.openLevel),closeLevel:str(r.closeLevel),size:str(r.size),cashTransaction:typeof r.cashTransaction==="boolean"?r.cashTransaction:["DEPOSIT","WITHDRAWAL","TRANSFER","INTEREST","FEE"].includes(r.transactionType)?true:null})),activities:a.activities.map((r:any)=>({date:str(r.date),type:str(r.type),status:str(r.status),description:str(r.description),epic:str(r.epic),dealId:str(r.dealId)})),pagination:{transactions:{pageNumber:num(t.metadata?.pageData?.pageNumber),pageSize:num(t.metadata?.pageData?.pageSize),totalPages:txPages},activities:{nextPageAvailable:!!a.metadata?.paging?.next,size:num(a.metadata?.size)}},note:"Kontohändelser och kassatransaktioner är inte automatiskt avslutade trades eller strategins PnL",updatedAt:now()};
     });
   }
-  return {searchMarkets,catalogue,marketOverview,market,rawMarket,accountFx,candles,history};
+  return {searchMarkets,catalogue,marketOverview,market,rawMarket,accountFx,accountFxError,candles,history};
 }
 const markets=createIgMarkets();
 export const searchIgMarkets=markets.searchMarkets,getIgMarket=markets.market,getIgCandles=markets.candles,getIgHistory=markets.history,getIgAccountFx=markets.accountFx,getIgCatalogue=markets.catalogue,getIgMarketOverview=markets.marketOverview;

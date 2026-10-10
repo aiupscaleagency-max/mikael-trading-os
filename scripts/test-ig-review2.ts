@@ -131,6 +131,9 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
   ps.push({ dealId: "OLD", epic: EPIC, direction: "BUY", size: 100, createdDateUTC: new Date(clock - 3_600_000).toISOString().slice(0, 19) });
   await assert.rejects(o3.resolveUnknown("demo", d3.id), /För tidigt/, "gammal position räknas inte som ordern");
   ps.push({ dealId: "NEW", epic: EPIC, direction: "BUY", size: 100, createdDateUTC: new Date(clock).toISOString().slice(0, 19) });
+  // Granskning 3 (N1): positionen i fönstret räcker inte; en ACCEPTED IG-aktivitet med samma dealId krävs.
+  await assert.rejects(o3.resolveUnknown("demo", d3.id), /saknar en accepterad IG-aktivitet/, "position utan bekräftande aktivitet adopteras inte");
+  activity = [{ epic: EPIC, date: new Date(clock).toISOString().slice(0, 19), status: "ACCEPTED", dealId: "NEW", details: { direction: "BUY" } }];
   const res3 = await o3.resolveUnknown("demo", d3.id);
   assert.equal(res3.status, "accepted"); assert.equal(res3.dealId, "NEW");
   ok("M2 manuell avstämning: med referens (IG-aktivitet) och utan referens (bara nya positioner), ingenting skickas om");

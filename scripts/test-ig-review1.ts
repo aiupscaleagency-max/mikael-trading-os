@@ -90,7 +90,8 @@ const market = async (_e: string, epic: string) => ({
   const call = async (_m: string, route: string, method: string) => {
     if (route === "workingorders") return { workingOrders: [] };
     if (route === "history/transactions") return { transactions: [], metadata: { pageData: { totalPages: 1 } } };
-    if (route === "history/activity") return { activities: [{ epic: EPIC, date: "2026-10-09T10:00:00", details: { direction: "BUY" } }] };
+    // Granskning 3 (N1): adoption kräver en ACCEPTED IG-aktivitet med samma dealId inom fönstret.
+    if (route === "history/activity") return { activities: [{ epic: EPIC, date: "2026-10-09T10:00:00", status: "ACCEPTED", dealId: "found-1", details: { direction: "BUY" } }] };
     if (method === "POST") { posts.push(route); if (timeout) throw new Error("timeout"); return { dealReference: "x" }; }
     throw new Error("oväntat " + route);
   };
