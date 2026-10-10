@@ -2976,6 +2976,8 @@ body.app-state-onboard .fc-panel{display:none !important}
 #page-markets .mk-btns button:disabled{opacity:.4;cursor:not-allowed}
 #page-markets .mk-more{margin-top:8px}
 #page-markets .mk-reflbl{font-size:10px;font-weight:800;color:#f0b90b}
+/* Demo-simulering: Live-instrument som saknas på IG Demo (Live-pris, låtsaspengar) */
+.ig-simlbl{display:inline-block;font-size:10px;font-weight:800;color:#f0b90b;border:1px solid #f0b90b;border-radius:4px;padding:1px 5px;margin-top:3px}
 #page-markets .mk-missing{color:var(--dim);font-style:italic}
 @media (max-width:640px){ #page-markets .mk-grid{grid-template-columns:1fr} }
 </style>
@@ -9603,7 +9605,7 @@ document.addEventListener("DOMContentLoaded", boot);
     const e = m.epic;
     return `<div class="pp-col${S().has(e) ? " pp-sel" : ""}" data-b="${esc(e)}">
       <div class="pp-top"><input type="checkbox" class="pp-chk" ${S().has(e) ? "checked" : ""} title="Ta med i Analysera valda / agentsession"><span class="pp-name" title="${esc(e)}">${esc(m.name || IG.label(e))}</span><span class="pp-px">–</span></div>
-      <div class="pp-chg">–</div>
+      <div class="pp-chg">–</div>${m.sim ? `<div class="ig-simlbl" title="Finns på IG Live men inte på ditt Demo-konto. Order fylls i simuleringen mot Live-pris med låtsaspengar; inget skickas till IG.">${esc(m.simLabel || "Demo-simulering · Live-pris · låtsaspengar")}</div>` : ""}
       <canvas class="pp-canvas"></canvas><div class="pp-sub"><span class="pp-cv">diagram hämtas när kortet syns</span> · ${esc(IG.envLabel())} · <span class="pp-st"></span></div>
       <div class="pp-row pp-sig"><span class="pp-k">Signal (indikatorer)</span>–</div>
       <div class="pp-row pp-pick"><span class="pp-k">Agenterna (senaste analys)</span>Inte analyserad än</div>
@@ -10263,7 +10265,7 @@ window.MK = (function(){
     const extra = hooks.card.map(f=>{ try{ return f(m) || ""; }catch(_){ return ""; } }).join("");
     return `<div class="mk-card${sel.has(m.epic)?" mk-sel":""}" data-epic="${esc(m.epic)}">
       <div class="mk-top"><input type="checkbox" class="mk-chk" ${sel.has(m.epic)?"checked":""} title="Markera"><span class="mk-ico">${icon(m)}</span>
-        <div style="min-width:0"><div class="mk-name">${esc(m.name || "namn saknas")}</div><div class="mk-epic">${esc(m.epic)}${m.type ? " · " + esc(m.type) : ""}</div></div></div>
+        <div style="min-width:0"><div class="mk-name">${esc(m.name || "namn saknas")}</div><div class="mk-epic">${esc(m.epic)}${m.type ? " · " + esc(m.type) : ""}</div>${m.sim ? `<div class="ig-simlbl" title="Finns på IG Live men inte på ditt Demo-konto. Order fylls i simuleringen mot Live-pris med låtsaspengar; inget skickas till IG.">${esc(m.simLabel || "Demo-simulering · Live-pris · låtsaspengar")}</div>` : ""}</div></div>
       <div class="mk-row"><span class="mk-px">${mid != null ? IG.px(mid) : '<span class="mk-missing">kvot saknas</span>'}</span>
         <span class="${chg == null ? "mk-missing" : chg >= 0 ? "up" : "down"}">${chg == null ? "förändring saknas" : (chg >= 0 ? "▲ +" : "▼ ") + Number(chg).toFixed(2) + " %"}</span></div>
       <div class="mk-row" style="font-size:10px;color:var(--dim)"><span>${m.marketStatus ? esc(m.marketStatus === "TRADEABLE" ? "öppen" : m.marketStatus) : "status saknas"}</span><span>${data[m.category] && data[m.category].updatedAt ? "katalog " + IG.age(Date.now() - data[m.category].updatedAt) + " sedan" : ""}</span></div>

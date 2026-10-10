@@ -59,6 +59,8 @@ export interface Position {
   pnlVerified?: boolean;
   stopLevel?: number | null;
   limitLevel?: number | null;
+  /** Demo-simulering: Live-instrument som saknas på IG Demo, fyllt med låtsaspengar mot Live-pris (aldrig hos IG) */
+  sim?: boolean;
 }
 
 export interface OrderRequest {

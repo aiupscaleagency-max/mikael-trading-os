@@ -17,6 +17,7 @@ import type { IgEnvironment } from "../integrations/igConnection.js";
 import { setStakeHistory } from "../risk/stakeLadder.js";
 import { listTimedExits } from "./tradeHorizon.js";
 import { reconcileStrategyDeals, type ClosedTx, type ObservedPosition } from "./igStrategyTrades.js";
+import { DEMO_SIM_SHORT, type IgDemoSim } from "../integrations/igDemoSim.js";
 
 export interface ResultTrade {
   at: number; coin: string; side: "BUY" | "SELL"; qty: number; price: number; usd: number; kind: string;
@@ -28,6 +29,8 @@ export interface ResultOpen {
   tp?: number; sl?: number; epic?: string; dealId?: string; direction?: "BUY" | "SELL"; closeAt?: number | null; nextAttemptAt?: number | null;
   /** Tidsgränsens läge: waiting | execution-off ("väntar – orderläget av") | retrying | needs-attention */
   exitState?: string | null; exitError?: string | null;
+  /** Demo-simulering (Live-pris, låtsaspengar) */
+  sim?: boolean;
 }
 export interface Results {
   mode: "TEST" | "LIVE";
@@ -72,7 +75,7 @@ export async function getResults(
   brokers: Record<string, BrokerAdapter>,
   mode: "TEST" | "LIVE",
   _liveTpSl: Array<{ symbol: string; takeProfit?: number; stopLoss?: number }> = [],
-  deps: { history?: typeof getIgHistory } = {},
+  deps: { history?: typeof getIgHistory; sim?: Pick<IgDemoSim, "snapshot" | "positionsView"> | null } = {},
 ): Promise<Results> {
   const env: IgEnvironment = mode === "LIVE" ? "live" : "demo";
   const broker = brokers[env === "live" ? "ig" : "ig-demo"];
@@ -112,7 +115,8 @@ export async function getResults(
     try {
       const exits = listTimedExits();
       const positions = await broker.getPositions();
-      livePositions = positions;
+      // Simulerade positioner finns aldrig hos IG och ska inte stämmas av mot IG:s historik
+      livePositions = positions.filter((p) => !p.sim);
       for (const p of positions) {
         const exposure = p.avgEntryPrice * p.quantity;
         open.push({
@@ -124,14 +128,46 @@ export async function getResults(
           nextAttemptAt: exits.find((x) => x.dealId === p.dealId)?.exitAt ?? null,
           exitState: (() => { const x = exits.find((y) => y.dealId === p.dealId); return x ? x.igState ?? "waiting" : null; })(),
           exitError: exits.find((x) => x.dealId === p.dealId)?.lastError ?? null,
+          ...(p.sim ? { sim: true } : {}),
         });
       }
     } catch (e) { errors.push(`positioner: ${e instanceof Error ? e.message : String(e)}`); }
   }
 
+  // Demo-simulering: övningsaffärerna (Live-pris, låtsaspengar) visas i Demo-resultatet, märkta "sim".
+  // De räknas inte in i insatstrappan eller strategiresultaten (de bygger på IG:s egen historik).
+  const igTrades = trades.slice();
+  if (env === "demo") {
+    const sim = deps.sim === undefined ? (await import("./igDemoSimLive.js")).igDemoSim : deps.sim;
+    if (sim) {
+      try {
+        for (const t of sim.snapshot().closed) {
+          trades.push({
+            at: t.closedAt, coin: `${t.name} · ${DEMO_SIM_SHORT}`, side: t.direction === "SELL" ? "SELL" : "BUY", qty: t.size, price: t.closeLevel, usd: 0,
+            kind: "sim", pnl: t.pnl, pnlPct: t.openLevel > 0 ? ((t.direction === "SELL" ? -1 : 1) * (t.closeLevel - t.openLevel) / t.openLevel) * 100 : undefined,
+            openLevel: t.openLevel, closeLevel: t.closeLevel, reference: t.dealId,
+          });
+        }
+        // Gick IG-positionerna inte att läsa syns de simulerade ändå (de finns bara här)
+        if (!open.some((o) => o.sim)) {
+          const exits = listTimedExits();
+          for (const p of sim.positionsView()) {
+            const x = exits.find((y) => y.dealId === p.dealId);
+            open.push({
+              coin: `${p.name} · ${DEMO_SIM_SHORT}`, epic: p.epic, dealId: p.dealId, direction: p.direction, qty: p.size, avg: p.level, price: p.currentPrice, value: null,
+              upnl: p.upnl, upnlPct: p.currentPrice !== null && p.level > 0 ? ((p.direction === "SELL" ? -1 : 1) * (p.currentPrice - p.level) / p.level) * 100 : null,
+              tp: p.limitLevel ?? undefined, sl: p.stopLevel ?? undefined, closeAt: x?.requestedExitAt ?? x?.exitAt ?? null, nextAttemptAt: x?.exitAt ?? null,
+              exitState: x ? x.igState ?? "waiting" : null, exitError: x?.lastError ?? null, sim: true,
+            });
+          }
+        }
+      } catch (e) { errors.push(`simulering: ${e instanceof Error ? e.message : String(e)}`); }
+    }
+  }
+
   // Bara när IG-historiken faktiskt lästes: ett IG-avbrott får aldrig nollställa trappan/minnet.
   if (!errors.length) {
-    const pnls = trades.filter((t) => t.pnl !== undefined).sort((a, b) => a.at - b.at).map((t) => t.pnl!);
+    const pnls = igTrades.filter((t) => t.pnl !== undefined).sort((a, b) => a.at - b.at).map((t) => t.pnl!);
     setStakeHistory(pnls, balance, currency, env);
   }
   // F1: strategins stängda affärer registreras bara när positioner OCH hela historiken lästes utan fel (samma miljö).
@@ -143,7 +179,7 @@ export async function getResults(
   if (env === "demo" && !errors.length) {
     try {
       mkdirSync(path.dirname(dataPath("ig-closed-demo.json")), { recursive: true });
-      writeFileSync(dataPath("ig-closed-demo.json"), JSON.stringify(trades.filter((t) => t.pnl !== undefined).map((t) => ({ base: t.coin, side: "SELL", qty: t.qty, price: t.price, at: t.at, kind: "IG Demo", pnl: t.pnl }))));
+      writeFileSync(dataPath("ig-closed-demo.json"), JSON.stringify(igTrades.filter((t) => t.pnl !== undefined).map((t) => ({ base: t.coin, side: "SELL", qty: t.qty, price: t.price, at: t.at, kind: "IG Demo", pnl: t.pnl }))));
     } catch { /* bara för tradingminnet */ }
   }
   return summarize({ mode, env, label, currency, trades, open, error: errors.length ? errors.join(" · ") : null, partial });
