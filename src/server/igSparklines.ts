@@ -4,6 +4,7 @@ import { dataPath } from "../dataDir.js";
 import { getIgReadBudget, IG_HISTORY_RATE_ERROR, IG_HISTORY_BLOCK_MS, type IgEnvironment } from "../integrations/igConnection.js";
 import { getIgCandles } from "../integrations/igMarkets.js";
 import { igMarketData } from "./igMarketData.js";
+import { tiingoIntraday, TIINGO_SPARK_LABEL, type TiingoSeries } from "./tiingoIntraday.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Minidiagram för korten på Alla par — skonsamt mot IG:s historikkvot.
@@ -33,7 +34,9 @@ export const SPARK_QUOTA_TEXT = "diagram ej hämtat (IG:s historikkvot)";
 
 export interface Sparkline {
   epic: string; env: IgEnvironment; closes: number[]; interval: string; at: number;
-  source: "minne" | "cache" | "ig" | "ingen"; error: string | null; note?: string; retryAt?: number;
+  source: "minne" | "cache" | "ig" | "ingen" | "tiingo"; error: string | null; note?: string; retryAt?: number;
+  /** Etikett under diagrammet när källan inte är IG (t.ex. "Tiingo-diagram (ej IG-pris)") */
+  sourceLabel?: string; tiingoTicker?: string;
   /** Första och sista ljusets öppningstid (ms), så att etiketten visar verklig period (t.ex. helg = fredagens ljus) */
   from?: number | null; to?: number | null;
 }
@@ -48,6 +51,10 @@ export function createIgSparklines(deps: {
   now?: () => number;
   file?: (env: IgEnvironment) => string;
   persist?: boolean;
+  /** Tiingo-reserv när IG:s historikkvot är slut (endast visning). null = avstängd. */
+  tiingo?: { get: (epic: string, name: string | null | undefined, opts?: { cacheOnly?: boolean }) => Promise<TiingoSeries> } | null;
+  /** Instrumentnamn (för att mappa EPIC → Tiingo-ticker) */
+  name?: (env: IgEnvironment, epic: string) => string | null;
 } = {}) {
   const candles = deps.candles ?? (getIgCandles as unknown as CandlesFn);
   const budget = deps.budget ?? getIgReadBudget;
@@ -56,6 +63,8 @@ export function createIgSparklines(deps: {
   const now = deps.now ?? Date.now;
   const file = deps.file ?? ((env: IgEnvironment) => dataPath(`ig-sparklines-${env}.json`));
   const persist = deps.persist !== false;
+  const tiingo = deps.tiingo === undefined ? tiingoIntraday : deps.tiingo;
+  const nameOf = deps.name ?? ((env: IgEnvironment, epic: string) => igMarketData.nameOf(epic, env));
   const cache = new Map<IgEnvironment, Map<string, Sparkline>>();
   const pending = new Map<string, Promise<Sparkline>>();
   const fetches = new Map<IgEnvironment, number[]>();
@@ -108,7 +117,7 @@ export function createIgSparklines(deps: {
     return null;
   }
 
-  async function get(env: IgEnvironment, epic: string, opts: { cacheOnly?: boolean } = {}): Promise<Sparkline> {
+  async function getIg(env: IgEnvironment, epic: string, opts: { cacheOnly?: boolean } = {}): Promise<Sparkline> {
     const mem = fromMemory(env, epic);
     if (mem) return mem;
     const hit = store(env).get(epic);
@@ -144,6 +153,26 @@ export function createIgSparklines(deps: {
     })();
     pending.set(key, job);
     try { return await job; } finally { pending.delete(key); }
+  }
+  /**
+   * IG först (oförändrat). Bara när IG:s historikkvot är slut eller IG saknar ljus provas Tiingo,
+   * tydligt märkt "ej IG-pris". Tiingo-svaren lagras i Tiingo-modulens egen cache, aldrig i IG-cachen
+   * eller igMarketData, så de når aldrig signaler, strategier eller ordrar.
+   */
+  async function get(env: IgEnvironment, epic: string, opts: { cacheOnly?: boolean } = {}): Promise<Sparkline> {
+    const s = await getIg(env, epic, opts);
+    if (s.closes.length || !tiingo) return s;
+    const quota = s.error === SPARK_QUOTA_TEXT || /historik saknas/i.test(s.error ?? "");
+    if (!quota && !opts.cacheOnly) return s; // tillfälliga väntelägen (läsgräns, minuttak) och andra fel: ingen reserv
+    let t: TiingoSeries;
+    try { t = await tiingo.get(epic, nameOf(env, epic), { cacheOnly: !!opts.cacheOnly || !quota }); }
+    catch { return quota ? { ...s, note: "Tiingo-reserven misslyckades" } : s; }
+    if (t.closes.length) {
+      return { epic, env, closes: t.closes, interval: SPARK_INTERVAL, at: t.at, source: "tiingo", error: null,
+        note: quota ? "IG:s historikkvot slut" : undefined, sourceLabel: TIINGO_SPARK_LABEL, tiingoTicker: t.ticker ?? undefined, from: t.from, to: t.to };
+    }
+    // Ingen reserv: IG:s felmeddelande står kvar oförändrat, Tiingos skäl läggs i note
+    return quota && t.note ? { ...s, note: t.note } : s;
   }
   return { get, stats: () => ({ ...stats }), blockedUntil: (env: IgEnvironment) => blockedUntil.get(env) ?? 0 };
 }

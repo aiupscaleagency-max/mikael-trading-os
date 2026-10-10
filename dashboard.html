@@ -9685,8 +9685,9 @@ document.addEventListener("DOMContentLoaded", boot);
     try{
       const d = await (await fetch("/api/market/sparkline?epic=" + encodeURIComponent(e))).json();
       if(d.env && d.env !== env) return; // svar för fel miljö kastas
-      if(d.closes && d.closes.length){ x.bars = d.closes; x.iv = d.interval; x.from = d.from; x.to = d.to; x.missing = d.note || null; x.at = Date.now(); }
-      else { x.missing = d.error || "diagram ej hämtat"; x.at = Date.now() - CHART_TTL + 120000; } // nytt försök tidigast om 2 min
+      // sourceLabel finns bara när diagrammet INTE är IG:s priser (t.ex. Tiingo när IG:s historikkvot är slut)
+      if(d.closes && d.closes.length){ x.bars = d.closes; x.iv = d.interval; x.from = d.from; x.to = d.to; x.missing = d.note || null; x.src = d.sourceLabel || null; x.at = Date.now(); }
+      else { x.missing = (d.error || "diagram ej hämtat") + (d.note ? " · " + d.note : ""); x.src = null; x.at = Date.now() - CHART_TTL + 120000; } // nytt försök tidigast om 2 min
     }catch(err){ x.missing = "diagram ej hämtat: " + err.message; x.at = Date.now() - CHART_TTL + 120000; }
     finally{ x.loading = false; }
     draw(e);
@@ -9723,7 +9724,8 @@ document.addEventListener("DOMContentLoaded", boot);
     if(x.chg != null){ c.textContent = `idag ${x.chg >= 0 ? "+" : ""}${Number(x.chg).toFixed(2)} %`; c.style.color = x.chg >= 0 ? "#3fb950" : "#f85149"; }
     else c.textContent = "idag –";
     const cv = el.querySelector(".pp-canvas"), lbl = el.querySelector(".pp-cv"); const bars = x.bars || [];
-    if(lbl) lbl.textContent = bars.length ? spanText(x) + (x.missing ? " · " + x.missing : "")
+    if(lbl) lbl.style.color = x.src && bars.length ? "#f0b90b" : "";
+    if(lbl) lbl.textContent = bars.length ? (x.src ? x.src + " · " : "") + spanText(x) + (x.missing ? " · " + x.missing : "")
       : x.missing ? x.missing : x.loading ? "hämtar diagram…" : "diagram hämtas när kortet syns";
     const w = cv.clientWidth || 220, h = 70, dpr = window.devicePixelRatio || 1;
     if(cv.width !== w*dpr){ cv.width = w*dpr; cv.height = h*dpr; }
