@@ -11,10 +11,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import { dataPath } from "../dataDir.js";
+import { log } from "../logger.js";
 import { getIgHistory } from "../integrations/igMarkets.js";
 import type { IgEnvironment } from "../integrations/igConnection.js";
 import { setStakeHistory } from "../risk/stakeLadder.js";
 import { listTimedExits } from "./tradeHorizon.js";
+import { reconcileStrategyDeals, type ClosedTx, type ObservedPosition } from "./igStrategyTrades.js";
 
 export interface ResultTrade {
   at: number; coin: string; side: "BUY" | "SELL"; qty: number; price: number; usd: number; kind: string;
@@ -83,10 +85,13 @@ export async function getResults(
 
   const trades: ResultTrade[] = [];
   let partial = false;
+  let rawTx: ClosedTx[] = [];
+  let livePositions: ObservedPosition[] | null = null;
   if (!errors.length) {
     try {
       const h = await (deps.history ?? getIgHistory)(env);
       partial = h.status === "partial";
+      rawTx = h.transactions as ClosedTx[];
       for (const t of h.transactions as any[]) {
         if (t.cashTransaction === true || t.type !== "DEAL") continue;
         const pnl = parseIgMoney(t.profitAndLoss);
@@ -106,7 +111,9 @@ export async function getResults(
   if (!errors.length || errors.every((e) => e.startsWith("historik"))) {
     try {
       const exits = listTimedExits();
-      for (const p of await broker.getPositions()) {
+      const positions = await broker.getPositions();
+      livePositions = positions;
+      for (const p of positions) {
         const exposure = p.avgEntryPrice * p.quantity;
         open.push({
           coin: p.name ?? p.symbol, epic: p.symbol, dealId: p.dealId, direction: p.direction, qty: p.quantity, avg: p.avgEntryPrice,
@@ -126,6 +133,11 @@ export async function getResults(
   if (!errors.length) {
     const pnls = trades.filter((t) => t.pnl !== undefined).sort((a, b) => a.at - b.at).map((t) => t.pnl!);
     setStakeHistory(pnls, balance, currency, env);
+  }
+  // F1: strategins stängda affärer registreras bara när positioner OCH historik lästes utan fel (samma miljö).
+  if (!errors.length && livePositions) {
+    try { reconcileStrategyDeals(env, livePositions, rawTx, parseIgMoney, currency); }
+    catch (e) { log.warn(`[strategi-resultat] avstämningen misslyckades: ${e instanceof Error ? e.message : String(e)}`); }
   }
   if (env === "demo" && !errors.length) {
     try {

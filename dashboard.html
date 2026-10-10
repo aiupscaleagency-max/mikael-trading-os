@@ -1593,7 +1593,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 <!-- ═══ TRADE-SIDA ═══ -->
 <section class="page active" id="page-trade">
 <div class="page-header"><span class="ph-ico">📊</span>Trade<span class="ph-sub">— marknaden, handla, signaler, analys och ordrar</span>
-  <button type="button" onclick="switchPage('pairs')" style="margin-left:auto;padding:6px 14px;border:1px solid var(--cyan);background:transparent;color:var(--cyan);border-radius:6px;font-weight:800;cursor:pointer;letter-spacing:.4px">ALLA PAR SIDA VID SIDA →</button></div>
+  <button type="button" onclick="switchPage('pairs')" style="margin-left:auto;padding:6px 14px;border:1px solid var(--cyan);background:transparent;color:var(--cyan);border-radius:6px;font-weight:800;cursor:pointer;letter-spacing:.4px">ALLA PAR SIDA VID SIDA →</button><button class="ph-action" style="margin-left:6px" data-ask-agent="trade" title="Öppnar agentchatten med den här sidan, miljön (Demo/Live), instrumentet och vald strategi som kontext">💬 Fråga agenten</button></div>
 <div id="posBanner" style="display:none;margin:8px 12px;padding:10px 12px;border:1px solid var(--cyan);border-radius:10px;background:var(--card);font-size:13px"></div>
 <main>
 <!-- Vad som analyseras: läser /api/live/watchlist + /api/brokers. Bara visning. -->
@@ -2962,7 +2962,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 <!-- ═══ VALUTAPAR — IG-katalogen för aktiv miljö (Forex + Krypto). Live-EPICs som saknas på Demo
      visas som katalogreferens ("ej tillgänglig på Demo") utan Live-priser. Katalogframsteg syns. -->
 <section class="page" id="page-markets">
-  <div class="page-header"><span class="ph-ico">💱</span>Valutapar<span class="ph-sub">— IG-katalogen för kontot: Forex och Krypto</span></div>
+  <div class="page-header"><span class="ph-ico">💱</span>Valutapar<span class="ph-sub">— IG-katalogen för kontot: Forex och Krypto</span><span class="ph-spacer"></span><button class="ph-action" data-ask-agent="markets" title="Öppnar agentchatten med den här sidan, miljön (Demo/Live), instrumentet och vald strategi som kontext">💬 Fråga agenten</button></div>
   <div class="mk-wrap">
     <div class="mk-bar" id="mk-bar">
       <span data-ig-env class="mk-chip">–</span>
@@ -3021,7 +3021,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 </style>
 <!-- ═══ SIGNALER — agenternas signaler + inklistrad IG-signal → agentteamet granskar → Kopiera till Trade (utkast, aldrig order) -->
 <section class="page" id="page-signals">
-  <div class="page-header"><span class="ph-ico">📡</span>Signaler<span class="ph-sub">— agenternas signaler och inklistrade IG-signaler</span></div>
+  <div class="page-header"><span class="ph-ico">📡</span>Signaler<span class="ph-sub">— agenternas signaler och inklistrade IG-signaler</span><span class="ph-spacer"></span><button class="ph-action" data-ask-agent="signals" title="Öppnar agentchatten med den här sidan, miljön (Demo/Live), instrumentet och vald strategi som kontext">💬 Fråga agenten</button></div>
   <div class="xp-wrap">
     <div class="xp-card">
       <h3>Agenternas signaler <span data-ig-env class="tag" style="font-size:10px"></span></h3>
@@ -3049,7 +3049,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 
 <!-- ═══ AGENTSESSIONER — pågående session, kö per instrument, schema, historik -->
 <section class="page" id="page-sessions">
-  <div class="page-header"><span class="ph-ico">🤖</span>Agentsessioner<span class="ph-sub">— sessioner över valda instrument, 5 per minut · schema</span></div>
+  <div class="page-header"><span class="ph-ico">🤖</span>Agentsessioner<span class="ph-sub">— sessioner över valda instrument, 5 per minut · schema</span><span class="ph-spacer"></span><button class="ph-action" data-ask-agent="sessions" title="Öppnar agentchatten med den här sidan, miljön (Demo/Live), instrumentet och vald strategi som kontext">💬 Fråga agenten</button></div>
   <div class="xp-wrap">
     <div class="xp-card">
       <h3>Session <span data-ig-env class="tag" style="font-size:10px"></span>
@@ -3064,7 +3064,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 
 <!-- ═══ VERKTYG — datakällor, export, externa verktyg -->
 <section class="page" id="page-tools">
-  <div class="page-header"><span class="ph-ico">🧰</span>Verktyg<span class="ph-sub">— datakällor, export och externa verktyg</span></div>
+  <div class="page-header"><span class="ph-ico">🧰</span>Verktyg<span class="ph-sub">— datakällor, export och externa verktyg</span><span class="ph-spacer"></span><button class="ph-action" data-ask-agent="tools" title="Öppnar agentchatten med den här sidan, miljön (Demo/Live), instrumentet och vald strategi som kontext">💬 Fråga agenten</button></div>
   <div class="xp-wrap">
     <div class="xp-card">
       <h3>Datakällor <span id="tl-time" class="xp-note" style="margin-left:auto"></span></h3>
@@ -3142,7 +3142,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 
 <!-- ═══ LIVE-SIDA — 4 rullande rader (en per kategori) ═══ -->
 <section class="page live-section" id="page-live">
-  <div class="page-header"><span class="ph-ico">⚡</span>Alla marknader<span class="ph-sub">— 4 rullande rader med IG-kvoter i realtid</span></div>
+  <div class="page-header"><span class="ph-ico">⚡</span>Alla marknader<span class="ph-sub">— 4 rullande rader med IG-kvoter i realtid</span><span class="ph-spacer"></span><button class="ph-action" data-ask-agent="live" title="Öppnar agentchatten med den här sidan, miljön (Demo/Live), instrumentet och vald strategi som kontext">💬 Fråga agenten</button></div>
   <div style="margin:0 10px;display:flex;flex-direction:column;gap:6px">
     <div class="live-strip-row" data-speed="40">
       <div class="lsr-label"><span class="lsr-pulse"></span>KRYPTO (IG)</div>
@@ -3224,7 +3224,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 @media (max-width:900px){#page-strategies .sl-grid{grid-template-columns:1fr}#sl-editor .sl-form{grid-template-columns:1fr 1fr}.sl-rule-row{grid-template-columns:1fr 1fr}}
 </style>
 <section class="page" id="page-strategies">
-  <div class="page-header"><span class="ph-ico">🧠</span>Strategier<span class="ph-sub">— live-anslutningar, IG-saldo, strategibibliotek</span></div>
+  <div class="page-header"><span class="ph-ico">🧠</span>Strategier<span class="ph-sub">— live-anslutningar, IG-saldo, strategibibliotek</span><span class="ph-spacer"></span><button class="ph-action" data-ask-agent="strategies" title="Öppnar agentchatten med den här sidan, miljön (Demo/Live), instrumentet och vald strategi som kontext">💬 Fråga agenten</button></div>
 
   <div class="sl-grid">
     <div class="card">
@@ -3384,6 +3384,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     <span class="ph-sub">— aktiva positioner, beslut, historik, P&amp;L</span>
     <span class="ph-spacer"></span>
     <span id="trades-summary" style="font-size:11px;color:var(--label);font-weight:600">–</span>
+    <button class="ph-action" style="margin-left:8px" data-ask-agent="trades" title="Öppnar agentchatten med den här sidan, miljön (Demo/Live), instrumentet och vald strategi som kontext">💬 Fråga agenten</button>
   </div>
 
   <div style="display:grid;grid-template-columns:1fr;gap:10px;margin:0 10px">
@@ -3514,7 +3515,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 
 <!-- ═══ COST-SIDA ═══ -->
 <section class="page" id="page-cost">
-  <div class="page-header"><span class="ph-ico">💰</span>Cost<span class="ph-sub">— spend tracking, cap, breakdown</span></div>
+  <div class="page-header"><span class="ph-ico">💰</span>Cost<span class="ph-sub">— spend tracking, cap, breakdown</span><span class="ph-spacer"></span><button class="ph-action" data-ask-agent="cost" title="Öppnar agentchatten med den här sidan, miljön (Demo/Live), instrumentet och vald strategi som kontext">💬 Fråga agenten</button></div>
   <div class="card" style="margin:0 10px">
     <p style="font-size:12px;color:var(--dim);line-height:1.5">Faktiska kostnader för agenternas AI-/API-anrop (USD, från kostnadsloggen) och budgetstatus. <b>Detta är inte trading-resultat</b> — P/L för IG-affärer finns under Trades (i kontovalutan).</p>
     <div id="costLive" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-top:10px;font-size:12px">Laddar…</div>
@@ -3546,7 +3547,7 @@ body.app-state-onboard .fc-panel{display:none !important}
 
 <!-- ═══ SETTINGS-SIDA ═══ -->
 <section class="page settings-page" id="page-settings">
-  <div class="page-header"><span class="ph-ico">⚙️</span>Inställningar<span class="ph-sub">— datakällor (IG), nycklar, läge</span></div>
+  <div class="page-header"><span class="ph-ico">⚙️</span>Inställningar<span class="ph-sub">— datakällor (IG), nycklar, läge</span><span class="ph-spacer"></span><button class="ph-action" data-ask-agent="settings" title="Öppnar agentchatten med den här sidan, miljön (Demo/Live), instrumentet och vald strategi som kontext">💬 Fråga agenten</button></div>
   <div class="card" style="margin:0 10px">
     <h4>Backend-anslutning</h4>
     <div class="grid">
@@ -10456,13 +10457,23 @@ window.IGS = (function(){
   const PAGE_NAMES = { trade:"Trade", markets:"Valutapar", pairs:"Alla par", library:"Strategibibliotek", course:"Backtest & kurs", signals:"Signaler", sessions:"Sessioner", tools:"Verktyg", team:"Team", chat:"Agentchatt", live:"Marknader", strategies:"Strategier", tree:"Träd", trades:"Trades", cost:"Cost", settings:"Inställningar" };
   const LIB = { data:null, filter:"", strategies:[] };
   let lastPage = "trade";
+  const EPIC_PAGES = new Set(["trade"]);
 
   // ── Strategibibliotek ──
   const obj = (v)=> v == null ? "–" : esc(typeof v === "string" ? v : JSON.stringify(v));
+  // F1: stängda IG-affärer som kom från strategin, bara i denna miljö (Demo och Live blandas aldrig)
+  function igTradesLine(env, t){
+    const label = (t && t.label) || ("från dina IG-affärer (" + (env === "live" ? "Live" : "Demo") + ")");
+    if(!t || !t.trades) return '<br><span class="lib-ig">Resultat ' + esc(label) + ': inga stängda affärer ännu.</span>';
+    const pnl = Object.keys(t.pnl || {}).map(c => (t.pnl[c] >= 0 ? "+" : "") + Number(t.pnl[c]).toLocaleString("sv-SE", { minimumFractionDigits:2, maximumFractionDigits:2 }) + " " + esc(c)).join(", ") || "–";
+    const last = t.lastAt ? new Date(t.lastAt).toLocaleString("sv-SE") : "–";
+    return '<br><span class="lib-ig">Resultat ' + esc(label) + ': ' + t.trades + ' affärer · vinst ' + (t.winRate ?? "–") + ' % (' + t.wins + ' av ' + t.trades + ') · totalt ' + pnl + ' · senaste ' + esc(last) + '</span>';
+  }
   function envBox(env, a){
     const rows = (a && a.results) || [];
     return '<div class="lib-env"><b>' + (env === "live" ? "IG Live" : "IG Demo") + '</b> · status: ' + esc(a ? a.status : "–") + '<br>' +
-      (rows.length ? rows.map(r=> esc(r.kind === "forward" ? "Framåttest" : "Backtest") + ' ' + esc(r.period.from) + '–' + esc(r.period.to) + ' · ' + r.trades + ' affärer · PF ' + (r.profitFactor ?? "–") + ' · DD ' + (r.maxDrawdownPercent ?? "–") + ' % · kostnad: ' + esc(r.costModel)).join("<br>") : 'Inga verifierade resultat i denna miljö.') + '</div>';
+      (rows.length ? rows.map(r=> esc(r.kind === "forward" ? "Framåttest" : "Backtest") + ' ' + esc(r.period.from) + '–' + esc(r.period.to) + ' · ' + r.trades + ' affärer · PF ' + (r.profitFactor ?? "–") + ' · DD ' + (r.maxDrawdownPercent ?? "–") + ' % · kostnad: ' + esc(r.costModel)).join("<br>") : 'Inga verifierade resultat i denna miljö.') +
+      igTradesLine(env, a && a.igTrades) + '</div>';
   }
   function renderLib(){
     const d = LIB.data; if(!d) return;
@@ -10535,7 +10546,10 @@ window.IGS = (function(){
     fillPages();
     if($("cc-page")) $("cc-page").value = page || lastPage || "";
     if(strategy && $("cc-strategy")){ if(!LIB.strategies.length) loadLib().then(()=>{ $("cc-strategy").value = strategy; }); else $("cc-strategy").value = strategy; }
-    if($("cc-epic") && !$("cc-epic").value && typeof STATE !== "undefined" && STATE.symbol) $("cc-epic").value = STATE.symbol;
+    // F4: sidor med ett aktuellt instrument (Trade) skickar just det instrumentet; andra sidor behåller valt EPIC.
+    const cur = typeof STATE !== "undefined" && STATE.symbol ? STATE.symbol : "";
+    if($("cc-epic") && cur && (EPIC_PAGES.has(page) || !$("cc-epic").value)) $("cc-epic").value = cur;
+    syncEnv();
     if(typeof switchPage === "function") switchPage("chat");
   }
   async function readFiles(){

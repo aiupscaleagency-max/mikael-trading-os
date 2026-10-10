@@ -212,6 +212,8 @@ export interface PendingOrder {
   limitPrice?: number;
   takeProfit?: number;
   stopLoss?: number;
+  /** F1: strategi i Strategibiblioteket som ordern kom från (bara när den är känd). Stängda affärer räknas på den. */
+  strategyId?: string;
   /** Krav E5: försöket som räknats mot agentsessionens tak (utfallet skrivs dit) */
   sessionAttempt?: SessionAttemptTag;
   /** Pris när ordern föreslogs (för att visa möjlig vinst/förlust) */
