@@ -314,4 +314,37 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   ok("Forex i IG-punkter visas med vanlig kurs bredvid; IG:s läsgräns känns igen som tillfällig (429, försök igen om en minut)");
 }
 
+{
+  // Dator 1: GBP/USD 1m fastnade på ett strömmat ljus med "historik saknas: IG begränsade antal läsanrop",
+  // eftersom serien inte längre var tom och historiken aldrig hämtades igen.
+  const { EventEmitter } = await import("node:events");
+  const { createIgMarketData } = await import("../src/server/igMarketData.js");
+  const { IG_READ_RATE_ERROR } = await import("../src/integrations/igConnection.js");
+  let t = Date.UTC(2026, 9, 10, 7, 0, 0), calls = 0, fail = true;
+  const E = "CS.D.GBPUSD.MINI.IP", M = 60_000, base = t - 300 * M;
+  const stream = { events: new EventEmitter(), summary: () => ({ status: "DISCONNECTED" }), ensure: () => {}, request: () => {} };
+  const md = createIgMarketData({
+    status: (() => ({ environments: { demo: { status: "missing", credentialsComplete: false }, live: { status: "missing", credentialsComplete: false } } })) as never,
+    now: () => t, stream: stream as never, file: (e) => path.join(tmp, `wl-hist-${e}.json`),
+    market: (async (_e: string, epic: string) => ({ epic, name: "GBP/USD Mini", category: "forex", quote: {} })) as never,
+    candles: (async () => { calls++; if (fail) throw new Error(IG_READ_RATE_ERROR);
+      return { status: "ready", candles: Array.from({ length: 200 }, (_, i) => ({ openTime: base + i * M, closeTime: base + (i + 1) * M, open: 1.32, high: 1.33, low: 1.31, close: 1.32, volume: 0, closed: true })) }; }) as never,
+  });
+  md.start();
+  await md.ensureSeries("demo", E, "1m");
+  assert.equal(calls, 1); assert.match(md.historyError(E, "1m", "demo")!, /läsanrop/);
+  stream.events.emit("candle", "demo", { epic: E, scale: "1MINUTE", openTime: base + 250 * M, open: 1.32, high: 1.33, low: 1.31, close: 1.3234, closed: true });
+  assert.equal(md.closed(E, "1m", "demo").length, 1, "ett strömmat ljus");
+  await md.ensureSeries("demo", E, "1m");
+  assert.equal(calls, 1, "inget nytt försök inom en minut");
+  t += 61_000; fail = false;
+  await md.ensureSeries("demo", E, "1m");
+  md.stop();
+  assert.equal(calls, 2, "nytt historikförsök efter en minut trots strömmat ljus");
+  assert.equal(md.historyError(E, "1m", "demo"), null);
+  assert.equal(md.closed(E, "1m", "demo").length, 201, "200 historiska ljus + det strömmade, äldre ljus kastas inte");
+  assert.equal(md.closed(E, "1m", "demo").at(-1)!.close, 1.3234, "det strömmade ljuset ligger sist");
+  ok("Misslyckad historik hämtas igen efter en minut även när strömmen lagt till ljus, och slås ihop utan att tappa äldre ljus");
+}
+
 console.log("Granskning 3: alla tester godkända (endast mocks, inga nätverksanrop)");

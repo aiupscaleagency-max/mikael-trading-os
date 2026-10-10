@@ -42,7 +42,7 @@ export const MAX_STREAM_CHARTS = 4;
 /** Ett diagram/serie som ingen frågat efter på så här länge slutar följas (ingen ström, ingen historikpollning). */
 export const SERIES_TTL_MS = 150_000;
 
-interface Series { closed: Candle[]; forming: Candle | null; historyError: string | null; updatedAt: number; seeding?: Promise<void> }
+interface Series { closed: Candle[]; forming: Candle | null; historyError: string | null; updatedAt: number; seeding?: Promise<void>; historyRetryAt?: number }
 
 export function createIgMarketData(deps: {
   status?: typeof getIgStatus; connect?: typeof testIgConnection; market?: typeof getIgMarket; candles?: typeof getIgCandles;
@@ -155,6 +155,12 @@ export function createIgMarketData(deps: {
       const last = s.closed[s.closed.length - 1]?.openTime ?? -Infinity;
       const fresh = got.filter((c) => c.openTime > last);
       if (!s.closed.length) s.closed = got.slice(-MAX_BUFFER);
+      else if (s.closed.length < got.length) {
+        // Serien har bara några strömmade ljus (historiken misslyckades först): slå ihop så att äldre historik inte kastas.
+        const merged = new Map<number, Candle>(got.map((c) => [c.openTime, c]));
+        for (const c of s.closed) merged.set(c.openTime, c);
+        s.closed = [...merged.values()].sort((a, b) => a.openTime - b.openTime).slice(-MAX_BUFFER);
+      }
       else if (fresh.length) { s.closed.push(...fresh); if (s.closed.length > MAX_BUFFER) s.closed.splice(0, s.closed.length - MAX_BUFFER); }
       s.historyError = res.status === "unavailable" ? (res.error ?? "historik saknas") : null;
       s.updatedAt = now();
@@ -163,6 +169,7 @@ export function createIgMarketData(deps: {
       if (s.closed.length) for (const c of emitList) events.emit("closed", env, epic, iv, c, s.closed);
     } catch (err) {
       s.historyError = `historik saknas: ${err instanceof Error ? err.message : String(err)}`;
+      s.historyRetryAt = now() + 60_000; // nytt försök om en minut, även om strömmen redan har lagt till ljus
       // Kvot/metadata behålls: hämta bara kvoten (cachad) så att priset fortfarande syns.
       try { const m = await market(env, epic); if (m.epic === epic) { rememberName(env, epic, m.name, m.category); setRestQuote(env, epic, m.quote); } } catch { /* visas som frånkopplat */ }
     }
@@ -197,7 +204,10 @@ export function createIgMarketData(deps: {
     if (!IV_MS[iv]) throw new Error(`IG stöder inte intervallet ${iv}`);
     touchSeries(env, epic, iv);
     const s = getSeries(env, epic, iv);
-    if (!s.closed.length && !s.seeding) {
+    // Ny hämtning när serien är tom, eller när förra historikförsöket misslyckades (efter en minut). Tidigare fastnade
+    // serien på ett enda strömmat ljus med ett gammalt fel, eftersom den inte längre var tom.
+    const retry = !!s.historyError && s.closed.length < 50 && now() >= (s.historyRetryAt ?? 0);
+    if ((!s.closed.length || retry) && !s.seeding) {
       s.seeding = refreshHistory(env, epic, iv).finally(() => { s.seeding = undefined; });
     }
     if (s.seeding) await s.seeding;
@@ -304,8 +314,9 @@ export function createIgMarketData(deps: {
     const streamUp = stream.summary(env).status === "CONNECTED:WS-STREAMING";
     for (const x of activeSeries(env)) {
       const [epic, iv] = x.split("|") as [string, string];
-      if (streamUp && streamedKeys.get(env)?.has(x)) continue;
       const s = getSeries(env, epic, iv), last = s.closed[s.closed.length - 1];
+      if (s.historyError && s.closed.length < 50 && now() >= (s.historyRetryAt ?? 0) && !s.seeding) { s.seeding = refreshHistory(env, epic, iv).finally(() => { s.seeding = undefined; }); continue; }
+      if (streamUp && streamedKeys.get(env)?.has(x)) continue;
       if (last && now() >= last.closeTime + IV_MS[iv]! + 5_000 && !s.seeding) { s.seeding = refreshHistory(env, epic, iv).finally(() => { s.seeding = undefined; }); }
     }
   }
