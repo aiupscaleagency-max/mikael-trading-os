@@ -89,8 +89,8 @@ export function igPlainRate(price: number | null | undefined, epic: string): num
 function quoteView(q: IgQuote | null, epic: string, env: IgEnvironment = igMarketData.getActiveEnv()) {
   const ds = igMarketData.dataState(epic, env);
   const plain = q ? { plainRate: igPlainRate(q.mid, epic) } : {};
-  return q ? { ...plain, epic, name: igMarketData.nameOf(epic, env), bid: q.bid, offer: q.offer, mid: q.mid, changePct: q.changePct, high: q.high, low: q.low, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, source: q.source, state: ds.state, ageMs: ds.ageMs }
-    : { epic, name: igMarketData.nameOf(epic, env), state: ds.state, ageMs: null };
+  return q ? { ...plain, epic, name: igMarketData.nameOf(epic, env), bid: q.bid, offer: q.offer, mid: q.mid, changePct: q.changePct, high: q.high, low: q.low, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, delayFlag: q.delayFlag ?? null, marketStatus: q.marketStatus, source: q.source, state: ds.state, ageMs: ds.ageMs, ...(ds.note ? { note: ds.note } : {}) }
+    : { epic, name: igMarketData.nameOf(epic, env), state: ds.state, ageMs: null, ...(ds.note ? { note: ds.note } : {}) };
 }
 /** Katalogframsteg i klartext: antal, komplett/delvis, fel och nästa försök (~60 s, singleflight i katalogen). */
 export function catalogueProgress(d: { markets?: unknown[]; status?: string; complete?: boolean; error?: string | null; note?: string; updatedAt?: number; progress?: any; remainingSearches?: number | null }) {
@@ -390,7 +390,7 @@ export async function handleIgRoutes(
       const limit = Math.min(500, Math.max(10, Number(url.searchParams.get("limit")) || 300));
       if (!EPIC_RE.test(epic)) { send(res, 400, { error: "Välj ett IG-instrument (EPIC)", klines: [] }); return true; }
       let meta: Record<string, unknown> = {};
-      try { const m = await getIgMarket(env, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(env, epic, m.name, m.category); igMarketData.setRestQuote(env, epic, m.quote); meta = { name: m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
+      try { const m = await getIgMarket(env, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(env, epic, m.name, m.category); igMarketData.setRestQuote(env, epic, m.quote, m.instrument?.streamingPricesAvailable); meta = { name: m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
       catch (e) { meta = { metaError: e instanceof Error ? e.message : String(e) }; }
       try { await igMarketData.ensureSeries(env, epic, iv); } catch { /* historyError visas nedan */ }
       igMarketData.requestStream([epic], env);
@@ -414,7 +414,7 @@ export async function handleIgRoutes(
       for (const s of symbols) {
         let q = igMarketData.quote(s, env);
         if (!q || q.observedAt === null || Date.now() - q.observedAt > 60_000) {
-          try { const m = await getIgMarket(env, s); igMarketData.setRestQuote(env, s, m.quote); igMarketData.rememberName(env, s, m.name, m.category); q = igMarketData.quote(s, env); } catch { /* visas som saknad */ }
+          try { const m = await getIgMarket(env, s); igMarketData.setRestQuote(env, s, m.quote, m.instrument?.streamingPricesAvailable); igMarketData.rememberName(env, s, m.name, m.category); q = igMarketData.quote(s, env); } catch { /* visas som saknad */ }
         }
         quotes[s] = quoteView(q, s, env);
         if (q) prices[s] = q.mid;

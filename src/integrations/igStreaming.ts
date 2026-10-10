@@ -47,7 +47,7 @@ export function createIgStreaming(deps:{verifyPrice?:(mode:IgEnvironment,epic:st
   if(!s||s.generation!==auth.generation){if(s)stop(mode);const sdk=deps.sdk??require('lightstreamer-client-node');const client=new sdk.LightstreamerClient(auth.endpoint);
    client.connectionDetails.setUser(auth.accountId);client.connectionDetails.setPassword(auth.password);
    client.connectionOptions.setForcedTransport('WS-STREAMING');client.connectionOptions.setRetryDelay(3000);client.connectionOptions.setStalledTimeout(5000);
-   s={client,sdk,generation:auth.generation,status:'CONNECTING',quotes:new Map(),lastPriceAt:null,subscriptions:new Map(),lastError:null,proofs:new Map(),attempts:new Map(),pending:new Set(),chartEpics:new Set(),epoch:0};states.set(mode,s);const own=s;
+   s={client,sdk,generation:auth.generation,status:'CONNECTING',quotes:new Map(),lastPriceAt:null,subscriptions:new Map(),lastError:null,proofs:new Map(),attempts:new Map(),pending:new Set(),chartEpics:new Set(),epoch:0,failed:new Map()};states.set(mode,s);const own=s;
    client.addListener({onStatusChange:(status:string)=>{if(states.get(mode)!==own)return;own.status=status;if(status!=='CONNECTED:WS-STREAMING'){own.quotes.clear();own.proofs.clear();own.attempts.clear();own.pending.clear();own.epoch++;}else verifyCharts(mode,own);events.emit('status',mode,summary(mode));},onServerError:()=>{if(states.get(mode)!==own)return;own.lastError='IG avvisade streaminganslutningen';events.emit('status',mode,summary(mode));}});client.connect();
   }
   const current=s;const wanted=new Map<string,{mode:string;items:string[];fields:string[];adapter?:string;kind:string}>();
@@ -58,9 +58,10 @@ export function createIgStreaming(deps:{verifyPrice?:(mode:IgEnvironment,epic:st
   for(const c of charts.slice(0,Math.min(Math.max(1,maxCharts),4))){if(!/^[A-Za-z0-9._-]{1,100}$/.test(c.epic)||!['1MINUTE','5MINUTE','HOUR'].includes(c.scale))continue;wanted.set(`chart:${c.epic}:${c.scale}`,{mode:'MERGE',items:[`CHART:${c.epic}:${c.scale}`],fields:['UTM','BID_OPEN','BID_HIGH','BID_LOW','BID_CLOSE','OFR_OPEN','OFR_HIGH','OFR_LOW','OFR_CLOSE','CONS_END'],kind:'candle'});}
   current.chartEpics=new Set([...wanted.keys()].filter(k=>k.startsWith('chart:')).map(k=>k.split(':')[1]));
   for(const epic of current.proofs.keys())if(!current.chartEpics.has(epic))current.proofs.delete(epic);
-  for(const [key,sub] of current.subscriptions){if(!wanted.has(key)){current.client.unsubscribe(sub);current.subscriptions.delete(key);if(key.startsWith('price:'))current.quotes.delete(key.slice(6));}}
+  for(const [key,sub] of current.subscriptions){if(!wanted.has(key)){current.client.unsubscribe(sub);current.subscriptions.delete(key);current.failed.delete(key);if(key.startsWith('price:'))current.quotes.delete(key.slice(6));}}
   for(const [key,w] of wanted){if(current.subscriptions.has(key))continue;const sub=new current.sdk.Subscription(w.mode,w.items,w.fields);if(w.adapter)sub.setDataAdapter(w.adapter);sub.setRequestedSnapshot('yes');
-   sub.addListener({onSubscriptionError:()=>{if(states.get(mode)!==current)return;current.lastError='En IG-prenumeration kunde inte verifieras';events.emit('status',mode,summary(mode));},onItemUpdate:(update:any)=>{
+   sub.addListener({onSubscription:()=>{if(states.get(mode)===current)current.failed.delete(key);},onSubscriptionError:(code:unknown,message:unknown)=>{if(states.get(mode)!==current)return;// Spara VILKEN post IG avvisade (nyckeln innehåller bara EPIC/skala), så att UI kan säga att instrumentet saknar ström.
+    current.failed.set(key,{code:typeof code==='number'?code:null,message:typeof message==='string'?message.slice(0,120):null,at:now()});current.lastError=`En IG-prenumeration kunde inte verifieras (${key})`;events.emit('status',mode,summary(mode));},onItemUpdate:(update:any)=>{
     if(states.get(mode)!==current||identity(mode)?.generation!==current.generation)return;
     const fields:Record<string,string|null>={};for(const f of w.fields)fields[f]=update.getValue(f);const receivedAt=now();
     const numeric=(v:unknown)=>typeof v==='string'&&v.trim()!==''&&Number.isFinite(Number(v))?Number(v):null;
@@ -82,7 +83,7 @@ export function createIgStreaming(deps:{verifyPrice?:(mode:IgEnvironment,epic:st
   verifyCharts(mode,current);
  }
  function active(mode:IgEnvironment){const s=states.get(mode);return s&&identity(mode)?.generation===s.generation?s:null;}
- function summary(mode:IgEnvironment){const s=active(mode);return {transport:'WebSocket',upstream:'IG Lightstreamer PRICE',status:s?.status??'DISCONNECTED',generation:s?.generation??null,lastPriceAt:s?.lastPriceAt??null,subscriptions:s?.subscriptions.size??0,freshPrices:s?[...s.quotes.values()].filter((q:any)=>now()-q.observedAt<=60000&&verifiedQuote(s,q).delayTime===0&&now()-q.observedAt>=0).length:0,error:s?.lastError??null};}
+ function summary(mode:IgEnvironment){const s=active(mode);return {transport:'WebSocket',upstream:'IG Lightstreamer PRICE',status:s?.status??'DISCONNECTED',generation:s?.generation??null,lastPriceAt:s?.lastPriceAt??null,subscriptions:s?.subscriptions.size??0,freshPrices:s?[...s.quotes.values()].filter((q:any)=>now()-q.observedAt<=60000&&verifiedQuote(s,q).delayTime===0&&now()-q.observedAt>=0).length:0,error:s?.lastError??null,failed:s?[...s.failed.keys()]:[]};}
  function quotes(mode:IgEnvironment){const s=active(mode);return s?[...s.quotes.values()].map(q=>verifiedQuote(s,q)):[];}
  return {events,ensure,stop,summary,quotes,close:()=>{for(const mode of [...states.keys()])stop(mode);}};
 }

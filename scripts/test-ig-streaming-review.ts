@@ -107,3 +107,15 @@ console.log('IG streaming review: DI, tidsstämplar, generationsbyte och endpoin
  s2.close();
  console.log('B1 strömkontroll: 50 s intervall och DELAY=0-undantag OK');
 }
+
+// Avvisad prenumeration: VILKEN post IG avvisade sparas (för "ingen ström"-besked i UI), och tas bort när posten försvinner.
+{
+ const s3=createIgStreaming({now:()=>2_000_000,sdk:{LightstreamerClient:Client,Subscription},identity:()=>({endpoint:'https://fixture.ig.com',accountId:'fixture',password:'fixture',generation:'g3'})});
+ s3.ensure('demo',['EUR','SUN']);const cl=Client.all.at(-1)!;cl.listener.onStatusChange('CONNECTED:WS-STREAMING');
+ const sun=cl.subscriptions.find((x:any)=>x.items[0]==='PRICE:fixture:SUN')!;
+ sun.listener.onSubscriptionError(17,'Data item not found');
+ assert.deepEqual(s3.summary('demo').failed,['price:SUN']);assert.match(String(s3.summary('demo').error),/price:SUN/);
+ s3.ensure('demo',['EUR']);assert.deepEqual(s3.summary('demo').failed,[],'borttagen post räknas inte längre som avvisad');
+ s3.close();
+ console.log('Avvisad IG-prenumeration sparas per post OK');
+}
