@@ -3,7 +3,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { log } from "../logger.js";
 import { dataPath } from "../dataDir.js";
-import { getIgStatus, testIgConnection, withIgPriority, IG_HISTORY_RATE_ERROR, IG_HISTORY_BLOCK_MS, type IgEnvironment } from "../integrations/igConnection.js";
+import { getIgStatus, getIgReadBudget, testIgConnection, withIgPriority, IG_HISTORY_RATE_ERROR, IG_HISTORY_BLOCK_MS, type IgEnvironment } from "../integrations/igConnection.js";
 import { getIgMarket, getIgCandles, searchIgMarkets, igMarketCategory, type IgTimeframe } from "../integrations/igMarkets.js";
 import { igStreaming } from "../integrations/igStreaming.js";
 import { tickIgOrders } from "../integrations/igOrders.js";
@@ -29,8 +29,11 @@ export interface IgQuote {
   epic: string; bid: number; offer: number; mid: number; observedAt: number | null; receivedAt: number;
   delayTime: number | null; marketStatus: string | null; changePct: number | null; high: number | null; low: number | null;
   source: "stream" | "rest";
+  /** Strömmens råa DELAY-värde (kort, för felsökning). Saknas för REST-kvoter. */
+  delayFlag?: string | number | boolean | null;
 }
-export type DataState = "live" | "fördröjt" | "historiskt" | "inaktuellt" | "frånkopplat";
+// "okänd fördröjning": färsk handelsbar strömkvot där IG varken angav DELAY eller gav REST-belägg (se dataState).
+export type DataState = "live" | "fördröjt" | "okänd fördröjning" | "historiskt" | "inaktuellt" | "frånkopplat";
 
 const IV_MS: Record<string, number> = { "1m": 60e3, "3m": 180e3, "5m": 300e3, "15m": 900e3, "30m": 1800e3, "1h": 3600e3, "4h": 14400e3, "1d": 86400e3 };
 const STREAM_SCALE: Record<string, string> = { "1m": "1MINUTE", "5m": "5MINUTE", "1h": "HOUR" };
@@ -39,6 +42,10 @@ const MAX_BUFFER = 500;
 const MAX_WATCH = 10;
 /** IG-strömmens diagramplatser per miljö (Codex-värdet). Varje diagram kostar REST-verifiering. */
 export const MAX_STREAM_CHARTS = 4;
+/** REST-reserv för bevakade instrument utan färska strömtickar: högst en läsning per varv, bara med bakgrundsutrymme kvar. */
+export const REST_FALLBACK_MIN_BACKGROUND = 3;
+export const REST_FALLBACK_EVERY_MS = 60_000;          // handelsbar marknad
+export const REST_FALLBACK_CLOSED_EVERY_MS = 300_000;  // stängd/EDIT-marknad (t.ex. vanlig forex på helgen)
 /** Ett diagram/serie som ingen frågat efter på så här länge slutar följas (ingen ström, ingen historikpollning). */
 export const SERIES_TTL_MS = 150_000;
 
@@ -47,9 +54,11 @@ interface Series { closed: Candle[]; forming: Candle | null; historyError: strin
 export function createIgMarketData(deps: {
   status?: typeof getIgStatus; connect?: typeof testIgConnection; market?: typeof getIgMarket; candles?: typeof getIgCandles;
   search?: typeof searchIgMarkets; stream?: typeof igStreaming; now?: () => number; file?: (env: IgEnvironment) => string;
+  budget?: (env: IgEnvironment) => { backgroundRemaining: number };
 } = {}) {
   const status = deps.status ?? getIgStatus, connect = deps.connect ?? testIgConnection, market = deps.market ?? getIgMarket;
   const candles = deps.candles ?? getIgCandles, search = deps.search ?? searchIgMarkets, stream = deps.stream ?? igStreaming;
+  const budget = deps.budget ?? getIgReadBudget;
   const now = deps.now ?? Date.now, file = deps.file ?? ((env: IgEnvironment) => dataPath(`ig-watchlist-${env}.json`));
   const events = new EventEmitter();
   events.setMaxListeners(100);
@@ -62,6 +71,9 @@ export function createIgMarketData(deps: {
   const pins = new Map<string, Set<string>>(); // ägare → "env|epic|interval" som alltid följs (t.ex. strategier)
   const streamedKeys = new Map<IgEnvironment, Set<string>>(); // serier som just nu har en IG-diagramplats
   const extraStreamEpics = new Map<IgEnvironment, Map<string, number>>(); // epic → senast begärd
+  // Senaste REST-snapshotens fördröjningsbesked per "env|epic", bundet till strömmens sessionsgeneration.
+  const delayEvidence = new Map<string, { delayTime: number | null; streamingPricesAvailable: boolean | null; generation: string | null; at: number }>();
+  const lastRestTry = new Map<string, number>(); // "env|epic" → senaste REST-reservläsning
   let signalInterval = "1m";
   const k = (env: IgEnvironment, epic: string, iv?: string) => iv ? `${env}|${epic}|${iv}` : `${env}|${epic}`;
 
@@ -172,7 +184,7 @@ export function createIgMarketData(deps: {
       // Nytt försök om en minut (läsgräns), eller om en timme när IG:s veckokvot för historik är slut. Strömmens ljus läggs till under tiden.
       s.historyRetryAt = now() + (err instanceof Error && err.message === IG_HISTORY_RATE_ERROR ? IG_HISTORY_BLOCK_MS : 60_000);
       // Kvot/metadata behålls: hämta bara kvoten (cachad) så att priset fortfarande syns.
-      try { const m = await market(env, epic); if (m.epic === epic) { rememberName(env, epic, m.name, m.category); setRestQuote(env, epic, m.quote); } } catch { /* visas som frånkopplat */ }
+      try { const m = await market(env, epic); if (m.epic === epic) { rememberName(env, epic, m.name, m.category); setRestQuote(env, epic, m.quote, m.instrument?.streamingPricesAvailable); } } catch { /* visas som frånkopplat */ }
     }
   }
   function touchSeries(env: IgEnvironment, epic: string, iv: string): void {
@@ -216,12 +228,20 @@ export function createIgMarketData(deps: {
   }
 
   // ── Kvoter ──
-  function setRestQuote(env: IgEnvironment, epic: string, q: any): void {
+  function setRestQuote(env: IgEnvironment, epic: string, q: any, streamingPricesAvailable?: boolean): void {
+    if (q && typeof q === "object") {
+      // Fördröjningsbeskedet gäller även när själva REST-priset är äldre än strömmens och kastas nedan.
+      // Ett senare besked (t.ex. delayTime 1 eller saknat) ersätter alltid ett tidigare.
+      delayEvidence.set(k(env, epic), { delayTime: typeof q.delayTime === "number" ? q.delayTime : null, streamingPricesAvailable: typeof streamingPricesAvailable === "boolean" ? streamingPricesAvailable : null, generation: stream.summary(env).generation ?? null, at: now() });
+    }
     if (typeof q?.bid !== "number" || typeof q?.offer !== "number") return;
     const prev = quotes.get(k(env, epic));
     // En REST-kvot ersätter aldrig en nyare strömkvot och får aldrig ny tidsstämpel.
     if (prev && prev.observedAt !== null && (q.observedAt ?? 0) <= prev.observedAt) return;
-    quotes.set(k(env, epic), { epic, bid: q.bid, offer: q.offer, mid: (q.bid + q.offer) / 2, observedAt: q.observedAt ?? null, receivedAt: q.receivedAt ?? now(), delayTime: q.delayTime ?? null, marketStatus: q.marketStatus ?? null, changePct: q.percentageChange ?? prev?.changePct ?? null, high: q.high ?? prev?.high ?? null, low: q.low ?? prev?.low ?? null, source: "rest" });
+    const next: IgQuote = { epic, bid: q.bid, offer: q.offer, mid: (q.bid + q.offer) / 2, observedAt: q.observedAt ?? null, receivedAt: q.receivedAt ?? now(), delayTime: q.delayTime ?? null, marketStatus: q.marketStatus ?? null, changePct: q.percentageChange ?? prev?.changePct ?? null, high: q.high ?? prev?.high ?? null, low: q.low ?? prev?.low ?? null, source: "rest" };
+    quotes.set(k(env, epic), next);
+    // Skickas vidare (SSE) så att ett instrument utan strömtickar ändå uppdateras i webbläsaren.
+    events.emit("quote", env, next);
   }
   function onQuote(env: IgEnvironment, q: any): void {
     // B1: trasiga eller ofullständiga strömsvar kastas (ingen gissning av pris eller tid).
@@ -229,7 +249,7 @@ export function createIgMarketData(deps: {
     const prev = quotes.get(k(env, q.epic));
     if (prev && prev.observedAt === q.observedAt && prev.bid === q.bid && prev.offer === q.offer && prev.delayTime === (q.delayTime ?? null) && prev.marketStatus === (q.marketStatus ?? null)) return; // dubblett (en ändrad fördröjnings-/statusflagga släpps igenom)
     if (prev && prev.observedAt !== null && q.observedAt < prev.observedAt) return; // gammal/dubblett
-    const next: IgQuote = { epic: q.epic, bid: q.bid, offer: q.offer, mid: (q.bid + q.offer) / 2, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, changePct: q.changePercent ?? prev?.changePct ?? null, high: prev?.high ?? null, low: prev?.low ?? null, source: "stream" };
+    const next: IgQuote = { epic: q.epic, bid: q.bid, offer: q.offer, mid: (q.bid + q.offer) / 2, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, changePct: q.changePercent ?? prev?.changePct ?? null, high: prev?.high ?? null, low: prev?.low ?? null, source: "stream", delayFlag: q.delayFlag ?? null };
     quotes.set(k(env, q.epic), next);
     events.emit("quote", env, next);
   }
@@ -252,15 +272,70 @@ export function createIgMarketData(deps: {
     events.emit("candle", env, c.epic, iv, candle);
   }
 
-  function dataState(epic: string, env = activeEnv): { state: DataState; ageMs: number | null; source: string | null } {
+  /** REST-belägg att instrumentet inte är fördröjt: senaste snapshot sa delayTime 0, i samma strömsession. */
+  function restDelay(env: IgEnvironment, epic: string): "realtid" | "fördröjt" | null {
+    const ev = delayEvidence.get(k(env, epic)), gen = stream.summary(env).generation ?? null;
+    if (!ev || gen === null || ev.generation !== gen || ev.delayTime === null) return null;
+    if (ev.delayTime > 0) return "fördröjt";
+    return ev.streamingPricesAvailable !== false ? "realtid" : null;
+  }
+  // Visningsstatus (inte ordergrind; igOrders/igRules kräver fortfarande delayTime === 0 på själva kvoten).
+  //  delayTime 0 → live · delayTime > 0 → fördröjt · okänt (null):
+  //   färsk strömkvot + REST-snapshot med delayTime 0 i samma strömsession → live (REST delayTime > 0 → fördröjt). Att färska strömtickar
+  //   kommer räcker som belägg för att strömmen finns (även om REST:s streamingPricesAvailable saknas i
+  //   just den läsningen); sa REST uttryckligen false räknas det inte. Utan belägg → "okänd fördröjning".
+  //   Belägget gäller hela sessionen i stället för 60 s (som diagramkontrollen), eftersom IG:s fördröjning
+  //   är en kontorättighet per marknad; 60 s-kontroll för varje bevakat instrument skulle kosta upp till 10 läsningar/min.
+  function dataState(epic: string, env = activeEnv): { state: DataState; ageMs: number | null; source: string | null; note?: string } {
     const q = quotes.get(k(env, epic));
     const st = stream.summary(env);
     const ageMs = q?.observedAt != null ? now() - q.observedAt : null;
-    if (!q) return { state: "frånkopplat", ageMs: null, source: null };
-    if (q.marketStatus && q.marketStatus !== "TRADEABLE") return { state: "historiskt", ageMs, source: q.source };
-    if (ageMs === null || ageMs > 60_000) return { state: st.status === "CONNECTED:WS-STREAMING" ? "inaktuellt" : "frånkopplat", ageMs, source: q.source };
-    if (q.delayTime !== 0) return { state: "fördröjt", ageMs, source: q.source };
-    return { state: "live", ageMs, source: q.source };
+    // IG avvisade strömprenumerationen för just detta instrument: säg det i stället för att låta priset se fryst ut.
+    const noStream = Array.isArray((st as { failed?: unknown }).failed) && ((st as { failed: string[] }).failed).includes(`price:${epic}`)
+      ? "IG skickar ingen ström för instrumentet (prenumerationen avvisades); priset hämtas via IG REST ungefär varje minut" : undefined;
+    if (!q) return { state: "frånkopplat", ageMs: null, source: null, ...(noStream ? { note: noStream } : {}) };
+    if (q.marketStatus && q.marketStatus !== "TRADEABLE") return { state: "historiskt", ageMs, source: q.source, ...(noStream ? { note: noStream } : {}) };
+    if (ageMs === null || ageMs > 60_000) return { state: st.status === "CONNECTED:WS-STREAMING" ? "inaktuellt" : "frånkopplat", ageMs, source: q.source, ...(noStream ? { note: noStream } : {}) };
+    if (q.delayTime === 0) return { state: "live", ageMs, source: q.source };
+    if (q.delayTime !== null) return { state: "fördröjt", ageMs, source: q.source };
+    const rest = q.source === "stream" ? restDelay(env, epic) : null;
+    if (rest === "fördröjt") return { state: "fördröjt", ageMs, source: q.source, note: "IG REST anger fördröjda priser för instrumentet" };
+    if (rest === "realtid") return { state: "live", ageMs, source: q.source, note: "IG-strömmen angav ingen fördröjningsflagga; IG REST anger delayTime 0 för instrumentet" };
+    return { state: "okänd fördröjning", ageMs, source: q.source, note: "IG angav ingen fördröjningsflagga för priset" };
+  }
+
+  /**
+   * REST-reserv för bevakningslistan: instrument vars kvot är äldre än 60 s (t.ex. inga strömtickar för
+   * IG:s helgmarknad) eller saknar fördröjningsbelägg hämtas via IG REST /markets. Högst EN läsning per varv,
+   * aldrig med prioritet, och bara när bakgrundsbudgeten har minst REST_FALLBACK_MIN_BACKGROUND kvar, så att
+   * order, konto och katalog inte svälts. Stängda marknader frågas högst var 5:e minut.
+   */
+  // Högst en REST-reservläsning åt gången per miljö (tick körs var 15:e s även om IG svarar långsamt)
+  const restFallbackBusy = new Set<IgEnvironment>();
+  async function restFallback(env: IgEnvironment): Promise<void> {
+    if (restFallbackBusy.has(env)) return;
+    restFallbackBusy.add(env);
+    try { await restFallbackOnce(env); } finally { restFallbackBusy.delete(env); }
+  }
+  async function restFallbackOnce(env: IgEnvironment): Promise<void> {
+    let b: { backgroundRemaining: number };
+    try { b = budget(env); } catch { return; }
+    if (!(b.backgroundRemaining >= REST_FALLBACK_MIN_BACKGROUND)) return;
+    const gen = stream.summary(env).generation ?? null;
+    for (const epic of loadWatch(env)) {
+      const key = k(env, epic), q = quotes.get(key), ev = delayEvidence.get(key);
+      const stale = !q || q.observedAt === null || now() - q.observedAt > 60_000;
+      const needsDelayProof = !!q && !stale && q.source === "stream" && q.delayTime === null && !(gen !== null && ev?.generation === gen);
+      if (!stale && !needsDelayProof) continue;
+      const closed = !!q?.marketStatus && q.marketStatus !== "TRADEABLE";
+      if (now() - (lastRestTry.get(key) ?? -Infinity) < (closed ? REST_FALLBACK_CLOSED_EVERY_MS : REST_FALLBACK_EVERY_MS)) continue;
+      lastRestTry.set(key, now());
+      try {
+        const m = await market(env, epic);
+        if (m.epic === epic) { rememberName(env, epic, m.name, m.category); setRestQuote(env, epic, m.quote, m.instrument?.streamingPricesAvailable); }
+      } catch { /* läsgräns eller IG-fel: nästa försök efter intervallet */ }
+      return;
+    }
   }
 
   // ── Ström ──
@@ -320,6 +395,8 @@ export function createIgMarketData(deps: {
       if (streamUp && streamedKeys.get(env)?.has(x)) continue;
       if (last && now() >= last.closeTime + IV_MS[iv]! + 5_000 && !s.seeding) { s.seeding = refreshHistory(env, epic, iv).finally(() => { s.seeding = undefined; }); }
     }
+    // Sist i varvet, så att ett långsamt REST-svar inte fördröjer historikslingan ovan.
+    await restFallback(env);
   }
   function start(): void {
     if (timer) return;
@@ -353,7 +430,7 @@ export function createIgMarketData(deps: {
     historyError: (epic: string, iv: string, env = activeEnv) => series.get(k(env, epic, iv))?.historyError ?? null,
     quote: (epic: string, env = activeEnv) => quotes.get(k(env, epic)) ?? null,
     quotes: (env = activeEnv) => [...quotes.entries()].filter(([key]) => key.startsWith(`${env}|`)).map(([, q]) => q),
-    setRestQuote, dataState,
+    setRestQuote, dataState, restFallback,
     streamStatus: (env = activeEnv) => stream.summary(env),
     watchedSeries: (env = activeEnv) => activeSeries(env),
     streamedSeries: (env = activeEnv) => [...(streamedKeys.get(env) ?? [])],

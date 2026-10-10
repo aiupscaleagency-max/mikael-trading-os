@@ -1,7 +1,7 @@
 import type { BrokerAdapter } from "./adapter.js";
 import type { Account, Kline, OrderRequest, OrderResult, Position, Ticker } from "../types.js";
 import {
-  getIgStatus, testIgConnection, getIgAccounts, getIgPositions, igOrderExecutionEnabled, withIgPriority, type IgEnvironment,
+  getIgStatus, testIgConnection, getIgAccounts, getIgPositions, igWritesEnabled, withIgPriority, type IgEnvironment,
 } from "../integrations/igConnection.js";
 import { getIgOrderState } from "../integrations/igOrders.js";
 import { igPositionLimitReason } from "../integrations/igRiskLimits.js";
@@ -52,7 +52,8 @@ export interface IgDeps {
 const defaultDeps: IgDeps = {
   status: getIgStatus, connect: testIgConnection, accounts: getIgAccounts, positions: getIgPositions,
   market: getIgMarket, candles: getIgCandles, preview: previewIgOrder, confirm: confirmIgOrder, close: closeIgPosition,
-  enabled: igOrderExecutionEnabled, now: Date.now,
+  // Live räknas som "på" bara när .env också låst upp Live (MODE=live + LIVE_TRADING_CONFIRMED=true).
+  enabled: igWritesEnabled, now: Date.now,
   observe: (env, positions) => { try { getIgOrderState(env, positions); } catch { /* bara avstämning */ } },
 };
 /** Positioner cachas så här länge (samma IG-session). Order och stängningar läser alltid färskt. */

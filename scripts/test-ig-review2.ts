@@ -13,15 +13,15 @@ delete process.env.LIVE_TRADING_CONFIRMED;
 for (const k of ["IG_MAX_STAKE_PCT", "IG_MAX_TOTAL_MARGIN_PCT", "IG_MAX_DAILY_LOSS_PCT", "IG_MAX_POSITION_MARGIN", "IG_MAX_TOTAL_MARGIN", "IG_MAX_DAILY_LOSS", "STAKE_PCT_START", "STAKE_PCT_MAX"]) delete process.env[k];
 globalThis.fetch = (async () => { throw new Error("Nätverk förbjudet i testerna"); }) as typeof fetch;
 
-const { createIgConnection, withIgPriority, IG_ORDER_READ_NEED } = await import("../src/integrations/igConnection.js");
+const { createIgConnection, withIgPriority, IG_ORDER_READ_NEED, IG_LIVE_WRITE_LOCKED, igLiveWritesUnlocked, igWritesEnabled } = await import("../src/integrations/igConnection.js");
 const { createIgOrders, setIgLateAcceptedHook } = await import("../src/integrations/igOrders.js");
 const { createIgMarkets } = await import("../src/integrations/igMarkets.js");
 const { FX_SAFETY_MARGIN, igFxIsFresh } = await import("../src/integrations/igRules.js");
 const { igAccountLimits } = await import("../src/integrations/igRiskLimits.js");
-const { checkOrderGate, isOpeningOrder } = await import("../src/server/orderGate.js");
+const { checkOrderGate, isOpeningOrder, needsApproval, setActiveLiveCheck } = await import("../src/server/orderGate.js");
 const { createIgSessions } = await import("../src/server/igSessions.js");
 const { setStakeHistory, currentStake, setStakeEnvProvider } = await import("../src/risk/stakeLadder.js");
-const { accountView, handleIgRoutes, LIVE_LOCKED } = await import("../src/server/igRoutes.js");
+const { accountView, handleIgRoutes, LIVE_LOCKED, LIVE_READ_MISSING, liveReadAllowed } = await import("../src/server/igRoutes.js");
 const { IgBroker } = await import("../src/brokers/ig.js");
 const { getResults } = await import("../src/server/results.js");
 const store = await import("../src/memory/store.js");
@@ -218,7 +218,7 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
   ok("FX GBP direkt, NOK omvänt, JPY kors via USD; helg: senaste växelkurs (fredag) med 2 % marginal, högst 4 dygn");
 }
 
-// ══ M4: belopp bara för aktiv miljö; Live-vägar låsta tills .env låser upp ══
+// ══ M4: belopp bara för aktiv miljö. Live får LÄSAS när Live-uppgifterna finns; Live-ORDER låsta tills .env låser upp ══
 {
   const a = { accountId: "X", currency: "SEK", accountType: "CFD", balance: 123_456, available: 1 };
   assert.deepEqual(accountView(a, false), { currency: "SEK", accountType: "CFD", hidden: true });
@@ -229,13 +229,141 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
     await handleIgRoutes(new URL("http://x" + pathname), method, {} as never, res, async () => body, {}, () => undefined, () => {}, async () => ({ id: "x" }));
     return { code, body: JSON.parse(out || "{}") };
   };
+  // Påhittade uppgifter i en privat tmp-fil (600). Den riktiga IG-filen läses aldrig i testet.
+  const prevFile = process.env.IG_CREDENTIALS_FILE;
+  const credFile = (name: string, data: unknown) => { const f = path.join(tmp, name); fs.writeFileSync(f, JSON.stringify(data), { mode: 0o600 }); fs.chmodSync(f, 0o600); return f; };
+  const fakeRow = { apiKey: "test-k", identifier: "test-i", password: "test-p" };
+  // (a1) Live-uppgifter kompletta → läsning tillåten (inte 403), order fortsatt låsta
+  process.env.IG_CREDENTIALS_FILE = credFile("creds-live.json", { demo: fakeRow, live: fakeRow });
+  assert.equal(liveReadAllowed(), true);
   const h = await call("/api/ig/history?env=live");
-  assert.equal(h.code, 403); assert.equal(h.body.error, LIVE_LOCKED);
+  assert.notEqual(h.code, 403, "Live-historik får läsas"); assert.equal(h.body.env, "live");
   const c = await call("/api/ig/connect", "POST", JSON.stringify({ environment: "live" }));
-  assert.equal(c.code, 403, "ingen Live-inloggning när Live är låst");
+  assert.notEqual(c.code, 403, "Live-inloggning (bara läsning) tillåten"); assert.notEqual(c.body.status, "locked");
   const st = await call("/api/ig/status");
-  assert.equal(st.body.liveLocked, true); assert.equal(st.body.environments.live.locked, true);
-  ok("M4 andra miljöns saldo döljs; /api/ig/history och /api/ig/connect för Live svarar 403 när Live är låst");
+  assert.equal(st.code, 200);
+  assert.equal(st.body.liveRead, true); assert.equal(st.body.orderAllowed, false);
+  assert.equal(st.body.liveLocked, true, "liveLocked betyder fortfarande: Live-ORDER låsta");
+  assert.equal(st.body.environments.live.liveRead, true); assert.equal(st.body.environments.live.orderAllowed, false);
+  assert.equal(st.body.environments.live.executionEnabled, false, "Live visas aldrig som orderläge PÅ");
+  assert.match(LIVE_LOCKED, /order är låsta/); assert.match(LIVE_LOCKED, /Läsning .* tillåten/);
+  // (a2) Live-uppgifter saknas → 403, ingen inloggning eller läsning mot Live
+  process.env.IG_CREDENTIALS_FILE = credFile("creds-demo.json", { demo: fakeRow });
+  assert.equal(liveReadAllowed(), false);
+  const h2 = await call("/api/ig/history?env=live");
+  assert.equal(h2.code, 403); assert.equal(h2.body.error, LIVE_READ_MISSING);
+  const c2 = await call("/api/ig/connect", "POST", JSON.stringify({ environment: "live" }));
+  assert.equal(c2.code, 403, "ingen Live-inloggning utan Live-uppgifter");
+  const st2 = await call("/api/ig/status");
+  assert.equal(st2.body.liveRead, false); assert.equal(st2.body.orderAllowed, false); assert.equal(st2.body.environments.live.locked, true);
+  if (prevFile === undefined) delete process.env.IG_CREDENTIALS_FILE; else process.env.IG_CREDENTIALS_FILE = prevFile;
+  // Dashboard: mäklarväljaren byter utan CFG.mode-villkor och visar fel; LIVE-knappen öppnar handelsbekräftelsen bara när Live-order är tillåtna
+  const dash = fs.readFileSync(new URL("../dashboard.html", import.meta.url), "utf8");
+  assert.ok(/getElementById\("broker-select"\)\.addEventListener\("change", async e=>\{\s*await switchBroker\(e\.target\.value\);/.test(dash), "mäklarväljaren byter alltid via switchBroker");
+  assert.ok(dash.includes("if(m && m.liveOrdersAllowed){ openLiveConfirm(); return; }"), "handelsbekräftelsen bara när Live-order är tillåtna");
+  assert.ok(dash.includes("LIVE · bara läsning, order låsta"), "Live-vy med låsta order märks tydligt");
+  assert.ok(dash.includes('else if(ev.type === "broker-changed"){ if(ev.payload?.broker) applyBrokerView(ev.payload.broker); }'), "broker-changed uppdaterar allt");
+  ok("M4 andra miljöns saldo döljs; Live läses (status/connect/history) när uppgifterna finns, 403 när de saknas; status: liveRead ja, orderAllowed nej");
+}
+
+// ══ M4b: HÅRT SKRIVSTOPP för IG Live. Live aktiv + order låsta → NOLL POST/PUT/DELETE mot IG (utom sessionsinloggning) ══
+{
+  const log: string[] = [];
+  const fake = (async (url: string, init: any) => {
+    const u = new URL(url), env = u.hostname.startsWith("demo-") ? "demo" : "live", p = u.pathname.replace("/gateway/deal/", "");
+    const hdr = init?.headers ?? {}; log.push(`${env} ${init?.method ?? "GET"}${hdr._method ? "(" + hdr._method + ")" : ""} ${p}`);
+    const res = (body: any, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status: 200, headers });
+    if (p === "session") return res({ currentAccountId: "A1" }, { CST: "c", "X-SECURITY-TOKEN": "x" });
+    if (p === "accounts") return res({ accounts: [{ accountId: "A1", accountType: "CFD", currency: "SEK", balance: { balance: 10000, available: 8000, deposit: 0, profitLoss: 0 } }] });
+    if (p === "positions" && (init?.method ?? "GET") === "GET") return res({ positions: [{ position: { dealId: "OWN1", direction: "BUY", size: 1, level: 1.1, currency: "SEK", createdDateUTC: "2026-10-09T09:00:00" }, market: { epic: EPIC, instrumentName: "EUR/USD Mini", bid: 1.1, offer: 1.1, marketStatus: "TRADEABLE" } }] });
+    if (p === "workingorders") return res({ workingOrders: [] });
+    if (p === "history/transactions") return res({ transactions: [], metadata: { pageData: { totalPages: 1 } } });
+    if (p === "positions/otc" || p === "workingorders/otc") return res({ dealReference: "REF-LIVE" });
+    if (p.startsWith("confirms/")) return res({ dealStatus: "ACCEPTED", dealId: "D-LIVE", affectedDeals: [{ dealId: "OWN1", status: "DELETED" }] });
+    return res({});
+  }) as typeof fetch;
+  const liveWrites = () => log.filter((x) => x.startsWith("live ") && !/^live GET /.test(x) && x !== "live POST session");
+  const saved = { MODE: process.env.MODE, LTC: process.env.LIVE_TRADING_CONFIRMED, FL: process.env.IG_ORDER_EXECUTION_ENABLED_LIVE, FD: process.env.IG_ORDER_EXECUTION_ENABLED_DEMO };
+  const restore = () => { for (const [k, v] of [["MODE", saved.MODE], ["LIVE_TRADING_CONFIRMED", saved.LTC], ["IG_ORDER_EXECUTION_ENABLED_LIVE", saved.FL], ["IG_ORDER_EXECUTION_ENABLED_DEMO", saved.FD]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
+  // Värsta fallet: Live-orderflaggan PÅ men servern INTE startad i live (MODE/LIVE_TRADING_CONFIRMED saknas) → fortfarande låst.
+  delete process.env.MODE; delete process.env.LIVE_TRADING_CONFIRMED;
+  process.env.IG_ORDER_EXECUTION_ENABLED_LIVE = "true"; process.env.IG_ORDER_EXECUTION_ENABLED_DEMO = "true";
+  try {
+    assert.equal(igLiveWritesUnlocked(), false); assert.equal(igWritesEnabled("live"), false); assert.equal(igWritesEnabled("demo"), true);
+    const conn = createIgConnection({ loadCredentials: () => ({ demo: { apiKey: "k", identifier: "i", password: "p" }, live: { apiKey: "k", identifier: "i", password: "p" } }) as never, fetch: fake });
+    assert.equal((await conn.testConnection("live")).status, "connected", "Live-inloggning (POST session) släpps igenom");
+    await conn.testConnection("demo");
+    // 1) Direkt i igConnection: öppna, stäng (_method DELETE), arbetsorder → alla stoppas före fetch
+    await assert.rejects(conn.callAuthenticated("live", "positions/otc", "POST", "2", { epic: EPIC, direction: "BUY", size: 1 }), (e: Error) => e.message === IG_LIVE_WRITE_LOCKED);
+    await assert.rejects(conn.callAuthenticated("live", "positions/otc", "POST", "1", { dealId: "OWN1", direction: "SELL", size: 1, orderType: "MARKET" }, { _method: "DELETE" }), (e: Error) => e.message === IG_LIVE_WRITE_LOCKED);
+    await assert.rejects(conn.callAuthenticated("live", "workingorders/otc", "POST", "2", { epic: EPIC }), (e: Error) => e.message === IG_LIVE_WRITE_LOCKED);
+    // Läsning fungerar som vanligt
+    assert.ok(Array.isArray((await conn.callAuthenticated("live", "positions", "GET", "2")).positions), "Live-positioner läses");
+    assert.equal((await conn.getAccounts("live")).status, "ready", "Live-saldo läses");
+    // 2) Orderflödet (Godkänn/orderpanel → preview+confirm) och stängning (Sälj nu / Sälj allt / tidsstängning / TP/SL → close)
+    const orders = createIgOrders({ status: conn.getStatus as never, accounts: conn.getAccounts as never, positions: conn.getPositions as never, call: conn.callAuthenticated as never,
+      market: fixtureMarket(Date.now) as never, guard: async () => ({ killSwitchActive: false }), directory: path.join(tmp, "m4b"), enabled: () => true });
+    const draft = await withIgPriority(() => orders.preview("live", TICKET as never));
+    assert.equal(draft.status, "draft", "granskning (läsning) fungerar i Live");
+    await assert.rejects(withIgPriority(() => orders.confirm("live", draft.id)), /order låsta/);
+    await assert.rejects(withIgPriority(() => orders.close("live", "OWN1")), /order låsta/, "egen position i IG:s app stängs aldrig");
+    assert.equal(orders.snapshot("live").exitPlans.length, 0, "ingen stängningsplan/adoption skapas för Live");
+    // 3) Mäklaren (placeOrder/closePosition: Godkänn, Sälj nu, Sälj allt, liveTpSl, strategier, chattens stängning)
+    const live = new IgBroker("live", { status: conn.getStatus as never, connect: conn.testConnection as never, accounts: conn.getAccounts as never, positions: conn.getPositions as never,
+      market: fixtureMarket(Date.now) as never, preview: orders.preview as never, confirm: orders.confirm as never, close: orders.close as never });
+    assert.equal(live.executionEnabled(), false, "standard: Live-orderläget AV när .env inte låst upp Live");
+    await assert.rejects(live.placeOrder({ symbol: EPIC, side: "BUY", type: "MARKET", stakeAmount: 100 } as never));
+    await assert.rejects(live.closePosition("OWN1", EPIC));
+    // Även om någon injicerar "på" stoppar orderflödet/skrivstoppet
+    const forced = new IgBroker("live", { status: conn.getStatus as never, connect: conn.testConnection as never, accounts: conn.getAccounts as never, positions: conn.getPositions as never,
+      market: fixtureMarket(Date.now) as never, preview: orders.preview as never, confirm: orders.confirm as never, close: orders.close as never, enabled: () => true });
+    await assert.rejects(forced.closePosition("OWN1", EPIC));
+    // 4) Tidsstängning (tradeHorizon) mot Live: standardmäklaren → "orderläget av", inget skickas
+    const { closeIgAtExpiry } = await import("../src/server/tradeHorizon.js");
+    await closeIgAtExpiry({ id: "m4b-x", broker: "ig", symbol: EPIC, qty: 1, live: true, exitAt: Date.now(), dealId: "OWN1" } as never, live);
+    await closeIgAtExpiry({ id: "m4b-y", broker: "ig", symbol: EPIC, qty: 1, live: true, exitAt: Date.now(), dealId: "OWN1" } as never, forced);
+    // 5) Bakgrundens orderslinga (tidsplaner/avstämning) läser bara
+    await orders.tick();
+    // 6) AUTO: medan Live visas kräver varje order Godkänn (agentens AUTO-gren nås aldrig)
+    setActiveLiveCheck(() => true); assert.equal(needsApproval(), true); setActiveLiveCheck(null);
+    const toolsSrc = fs.readFileSync(new URL("../src/agent/tools.ts", import.meta.url), "utf8");
+    assert.ok(toolsSrc.includes('ctx.config.executionMode === "approve" || liveBroker'), "AUTO-grenen hoppas över för Live-mäklare");
+    assert.deepEqual(liveWrites(), [], `inga skrivande Live-anrop nådde IG (${liveWrites().join(", ")})`);
+    // Demo påverkas inte: samma skrivanrop når (den mockade) IG
+    await conn.callAuthenticated("demo", "positions/otc", "POST", "2", { epic: EPIC, direction: "BUY", size: 1 });
+    assert.ok(log.includes("demo POST positions/otc"), "Demo-order släpps igenom");
+    // Positiv kontroll: först när .env låst upp Live (MODE=live + LIVE_TRADING_CONFIRMED + Live-flaggan) når anropet IG
+    process.env.MODE = "live"; process.env.LIVE_TRADING_CONFIRMED = "true";
+    assert.equal(igLiveWritesUnlocked(), true);
+    await conn.callAuthenticated("live", "positions/otc", "POST", "2", { epic: EPIC, direction: "BUY", size: 1 });
+    assert.deepEqual(liveWrites(), ["live POST positions/otc"], "upplåst: exakt ett anrop släpptes");
+    // Flaggan av igen → låst trots MODE=live
+    process.env.IG_ORDER_EXECUTION_ENABLED_LIVE = "false";
+    await assert.rejects(conn.callAuthenticated("live", "positions/otc", "POST", "1", { dealId: "OWN1" }, { _method: "DELETE" }), (e: Error) => e.message === IG_LIVE_WRITE_LOCKED);
+    assert.equal(liveWrites().length, 1);
+    // Lager B (runt själva fetch): även om lager A skulle släppa igenom stoppar backstoppet, med oförvanskat fel
+    process.env.IG_ORDER_EXECUTION_ENABLED_LIVE = "true";
+    const onlyFirst = (() => { let n = 0; return () => n++ === 0; })(); // lager A får "ja", lager B får "nej"
+    const connB = createIgConnection({ loadCredentials: () => ({ live: { apiKey: "k", identifier: "i", password: "p" } }) as never, fetch: fake, liveWritesUnlocked: onlyFirst });
+    assert.equal((await connB.testConnection("live")).status, "connected");
+    await assert.rejects(connB.callAuthenticated("live", "positions/otc", "POST", "2", { epic: EPIC, direction: "BUY", size: 1 }), (e: Error) => e.message === IG_LIVE_WRITE_LOCKED, "backstoppet stoppar, felet blir inte 'okänt utfall'");
+    assert.equal(liveWrites().length, 1, "backstoppet: inget nytt skrivande Live-anrop");
+    // Bakgrundsslingan (tidsplan i igOrders.tick): en Live-plan skapad medan Live var upplåst stängs INTE när Live låsts igen
+    let clock = Date.now();
+    const ordersT = createIgOrders({ status: conn.getStatus as never, accounts: conn.getAccounts as never, positions: conn.getPositions as never, call: conn.callAuthenticated as never,
+      market: fixtureMarket(() => clock) as never, guard: async () => ({ killSwitchActive: false }), now: () => clock, directory: path.join(tmp, "m4b-tick"), enabled: () => true });
+    const dT = await withIgPriority(() => ordersT.preview("live", { ...TICKET, autoClose: true } as never));
+    const rT = await withIgPriority(() => ordersT.confirm("live", dT.id));
+    assert.equal(rT.status, "accepted", `upplåst: Live-order accepterad (${rT.error ?? ""})`);
+    assert.ok(ordersT.snapshot("live").exitPlans.some((p: any) => p.status === "scheduled"), "tidsplan skapad");
+    const writesBefore = liveWrites().length;
+    delete process.env.MODE; delete process.env.LIVE_TRADING_CONFIRMED; // Live låst igen
+    clock += 16 * 60_000; // tidsplanens stängningstid har passerat
+    await ordersT.tick();
+    assert.equal(liveWrites().length, writesBefore, "låst: bakgrundsslingan skickade ingen stängning till IG Live");
+    assert.ok(!ordersT.snapshot("live").exitPlans.some((p: any) => ["submitted", "confirmed"].includes(p.status)), "ingen stängning begärd");
+  } finally { restore(); }
+  ok("M4b skrivstopp: Live aktiv + order låsta → 0 skrivande Live-anrop från igConnection, Godkänn/confirm, stängning (Sälj nu/Sälj allt/TP/SL), mäklaren, tidsstängning, bakgrundsslingan och AUTO; Demo opåverkad; upplåst .env släpper igenom");
 }
 
 // ══ M5 + mindre 11: separat insatstrappa per miljö; IG_MAX_STAKE_PCT kan inte höjas över 3 % ══
@@ -292,7 +420,7 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
     const d = await orders.preview(e, TICKET as never);
     row[e]!.order = d.status === "draft" ? "granskning ✓" : "✗";
     const r = await orders.confirm(e, d.id).catch((err: Error) => ({ status: "blocked", error: err.message }) as any);
-    row[e]!.confirm = r.status === "accepted" ? "skickad, accepterad ✓" : /avstängt/.test(r.error ?? "") ? "orderläget av, inget skickat ✓" : `✗ ${r.status}`;
+    row[e]!.confirm = r.status === "accepted" ? "skickad, accepterad ✓" : /avstängt|order låsta/.test(r.error ?? "") ? "orderläget av/order låsta, inget skickat ✓" : `✗ ${r.status}`;
     const b = new IgBroker(e, { status, connect: (async () => ({})) as never, accounts: (async () => ({ status: "ready" })) as never, market: fixtureMarket(() => NOW0) as never, enabled: () => enabled(e), now: () => NOW0, observe: () => {} } as never);
     const q = await b.stakeQuote({ epic: EPIC, direction: "BUY", stake: e === "demo" ? 100 : 500, stopLoss: 1.09, takeProfit: 1.12 });
     row[e]!.money = q.ok && q.currency === "SEK" ? `insats i SEK ✓ (${q.currency})` : `✗ ${q.error}`;

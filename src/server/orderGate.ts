@@ -188,9 +188,15 @@ export async function checkOrderGate(input: GateInput): Promise<GateResult> {
   return sessionAttempt ? { ok: true, sessionAttempt } : { ok: true };
 }
 
+// Visas IG Live just nu? Sätts av api.ts. Då väntar varje order på Godkänn, även om AUTO valts för Demo.
+let activeLiveCheck: (() => boolean) | null = null;
+export function setActiveLiveCheck(fn: (() => boolean) | null): void { activeLiveCheck = fn; }
+export function activeEnvIsLive(): boolean { try { return activeLiveCheck?.() === true; } catch { return true; } }
+
 /** Ska ordern vänta på Mikes godkännande? */
 export function needsApproval(): boolean {
   if (approvalOverride?.()) return true;
+  if (activeEnvIsLive()) return true;
   return config.executionMode === "approve";
 }
 

@@ -16,11 +16,11 @@ import { getCostSummary } from "../cost/tracker.js";
 import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
 import { igMarketData } from "./igMarketData.js";
 import { setIgLateAcceptedHook, setIgLateDealHook } from "../integrations/igOrders.js";
-import { handleIgRoutes } from "./igRoutes.js";
+import { handleIgRoutes, liveReadAllowed, liveOrdersAllowed } from "./igRoutes.js";
 import { getIgTimes, setIgTimes, ANALYSIS_INTERVALS, SESSION_MINUTES } from "./igTimes.js";
 import { type createIgSessions, DIRECT_ANALYSIS_MAX } from "./igSessions.js";
 import { listIgImportedSignals, reviewIgImportedSignal } from "../integrations/igImportedSignals.js";
-import { igOrderExecutionEnabled } from "../integrations/igConnection.js";
+import { igOrderExecutionEnabled, igWritesEnabled } from "../integrations/igConnection.js";
 import { currentStake, setStakeEnvProvider } from "../risk/stakeLadder.js";
 // M5 (granskning 2): insats-trappan följer aktiv IG-miljö (egna resultat och eget saldo).
 setStakeEnvProvider(() => igMarketData.getActiveEnv());
@@ -41,7 +41,7 @@ import { getResultsCached, recordLiveFill } from "./results.js";
 import { CATEGORIES, getCategory, type Category } from "./movers.js";
 import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, startLiveTpSl } from "./liveTpSl.js";
 import { addTimedExit, cancelTimedExit, cancelTimedExitForDeal, getHorizonMin, HORIZON_CHOICES, listTimedExits, listConfirmedExits, rollOverTimedExit, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
-import { reportSessionAttempt, adjustLiveSpend, addOrderGateBlock, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
+import { setActiveLiveCheck, reportSessionAttempt, adjustLiveSpend, addOrderGateBlock, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 import { isLibraryStrategy } from "./igStrategyLibrary.js";
 import { rememberUnknownStrategyOrder, tagStrategyDeal, takeUnknownStrategyOrder } from "./igStrategyTrades.js";
 
@@ -172,7 +172,7 @@ function initIntegrationsFromEnv(): void {
 }
 // IG är plattformen: Binance-/Oanda-nycklar läses inte längre in (inga Binance/Oanda-anrop i körvägen).
 void initIntegrationsFromEnv;
-log.info(`IG: TEST = IG Demo, LIVE = IG Live. Orderläge Demo ${igOrderExecutionEnabled("demo") ? "PÅ" : "AV"} · Live ${igOrderExecutionEnabled("live") ? "PÅ" : "AV"}`);
+log.info(`IG: TEST = IG Demo, LIVE = IG Live. Orderläge Demo ${igWritesEnabled("demo") ? "PÅ" : "AV"} · Live ${igWritesEnabled("live") ? "PÅ" : "AV (Live går att läsa, order låsta)"}`);
 
 // Starta autonom Position Monitor — ladda lärdomar + entries från disk FÖRST
 // så agenten kommer ihåg över restarts
@@ -917,6 +917,10 @@ export function setActiveBrokerName(name: string | null): void {
   activeBrokerName = name;
   igMarketData.setActiveEnv(name === "ig" ? "live" : "demo");
 }
+/** Visas IG Live just nu (aktiv mäklare = Live)? Då kräver varje agentorder Godkänn, även om AUTO valts. */
+export function activeBrokerIsLive(): boolean { return activeBrokerName === "ig"; }
+/** Läget som faktiskt gäller för agenternas ordrar just nu (visning): Live visas → alltid Godkänn. Sparat val ändras inte. */
+function effectiveExecutionMode(): string { return activeBrokerIsLive() ? "approve" : config.executionMode; }
 /** Aktiv mäklare: IG Live bara när den uttryckligen valts, annars IG Demo. */
 function activeName(brokers: Record<string, BrokerAdapter>): string | undefined {
   return activeBrokerName && brokers[activeBrokerName] ? activeBrokerName : brokers["ig-demo"] ? "ig-demo" : Object.keys(brokers)[0];
@@ -1047,6 +1051,8 @@ export function startServer(
   const uiDir = path.resolve(import.meta.dirname, "ui");
   // Bybit-websocket, live-lampor och strategibiblioteket (src/server/liveRoutes.ts)
   initLiveLayer(brokers, broadcastEvent);
+  // Medan IG Live visas kräver varje order Godkänn (AUTO gäller bara Demo). Sparat val ändras inte.
+  setActiveLiveCheck(activeBrokerIsLive);
   // Startad i LIVE (MODE=live + LIVE_TRADING_CONFIRMED) → Bybit LIVE är aktiv
   // mäklare direkt, så att en LIVE-order aldrig tyst blir TEST efter omstart.
   if (liveAllowedByServer() && brokers.ig && !activeBrokerName) {
@@ -1291,14 +1297,16 @@ export function startServer(
           jsonStatus(res, 400, { error: `Broker '${name}' finns inte. Tillgängliga: ${Object.keys(brokers).join(", ")}` });
           return;
         }
-        if (brokers[name]!.mode === "live" && !liveAllowedByServer()) {
-          jsonStatus(res, 409, { error: "IG Live är låst. Riktiga pengar slås bara på i .env (MODE=live, LIVE_TRADING_CONFIRMED=true) och omstart." });
+        // Live får VISAS när Live-uppgifterna finns. Order låses separat (orderGate + skrivstoppet i igConnection).
+        if (brokers[name]!.mode === "live" && !liveReadAllowed()) {
+          jsonStatus(res, 409, { error: "IG Live saknar inloggningsuppgifter (~/.config/aiupscale/trading-ig.json). Ingenting har ändrats." });
           return;
         }
         setActiveBrokerName(name);
-        broadcastEvent("broker-changed", { activeBroker: name, env: igMarketData.getActiveEnv() });
-        log.info(`Aktiv broker bytt till: ${name}`);
-        json(res, { ok: true, activeBroker: name });
+        const ordersLocked = brokers[name]!.mode === "live" && !liveOrdersAllowed();
+        broadcastEvent("broker-changed", { activeBroker: name, env: igMarketData.getActiveEnv(), ordersLocked });
+        log.info(`Aktiv broker bytt till: ${name}${ordersLocked ? " (bara läsning, Live-order låsta)" : ""}`);
+        json(res, { ok: true, activeBroker: name, env: igMarketData.getActiveEnv(), ordersLocked });
         return;
       }
 
@@ -1313,7 +1321,7 @@ export function startServer(
           json(res, { error: "Ingen broker tillgänglig" });
           return;
         }
-        if (broker.mode === "live" && !liveAllowedByServer()) { json(res, { error: "IG Live är låst på servern", symbol, interval, klines: [] }); return; }
+        if (broker.mode === "live" && !liveReadAllowed()) { json(res, { error: "IG Live saknar inloggningsuppgifter", symbol, interval, klines: [] }); return; }
         try {
           const klines = await broker.getKlines(symbol, interval, Math.min(limit, 500));
           const indicators = computeIndicators(klines);
@@ -1333,7 +1341,7 @@ export function startServer(
           json(res, { error: "Ingen broker tillgänglig" });
           return;
         }
-        if (broker.mode === "live" && !liveAllowedByServer()) { json(res, { error: "IG Live är låst på servern" }); return; }
+        if (broker.mode === "live" && !liveReadAllowed()) { json(res, { error: "IG Live saknar inloggningsuppgifter" }); return; }
         try {
           const ticker = await broker.getTicker(symbol);
           json(res, ticker);
@@ -1361,17 +1369,22 @@ export function startServer(
       if (url.pathname === "/api/mode" && method === "GET") {
         json(res, {
           mode: config.mode,
-          executionMode: config.executionMode,
+          executionMode: effectiveExecutionMode(),
           // Härled UI-läge från kombination
-          uiMode: config.mode === "paper" ? "paper" :
+          // IG Live visas (även bara läsning) → LIVE-knappen tänds, så att en omladdning aldrig visar TEST över Live-data.
+          uiMode: activeBrokerName === "ig" ? "live" :
+                  config.mode === "paper" ? "paper" :
                   liveAllowedByServer() && activeBrokerName === "ig" ? "live" :
                   config.executionMode === "approve" ? "propose" : "live",
           activeBroker: activeBrokerName,
           // Ärligt svar till UI:t: kan LIVE över huvud taget användas just nu?
           liveAllowed: liveAllowedByServer(),
+          // Live-vy (läsning) och Live-order hålls isär: liveRead = får läsas, liveOrdersAllowed = order möjliga.
+          liveRead: liveReadAllowed(), liveOrdersAllowed: liveOrdersAllowed(),
+          liveView: activeBrokerName === "ig", liveOrdersLocked: activeBrokerName === "ig" && !liveOrdersAllowed(),
           liveKeys: { ig: !!brokers.ig && (brokers.ig as IgBroker).status().credentialsComplete },
           platform: "IG", env: igMarketData.getActiveEnv(),
-          execution: { demo: igOrderExecutionEnabled("demo"), live: igOrderExecutionEnabled("live") },
+          execution: { demo: igWritesEnabled("demo"), live: igWritesEnabled("live") },
           limits: { maxLiveStakeUsd: MAX_LIVE_STAKE_USD, maxTestStakeUsd: testStakeCapUsd(), maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD, liveSpentTodayUsd: getLiveSpentTodayUsd(),
             // IG-ordrar räknas i antal kontrakt: USD-taken ovan gäller INTE dem. IG använder gränser i kontovalutan.
             ig: { note: "IG-ordrar (Demo och Live) prövas mot gränser i kontovalutan, inte USD-taken ovan.", rules: igAccountLimits(0).basis,
@@ -1392,16 +1405,23 @@ export function startServer(
 
         if (uiMode === "live") {
           if (!liveAllowedByServer()) {
-            jsonStatus(res, 409, {
-              ok: false,
-              error: "LIVE är låst. Riktiga pengar slås bara på i .env (MODE=live, LIVE_TRADING_CONFIRMED=true och live-nycklar) följt av omstart. Ingenting har ändrats.",
-            });
+            // Bara VY: Live visas (saldo, kurser, positioner, historik). Order förblir låsta; inget ändras i .env
+            // och godkännande-läget rörs inte (AUTO tvingas ändå till Godkänn medan Live visas).
+            if (!liveReadAllowed() || !brokers.ig) {
+              jsonStatus(res, 409, { ok: false, error: "IG Live saknar inloggningsuppgifter (~/.config/aiupscale/trading-ig.json). Ingenting har ändrats." });
+              return;
+            }
+            setActiveBrokerName("ig");
+            log.info("Dashboard visar IG Live (bara läsning, Live-order låsta)");
+            broadcastEvent("broker-changed", { activeBroker: "ig", env: igMarketData.getActiveEnv(), ordersLocked: true });
+            broadcastEvent("mode-changed", { uiMode: "live", mode: config.mode, executionMode: effectiveExecutionMode(), ordersLocked: true });
+            json(res, { ok: true, uiMode: "live", mode: config.mode, executionMode: effectiveExecutionMode(), activeBroker: "ig", ordersLocked: true });
             return;
           }
           log.warn("Dashboard bad om LIVE-vy (servern är redan startad i LIVE)");
           if (brokers.ig) setActiveBrokerName("ig");
-          broadcastEvent("mode-changed", { uiMode: "live", mode: config.mode, executionMode: config.executionMode });
-          json(res, { ok: true, uiMode: "live", mode: config.mode, executionMode: config.executionMode });
+          broadcastEvent("mode-changed", { uiMode: "live", mode: config.mode, executionMode: effectiveExecutionMode() });
+          json(res, { ok: true, uiMode: "live", mode: config.mode, executionMode: effectiveExecutionMode(), ordersLocked: !liveOrdersAllowed() });
           return;
         }
 
@@ -1415,8 +1435,8 @@ export function startServer(
         }
         // TEST-knappen byter tillbaka till TEST-mäklaren (låtsaskontot)
         if (activeBrokerName === "ig" || !activeBrokerName) setActiveBrokerName("ig-demo");
-        broadcastEvent("mode-changed", { uiMode, mode: config.mode, executionMode: config.executionMode });
-        json(res, { ok: true, uiMode, mode: config.mode, executionMode: config.executionMode, activeBroker: activeBrokerName });
+        broadcastEvent("mode-changed", { uiMode, mode: config.mode, executionMode: effectiveExecutionMode() });
+        json(res, { ok: true, uiMode, mode: config.mode, executionMode: effectiveExecutionMode(), activeBroker: activeBrokerName });
         return;
       }
 
@@ -1452,15 +1472,15 @@ export function startServer(
           jsonStatus(res, 400, { ok: false, error: "Välj auto eller approve." });
           return;
         }
-        if (executionMode === "auto" && !autoAllowed()) {
+        if (executionMode === "auto" && (!autoAllowed() || activeBrokerIsLive())) {
           jsonStatus(res, 409, { ok: false, error: "AUTO går bara i TEST. I LIVE kräver varje order alltid Godkänn." });
           return;
         }
         setExecutionMode(executionMode);
         await saveExecutionMode(executionMode).catch((e) => log.warn(`Kunde inte spara auto/manuellt: ${(e as Error).message}`));
         log.warn(`Agenternas ordrar: ${executionMode === "auto" ? "AUTO (läggs direkt inom gränserna, TEST)" : "MANUELL (varje order väntar på Godkänn)"} — valt på Trade-sidan`);
-        broadcastEvent("mode-changed", { mode: config.mode, executionMode: config.executionMode });
-        json(res, { ok: true, executionMode: config.executionMode, autoAllowed: autoAllowed() });
+        broadcastEvent("mode-changed", { mode: config.mode, executionMode: effectiveExecutionMode() });
+        json(res, { ok: true, executionMode: effectiveExecutionMode(), autoAllowed: autoAllowed() && !activeBrokerIsLive() });
         return;
       }
 
@@ -1515,7 +1535,7 @@ export function startServer(
 
       // ── Väntande ordrar (EXECUTION_MODE=approve) ──
       if (url.pathname === "/api/pending-orders" && method === "GET") {
-        json(res, { orders: await listPendingOrders(), executionMode: config.executionMode });
+        json(res, { orders: await listPendingOrders(), executionMode: effectiveExecutionMode() });
         return;
       }
 
@@ -1964,7 +1984,7 @@ export function startServer(
                 const snap = await getMarketSnapshot();
                 if (snap) {
                   const marketBlock = formatSnapshotForPrompt(snap);
-                  systemPrompt = `${profile.system}\n\n---\n\n${marketBlock}\n\n**VIKTIGT:** Använd alltid datan ovan när du svarar — det är IG-data (se datastatus per instrument: live/fördröjt/inaktuellt). Hänvisa till specifika nivåer, RSI-värden, trender. Du HAR realtidsdata. Vägra inte ge konkreta rekommendationer.`;
+                  systemPrompt = `${profile.system}\n\n---\n\n${marketBlock}\n\n**VIKTIGT:** Använd alltid datan ovan när du svarar — det är IG-data (se datastatus per instrument: live/fördröjt/okänd fördröjning/inaktuellt). Hänvisa till specifika nivåer, RSI-värden, trender. Du HAR realtidsdata. Vägra inte ge konkreta rekommendationer.`;
                 }
               } catch (err) {
                 log.warn(`Market snapshot misslyckades: ${err instanceof Error ? err.message : String(err)}`);
@@ -2557,7 +2577,7 @@ Regler:
             maxLiveDailySpendUsd: MAX_LIVE_DAILY_SPEND_USD,
             liveSpentTodayUsd: getLiveSpentTodayUsd(),
             liveAllowed: liveAllowedByServer(),
-            executionMode: config.executionMode,
+            executionMode: effectiveExecutionMode(),
           },
         });
         return;
