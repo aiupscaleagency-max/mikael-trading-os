@@ -223,15 +223,12 @@ export function createIgMarketData(deps: {
     if (prev && prev.observedAt !== null && (q.observedAt ?? 0) <= prev.observedAt) return;
     quotes.set(k(env, epic), { epic, bid: q.bid, offer: q.offer, mid: (q.bid + q.offer) / 2, observedAt: q.observedAt ?? null, receivedAt: q.receivedAt ?? now(), delayTime: q.delayTime ?? null, marketStatus: q.marketStatus ?? null, changePct: q.percentageChange ?? prev?.changePct ?? null, high: q.high ?? prev?.high ?? null, low: q.low ?? prev?.low ?? null, source: "rest" });
   }
-  const delayLogged = new Set<string>();
   function onQuote(env: IgEnvironment, q: any): void {
     // B1: trasiga eller ofullständiga strömsvar kastas (ingen gissning av pris eller tid).
     if (!q || typeof q.epic !== "string" || !/^[A-Za-z0-9._-]{1,100}$/.test(q.epic) || !Number.isFinite(q.bid) || !Number.isFinite(q.offer) || !Number.isFinite(q.observedAt)) return;
     const prev = quotes.get(k(env, q.epic));
     if (prev && prev.observedAt === q.observedAt && prev.bid === q.bid && prev.offer === q.offer && prev.delayTime === (q.delayTime ?? null) && prev.marketStatus === (q.marketStatus ?? null)) return; // dubblett (en ändrad fördröjnings-/statusflagga släpps igenom)
     if (prev && prev.observedAt !== null && q.observedAt < prev.observedAt) return; // gammal/dubblett
-    // Diagnostik (en gång per instrument): vad IG:s ström skickar i DELAY, så att etiketten "fördröjt" kan rättas mot verkliga data.
-    if (q.delayTime == null && !delayLogged.has(k(env, q.epic))) { delayLogged.add(k(env, q.epic)); log.info(`[ig] ${env} ${q.epic}: strömmen anger ingen fördröjning (DELAY rått: ${String(q.delayFlag ?? "tomt").slice(0, 12)})`); }
     const next: IgQuote = { epic: q.epic, bid: q.bid, offer: q.offer, mid: (q.bid + q.offer) / 2, observedAt: q.observedAt, receivedAt: q.receivedAt, delayTime: q.delayTime, marketStatus: q.marketStatus, changePct: q.changePercent ?? prev?.changePct ?? null, high: prev?.high ?? null, low: prev?.low ?? null, source: "stream" };
     quotes.set(k(env, q.epic), next);
     events.emit("quote", env, next);
