@@ -8,6 +8,8 @@ import { getIgMarket, getIgHistory, searchIgMarkets } from "../integrations/igMa
 import { getIgMarketDirectory, getIgDirectoryEnrichment, peekIgMarketDirectory, igLiveOnlyReferences } from "../integrations/igMarketDirectory.js";
 import { getIgOrderState, resolveIgUnknown, answerIgLateExit } from "../integrations/igOrders.js";
 import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
+import { igSparklines } from "./igSparklines.js";
+import { agentNotes } from "./igAgentNotes.js";
 import { currentStake } from "../risk/stakeLadder.js";
 import { igOrderMoneyView } from "../integrations/igRiskLimits.js";
 import { listIgImportedSignals, saveIgImportedSignal, deleteIgImportedSignal } from "../integrations/igImportedSignals.js";
@@ -37,6 +39,8 @@ import { igCourse } from "../integrations/igCourse.js";
 //   GET  /api/market/search?q=          → IG-sökning
 //   GET  /api/market/klines?symbol=EPIC&interval=1m&limit=300 → stängda IG-ljus + pågående + datatillstånd
 //   GET  /api/market/prices?symbols=a,b → kvoter med ålder/tillstånd
+//   GET  /api/market/sparkline?epic=    → minidiagram för Alla par (minne/cache först, skonsamt mot historikkvoten)
+//   GET  /api/ig/agent-notes?epics=a,b → agenternas senaste besked per instrument (även avstå)
 //   GET  /api/market/stream?epics=a,b   → SSE: quote, candle, stream-status (IG Lightstreamer via servern)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -93,15 +97,19 @@ function quoteView(q: IgQuote | null, epic: string, env: IgEnvironment = igMarke
     : { epic, name: igMarketData.nameOf(epic, env), state: ds.state, ageMs: null, ...(ds.note ? { note: ds.note } : {}) };
 }
 /** Katalogframsteg i klartext: antal, komplett/delvis, fel och nästa försök (~60 s, singleflight i katalogen). */
-export function catalogueProgress(d: { markets?: unknown[]; status?: string; complete?: boolean; error?: string | null; note?: string; updatedAt?: number; progress?: any; remainingSearches?: number | null }) {
+export function catalogueProgress(d: { markets?: unknown[]; status?: string; complete?: boolean; error?: string | null; note?: string; updatedAt?: number; progress?: any; remainingSearches?: number | null; searchCompletedAt?: number | null }) {
   const count = Array.isArray(d.markets) ? d.markets.length : 0;
   const complete = d.complete === true;
   const retryAt = Number(d.progress?.retryAt ?? d.progress?.category?.retryAt) || null;
-  const state = d.status === "unavailable" ? "fel" : complete ? "fullständig" : "delvis";
+  // Sökbaserad katalog: IG kan inte bekräfta fullständighet, men när alla sökord gått igenom utan fel sägs det ärligt
+  const searchCompletedAt = Number(d.searchCompletedAt) || null;
+  const searchComplete = !complete && d.status !== "unavailable" && searchCompletedAt !== null;
+  const state = d.status === "unavailable" ? "fel" : complete ? "fullständig" : searchComplete ? "alla sökningar klara" : "delvis";
   const text = state === "fel" ? `Katalogen kunde inte hämtas: ${d.error ?? "okänt fel"}. Nytt försök inom ~60 s.`
     : complete ? `${count} instrument · fullständig`
+    : searchComplete ? `${count} instrument · alla IG-sökningar klara (IG kan inte bekräfta att listan är fullständig) · uppdateras i bakgrunden`
     : `${count} instrument hittills · delvis${d.remainingSearches ? ` · ${d.remainingSearches} sökningar kvar` : ""}${d.error ? ` · ${d.error}` : ""} · fortsätter automatiskt inom IG:s läskvot`;
-  return { count, complete, state, error: d.error ?? null, note: d.note ?? null, updatedAt: d.updatedAt ?? null, retryAt, remainingSearches: d.remainingSearches ?? null, text };
+  return { count, complete, searchComplete, searchCompletedAt, state, error: d.error ?? null, note: d.note ?? null, updatedAt: d.updatedAt ?? null, retryAt, remainingSearches: d.remainingSearches ?? null, text };
 }
 const chartBar = (c: Candle) => ({ time: Math.floor(c.openTime / 1000), open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume, closed: c.closed });
 
@@ -382,6 +390,20 @@ export async function handleIgRoutes(
         for (const m of r.markets) igMarketData.rememberName(env, m.epic, m.name, m.category);
         send(res, 200, { env, markets: r.markets });
       } catch (e) { send(res, 200, { env, markets: [], error: e instanceof Error ? e.message : String(e) }); }
+      return true;
+    }
+    // Alla par: minidiagram (minne → cache ≥30 min → högst några IG-hämtningar per minut). Se igSparklines.ts.
+    if (p === "/api/market/sparkline" && method === "GET") {
+      const epic = String(url.searchParams.get("epic") ?? "");
+      if (!EPIC_RE.test(epic)) { send(res, 400, { error: "Välj ett IG-instrument (EPIC)", closes: [] }); return true; }
+      const s = await igSparklines.get(env, epic, { cacheOnly: url.searchParams.get("cacheOnly") === "1" });
+      send(res, 200, { ...s, label: envLabel(env), envChanged: env !== igMarketData.getActiveEnv() });
+      return true;
+    }
+    // Agenternas senaste besked per instrument och miljö (även HOLD/avstå). Se igAgentNotes.ts.
+    if (p === "/api/ig/agent-notes" && method === "GET") {
+      const list = (url.searchParams.get("epics") ?? "").split(",").map((x) => x.trim()).filter((x) => EPIC_RE.test(x)).slice(0, 500);
+      send(res, 200, { env, label: envLabel(env), notes: agentNotes.get(env, list.length ? list : undefined) });
       return true;
     }
     if (p === "/api/market/klines" && method === "GET") {

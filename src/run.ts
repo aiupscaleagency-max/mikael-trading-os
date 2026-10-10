@@ -462,7 +462,7 @@ async function main(): Promise<void> {
       const a = getAnalysis();
       if (a?.status === "running") analysisEnd({ status: "stopped", reason: out.jevStopped?.length === epics.length ? "JEV stoppade alla instrument i omgången" : "Omgången kördes inte (kill switch eller ingen mäklare)" });
       const done = getAnalysis();
-      return { picks: done?.picks ?? [], stopped: out.jevStopped, status: out.jevStopped?.length === epics.length ? "done" : done?.status, reason: done?.reason };
+      return { picks: done?.picks ?? [], stopped: out.jevStopped, status: out.jevStopped?.length === epics.length ? "done" : done?.status, reason: done?.reason, notes: done?.notes };
     },
     onChange: (env) => broadcastEvent("ig-session", { env }),
   });

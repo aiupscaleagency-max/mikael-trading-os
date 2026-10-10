@@ -1,5 +1,5 @@
 import type { Config } from "../config.js";
-import { track, agentSkip, turnPhase, turnEnd, analysisStart, analysisEnd, getAnalysis, type AnalysisOrder } from "../server/agentActivity.js";
+import { track, agentSkip, turnPhase, turnEnd, analysisStart, analysisEnd, getAnalysis, type AnalysisOrder, type AnalysisResult } from "../server/agentActivity.js";
 import type { AgentState } from "../memory/store.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import type { RiskManager } from "../risk/riskManager.js";
@@ -299,14 +299,28 @@ export async function runOrchestratedTurn(params: {
         const usd = Number(i.quote_qty);
         return { symbol: String(i.symbol ?? "?"), side: String(i.side ?? "?"), usd: Number.isFinite(usd) ? usd : null, status };
       });
+    const picks = headTrader.decision.actions.map((a) => ({
+      symbol: a.symbol, action: a.action, sizeUsd: a.sizeUsd, confidence: a.confidence, reasoning: a.reasoning.slice(0, 300),
+    }));
+    // Besked per instrument (även när Hanna avstod): Hannas beslut + teknisk analytiker, per miljö och EPIC
+    let notes: AnalysisResult["notes"];
+    try {
+      const { igMarketData } = await import("../server/igMarketData.js");
+      const { buildAgentNotes, agentNotes } = await import("../server/igAgentNotes.js");
+      const env = igMarketData.getActiveEnv();
+      notes = buildAgentNotes({
+        env, symbols: allSymbols, picks, technical: technical.analyses ?? [], summary: headTrader.decision.briefingSummary,
+        trigger: getAnalysis()?.trigger ?? null, nameOf: (e) => igMarketData.nameOf(e, env),
+      });
+      agentNotes.record(notes);
+    } catch { /* anteckningarna är bara en spegel */ }
     analysisEnd({
       status: "done",
       regime: headTrader.decision.regime,
       summary: headTrader.decision.briefingSummary.slice(0, 1500),
-      picks: headTrader.decision.actions.map((a) => ({
-        symbol: a.symbol, action: a.action, sizeUsd: a.sizeUsd, confidence: a.confidence, reasoning: a.reasoning.slice(0, 300),
-      })),
+      picks,
       orders,
+      ...(notes ? { notes } : {}),
     });
   } catch { /* bara en spegel */ }
   return {

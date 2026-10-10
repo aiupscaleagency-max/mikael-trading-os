@@ -1872,7 +1872,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     <div style="margin-top:10px;border-top:1px solid #2a3140;padding-top:8px">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px">
         <strong>Agentsession</strong>
-        <button type="button" data-igs-start-saved style="padding:4px 10px;border:1px solid #fbbf24;background:transparent;color:#fbbf24;border-radius:6px;font-weight:700;cursor:pointer" title="Kör det sparade urvalet (Valutapar) 5 instrument per minut. Agenterna analyserar, inte IG.">▶ Starta agentsession</button>
+        <button type="button" data-igs-start-saved style="padding:4px 10px;border:1px solid #fbbf24;background:transparent;color:#fbbf24;border-radius:6px;font-weight:700;cursor:pointer" title="Kör det sparade urvalet (Alla par / Valutapar) 5 instrument per minut. Agenterna analyserar, inte IG.">▶ Starta agentsession</button>
         <span style="color:#8b95a7">Urvalet väljs på Valutapar. Sessionen får avstå från trades.</span>
       </div>
       <div data-igs-session style="margin-top:6px;font-size:12px;color:#c9d1d9"></div>
@@ -2912,30 +2912,43 @@ body.app-state-onboard .fc-panel{display:none !important}
 </main>
 </section>
 
-<!-- ═══ ALLA PAR — en kolumn per IG-instrument i bevakningslistan ═══
-     Kvoter live från IG (Lightstreamer via servern, /api/market/stream), minidiagram från
-     /api/market/klines (stängda IG-ljus), signal från /api/signals, agenternas senaste förslag från
-     /api/live/analysis. CALL = köp och PUT = sälj läggs i Väntande ordrar (inget skickas
-     utan Godkänn). "Analysera" startar en analys av just de par du valt. -->
+<!-- ═══ ALLA PAR — hela IG-katalogen för kontot (Krypto som standard, Forex, Bevakade, Alla) ═══
+     Namn/EPIC/kvot från katalogen (/api/market/directory via MK.load), live-kvoter för korten på skärmen
+     (/api/market/stream). Minidiagram laddas bara för kort som syns (IntersectionObserver, högst 6 åt gången)
+     från /api/market/sparkline (serverns minne → cache ≥ 30 min → högst några IG-hämtningar per minut),
+     signal från /api/signals, agenternas besked per instrument från /api/ig/agent-notes (även avvakta).
+     Urvalet är detsamma som på Valutapar (/api/ig/selection, per miljö). KÖP/SÄLJ läggs i Väntande ordrar
+     (inget skickas utan Godkänn). -->
 <section class="page" id="page-pairs">
-  <div class="page-header"><span class="ph-ico">🧮</span>Alla par<span class="ph-sub">— en kolumn per par · analysera flera samtidigt · CALL / PUT under varje</span></div>
+  <div class="page-header"><span class="ph-ico">🧮</span>Alla par<span class="ph-sub">— alla IG-instrument för kontot · analysera flera samtidigt · KÖP / SÄLJ under varje</span></div>
   <div class="pp-bar">
     <div class="pp-help">
-      <b>Så fungerar sidan:</b> varje kolumn är ett IG-instrument i bevakningslistan. Priset kommer live från IG och diagrammet är stängda IG-ljus.
-      <b>Signal</b> är indikatorernas läge just nu. <b>Agenterna</b> visar vad AI-teamet föreslog senast för just det paret.
-      Bocka i flera par och tryck <b>Analysera valda</b>, så analyseras de samtidigt i en körning. Följ arbetet i fliken Träd.
+      <b>Så fungerar sidan:</b> här finns alla Forex- och kryptoinstrument som IG erbjuder ditt konto (Demo eller Live). Priset kommer från IG och diagrammet är stängda IG-ljus.
+      <b>Signal</b> är indikatorernas läge just nu (för bevakade instrument). <b>Agenterna</b> visar vad AI-teamet sa senast om just det paret, även när de valde att avvakta.
+      Bocka i par och tryck <b>Analysera valda</b> (högst 10) eller <b>Starta agentsession med valda</b>. Urvalet sparas och syns också under Valutapar och Agentsessioner.
       <b>KÖP</b> = lång och <b>SÄLJ</b> = kort (eller stänger en öppen lång). Ordern hamnar i Väntande ordrar och skickas först när du trycker Godkänn.
     </div>
     <div class="pp-tools">
       <span id="pp-mode" class="pp-chip">–</span>
       <label>Insats (% av saldot) <input type="number" id="pp-amt" value="1" min="0.1" max="3" step="0.1"></label>
       <label>Tidshorisont <select id="pp-tf"><option value="1">1 min</option><option value="2">2 min</option><option value="3">3 min</option><option value="4">4 min</option><option value="5">5 min</option><option value="15">15 min</option><option value="30">30 min</option></select></label>
-      <button type="button" id="pp-all" class="pp-btn">Markera alla</button>
+      <button type="button" id="pp-all" class="pp-btn" title="Markerar korten som visas just nu">Markera alla (synliga)</button>
+      <button type="button" id="pp-none" class="pp-btn">Avmarkera</button>
       <button type="button" id="pp-run" class="pp-btn pp-go">▶ Analysera valda (0)</button>
+      <button type="button" id="pp-session" class="pp-btn pp-ses" title="Agentsession: 5 instrument per minut, upp till 500. Följs under Agentsessioner.">▶ Starta agentsession med valda (0)</button>
+    </div>
+    <div class="pp-tools pp-filter" id="pp-filter">
+      <button type="button" class="pp-btn pp-f on" data-pp-f="crypto">🪙 Krypto <span data-pp-n="crypto"></span></button>
+      <button type="button" class="pp-btn pp-f" data-pp-f="forex">🌍 Forex <span data-pp-n="forex"></span></button>
+      <button type="button" class="pp-btn pp-f" data-pp-f="watch">⭐ Bevakade <span data-pp-n="watch"></span></button>
+      <button type="button" class="pp-btn pp-f" data-pp-f="all">Alla <span data-pp-n="all"></span></button>
+      <input type="search" id="pp-q" placeholder="Sök namn eller EPIC" style="width:200px">
+      <span id="pp-cat" style="font-size:11px"></span>
     </div>
     <div id="pp-status" class="pp-status"></div>
   </div>
   <div id="pp-grid" class="pp-grid"><div style="padding:20px;color:var(--dim)">Laddar par…</div></div>
+  <div style="margin:0 24px 24px"><button type="button" id="pp-more" class="pp-btn" style="display:none">Visa fler</button></div>
 </section>
 
 <style>
@@ -3061,7 +3074,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     <div class="xp-card">
       <h3>Session <span data-ig-env class="tag" style="font-size:10px"></span>
         <button type="button" data-igs-start-saved class="xp-btn" style="margin-left:auto;border-color:#fbbf24;color:#fbbf24">▶ Starta agentsession</button></h3>
-      <div class="xp-note">Instrumenten väljs på <a href="#markets" style="color:var(--cyan)">Valutapar</a> (sparas på servern). Agenterna analyserar: JEV-förkontroll → teknisk analytiker → Hanna. Sessionen får avstå. Högst 5 orderförsök som öppnar nya positioner (accepterade, avvisade, okända och stoppade räknas; stängningar räknas inte); allt kräver Godkänn.</div>
+      <div class="xp-note">Instrumenten väljs på <a href="#pairs" style="color:var(--cyan)">Alla par</a> eller <a href="#markets" style="color:var(--cyan)">Valutapar</a> (samma urval, sparas på servern per konto). Under varje instrument i kön står agenternas besked, även när de avstår. Agenterna analyserar: JEV-förkontroll → teknisk analytiker → Hanna. Sessionen får avstå. Högst 5 orderförsök som öppnar nya positioner (accepterade, avvisade, okända och stoppade räknas; stängningar räknas inte); allt kräver Godkänn.</div>
       <div data-igs-session style="margin-top:8px;font-size:12px"></div>
     </div>
     <div class="xp-card"><h3>Schema</h3><div data-igs-schedule></div></div>
@@ -4740,7 +4753,7 @@ function fillBetSymbols(){
     if(!SYMBOLS[k].length) continue;
     const og = document.createElement("optgroup");
     og.label = ({watch:"Bevakade (IG)",forex:"Forex (IG)",crypto:"Krypto (IG)"})[k];
-    SYMBOLS[k].slice(0, 300).forEach(s=>{ const o=document.createElement("option"); o.value=s; o.textContent=IG.label(s); og.appendChild(o); });
+    SYMBOLS[k].slice(0, 2000).forEach(s=>{ const o=document.createElement("option"); o.value=s; o.textContent=IG.label(s); og.appendChild(o); }); /* hela IG-katalogen, inte bara de första 300 */
     sel.appendChild(og);
   }
   if(keep && [...sel.options].some(o=>o.value===keep)) sel.value = keep;
@@ -9506,6 +9519,10 @@ document.addEventListener("DOMContentLoaded", boot);
 .pp-put{border:1px solid #f85149;background:#2d1114;color:#f85149}
 .pp-an{grid-column:1 / -1;border:1px solid var(--cyan);background:transparent;color:var(--cyan)}
 .pp-ctrl button:disabled{opacity:.45;cursor:not-allowed}
+#page-pairs .pp-ses{border-color:#fbbf24;color:#fbbf24}
+#page-pairs .pp-f.on{border-color:var(--cyan);color:var(--cyan)}
+#page-pairs .pp-filter input{margin-left:0}
+.pp-top .pp-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>
 <script>
 // ── Trade-sidan: "Vad analyseras" överst ──
@@ -9543,72 +9560,161 @@ document.addEventListener("DOMContentLoaded", boot);
   load(); setInterval(load, 15000);
 })();
 
-// ── Sidan Alla par (IG) ──
+// ── Sidan Alla par (IG): hela katalogen för aktiv miljö ──
+// Katalogen (namn, EPIC, kvot) delas med Valutapar (MK). Urvalet är samma Set som Valutapar (MK.sel) och
+// sparas på servern per miljö (IGS.saveSelection via MK.onSelect), så Agentsessioner visar samma antal.
+// Minidiagram: bara kort som syns på skärmen, högst 6 hämtningar åt gången, via /api/market/sparkline
+// (servern svarar från minne/cache och gör högst några IG-historikhämtningar per minut).
 (function(){
   const $ = (id)=>document.getElementById(id);
   const grid = $("pp-grid"); if(!grid) return;
   const esc = IG.esc;
-  const P = {};            // EPIC → { price, chg, bars, el }
-  const sel = new Set();
-  let order = [], analysisRunning = false, busy = new Set();
-  const ACTION = { buy:"KÖP", sell:"SÄLJ", hold:"AVVAKTA" };
+  const P = {};            // EPIC → { price, chg, bars, iv, missing, at, loading, el }
+  const localSel = new Set();
+  const S = ()=> (window.MK ? MK.sel : localSel);
+  let filter = "crypto", query = "", shown = 24, items = [], renderedKey = "";
+  let analysisRunning = false, busy = new Set(), lastAnalysis = null, notes = {}, signals = [];
+  const onScreen = new Set();
+  const ACTION = { buy:"KÖP", sell:"SÄLJ", hold:"AVVAKTA", "avstå":"AVVAKTA" };
+  const CONC = 6, CHART_TTL = 30 * 60000;
+  let inFlight = 0; const queue = [];
+  const active = ()=>{ const el = $("page-pairs"); return !!el && el.classList.contains("active"); };
 
-  function colHtml(e){
-    return `<div class="pp-col" data-b="${esc(e)}">
-      <div class="pp-top"><input type="checkbox" class="pp-chk" title="Ta med i Analysera valda"><span class="pp-name" title="${esc(e)}">${esc(IG.label(e))}</span><span class="pp-px">–</span></div>
+  // ── Data: katalog + bevakade ──
+  function catalogue(cat){ return (window.MK && MK.data[cat] && MK.data[cat].markets) || []; }
+  function byEpic(){ const m = {}; ["forex","crypto"].forEach(c=>catalogue(c).forEach(x=>{ m[x.epic] = x; })); return m; }
+  function listFor(f){
+    const all = byEpic();
+    const watch = (IG.st.watchlist || []).filter(IG.isEpic).map(e=>all[e] || { epic: e, name: IG.label(e), category: IG.category(e) });
+    if(f === "crypto") return catalogue("crypto");
+    if(f === "forex") return catalogue("forex");
+    if(f === "watch") return watch;
+    const seen = new Set(), out = [];
+    [...watch, ...catalogue("forex"), ...catalogue("crypto")].forEach(m=>{ if(!seen.has(m.epic)){ seen.add(m.epic); out.push(m); } });
+    return out;
+  }
+  function filtered(){
+    const q = query.trim().toLowerCase();
+    const list = listFor(filter);
+    return q ? list.filter(m=>String(m.name || "").toLowerCase().includes(q) || String(m.epic).toLowerCase().includes(q)) : list;
+  }
+
+  function colHtml(m){
+    const e = m.epic;
+    return `<div class="pp-col${S().has(e) ? " pp-sel" : ""}" data-b="${esc(e)}">
+      <div class="pp-top"><input type="checkbox" class="pp-chk" ${S().has(e) ? "checked" : ""} title="Ta med i Analysera valda / agentsession"><span class="pp-name" title="${esc(e)}">${esc(m.name || IG.label(e))}</span><span class="pp-px">–</span></div>
       <div class="pp-chg">–</div>
-      <canvas class="pp-canvas"></canvas><div class="pp-sub">5-minutersljus (stängda) · ${esc(IG.envLabel())} · <span class="pp-st"></span></div>
+      <canvas class="pp-canvas"></canvas><div class="pp-sub"><span class="pp-cv">senaste 6 timmarna · 5-minutersljus</span> · ${esc(IG.envLabel())} · <span class="pp-st"></span></div>
       <div class="pp-row pp-sig"><span class="pp-k">Signal (indikatorer)</span>–</div>
       <div class="pp-row pp-pick"><span class="pp-k">Agenterna (senaste analys)</span>Inte analyserad än</div>
       <div class="pp-ctrl">
         <button type="button" class="pp-call">▲ KÖP · lång</button>
         <button type="button" class="pp-put">▼ SÄLJ · kort</button>
-        <button type="button" class="pp-an">Analysera</button>
+        <button type="button" class="pp-an">Analysera ${esc(m.name || IG.label(e))}</button>
       </div>
     </div>`;
   }
 
-  async function init(){
-    await IG.refresh();
-    const list = (IG.st.watchlist || []).filter(IG.isEpic);
-    order = list;
-    if(!order.length){ grid.innerHTML = '<div style="padding:20px;color:var(--dim)">Bevakningslistan är tom eller IG är inte anslutet. Lägg till instrument under Valutapar.</div>'; return; }
-    grid.innerHTML = order.map(colHtml).join("");
-    order.forEach(e=>{ P[e] = { el: grid.querySelector(`.pp-col[data-b="${CSS.escape(e)}"]`), bars: [] }; });
-    order.forEach(loadBars);
-    IG.want("allpairs", order);
-    IG.prices(order).then(()=>order.forEach(e=>{ const q = IG.quote(e); if(q){ P[e].price = q.mid; P[e].chg = q.changePct; } draw(e); })).catch(()=>{});
-    loadSignals(); loadAnalysis(); loadMode();
+  function render(force){
+    items = filtered();
+    const vis = items.slice(0, shown);
+    const key = IG.st.env + "|" + vis.map(m=>m.epic).join(",");
+    counts();
+    const more = $("pp-more");
+    more.style.display = items.length > shown ? "" : "none";
+    more.textContent = `Visa fler (${items.length - shown} till)`;
+    if(!force && key === renderedKey){ syncChecks(); return; }
+    renderedKey = key;
+    if(io) io.disconnect();
+    onScreen.clear();
+    if(!vis.length){
+      const loading = window.MK && !MK.data.crypto && !MK.data.forex;
+      grid.innerHTML = `<div style="padding:20px;color:var(--dim)">${loading ? "Hämtar IG-katalogen…" : filter === "watch" ? "Bevakningslistan är tom. Lägg till instrument under Valutapar eller välj Krypto/Forex/Alla." : query ? "Inga instrument matchar sökningen." : "Inga instrument i katalogen än (IG inte anslutet eller katalogen hämtas)."}</div>`;
+      wantStream(); return;
+    }
+    grid.innerHTML = vis.map(colHtml).join("");
+    vis.forEach(m=>{
+      const e = m.epic;
+      const x = P[e] || (P[e] = { bars: [] });
+      x.el = grid.querySelector(`.pp-col[data-b="${CSS.escape(e)}"]`);
+      // Startpris från katalogens ögonblicksbild tills strömmen ger ett livepris
+      const q = IG.quote(e);
+      if(q && q.mid != null){ x.price = q.mid; if(q.changePct != null) x.chg = q.changePct; }
+      else if(m.bid != null && m.offer != null){ x.price = (m.bid + m.offer) / 2; if(m.changePercent != null) x.chg = m.changePercent; }
+      draw(e);
+      if(io) io.observe(x.el);
+    });
+    paintSignals(); paintAgents(); syncButtons();
   }
-  IG.on("quote", q=>{ const x = P[q.epic]; if(!x) return; if(q.mid != null){ x.price = q.mid; } if(q.changePct != null) x.chg = q.changePct; x.dirty = true; });
-  IG.on("env", ()=>{ Object.keys(P).forEach(k=>delete P[k]); sel.clear(); init(); });
+  function counts(){
+    ["crypto","forex","watch","all"].forEach(f=>{ const el = document.querySelector(`#page-pairs [data-pp-n="${f}"]`); if(el) el.textContent = `(${listFor(f).length})`; });
+    const c = window.MK && MK.data.crypto && MK.data.crypto.catalogue, fx = window.MK && MK.data.forex && MK.data.forex.catalogue;
+    const ce = $("pp-cat");
+    if(ce) ce.innerHTML = [["Krypto", c], ["Forex", fx]].map(([n, p])=>p ? `<span style="color:${p.complete || p.searchComplete ? "var(--dim)" : "#f0b90b"}" title="${esc(p.text || "")}">${n}: ${esc(p.state || "")}</span>` : "").filter(Boolean).join(" · ");
+  }
+  function syncChecks(){
+    grid.querySelectorAll(".pp-col").forEach(col=>{ const on = S().has(col.dataset.b); const c = col.querySelector(".pp-chk"); if(c) c.checked = on; col.classList.toggle("pp-sel", on); });
+    syncButtons();
+  }
 
+  // ── Minidiagram: bara synliga kort, högst CONC samtidigt, aldrig om och om igen ──
+  const io = ("IntersectionObserver" in window) ? new IntersectionObserver((ents)=>{
+    ents.forEach(en=>{
+      const e = en.target.dataset.b; if(!e) return;
+      if(en.isIntersecting){ onScreen.add(e); want(e); } else onScreen.delete(e);
+    });
+    wantStream();
+  }, { rootMargin: "150px" }) : null;
+  function want(e){
+    const x = P[e]; if(!x || x.loading) return;
+    if(x.at && Date.now() - x.at < CHART_TTL) return;
+    if(!queue.includes(e)) queue.push(e);
+    pump();
+  }
+  function pump(){
+    while(inFlight < CONC && queue.length){
+      const e = queue.shift();
+      if(!onScreen.has(e) && io) continue; // rullat förbi: hoppa över
+      inFlight++; loadBars(e).finally(()=>{ inFlight--; pump(); });
+    }
+  }
   async function loadBars(e){
+    const x = P[e]; if(!x) return;
+    x.loading = true;
+    const env = IG.st.env;
     try{
-      const d = await IG.klines(e, "5m", 72);
-      if(d.klines && d.klines.length){ P[e].bars = d.klines.map(k=>k.close); P[e].missing = false; }
-      else P[e].missing = d.historyError || "historik saknas";
-    }catch(err){ P[e].missing = err.message; }
+      const d = await (await fetch("/api/market/sparkline?epic=" + encodeURIComponent(e))).json();
+      if(d.env && d.env !== env) return; // svar för fel miljö kastas
+      if(d.closes && d.closes.length){ x.bars = d.closes; x.iv = d.interval; x.missing = d.note || null; x.at = Date.now(); }
+      else { x.missing = d.error || "diagram ej hämtat"; x.at = Date.now() - CHART_TTL + 120000; } // nytt försök tidigast om 2 min
+    }catch(err){ x.missing = "diagram ej hämtat: " + err.message; x.at = Date.now() - CHART_TTL + 120000; }
+    finally{ x.loading = false; }
     draw(e);
+  }
+  // Livekvoter bara för korten på skärmen (servern + IG-strömmen har ett tak)
+  let wantT = null;
+  function wantStream(){
+    clearTimeout(wantT);
+    wantT = setTimeout(()=>{ IG.want("allpairs", active() ? [...onScreen].slice(0, 20) : []); }, 300);
   }
 
   function draw(e){
-    const x = P[e]; if(!x || !x.el) return;
+    const x = P[e]; if(!x || !x.el || !x.el.isConnected) return;
     const el = x.el, q = IG.quote(e);
-    el.querySelector(".pp-st").innerHTML = IG.badge(q);
-    if(x.price != null){
-      const pxEl = el.querySelector(".pp-px");
-      pxEl.textContent = IG.px(x.price);
-      if(typeof tickFlash === "function") tickFlash(pxEl, x.price);
-    }
+    el.querySelector(".pp-st").innerHTML = q ? IG.badge(q) : '<span style="color:#8b95a7">katalogkvot</span>';
+    const pxEl = el.querySelector(".pp-px");
+    if(x.price != null){ pxEl.textContent = IG.px(x.price); if(typeof tickFlash === "function") tickFlash(pxEl, x.price); }
+    else pxEl.innerHTML = '<span style="color:var(--dim);font-size:11px">kvot saknas</span>';
     const c = el.querySelector(".pp-chg");
     if(x.chg != null){ c.textContent = `idag ${x.chg >= 0 ? "+" : ""}${Number(x.chg).toFixed(2)} %`; c.style.color = x.chg >= 0 ? "#3fb950" : "#f85149"; }
     else c.textContent = "idag –";
-    const cv = el.querySelector(".pp-canvas"); const bars = x.bars;
-    if(!bars.length){ if(x.missing){ const ctx = cv.getContext("2d"); ctx.clearRect(0,0,cv.width,cv.height); el.querySelector(".pp-sub").title = String(x.missing); } return; }
+    const cv = el.querySelector(".pp-canvas"), lbl = el.querySelector(".pp-cv"); const bars = x.bars || [];
+    if(lbl) lbl.textContent = bars.length ? (x.iv === "1m" ? "senaste 6 timmarna · 1-minutersljus" : "senaste 6 timmarna · 5-minutersljus") + (x.missing ? " · " + x.missing : "")
+      : x.missing ? x.missing : x.loading ? "hämtar diagram…" : "diagram hämtas när kortet syns";
     const w = cv.clientWidth || 220, h = 70, dpr = window.devicePixelRatio || 1;
     if(cv.width !== w*dpr){ cv.width = w*dpr; cv.height = h*dpr; }
     const ctx = cv.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,w,h);
+    if(bars.length < 2) return;
     const lo = Math.min(...bars), hi = Math.max(...bars), span = (hi - lo) || 1;
     const up = bars[bars.length-1] >= bars[0];
     ctx.beginPath();
@@ -9617,52 +9723,75 @@ document.addEventListener("DOMContentLoaded", boot);
     ctx.lineTo(w-1,h); ctx.lineTo(1,h); ctx.closePath();
     ctx.fillStyle = up ? "rgba(63,185,80,.10)" : "rgba(248,81,73,.10)"; ctx.fill();
   }
+  IG.on("quote", q=>{ const x = P[q.epic]; if(!x) return; if(q.mid != null){ x.price = q.mid; } if(q.changePct != null) x.chg = q.changePct; x.dirty = true; });
+  IG.on("env", ()=>{ Object.keys(P).forEach(k=>delete P[k]); localSel.clear(); renderedKey = ""; notes = {}; signals = []; render(true); if(active() && window.MK) MK.load().then(()=>render()); });
 
+  // ── Signal ──
   async function loadSignals(){
-    try{
-      const r = await fetch("/api/signals"); if(!r.ok) return;
-      const list = (await r.json()).signals || [];
-      const D = { LONG:["▲ LÅNG","#3fb950"], SHORT:["▼ KORT","#f85149"], NEUTRAL:["— AVVAKTA","#8b95a7"] };
-      order.forEach(e=>{
-        const sg = list.find(s=>s.symbol === e);
-        const el = P[e] && P[e].el && P[e].el.querySelector(".pp-sig"); if(!el) return;
-        if(!sg){ el.innerHTML = '<span class="pp-k">Signal (indikatorer)</span>Ingen signal än (väntar på stängda ljus)'; return; }
-        const dir = String(sg.direction || "NEUTRAL").toUpperCase();
-        const [t,c] = D[dir] || D.NEUTRAL;
-        const extra = [sg.score != null ? `score ${esc(sg.score)}` : "", sg.indicators && sg.indicators.rsi14 != null ? `RSI ${Number(sg.indicators.rsi14).toFixed(0)}` : "", sg.interval ? esc(sg.interval) : ""].filter(Boolean).join(" · ");
-        el.innerHTML = `<span class="pp-k">Signal (indikatorer)</span><b style="color:${c}">${t}</b> ${extra ? "· " + extra : ""}`;
-      });
-    }catch(_){}
+    try{ const r = await fetch("/api/signals"); if(!r.ok) return; signals = (await r.json()).signals || []; paintSignals(); }catch(_){}
+  }
+  function paintSignals(){
+    const D = { LONG:["▲ LÅNG","#3fb950"], SHORT:["▼ KORT","#f85149"], NEUTRAL:["— AVVAKTA","#8b95a7"] };
+    grid.querySelectorAll(".pp-col").forEach(col=>{
+      const e = col.dataset.b, el = col.querySelector(".pp-sig"); if(!el) return;
+      const sg = signals.find(s=>s.symbol === e);
+      if(!sg){ el.innerHTML = '<span class="pp-k">Signal (indikatorer)</span><span style="color:var(--dim)">signal saknas (bevaka för signal)</span>'; return; }
+      const dir = String(sg.direction || "NEUTRAL").toUpperCase();
+      const [t,c] = D[dir] || D.NEUTRAL;
+      const extra = [sg.score != null ? `score ${esc(sg.score)}` : "", sg.indicators && sg.indicators.rsi14 != null ? `RSI ${Number(sg.indicators.rsi14).toFixed(0)}` : "", sg.interval ? esc(sg.interval) : ""].filter(Boolean).join(" · ");
+      el.innerHTML = `<span class="pp-k">Signal (indikatorer)</span><b style="color:${c}">${t}</b> ${extra ? "· " + extra : ""}`;
+    });
   }
 
+  // ── Agenterna: senaste besked per instrument (även avvakta), plus pågående analys ──
   async function loadAnalysis(){
     try{
       const r = await fetch("/api/live/analysis"); if(!r.ok) return;
       const a = (await r.json()).analysis;
+      const wasRunning = analysisRunning;
+      lastAnalysis = a;
       analysisRunning = !!a && a.status === "running";
       busy = new Set();
       if(analysisRunning){
         const ins = String(a.instruction || "");
-        order.forEach(e=>{ if(ins.includes(e)) busy.add(e); });
-        if(!busy.size) order.forEach(e=>busy.add(e));
-        $("pp-status").innerHTML = `<span style="color:#fbbf24">● Agenterna analyserar ${busy.size === order.length ? "alla instrument" : [...busy].map(IG.label).map(esc).join(", ")} just nu. Följ dem i fliken Träd.</span>`;
+        items.forEach(m=>{ if(ins.includes(m.epic)) busy.add(m.epic); });
+        $("pp-status").innerHTML = `<span style="color:#fbbf24">● Agenterna analyserar ${busy.size ? [...busy].slice(0, 8).map(IG.label).map(esc).join(", ") + (busy.size > 8 ? ` … (${busy.size})` : "") : "just nu"}. Följ dem i fliken Träd.</span>`;
       } else if(a && a.status !== "done" && a.reason){
         $("pp-status").innerHTML = `<span style="color:#f87171">✕ Senaste analysen stoppades: ${esc(a.reason)}</span>`;
       } else if(a){
         $("pp-status").textContent = `Senaste analys klar ${a.endedAt ? new Date(a.endedAt).toLocaleTimeString("sv-SE").slice(0,5) : ""}.`;
       }
-      const picks = (a && a.picks) || [];
-      order.forEach(e=>{
-        const x = P[e]; if(!x || !x.el) return; x.el.classList.toggle("pp-busy", busy.has(e));
-        const p = picks.find(q=>q.symbol === e);
-        const el = x.el.querySelector(".pp-pick");
-        if(busy.has(e)){ el.innerHTML = '<span class="pp-k">Agenterna (senaste analys)</span><span style="color:#fbbf24">Analyserar nu…</span>'; return; }
-        if(!p){ el.innerHTML = `<span class="pp-k">Agenterna (senaste analys)</span>${a && a.status === "done" ? "Inget förslag för det här instrumentet" : "Inte analyserad än"}`; return; }
-        const col = p.action === "buy" ? "#3fb950" : p.action === "sell" ? "#f85149" : "#8b95a7";
-        el.innerHTML = `<span class="pp-k">Agenterna (senaste analys)</span><b style="color:${col}">${esc(ACTION[p.action] || p.action)}</b>${p.confidence ? " · säkerhet " + esc({low:"låg",medium:"medel",high:"hög"}[p.confidence] || p.confidence) : ""}<br><span style="color:var(--dim)">${esc(String(p.reasoning || "").slice(0,160))}</span>`;
-      });
-      syncButtons();
+      if(wasRunning && !analysisRunning) loadNotes();
+      paintAgents(); syncButtons();
     }catch(_){}
+  }
+  async function loadNotes(){
+    try{
+      const d = await (await fetch("/api/ig/agent-notes")).json();
+      if(d.env && d.env !== IG.st.env) return;
+      notes = d.notes || {}; paintAgents();
+    }catch(_){}
+  }
+  function paintAgents(){
+    const picks = (lastAnalysis && lastAnalysis.picks) || [];
+    grid.querySelectorAll(".pp-col").forEach(col=>{
+      const e = col.dataset.b, el = col.querySelector(".pp-pick"); if(!el) return;
+      col.classList.toggle("pp-busy", busy.has(e));
+      if(busy.has(e)){ el.innerHTML = '<span class="pp-k">Agenterna (senaste analys)</span><span style="color:#fbbf24">Analyserar nu…</span>'; return; }
+      const n = notes[e];
+      if(n){
+        const col2 = n.action === "buy" ? "#3fb950" : n.action === "sell" ? "#f85149" : "#8b95a7";
+        const t = n.at ? new Date(n.at).toLocaleString("sv-SE", { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" }) : "";
+        el.innerHTML = `<span class="pp-k">Agenterna (senaste analys)</span><b style="color:${col2}">${esc(ACTION[n.action] || n.action)}</b>${n.confidence ? " · säkerhet " + esc({low:"låg",medium:"medel",high:"hög"}[n.confidence] || n.confidence) : ""} <span style="color:var(--dim);font-size:10px">${esc(t)}</span>`
+          + `<br><span style="color:#c9d1d9"><b style="color:var(--dim);font-weight:700">Hanna:</b> ${esc(String(n.verdict || "").slice(0,220))}</span>`
+          + (n.technical ? `<br><span style="color:var(--dim)"><b style="font-weight:700">Teknisk analytiker:</b> ${esc(String(n.technical).slice(0,160))}</span>` : "");
+        return;
+      }
+      const p = picks.find(q=>q.symbol === e);
+      if(!p){ el.innerHTML = '<span class="pp-k">Agenterna (senaste analys)</span>Inte analyserad än'; return; }
+      const c = p.action === "buy" ? "#3fb950" : p.action === "sell" ? "#f85149" : "#8b95a7";
+      el.innerHTML = `<span class="pp-k">Agenterna (senaste analys)</span><b style="color:${c}">${esc(ACTION[p.action] || p.action)}</b>${p.confidence ? " · säkerhet " + esc({low:"låg",medium:"medel",high:"hög"}[p.confidence] || p.confidence) : ""}<br><span style="color:var(--dim)">${esc(String(p.reasoning || "").slice(0,160))}</span>`;
+    });
   }
 
   function loadMode(){
@@ -9673,20 +9802,33 @@ document.addEventListener("DOMContentLoaded", boot);
   }
 
   function syncButtons(){
-    const runBtn = $("pp-run");
-    runBtn.textContent = `▶ Analysera valda (${sel.size})`;
-    runBtn.disabled = analysisRunning || sel.size === 0 || sel.size > 10;
-    if(sel.size > 10) runBtn.title = "Högst 10 instrument i en direktanalys";
+    const n = S().size, runBtn = $("pp-run"), ses = $("pp-session");
+    const st = window.IGS && IGS.state && IGS.state();
+    const sesRunning = !!(st && st.session && st.session.status === "running");
+    runBtn.textContent = `▶ Analysera valda (${n})`;
+    runBtn.disabled = analysisRunning || n === 0 || n > 10;
+    runBtn.title = n > 10 ? `Direktanalys tar högst 10 instrument — du har ${n}. Starta en agentsession i stället.` : "Agenterna analyserar (JEV → teknisk analytiker → Hanna). Högst 10 instrument.";
+    ses.textContent = `▶ Starta agentsession med valda (${n})`;
+    ses.disabled = n === 0 || n > 500 || sesRunning;
+    ses.title = sesRunning ? "En agentsession pågår redan (se Agentsessioner)" : "Agentsession: 5 instrument per minut, upp till 500. Följs under Agentsessioner.";
     grid.querySelectorAll(".pp-an").forEach(b=>b.disabled = analysisRunning);
+  }
+  // Samma urval och samma server-endpoints som Valutapar: MK.onSelect → IGS.saveSelection (/api/ig/selection)
+  function selectionChanged(){
+    if(window.MK && typeof MK.onSelect === "function"){ MK.onSelect(); MK.render(); }
+    else if(window.IGS) IGS.saveSelection([...S()]);
+    syncChecks();
   }
 
   async function runAnalysis(epics){
     if(analysisRunning){ alert("En analys pågår redan. Vänta tills den är klar."); return; }
-    const list = epics.slice(0, 10).join(", ");
-    const instruction = `Analysera bara dessa IG-instrument (EPIC): ${list}. Ge för varje köp (lång), sälj (kort) eller avvakta med kort motivering.`;
+    if(epics.length > 10){ alert("Direktanalys tar högst 10 instrument. Starta en agentsession för fler."); return; }
     try{
-      const r = await fetch("/api/run-agent", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ instruction, symbols: epics.slice(0, 10) }) });
-      if(!r.ok){ alert("Analysen kunde inte startas (" + r.status + ")."); return; }
+      if(window.MK && typeof MK.analyze === "function") await MK.analyze(epics); // /api/run-agent, samma som Valutapar
+      else {
+        const r = await fetch("/api/run-agent", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ symbols: epics, instruction: `Analysera bara dessa IG-instrument (EPIC): ${epics.join(", ")}. Ge för varje köp (lång), sälj (kort) eller avstå med kort motivering.` }) });
+        if(!r.ok){ alert("Analysen kunde inte startas (" + r.status + ")."); return; }
+      }
       analysisRunning = true; syncButtons();
       setTimeout(loadAnalysis, 500);
     }catch(e){ alert("Fel: " + e.message); }
@@ -9719,20 +9861,29 @@ document.addEventListener("DOMContentLoaded", boot);
   grid.addEventListener("change", (ev)=>{
     if(!ev.target.classList.contains("pp-chk")) return;
     const col = ev.target.closest(".pp-col"); const e = col.dataset.b;
-    if(ev.target.checked) sel.add(e); else sel.delete(e);
-    col.classList.toggle("pp-sel", ev.target.checked);
-    syncButtons();
+    if(ev.target.checked) S().add(e); else S().delete(e);
+    selectionChanged();
   });
   $("pp-all").addEventListener("click", ()=>{
-    const all = sel.size !== order.length;
-    grid.querySelectorAll(".pp-col").forEach(col=>{
-      col.querySelector(".pp-chk").checked = all; col.classList.toggle("pp-sel", all);
-      if(all) sel.add(col.dataset.b); else sel.delete(col.dataset.b);
-    });
-    $("pp-all").textContent = all ? "Avmarkera alla" : "Markera alla";
-    syncButtons();
+    grid.querySelectorAll(".pp-col").forEach(col=>S().add(col.dataset.b));
+    selectionChanged();
   });
-  $("pp-run").addEventListener("click", ()=>{ if(sel.size) runAnalysis([...sel]); });
+  $("pp-none").addEventListener("click", ()=>{
+    if(S().size > 0 && !confirm(`Avmarkera alla ${S().size} instrument? Urvalet gäller också Valutapar och agentsessionen.`)) return;
+    S().clear(); selectionChanged();
+  });
+  $("pp-run").addEventListener("click", ()=>{ if(S().size) runAnalysis([...S()]); });
+  $("pp-session").addEventListener("click", ()=>{ if(S().size && window.IGS) IGS.startSession([...S()]); });
+  $("pp-more").addEventListener("click", ()=>{ shown += 48; render(); });
+  $("pp-filter").addEventListener("click", (ev)=>{
+    const b = ev.target.closest("[data-pp-f]"); if(!b) return;
+    filter = b.dataset.ppF; shown = 24;
+    document.querySelectorAll("#pp-filter [data-pp-f]").forEach(x=>x.classList.toggle("on", x === b));
+    render();
+  });
+  let qT = null;
+  $("pp-q").addEventListener("input", ()=>{ clearTimeout(qT); qT = setTimeout(()=>{ query = $("pp-q").value; shown = 24; render(); }, 200); });
+
   async function syncPpTf(){
     try{ const d = await (await fetch("/api/trade-horizon")).json(); if(d && d.minutes && $("pp-tf").value != d.minutes){ $("pp-tf").value = String(d.minutes); } }catch(_){}
   }
@@ -9743,13 +9894,31 @@ document.addEventListener("DOMContentLoaded", boot);
     }catch(_){}
   });
   IG.on("account", loadMode);
+  IG.on("watchlist", ()=>{ if(active()) render(); });
   syncPpTf(); setInterval(syncPpTf, 10000);
 
-  init();
-  setInterval(()=>{ order.forEach(e=>{ if(P[e] && P[e].dirty){ P[e].dirty = false; draw(e); } }); }, 250);
-  setInterval(loadSignals, 5000);
-  setInterval(loadAnalysis, 3000);
-  setInterval(()=>order.forEach(loadBars), 300000);
+  // Sidan visas: hämta katalogen (delad med Valutapar) och rita. Lämnas sidan: släpp kortens ström.
+  async function show(){
+    await IG.refresh();
+    loadMode();
+    if(window.MK){
+      if(!MK.hooks._pp){ MK.hooks._pp = true; MK.hooks.after.push(()=>{ if(active()) render(); else syncChecks(); }); }
+      render(true);
+      await MK.load();
+    }
+    render();
+    loadSignals(); loadAnalysis(); loadNotes();
+  }
+  document.addEventListener("page-shown", (e)=>{ if(e.detail === "pairs") setTimeout(show, 0); else wantStream(); });
+  setTimeout(()=>{ if(active()) show(); }, 400);
+
+  setInterval(()=>{ Object.keys(P).forEach(e=>{ if(P[e].dirty){ P[e].dirty = false; draw(e); } }); }, 250);
+  setInterval(()=>{ if(active()) loadSignals(); }, 5000);
+  setInterval(()=>{ if(active()) loadAnalysis(); }, 3000);
+  setInterval(()=>{ if(active()) loadNotes(); }, 20000);
+  setInterval(()=>{ if(active() && window.MK) MK.load(); }, 60000);
+  // Synliga kort vars diagram blivit äldre än 30 min hämtas om (servern svarar oftast från cache)
+  setInterval(()=>{ if(active()) onScreen.forEach(want); }, 60000);
 })();
 </script>
 <script>
@@ -10073,7 +10242,7 @@ window.MK = (function(){
   }
   function progText(c){
     if(!c) return { t:"hämtar…", cls:"part" };
-    return { t: c.text + (c.updatedAt ? ` · uppdaterad ${new Date(c.updatedAt).toLocaleTimeString("sv-SE").slice(0,5)}` : ""), cls: c.state === "fel" ? "err" : c.complete ? "" : "part" };
+    return { t: c.text + (c.updatedAt ? ` · uppdaterad ${new Date(c.updatedAt).toLocaleTimeString("sv-SE").slice(0,5)}` : ""), cls: c.state === "fel" ? "err" : (c.complete || c.searchComplete) ? "" : "part" };
   }
   function cardHtml(m){
     const mid = m.bid != null && m.offer != null ? (m.bid + m.offer)/2 : null;
