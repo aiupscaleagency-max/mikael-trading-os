@@ -45,7 +45,10 @@ function readCredentials(): CredentialFile {
   return JSON.parse(fs.readFileSync(file,"utf8")) as CredentialFile;
 }
 /** Bara lokala credentials och explicita läsanrop; inga orderfunktioner finns. */
-export const IG_HISTORY_RATE_ERROR="IG-historikkvoten är tillfälligt slut; nya historiska priser pausas";
+// IG:s veckokvot för historiska priser (error.public-api.exceeded-account-historical-data-allowance) fylls på löpande inom 7 dagar.
+// Vi frågar IG igen högst en gång i timmen; under tiden byggs diagrammet vidare från strömmens stängda ljus.
+export const IG_HISTORY_RATE_ERROR="IG:s veckokvot för historiska priser är slut på kontot. Diagrammet byggs från livepriserna tills IG fyller på kvoten (inom 7 dagar)";
+export const IG_HISTORY_BLOCK_MS=60*60*1000;
 export const IG_READ_RATE_ERROR="IG begränsade antal läsanrop; försök igen om en minut";
 export function isIgTemporaryRateError(error:unknown){const message=error instanceof Error?error.message:error;return message===IG_READ_RATE_ERROR||message==="IG begränsade antal anrop"||message==="IG svarade HTTP 429"||message==="IG-läsbudgeten är slut för denna minut";}
 export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fetch?:typeof fetch;now?:()=>number}={}) {
@@ -198,7 +201,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
         // Diagnostik: IG:s egen felkod (inga nycklar eller tokens) i serverloggen, så att läsgräns och historikkvot går att skilja åt.
         console.warn(`[ig] ${mode} ${method} ${route.replace(/[^A-Za-z0-9._/-]/g,'')} → HTTP ${response.status} ${typeof code==='string'?code.slice(0,120):'utan felkod'}`);
         // Historiska datapunkter har en egen kvot och får inte stoppa katalog, konton eller prisverifiering.
-        if(code==='error.public-api.exceeded-account-historical-data-allowance'&&route.startsWith('prices/')){historyBlockedUntil.set(mode,now()+60000);throw Error(IG_HISTORY_RATE_ERROR);}
+        if(code==='error.public-api.exceeded-account-historical-data-allowance'&&route.startsWith('prices/')){historyBlockedUntil.set(mode,now()+IG_HISTORY_BLOCK_MS);throw Error(IG_HISTORY_RATE_ERROR);}
         if(response.status===429||typeof code==='string'&&/^error\.public-api\.exceeded-[a-z-]+-allowance$/.test(code)){readBlockedUntil.set(mode,now()+60000);throw Error(IG_READ_RATE_ERROR);}
         if(code==='endpoint.unavailable.for.api-key'&&(route==='categories'||route.startsWith('categories/')||route.startsWith('client-sentiment/')))throw Error(`IG svarade HTTP ${response.status}`);
         if(response.status===401 || response.status===403)fail(mode,"IG-sessionen eller behörigheten kunde inte verifieras; anslut igen");throw Error(`IG svarade HTTP ${response.status}`);

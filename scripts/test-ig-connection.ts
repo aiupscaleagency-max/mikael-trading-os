@@ -131,12 +131,12 @@ console.log('PASS: kategorier/sentiment endast tillåtna GET med centralquota; s
   return mock(url,options);
  }) as typeof fetch});
  await history.testConnection('demo');await history.testConnection('live');const generation=history.getStatus().environments.demo.connectionGeneration;
- await assert.rejects(history.callAuthenticated('demo','prices/EURUSD','GET','3'),/IG-historikkvoten/);
+ await assert.rejects(history.callAuthenticated('demo','prices/EURUSD','GET','3'),/veckokvot för historiska priser/);
  assert.ok(history.getReadBudget('demo').remaining>0,'Historikfelet blockerar inte vanlig läsbudget');
  assert.deepEqual((await history.callAuthenticated('demo','markets')).markets,[]);
  assert.equal((await history.getAccounts('demo')).status,'ready');assert.equal((await history.getPositions('demo')).status,'ready');
- await assert.rejects(history.callAuthenticated('demo','prices/GBPUSD','GET','3'),/IG-historikkvoten/);assert.equal(priceCalls,1,'Cooldown gäller alla historikserier i samma miljö utan nya nätverksanrop');
+ await assert.rejects(history.callAuthenticated('demo','prices/GBPUSD','GET','3'),/veckokvot för historiska priser/);assert.equal(priceCalls,1,'Cooldown gäller alla historikserier i samma miljö utan nya nätverksanrop');
  exhausted=false;await history.callAuthenticated('live','prices/EURUSD','GET','3');assert.equal(priceCalls,2,'Live har en separat historikkvot');
- clock+=61000;await history.callAuthenticated('demo','prices/EURUSD','GET','3');assert.equal(priceCalls,3);assert.equal(history.getStatus().environments.demo.connectionGeneration,generation,'Historikfel byter inte kontosession');
+ clock+=61000;await assert.rejects(history.callAuthenticated('demo','prices/EURUSD','GET','3'),/veckokvot/);assert.equal(priceCalls,2,'veckokvoten: ingen ny IG-fråga efter en minut');assert.equal(history.getStatus().environments.demo.connectionGeneration,generation,'Historikfel byter inte kontosession');clock+=60*60*1000;await history.testConnection('demo');await history.callAuthenticated('demo','prices/EURUSD','GET','3');assert.equal(priceCalls,3,'nytt försök efter en timme');
  console.log('PASS: historikkvot stoppar endast nya historikförsök, marknadskatalog/konto/positioner fungerar och Demo/Live är separata');
 }

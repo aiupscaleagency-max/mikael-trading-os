@@ -345,6 +345,22 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   assert.equal(md.closed(E, "1m", "demo").length, 201, "200 historiska ljus + det strömmade, äldre ljus kastas inte");
   assert.equal(md.closed(E, "1m", "demo").at(-1)!.close, 1.3234, "det strömmade ljuset ligger sist");
   ok("Misslyckad historik hämtas igen efter en minut även när strömmen lagt till ljus, och slås ihop utan att tappa äldre ljus");
+  // Dator 1, IG:s svar: 403 error.public-api.exceeded-account-historical-data-allowance → tydlig text, nytt försök först om en timme.
+  const { IG_HISTORY_RATE_ERROR } = await import("../src/integrations/igConnection.js");
+  let hcalls = 0; const E2 = "CS.D.EURUSD.CEEM.IP";
+  const md2 = createIgMarketData({
+    status: (() => ({ environments: { demo: { status: "missing", credentialsComplete: false }, live: { status: "missing", credentialsComplete: false } } })) as never,
+    now: () => t, stream: stream as never, file: (e) => path.join(tmp, `wl-hist2-${e}.json`),
+    market: (async (_e: string, epic: string) => ({ epic, name: "EUR/USD Mini", category: "forex", quote: {} })) as never,
+    candles: (async () => { hcalls++; throw new Error(IG_HISTORY_RATE_ERROR); }) as never,
+  });
+  await md2.ensureSeries("demo", E2, "5m");
+  assert.match(md2.historyError(E2, "5m", "demo")!, /veckokvot för historiska priser är slut/);
+  t += 61_000; await md2.ensureSeries("demo", E2, "5m");
+  assert.equal(hcalls, 1, "veckokvoten: inget nytt IG-anrop efter en minut");
+  t += 60 * 60_000; await md2.ensureSeries("demo", E2, "5m");
+  assert.equal(hcalls, 2, "veckokvoten: nytt försök efter en timme");
+  ok("IG:s veckokvot för historik ger tydlig text och nytt försök först efter en timme, inte varje minut");
 }
 
 console.log("Granskning 3: alla tester godkända (endast mocks, inga nätverksanrop)");

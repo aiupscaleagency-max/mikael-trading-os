@@ -3,7 +3,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { log } from "../logger.js";
 import { dataPath } from "../dataDir.js";
-import { getIgStatus, testIgConnection, withIgPriority, type IgEnvironment } from "../integrations/igConnection.js";
+import { getIgStatus, testIgConnection, withIgPriority, IG_HISTORY_RATE_ERROR, IG_HISTORY_BLOCK_MS, type IgEnvironment } from "../integrations/igConnection.js";
 import { getIgMarket, getIgCandles, searchIgMarkets, igMarketCategory, type IgTimeframe } from "../integrations/igMarkets.js";
 import { igStreaming } from "../integrations/igStreaming.js";
 import { tickIgOrders } from "../integrations/igOrders.js";
@@ -169,7 +169,8 @@ export function createIgMarketData(deps: {
       if (s.closed.length) for (const c of emitList) events.emit("closed", env, epic, iv, c, s.closed);
     } catch (err) {
       s.historyError = `historik saknas: ${err instanceof Error ? err.message : String(err)}`;
-      s.historyRetryAt = now() + 60_000; // nytt försök om en minut, även om strömmen redan har lagt till ljus
+      // Nytt försök om en minut (läsgräns), eller om en timme när IG:s veckokvot för historik är slut. Strömmens ljus läggs till under tiden.
+      s.historyRetryAt = now() + (err instanceof Error && err.message === IG_HISTORY_RATE_ERROR ? IG_HISTORY_BLOCK_MS : 60_000);
       // Kvot/metadata behålls: hämta bara kvoten (cachad) så att priset fortfarande syns.
       try { const m = await market(env, epic); if (m.epic === epic) { rememberName(env, epic, m.name, m.category); setRestQuote(env, epic, m.quote); } } catch { /* visas som frånkopplat */ }
     }
@@ -206,8 +207,8 @@ export function createIgMarketData(deps: {
     const s = getSeries(env, epic, iv);
     // Ny hämtning när serien är tom, eller när förra historikförsöket misslyckades (efter en minut). Tidigare fastnade
     // serien på ett enda strömmat ljus med ett gammalt fel, eftersom den inte längre var tom.
-    const retry = !!s.historyError && s.closed.length < 50 && now() >= (s.historyRetryAt ?? 0);
-    if ((!s.closed.length || retry) && !s.seeding) {
+    const due = now() >= (s.historyRetryAt ?? 0);
+    if ((!s.closed.length || (!!s.historyError && s.closed.length < 50)) && due && !s.seeding) {
       s.seeding = refreshHistory(env, epic, iv).finally(() => { s.seeding = undefined; });
     }
     if (s.seeding) await s.seeding;

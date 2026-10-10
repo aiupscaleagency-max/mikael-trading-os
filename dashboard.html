@@ -4425,7 +4425,7 @@ function showIgSource(){
   if(!STATE.symbol){ setSourceIndicator('<span style="color:var(--label)">○</span> Välj ett IG-instrument'); return; }
   const q = IG.quote(STATE.symbol);
   setSourceIndicator(IG.badge(q) + ' <span style="color:var(--label)">' + IG.esc(IG.label(STATE.symbol)) + ' · ' + IG.esc(STATE.symbol) + ' · ' + STATE.tf + ' · ' + IG.envLabel() + '</span>'
-    + (igMain.hist ? ' <span style="color:#f0b90b" title="' + IG.esc(igMain.hist) + '">· historik saknas</span>' : ''));
+    + (igMain.hist ? ' <span style="color:#f0b90b" title="' + IG.esc(igMain.hist) + '">· ' + (/veckokvot/.test(igMain.hist) ? 'IG:s veckokvot för historik är slut, ljusen byggs från livepriserna' : 'historik saknas') + '</span>' : ''));
 }
 async function loadRealCandles(sym, tf){
   if(!IG.isEpic(sym)){ showIgSource(); return; }
@@ -9906,7 +9906,7 @@ window.TVW = (function(){
   }
   function head(pane){
     const q = IG.quote(pane.pc.e);
-    pane.el.querySelector(".mc-st").innerHTML = IG.badge(q) + (pane.hist ? ' <span style="color:#f0b90b" title="' + esc(pane.hist) + '">· historik saknas</span>' : "");
+    pane.el.querySelector(".mc-st").innerHTML = IG.badge(q) + (pane.hist ? ' <span style="color:#f0b90b" title="' + esc(pane.hist) + '">· ' + (/veckokvot/.test(pane.hist) ? 'IG:s historikkvot slut, byggs från livepriser' : 'historik saknas') + '</span>' : "");
     const px = pane.el.querySelector(".mc-px");
     const v = q && q.mid != null ? q.mid : pane.data.length ? pane.data[pane.data.length-1].close : null;
     px.textContent = v == null ? "–" : IG.px(v);
