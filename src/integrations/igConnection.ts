@@ -11,6 +11,8 @@ import {AsyncLocalStorage} from "node:async_hooks";
 const priorityContext=new AsyncLocalStorage<boolean>();
 export function withIgPriority<T>(fn:()=>Promise<T>):Promise<T>{return priorityContext.run(true,fn);}
 export function igPriorityActive():boolean{return priorityContext.getStore()===true;}
+/** Läsningar som INTE får använda orderns förtur (t.ex. Demo-simuleringens Live-priser), även om anroparen kör i withIgPriority. */
+export function withoutIgPriority<T>(fn:()=>Promise<T>):Promise<T>{return priorityContext.run(false,fn);}
 /** B1: läsningar en godkänd order behöver i värsta fall (granskning: konto, positioner, arbetsorder,
  *  transaktioner, marknad, valuta + marknad per position; bekräftelsen återanvänder granskningens läsningar
  *  under 5 s). confirms/ räknas inte mot spärren. */

@@ -8,6 +8,8 @@ import { getIgMarket, getIgHistory, searchIgMarkets } from "../integrations/igMa
 import { getIgMarketDirectory, getIgDirectoryEnrichment, peekIgMarketDirectory, igLiveOnlyReferences } from "../integrations/igMarketDirectory.js";
 import { getIgOrderState, resolveIgUnknown, answerIgLateExit } from "../integrations/igOrders.js";
 import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
+import { igSparklines } from "./igSparklines.js";
+import { agentNotes } from "./igAgentNotes.js";
 import { currentStake } from "../risk/stakeLadder.js";
 import { igOrderMoneyView } from "../integrations/igRiskLimits.js";
 import { listIgImportedSignals, saveIgImportedSignal, deleteIgImportedSignal } from "../integrations/igImportedSignals.js";
@@ -19,6 +21,8 @@ import { log } from "../logger.js";
 import { strategyLibrary } from "./igStrategyLibrary.js";
 import { getTiingoStatus } from "../data/tiingoHistory.js";
 import { igCourse } from "../integrations/igCourse.js";
+import { DEMO_SIM_LABEL, demoSimRow } from "../integrations/igDemoSim.js";
+import { igDemoSimRouter } from "./igDemoSimLive.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  IG-rutter (auth-grinden i api.ts körs före dessa)
@@ -37,6 +41,8 @@ import { igCourse } from "../integrations/igCourse.js";
 //   GET  /api/market/search?q=          → IG-sökning
 //   GET  /api/market/klines?symbol=EPIC&interval=1m&limit=300 → stängda IG-ljus + pågående + datatillstånd
 //   GET  /api/market/prices?symbols=a,b → kvoter med ålder/tillstånd
+//   GET  /api/market/sparkline?epic=    → minidiagram för Alla par (minne/cache först, skonsamt mot historikkvoten)
+//   GET  /api/ig/agent-notes?epics=a,b → agenternas senaste besked per instrument (även avstå)
 //   GET  /api/market/stream?epics=a,b   → SSE: quote, candle, stream-status (IG Lightstreamer via servern)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -93,15 +99,25 @@ function quoteView(q: IgQuote | null, epic: string, env: IgEnvironment = igMarke
     : { epic, name: igMarketData.nameOf(epic, env), state: ds.state, ageMs: null, ...(ds.note ? { note: ds.note } : {}) };
 }
 /** Katalogframsteg i klartext: antal, komplett/delvis, fel och nästa försök (~60 s, singleflight i katalogen). */
-export function catalogueProgress(d: { markets?: unknown[]; status?: string; complete?: boolean; error?: string | null; note?: string; updatedAt?: number; progress?: any; remainingSearches?: number | null }) {
+export function catalogueProgress(d: { markets?: unknown[]; status?: string; complete?: boolean; error?: string | null; note?: string; updatedAt?: number; progress?: any; remainingSearches?: number | null; searchCompletedAt?: number | null }) {
   const count = Array.isArray(d.markets) ? d.markets.length : 0;
   const complete = d.complete === true;
   const retryAt = Number(d.progress?.retryAt ?? d.progress?.category?.retryAt) || null;
-  const state = d.status === "unavailable" ? "fel" : complete ? "fullständig" : "delvis";
+  // Sökbaserad katalog: IG kan inte bekräfta fullständighet, men när alla sökord gått igenom utan fel sägs det ärligt
+  const searchCompletedAt = Number(d.searchCompletedAt) || null;
+  const searchComplete = !complete && d.status !== "unavailable" && searchCompletedAt !== null;
+  const state = d.status === "unavailable" ? "fel" : complete ? "fullständig" : searchComplete ? "alla sökningar klara" : "delvis";
   const text = state === "fel" ? `Katalogen kunde inte hämtas: ${d.error ?? "okänt fel"}. Nytt försök inom ~60 s.`
     : complete ? `${count} instrument · fullständig`
+    : searchComplete ? `${count} instrument · alla IG-sökningar klara (IG kan inte bekräfta att listan är fullständig) · uppdateras i bakgrunden`
     : `${count} instrument hittills · delvis${d.remainingSearches ? ` · ${d.remainingSearches} sökningar kvar` : ""}${d.error ? ` · ${d.error}` : ""} · fortsätter automatiskt inom IG:s läskvot`;
-  return { count, complete, state, error: d.error ?? null, note: d.note ?? null, updatedAt: d.updatedAt ?? null, retryAt, remainingSearches: d.remainingSearches ?? null, text };
+  return { count, complete, searchComplete, searchCompletedAt, state, error: d.error ?? null, note: d.note ?? null, updatedAt: d.updatedAt ?? null, retryAt, remainingSearches: d.remainingSearches ?? null, text };
+}
+/** Demo-simulering: i Demo-vyn läses Live-instrument som saknas på IG Demo från Live (läsning, märkt). */
+const dataEnvFor = (env: IgEnvironment, epic: string): IgEnvironment => (env === "demo" && igDemoSimRouter.liveOnly(epic) ? "live" : env);
+/** Live-kvot visad i Demo-vyn: Demo-namnet (märkt) och simuleringsetiketten. */
+function simQuoteView(q: IgQuote | null, epic: string) {
+  return { ...quoteView(q, epic, "live"), name: igMarketData.nameOf(epic, "demo") ?? igMarketData.nameOf(epic, "live"), sim: true, simLabel: DEMO_SIM_LABEL };
 }
 const chartBar = (c: Candle) => ({ time: Math.floor(c.openTime / 1000), open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume, closed: c.closed });
 
@@ -112,10 +128,12 @@ function wireSse(): void {
     const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const c of sse) if (!epic || c.epics.has(epic)) { try { c.res.write(msg); } catch { sse.delete(c); } }
   };
-  igMarketData.events.on("quote", (env: IgEnvironment, q: IgQuote) => { if (env === igMarketData.getActiveEnv()) write(q.epic, "quote", { env, ...quoteView(q, q.epic, env) }); });
-  igMarketData.events.on("candle", (env: IgEnvironment, epic: string, iv: string, c: Candle) => { if (env === igMarketData.getActiveEnv()) write(epic, "candle", { env, epic, interval: iv, bar: chartBar(c) }); });
+  // Demo-simulering: Live-händelser för simulerade EPICs skickas till Demo-vyn, märkta (sim: true)
+  const simLive = (env: IgEnvironment, epic: string) => env === "live" && igMarketData.getActiveEnv() === "demo" && igDemoSimRouter.liveOnly(epic);
+  igMarketData.events.on("quote", (env: IgEnvironment, q: IgQuote) => { if (env === igMarketData.getActiveEnv()) write(q.epic, "quote", { env, ...quoteView(q, q.epic, env) }); else if (simLive(env, q.epic)) write(q.epic, "quote", { env: "demo", ...simQuoteView(q, q.epic) }); });
+  igMarketData.events.on("candle", (env: IgEnvironment, epic: string, iv: string, c: Candle) => { if (env === igMarketData.getActiveEnv()) write(epic, "candle", { env, epic, interval: iv, bar: chartBar(c) }); else if (simLive(env, epic)) write(epic, "candle", { env: "demo", epic, interval: iv, bar: chartBar(c), sim: true }); });
   // Stängda ljus som kom via REST (serier utan IG-diagramplats) når också webbläsaren
-  igMarketData.events.on("closed", (env: IgEnvironment, epic: string, iv: string, c: Candle) => { if (env === igMarketData.getActiveEnv() && !igMarketData.streamedSeries(env).includes(`${epic}|${iv}`)) write(epic, "candle", { env, epic, interval: iv, bar: chartBar(c) }); });
+  igMarketData.events.on("closed", (env: IgEnvironment, epic: string, iv: string, c: Candle) => { if (env === igMarketData.getActiveEnv() && !igMarketData.streamedSeries(env).includes(`${epic}|${iv}`)) write(epic, "candle", { env, epic, interval: iv, bar: chartBar(c) }); else if (simLive(env, epic) && !igMarketData.streamedSeries(env).includes(`${epic}|${iv}`)) write(epic, "candle", { env: "demo", epic, interval: iv, bar: chartBar(c), sim: true }); });
   igMarketData.events.on("stream-status", (env: IgEnvironment, s: unknown) => { if (env === igMarketData.getActiveEnv()) write(null, "stream-status", { env, ...(s as object) }); });
   igMarketData.events.on("env", (env: IgEnvironment) => write(null, "env", { env, label: envLabel(env) }));
   const hb = setInterval(() => write(null, "heartbeat", { at: Date.now(), env: igMarketData.getActiveEnv(), stream: igMarketData.streamStatus() }), 15_000);
@@ -205,11 +223,11 @@ export async function handleIgRoutes(
       const q = await body(req, readBody);
       if (!b) { send(res, 409, { ok: false, error: "Ingen IG-mäklare aktiv" }); return true; }
       if (!EPIC_RE.test(String(q.epic)) || (q.direction !== "BUY" && q.direction !== "SELL")) { send(res, 400, { ok: false, error: "epic och direction (BUY/SELL) krävs" }); return true; }
-      const acc = await b.getAccount();
+      const acc = await b.getAccountFor(q.epic);
       const pct = Number(q.pct) > 0 ? Math.min(3, Number(q.pct)) : currentStake()?.pct ?? 1;
       const stake = Number(q.stake) > 0 ? Number(q.stake) : (acc.balance ?? 0) * pct / 100;
       const out = await b.stakeQuote({ epic: q.epic, direction: q.direction, stake, stopLoss: Number(q.stopLoss) || undefined, takeProfit: Number(q.takeProfit) || undefined, ...(Number(q.size) > 0 ? { size: Number(q.size) } : {}) });
-      const portfolio = await b.portfolioMargin().catch(() => null);
+      const portfolio = await b.portfolioMargin(q.epic).catch(() => null);
       const money = igOrderMoneyView({ currency: acc.currency ?? null, balance: acc.balance ?? null, available: acc.available ?? null, profitLoss: acc.profitLoss ?? null, pct, stake, quote: out, portfolio });
       send(res, 200, { ...out, pct, money, account: { currency: acc.currency, balance: acc.balance, available: acc.available, profitLoss: acc.profitLoss }, env: b.env, label: envLabel(b.env), executionEnabled: b.executionEnabled() });
       return true;
@@ -307,7 +325,8 @@ export async function handleIgRoutes(
     if (p === "/api/market/watchlist" && method === "POST") {
       const b = await body(req, readBody);
       try {
-        const r = await igMarketData.addWatch(String(b.epic ?? ""), env);
+        const epicIn = String(b.epic ?? "");
+        const r = await igMarketData.addWatch(epicIn, env, dataEnvFor(env, epicIn));
         userAction(`följer ${r.name ?? r.epic}`, { coin: r.epic });
         send(res, 200, { ok: true, env, ...r, watchlist: igMarketData.watchlistDetailed(env) });
       } catch (e) { send(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) }); }
@@ -323,7 +342,23 @@ export async function handleIgRoutes(
         const d = await getIgMarketDirectory(env, category);
         for (const m of d.markets) igMarketData.rememberName(env, m.epic, m.name, m.category);
         // Demo: Live-EPICs som saknas här visas som katalogreferens ("ej tillgänglig på Demo"), utan Live-priser
-        const liveReferences = env === "demo" ? igLiveOnlyReferences(d.markets, peekIgMarketDirectory("live", category)?.markets) : [];
+        let liveReferences = env === "demo" ? igLiveOnlyReferences(d.markets, peekIgMarketDirectory("live", category)?.markets) : [];
+        // Demo-simulering (Mike 2026-10-10: "exakt likadant oavsett DEMO eller LIVE"): alla Live-instrument som saknas
+        // i Demo-katalogen listas bland instrumenten, med Live-pris och märkta "Demo-simulering · Live-pris · låtsaspengar".
+        // Ordervägen avgörs ändå vid ordern (route): sim bara vid positivt belägg att IG Demo saknar instrumentet.
+        if (env === "demo") {
+          const split = igDemoSimRouter.split(category, d.markets);
+          const simRows = [...split.sim, ...split.unproven].map(demoSimRow);
+          for (const m of simRows) { igMarketData.rememberName("demo", m.epic, m.name, (m.category as string | null) ?? category); igMarketData.rememberName("live", m.epic, m.liveName, (m.category as string | null) ?? category); }
+          const simSet = new Set(simRows.map((m) => m.epic));
+          liveReferences = liveReferences.filter((r) => !simSet.has(r.epic));
+          // Obevisade: högst två Demo-läsningar per anrop i bakgrunden (ger belägg; läsgräns räknas aldrig som belägg)
+          for (const r of split.unproven.slice(0, 2)) void igDemoSimRouter.probe(r.epic).catch(() => undefined);
+          // Demo-rader som IG avvisat (prislösa sökträffar) ersätts av den märkta Live-raden; inga dubbletter
+          const markets = [...d.markets.filter((m: { epic: string }) => !simSet.has(m.epic)), ...simRows];
+          send(res, 200, { env, label: envLabel(env), ...d, markets, liveReferences, simulated: simRows.length, simLabel: DEMO_SIM_LABEL, catalogue: catalogueProgress({ ...d, markets }) });
+          return true;
+        }
         send(res, 200, { env, label: envLabel(env), ...d, liveReferences, catalogue: catalogueProgress(d) });
       } catch (e) {
         // Fel: visa senast kända katalog för samma inloggning (urvalet tappas inte) + felet
@@ -384,39 +419,61 @@ export async function handleIgRoutes(
       } catch (e) { send(res, 200, { env, markets: [], error: e instanceof Error ? e.message : String(e) }); }
       return true;
     }
+    // Alla par: minidiagram (minne → cache ≥30 min → högst några IG-hämtningar per minut). Se igSparklines.ts.
+    if (p === "/api/market/sparkline" && method === "GET") {
+      const epic = String(url.searchParams.get("epic") ?? "");
+      if (!EPIC_RE.test(epic)) { send(res, 400, { error: "Välj ett IG-instrument (EPIC)", closes: [] }); return true; }
+      const src = dataEnvFor(env, epic);
+      const s = await igSparklines.get(src, epic, { cacheOnly: url.searchParams.get("cacheOnly") === "1" });
+      send(res, 200, { ...s, ...(src !== env ? { env, sim: true, simLabel: DEMO_SIM_LABEL, source: `${s.source ?? ""} · IG Live-pris` } : {}), label: envLabel(env), envChanged: env !== igMarketData.getActiveEnv() });
+      return true;
+    }
+    // Agenternas senaste besked per instrument och miljö (även HOLD/avstå). Se igAgentNotes.ts.
+    if (p === "/api/ig/agent-notes" && method === "GET") {
+      const list = (url.searchParams.get("epics") ?? "").split(",").map((x) => x.trim()).filter((x) => EPIC_RE.test(x)).slice(0, 500);
+      send(res, 200, { env, label: envLabel(env), notes: agentNotes.get(env, list.length ? list : undefined) });
+      return true;
+    }
     if (p === "/api/market/klines" && method === "GET") {
       const epic = String(url.searchParams.get("epic") ?? url.searchParams.get("symbol") ?? "");
       const iv = url.searchParams.get("interval") || "1m";
       const limit = Math.min(500, Math.max(10, Number(url.searchParams.get("limit")) || 300));
       if (!EPIC_RE.test(epic)) { send(res, 400, { error: "Välj ett IG-instrument (EPIC)", klines: [] }); return true; }
+      // Demo-simulering: Live-instrument som saknas på IG Demo läses från Live (src), visas i Demo-vyn märkta
+      const src = dataEnvFor(env, epic), sim = src !== env;
       let meta: Record<string, unknown> = {};
-      try { const m = await getIgMarket(env, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(env, epic, m.name, m.category); igMarketData.setRestQuote(env, epic, m.quote, m.instrument?.streamingPricesAvailable); meta = { name: m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
+      try { const m = await getIgMarket(src, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(src, epic, m.name, m.category); igMarketData.setRestQuote(src, epic, m.quote, m.instrument?.streamingPricesAvailable); meta = { name: sim ? igMarketData.nameOf(epic, env) ?? m.name : m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
       catch (e) { meta = { metaError: e instanceof Error ? e.message : String(e) }; }
-      try { await igMarketData.ensureSeries(env, epic, iv); } catch { /* historyError visas nedan */ }
-      igMarketData.requestStream([epic], env);
+      try { await igMarketData.ensureSeries(src, epic, iv); } catch { /* historyError visas nedan */ }
+      igMarketData.requestStream([epic], src);
       // Miljön är bunden vid begärans start: allt nedan läses ur samma miljö (aldrig blandat)
-      const closed = igMarketData.closed(epic, iv, env).slice(-limit);
-      const forming = igMarketData.forming(epic, iv, env);
+      const closed = igMarketData.closed(epic, iv, src).slice(-limit);
+      const forming = igMarketData.forming(epic, iv, src);
       send(res, 200, {
         env, label: envLabel(env), symbol: epic, epic, interval: iv, ...meta, name: (meta.name as string) ?? igMarketData.nameOf(epic, env),
         klines: closed.map(chartBar), forming: forming ? chartBar(forming) : null,
-        historyError: igMarketData.historyError(epic, iv, env), quote: quoteView(igMarketData.quote(epic, env), epic, env),
-        streamed: igMarketData.streamedSeries(env).includes(`${epic}|${iv}`), envChanged: env !== igMarketData.getActiveEnv(),
-        source: `${envLabel(env)} · REST-historik (stängda mid-ljus) + Lightstreamer`, at: Date.now(),
+        historyError: igMarketData.historyError(epic, iv, src), quote: sim ? simQuoteView(igMarketData.quote(epic, src), epic) : quoteView(igMarketData.quote(epic, env), epic, env),
+        streamed: igMarketData.streamedSeries(src).includes(`${epic}|${iv}`), envChanged: env !== igMarketData.getActiveEnv(),
+        source: sim ? `${DEMO_SIM_LABEL} · IG Live REST-historik (stängda mid-ljus) + Lightstreamer` : `${envLabel(env)} · REST-historik (stängda mid-ljus) + Lightstreamer`, at: Date.now(),
+        ...(sim ? { sim: true, simLabel: DEMO_SIM_LABEL } : {}),
       });
       return true;
     }
     if (p === "/api/market/prices" && method === "GET") {
       const symbols = (url.searchParams.get("symbols") || igMarketData.watchlist(env).join(",")).split(",").map((x) => x.trim()).filter((x) => EPIC_RE.test(x)).slice(0, 30);
-      igMarketData.requestStream(symbols, env);
+      const simSyms = symbols.filter((s) => dataEnvFor(env, s) !== env);
+      igMarketData.requestStream(symbols.filter((s) => !simSyms.includes(s)), env);
+      if (simSyms.length) igMarketData.requestStream(simSyms, "live");
       const prices: Record<string, number> = {};
       const quotes: Record<string, unknown> = {};
       for (const s of symbols) {
-        let q = igMarketData.quote(s, env);
+        // Demo-simulering: Live-pris för Live-instrument som saknas på IG Demo (märkt)
+        const src = dataEnvFor(env, s);
+        let q = igMarketData.quote(s, src);
         if (!q || q.observedAt === null || Date.now() - q.observedAt > 60_000) {
-          try { const m = await getIgMarket(env, s); igMarketData.setRestQuote(env, s, m.quote, m.instrument?.streamingPricesAvailable); igMarketData.rememberName(env, s, m.name, m.category); q = igMarketData.quote(s, env); } catch { /* visas som saknad */ }
+          try { const m = await getIgMarket(src, s); igMarketData.setRestQuote(src, s, m.quote, m.instrument?.streamingPricesAvailable); igMarketData.rememberName(src, s, m.name, m.category); q = igMarketData.quote(s, src); } catch { /* visas som saknad */ }
         }
-        quotes[s] = quoteView(q, s, env);
+        quotes[s] = src !== env ? simQuoteView(q, s) : quoteView(q, s, env);
         if (q) prices[s] = q.mid;
       }
       send(res, 200, { env, prices, quotes, source: envLabel(env), at: Date.now(), envChanged: env !== igMarketData.getActiveEnv() });
@@ -427,13 +484,19 @@ export async function handleIgRoutes(
       const epics = new Set((url.searchParams.get("epics") || "").split(",").map((x) => x.trim()).filter((x) => EPIC_RE.test(x)).slice(0, 30));
       // Öppna diagram (charts=EPIC|1m,...) hålls vid liv så länge strömmen är öppen; stängs fliken slutar de följas.
       const charts = (url.searchParams.get("charts") || "").split(",").map((x) => x.trim().split("|")).filter((x) => x.length === 2 && EPIC_RE.test(x[0]!) && /^(1m|3m|5m|15m|30m|1h|4h|1d)$/.test(x[1]!)).slice(0, 8) as Array<[string, string]>;
-      const touch = () => { igMarketData.requestStream([...epics], env); for (const [e, iv] of charts) igMarketData.touchSeries(env, e, iv); };
+      const touch = () => {
+        // Demo-simulering: Live-instrument följs i Live-strömmen
+        const simE = [...epics].filter((e) => dataEnvFor(env, e) !== env);
+        igMarketData.requestStream([...epics].filter((e) => !simE.includes(e)), env);
+        if (simE.length) igMarketData.requestStream(simE, "live");
+        for (const [e, iv] of charts) igMarketData.touchSeries(dataEnvFor(env, e), e, iv);
+      };
       touch();
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
       const client = { res, epics };
       sse.add(client);
       res.write(`event: hello\ndata: ${JSON.stringify({ env, label: envLabel(env), stream: igMarketData.streamStatus() })}\n\n`);
-      for (const e of epics) { const q = igMarketData.quote(e, env); if (q) res.write(`event: quote\ndata: ${JSON.stringify({ env, ...quoteView(q, e, env) })}\n\n`); }
+      for (const e of epics) { const src = dataEnvFor(env, e), q = igMarketData.quote(e, src); if (q) res.write(`event: quote\ndata: ${JSON.stringify({ env, ...(src !== env ? simQuoteView(q, e) : quoteView(q, e, env)) })}\n\n`); }
       const keep = setInterval(touch, 60_000);
       req.on("close", () => { sse.delete(client); clearInterval(keep); });
       return true;

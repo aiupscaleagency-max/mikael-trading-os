@@ -55,10 +55,12 @@ export async function getMarketSnapshot(): Promise<MarketSnapshot | null> {
   try {
     const symbolSnapshots: SymbolSnapshot[] = [];
     for (const epic of igMarketData.watchlist(env)) {
-      const q = igMarketData.quote(epic, env);
+      // Demo-simulering: Live-instrument som saknas på IG Demo läses från Live (pris/ljus)
+      const src = igMarketData.dataEnv(env, epic);
+      const q = igMarketData.quote(epic, src);
       let interval = "1h";
-      let bars = igMarketData.closed(epic, "1h", env);
-      if (bars.length < 20) { interval = igMarketData.getSignalInterval(); bars = igMarketData.closed(epic, interval, env); }
+      let bars = igMarketData.closed(epic, "1h", src);
+      if (bars.length < 20) { interval = igMarketData.getSignalInterval(); bars = igMarketData.closed(epic, interval, src); }
       const price = q?.mid ?? bars[bars.length - 1]?.close;
       if (!price) continue;
       const klines = bars.slice(-60).map((k) => ({ high: k.high, low: k.low, close: k.close }));
@@ -71,7 +73,7 @@ export async function getMarketSnapshot(): Promise<MarketSnapshot | null> {
       const high24 = q?.high ?? null, low24 = q?.low ?? null;
       const patternsRaw = klines.length >= 10 ? detectAllPatterns(bars.slice(-60).map((k, i) => ({ time: i, open: k.open, high: k.high, low: k.low, close: k.close }))) : [];
       symbolSnapshots.push({
-        symbol: epic, name: igMarketData.nameOf(epic, env) ?? epic, interval, dataState: igMarketData.dataState(epic, env).state,
+        symbol: epic, name: igMarketData.nameOf(epic, env) ?? epic, interval, dataState: igMarketData.dataState(epic, src).state,
         price, changePct24h: q?.changePct ?? null, volume24h: null, high24h: high24, low24h: low24,
         rsi14: ind.rsi14, sma20: ind.sma20, sma50: ind.sma50, ema20: ind.ema20, macd: ind.macd, atr14: ind.atr14, obv: ind.obv,
         trend, nearResistance: high24 !== null && price > high24 * 0.995, nearSupport: low24 !== null && price < low24 * 1.005,
