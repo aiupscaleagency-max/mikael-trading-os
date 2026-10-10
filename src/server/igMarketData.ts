@@ -444,6 +444,8 @@ export function createIgMarketData(deps: {
     quotes: (env = activeEnv) => [...quotes.entries()].filter(([key]) => key.startsWith(`${env}|`)).map(([, q]) => q),
     setRestQuote, dataState, restFallback,
     streamStatus: (env = activeEnv) => stream.summary(env),
+    /** Avvisade strömposter med IG:s kod/text (billig; bygger ingen sammanfattning). */
+    streamFailed: (env: IgEnvironment) => ((stream as { failedKeys?: (m: IgEnvironment) => Array<{ key: string; code: number | null; message: string | null; at: number }> }).failedKeys?.(env) ?? []),
     watchedSeries: (env = activeEnv) => activeSeries(env),
     streamedSeries: (env = activeEnv) => [...(streamedKeys.get(env) ?? [])],
     touchSeries, pinSeries,

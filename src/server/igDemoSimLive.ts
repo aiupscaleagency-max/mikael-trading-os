@@ -6,10 +6,10 @@
 //   Katalogbelägg: peekIgMarketDirectory (ingen IG-läsning) + en Demo-läsning av EPIC:en vid behov.
 // Inget här skriver till IG.
 // ═══════════════════════════════════════════════════════════════════════════
-import { createIgDemoSim, createDemoSimRouter, type SimMarket, type SimQuote } from "../integrations/igDemoSim.js";
+import { createIgDemoSim, createDemoSimRouter, isNotFoundRejection, type SimMarket, type SimQuote } from "../integrations/igDemoSim.js";
 import { getIgMarket } from "../integrations/igMarkets.js";
 import { peekIgMarketDirectory } from "../integrations/igMarketDirectory.js";
-import { withoutIgPriority } from "../integrations/igConnection.js";
+import { withoutIgPriority, getIgAccountIdentity } from "../integrations/igConnection.js";
 import { igMarketData } from "./igMarketData.js";
 import { loadState } from "../memory/store.js";
 import { dataPath } from "../dataDir.js";
@@ -27,10 +27,10 @@ export const igDemoSimRouter = createDemoSimRouter({
     catch (e) { return e instanceof Error && e.message === "IG svarade HTTP 404" ? "missing" : "unknown"; }
   }),
   // IG Demo-strömmen avvisade prisposten (t.ex. Bitcoin ($0.1) på Demo): IG:s eget besked att Demo saknar priset
-  demoRejected: (epic) => {
-    const failed = (igMarketData.streamStatus("demo") as { failed?: unknown }).failed;
-    return Array.isArray(failed) && failed.includes(`price:${epic}`);
-  },
+  // Bara Lightstreamer-kod 21 (prisposten finns inte) räknas; gränser, session- och serverfel är inget belägg.
+  demoRejected: (epic) => isNotFoundRejection(igMarketData.streamFailed("demo").find((f) => f.key === `price:${epic}`)),
+  // Belägget gäller bara det inloggade Demo-kontot (fullt id, stannar på servern)
+  demoAccount: () => getIgAccountIdentity("demo")?.accountId ?? null,
 });
 
 // Bevakade simulerade instrument i Demo läses från Live (pris, ljus, ström), aldrig från IG Demo.

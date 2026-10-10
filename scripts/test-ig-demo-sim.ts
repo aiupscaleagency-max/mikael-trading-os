@@ -13,7 +13,7 @@ delete process.env.LIVE_TRADING_CONFIRMED;
 for (const k of ["IG_MAX_STAKE_PCT", "IG_MAX_TOTAL_MARGIN_PCT", "IG_MAX_DAILY_LOSS_PCT", "IG_MAX_POSITION_MARGIN", "IG_MAX_TOTAL_MARGIN", "IG_MAX_DAILY_LOSS", "STAKE_PCT_START", "STAKE_PCT_MAX"]) delete process.env[k];
 globalThis.fetch = (async () => { throw new Error("Nätverk förbjudet i testerna"); }) as typeof fetch;
 
-const { createIgDemoSim, createDemoSimRouter, isSimDealId, DEMO_SIM_LABEL, demoSimRow } = await import("../src/integrations/igDemoSim.js");
+const { createIgDemoSim, createDemoSimRouter, isSimDealId, DEMO_SIM_LABEL, demoSimRow, isNotFoundRejection, DEMO_SIM_PROOF_TTL_MS } = await import("../src/integrations/igDemoSim.js");
 const { createIgConnection } = await import("../src/integrations/igConnection.js");
 const { IgBroker } = await import("../src/brokers/ig.js");
 const { closeIgAtExpiry } = await import("../src/server/tradeHorizon.js");
@@ -208,6 +208,32 @@ const mkSim = (file: string) => createIgDemoSim({ market: liveMarket as never, g
   ok("IG Demo-strömmens avvisning av prisposten är belägg; minns; Demo-instrument orörda; raden ersätts (inga dubbletter)");
 }
 
+// ══ 4d) Negativa fall: fel felkod, riktigt Demo-instrument, belägget går ut och följer inte med till annat konto ══
+{
+  // Bara Lightstreamer-kod 21 (prisposten finns inte) är belägg
+  assert.equal(isNotFoundRejection({ code: 21 }), true);
+  for (const code of [17, 0, -1, -10, 30, 66, 68, null]) assert.equal(isNotFoundRejection({ code }), false, `kod ${code} är inget belägg`);
+  assert.equal(isNotFoundRejection(undefined), false);
+  // Riktigt Demo-instrument med pris blir aldrig simulering, även om strömmen skulle rapportera fel
+  const demoCat = { markets: [{ epic: FX, bid: 1.1, offer: 1.1001 }, { epic: SIM, name: "Bitcoin ($0.1)", bid: null, offer: null }] };
+  const live = { markets: [{ epic: FX, category: "forex", bid: 1.1, offer: 1.1 }, { epic: SIM, name: "Bitcoin ($0.1)", category: "crypto", bid: 60_000, offer: 60_010 }] };
+  let acct = "DEMO-A", rej = new Set<string>([FX, SIM]);
+  const r = createDemoSimRouter({ live: (c) => ({ markets: live.markets.filter((m) => m.category === c) }) as never, demo: () => demoCat as never, demoRejected: (e) => rej.has(e), demoAccount: () => acct, now });
+  assert.equal(r.known(FX), false, "Demo-rad med riktigt pris är aldrig sim"); assert.equal(r.liveOnly(FX), false); assert.equal(await r.route(FX), "ig");
+  assert.equal(r.known(SIM), true);
+  rej = new Set();
+  acct = "DEMO-B";
+  assert.equal(r.known(SIM), false, "belägget följer inte med till ett annat Demo-konto");
+  acct = "DEMO-A";
+  assert.equal(r.known(SIM), true, "samma konto: belägget gäller");
+  NOW += DEMO_SIM_PROOF_TTL_MS + 1;
+  assert.equal(r.known(SIM), false, "belägget går ut och EPIC:en prövas på Demo igen");
+  assert.equal(r.liveOnly(SIM), false, "efter utgång läses den som Demo-rad tills IG avvisar den igen");
+  rej = new Set([SIM]);
+  assert.equal(r.known(SIM), true, "ny avvisning (kod 21) ger nytt belägg");
+  ok("negativa fall: bara kod 21 är belägg; Demo-instrument med pris aldrig sim; belägg per Demo-konto och går ut efter 6 h");
+}
+
 // ══ 4c) Alla par: en kvot från strömmen uppdaterar kortets pris, idag % och minidiagrammets sista punkt ══
 {
   const vm = await import("node:vm");
@@ -220,6 +246,10 @@ const mkSim = (file: string) => createIgDemoSim({ market: liveMarket as never, g
   assert.equal(card.price, 60_123, "priset följer kvoten"); assert.equal(card.chg, 1.4, "idag % följer kvoten"); assert.equal(card.dirty, true, "kortet ritas om");
   assert.deepEqual(ctx.ppSparkSeries(card.bars, card.livePx, card.liveAt, card.to), [59_900, 60_000, 60_123], "minidiagrammets sista punkt = livepriset");
   assert.deepEqual(ctx.ppSparkSeries([], 1, 2, 0), [], "inget diagram hittas på från ett enda pris");
+  card.dirty = false;
+  assert.equal(ctx.ppApplyQuote(card, { epic: SIM, mid: 60_123, changePct: 1.4, observedAt: 2001 }), false);
+  assert.equal(card.dirty, false, "oförändrad kvot ritar inte om");
+  assert.ok(/sista punkt IG-live/.test(html), "Tiingo-diagram med IG-livepunkt märks ärligt");
   assert.ok(/IG\.on\("quote", q=>\{ ppApplyQuote\(P\[q\.epic\], q\); \}\)/.test(html), "Alla par lyssnar på strömmens kvoter");
   assert.ok(/IG\.want\("allpairs", active\(\) \? \[\.\.\.onScreen\]\.slice\(0, 20\)/.test(html), "högst 20 kort på skärmen prenumererar");
   ok("Alla par livesynk: kvot uppdaterar pris, idag % och sista punkten; högst 20 kort i strömmen");

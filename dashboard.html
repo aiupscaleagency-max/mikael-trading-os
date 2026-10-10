@@ -9567,9 +9567,10 @@ document.addEventListener("DOMContentLoaded", boot);
 function ppApplyQuote(x, q) {
   if (!x || !q) return false;
   var changed = false;
-  if (q.mid != null && isFinite(q.mid)) { if (x.price !== q.mid) changed = true; x.price = q.mid; x.livePx = q.mid; x.liveAt = q.observedAt || Date.now(); }
+  if (q.mid != null && isFinite(q.mid)) { if (x.price !== q.mid || x.livePx !== q.mid) changed = true; x.price = q.mid; x.livePx = q.mid; x.liveAt = q.observedAt || Date.now(); }
   if (q.changePct != null && isFinite(q.changePct)) { if (x.chg !== q.changePct) changed = true; x.chg = q.changePct; }
-  x.dirty = true;
+  // Ritas om bara när något ändrats (datastatus/ålder uppdateras ändå vid nästa ändring)
+  if (changed) x.dirty = true;
   return changed;
 }
 // Minidiagrammets punkter: stängda ljus + det senaste livepriset som pågående punkt (om det är nyare än sista ljuset).
@@ -9748,7 +9749,9 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
     // Livesynk: sista punkten följer IG-strömmens pris (pågående, bara visning)
     const bars = ppSparkSeries(closedBars, x.livePx, x.liveAt, x.to);
     if(lbl) lbl.style.color = x.src && bars.length ? "#f0b90b" : "";
-    if(lbl) lbl.textContent = bars.length ? (x.src ? x.src + " · " : "") + spanText(x) + (x.missing ? " · " + x.missing : "")
+    // Ärlig etikett: på Tiingo-historik är sista punkten IG:s livepris och märks så
+    const liveOnTiingo = !!x.src && bars.length > closedBars.length;
+    if(lbl) lbl.textContent = bars.length ? (x.src ? x.src + (liveOnTiingo ? " · sista punkt IG-live" : "") + " · " : "") + spanText(x) + (x.missing ? " · " + x.missing : "")
       : x.missing ? x.missing : x.loading ? "hämtar diagram…" : "diagram hämtas när kortet syns";
     const w = cv.clientWidth || 220, h = 70, dpr = window.devicePixelRatio || 1;
     if(cv.width !== w*dpr){ cv.width = w*dpr; cv.height = h*dpr; }

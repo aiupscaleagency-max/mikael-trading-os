@@ -303,6 +303,15 @@ export type IgDemoSim = ReturnType<typeof createIgDemoSim>;
 // Belägg: Live-katalogen har EPIC:en OCH (Demo-katalogens sökningar är klara utan den, ELLER IG Demo svarade 404
 // på just den EPIC:en). Delvis katalog, läsgräns eller frånkoppling räknas aldrig som belägg: då går ordern
 // den vanliga IG Demo-vägen (som själv nekar ett instrument som inte finns) eller nekas med klartext.
+/** Belägg att Demo saknar ett instrument gäller så här länge; sedan prövas EPIC:en på Demo igen. */
+export const DEMO_SIM_PROOF_TTL_MS = 6 * 3_600_000;
+/** Lightstreamer onSubscriptionError: bara kod 21 ("bad Group name", dvs. prisposten PRICE:<konto>:<EPIC> finns inte
+ *  på servern; enligt SDK-dokumentationen i lightstreamer-client-node/types.d.ts) räknas som belägg. Andra koder
+ *  (17 = fel Data Adapter, ≤ 0 = Metadata Adapter vägrade, t.ex. gränser/session, 66/68 = serverfel) är inget belägg. */
+export const LS_NOT_FOUND_CODES: readonly number[] = [21];
+export function isNotFoundRejection(e: { code: number | null | undefined } | null | undefined): boolean {
+  return !!e && typeof e.code === "number" && LS_NOT_FOUND_CODES.includes(e.code);
+}
 export interface SimCatalogue { markets: Array<{ epic: string } & Record<string, unknown>>; complete?: boolean; searchCompletedAt?: number | null }
 export interface DemoSimRouterDeps {
   live: (category: "forex" | "crypto") => SimCatalogue | null;
@@ -312,49 +321,60 @@ export interface DemoSimRouterDeps {
   /** IG Demo-strömmen avvisade prisposten för EPIC:en (Lightstreamer-fel): IG säger att Demo saknar priset.
    *  Positivt belägg även om Demo-sökningen listar EPIC:en (prislösa katalograder). */
   demoRejected?: (epic: string) => boolean;
+  /** Inloggat Demo-konto (belägg gäller bara samma konto) */
+  demoAccount?: () => string | null;
   now?: () => number;
 }
 export function createDemoSimRouter(deps: DemoSimRouterDeps) {
-  const missing = new Set<string>(); // IG Demo svarade 404 (positivt belägg)
-  const present = new Set<string>(); // IG Demo har instrumentet
+  // Belägg per Demo-konto och EPIC, med tidsgräns (DEMO_SIM_PROOF_TTL_MS): efter den får EPIC:en prövas på Demo igen.
+  const missingAt = new Map<string, number>(); // IG sa att Demo saknar instrumentet (404 / ogiltig prispost)
+  const presentAt = new Map<string, number>(); // IG Demo gav ett riktigt pris
   const probing = new Map<string, Promise<"exists" | "missing" | "unknown">>();
   const unknownAt = new Map<string, number>(); // "okänt"-svar minns 60 s så att samma EPIC inte läses om hela tiden
   const CATS = ["forex", "crypto"] as const;
   const clock = deps.now ?? Date.now;
+  const acct = () => { try { return deps.demoAccount?.() ?? ""; } catch { return ""; } };
+  const key = (epic: string) => `demo|${acct()}|${epic}`;
+  const fresh = (m: Map<string, number>, epic: string) => { const t = m.get(key(epic)); return t !== undefined && clock() - t < DEMO_SIM_PROOF_TTL_MS; };
+  const isMissing = (epic: string) => fresh(missingAt, epic), isPresent = (epic: string) => fresh(presentAt, epic);
+  const markMissing = (epic: string) => { missingAt.set(key(epic), clock()); presentAt.delete(key(epic)); };
+  const markPresent = (epic: string) => { presentAt.set(key(epic), clock()); missingAt.delete(key(epic)); };
   // Katalogerna (kopior) läses högst var 5:e s till ett uppslagsindex: anropas för varje Live-kvot och i seriesorteringen.
-  type Index = { live: Map<string, Record<string, unknown> & { epic: string }>; demo: Record<"forex" | "crypto", Set<string> | null>; searched: Record<"forex" | "crypto", boolean> };
+  type Index = { live: Map<string, Record<string, unknown> & { epic: string }>; demo: Record<"forex" | "crypto", Set<string> | null>; demoPriced: Set<string>; searched: Record<"forex" | "crypto", boolean> };
   let index: { at: number; value: Index } | null = null;
   function idx(): Index {
     if (index && clock() - index.at < 5_000) return index.value;
     const live = new Map<string, Record<string, unknown> & { epic: string }>();
-    const demo = { forex: null, crypto: null } as Index["demo"], searched = { forex: false, crypto: false };
+    const demo = { forex: null, crypto: null } as Index["demo"], searched = { forex: false, crypto: false }, demoPriced = new Set<string>();
     for (const c of CATS) {
       for (const m of deps.live(c)?.markets ?? []) if (typeof m.epic === "string") live.set(m.epic, { ...m, category: m.category ?? c });
       const d = deps.demo(c);
       demo[c] = d ? new Set(d.markets.map((m) => m.epic)) : null;
+      // Demo-rad med riktigt pris = Demo har instrumentet; den blir aldrig simulering
+      for (const m of d?.markets ?? []) if (finite(m.bid) && finite(m.offer)) demoPriced.add(m.epic);
       searched[c] = !!d && (d.complete === true || finite(d.searchCompletedAt));
     }
-    index = { at: clock(), value: { live, demo, searched } };
+    index = { at: clock(), value: { live, demo, demoPriced, searched } };
     return index.value;
   }
   const catOf = (row: Record<string, unknown>) => (row.category === "crypto" || row.category === "forex" ? row.category : null);
   function liveRow(epic: string) { return idx().live.get(epic) ?? null; }
-  /** IG har sagt att Demo saknar instrumentet (404 eller avvisad prisström). Minns för processen, så att
-   *  avslutad Demo-prenumeration (som raderar felet) inte får instrumentet att växla fram och tillbaka. */
+  /** IG har sagt att Demo saknar instrumentet (404 eller ogiltig prispost). Minns per Demo-konto i DEMO_SIM_PROOF_TTL_MS,
+   *  så att avslutad Demo-prenumeration (som raderar felet) inte får raden att växla; därefter prövas den på Demo igen. */
   function rejected(epic: string): boolean {
-    if (present.has(epic)) return false;
-    if (missing.has(epic)) return true;
+    if (isPresent(epic) || idx().demoPriced.has(epic)) return false;
+    if (isMissing(epic)) return true;
     let r = false; try { r = !!deps.demoRejected?.(epic); } catch { r = false; }
-    if (r) missing.add(epic);
+    if (r) markMissing(epic);
     return r;
   }
-  function inDemo(epic: string): boolean { const i = idx(); return present.has(epic) || (!rejected(epic) && CATS.some((c) => i.demo[c]?.has(epic) === true)); }
+  function inDemo(epic: string): boolean { const i = idx(); return isPresent(epic) || i.demoPriced.has(epic) || (!rejected(epic) && CATS.some((c) => i.demo[c]?.has(epic) === true)); }
   /** Synkront: simuleras EPIC:en (positivt belägg)? */
   function known(epic: string): boolean {
     if (typeof epic !== "string" || inDemo(epic)) return false;
     const row = liveRow(epic);
     if (!row) return false;
-    if (missing.has(epic)) return true;
+    if (isMissing(epic)) return true;
     const cat = catOf(row);
     return cat ? idx().searched[cat] : false;
   }
@@ -365,7 +385,7 @@ export function createDemoSimRouter(deps: DemoSimRouterDeps) {
     if (typeof epic !== "string" || inDemo(epic)) return false;
     const row = liveRow(epic);
     if (!row) return false;
-    if (missing.has(epic)) return true;
+    if (isMissing(epic)) return true;
     const cat = catOf(row);
     return !!cat && idx().demo[cat] !== null;
   }
@@ -376,7 +396,7 @@ export function createDemoSimRouter(deps: DemoSimRouterDeps) {
     if (!job) { job = deps.probeDemo(epic).catch(() => "unknown" as const); probing.set(epic, job); }
     try {
       const r = await job;
-      if (r === "missing") missing.add(epic); else if (r === "exists") present.add(epic); else unknownAt.set(epic, clock());
+      if (r === "missing") markMissing(epic); else if (r === "exists") markPresent(epic); else unknownAt.set(epic, clock());
       return r;
     } finally { probing.delete(epic); }
   }
@@ -395,7 +415,7 @@ export function createDemoSimRouter(deps: DemoSimRouterDeps) {
     const sim: Array<Record<string, unknown> & { epic: string }> = [], unproven: Array<Record<string, unknown> & { epic: string }> = [];
     for (const m of deps.live(category)?.markets ?? []) {
       // Demo-rader som IG avvisat (prislösa sökträffar) ersätts av Live-raden
-      if (typeof m.epic !== "string" || present.has(m.epic) || (have.has(m.epic) && !rejected(m.epic))) continue;
+      if (typeof m.epic !== "string" || isPresent(m.epic) || (have.has(m.epic) && !rejected(m.epic))) continue;
       (known(m.epic) ? sim : unproven).push(m);
     }
     return { sim, unproven };
