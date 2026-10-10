@@ -310,6 +310,12 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   assert.equal(igPlainRate(62000, "CS.D.BITCOIN.CFD.IP"), null);
   assert.equal(igPlainRate(62000, "CS.D.BTCUSD.CFD.IP"), null);
   assert.equal(igPlainRate(null, "CS.D.EURUSD.CEEM.IP"), null);
+  assert.ok(Math.abs((igPlainRate(11198.4, "IX.D.SUNEURUSD.CEE.IP") ?? 0) - 1.11984) < 1e-9, "Weekend EUR/USD i punkter");
+  assert.equal(igPlainRate(2650, "IX.D.SUNGOLD.CEE.IP"), null, "Weekend Spot Gold är inget valutapar");
+  const { igMarketCategory } = await import("../src/integrations/igMarkets.js");
+  assert.equal(igMarketCategory({ instrumentName: "Weekend EUR/USD", instrumentType: "CURRENCIES" }), "forex");
+  assert.equal(igMarketCategory({ instrumentName: "Weekend Spot Gold ($1)", instrumentType: "CURRENCIES" }), null);
+  assert.equal(igMarketCategory({ instrumentName: "Bitcoin Cash/Bitcoin ($1)", instrumentType: "CURRENCIES" }), "crypto");
   assert.ok(isIgTemporaryRateError(new Error(IG_READ_RATE_ERROR)), "läsgränsen ska ge 429 med begripligt besked, inte 500");
   ok("Forex i IG-punkter visas med vanlig kurs bredvid; IG:s läsgräns känns igen som tillfällig (429, försök igen om en minut)");
 }

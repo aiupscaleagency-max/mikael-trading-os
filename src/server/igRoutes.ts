@@ -69,7 +69,7 @@ export function accountView<T extends { currency: string | null; accountType: st
 const PIP4_QUOTES = new Set(["USD", "EUR", "GBP", "CHF", "CAD", "AUD", "NZD", "SGD", "SEK", "NOK", "DKK", "PLN", "ZAR", "MXN", "TRY", "CNH", "HKD"]);
 export function igPlainRate(price: number | null | undefined, epic: string): number | null {
   if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) return null;
-  const m = /^CS\.D\.([A-Z]{3})([A-Z]{3})\./.exec(epic); if (!m) return null;
+  const m = /^(?:CS\.D\.|IX\.D\.SUN)([A-Z]{3})([A-Z]{3})\./.exec(epic); if (!m) return null; // IX.D.SUN… = IG:s helgmarknad (Weekend EUR/USD)
   const [, base, quote] = m as unknown as [string, string, string];
   if (!PIP4_QUOTES.has(base) && base !== "JPY") return null; // inte ett valutapar (t.ex. krypto)
   if (quote === "JPY") return price >= 2000 ? price * 0.01 : null;

@@ -174,7 +174,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     // Tomt eller oklassificerat kategorisvar bevisar inte att kontot saknar marknader.
     if(!discovery&&enabled&&(!enabled.traversalComplete&&enabled.progress.failures<2||enabled.traversalComplete&&enabled.markets.length>0&&enabled.unclassifiedInstruments===0))return enabled;
     const identity=connectionIdentity(mode),key=`${mode}:${identity}:${category}`;
-    let progress=catalogProgress.get(key);const terms=category==='forex'?['Forex',...fiatCodes]:cryptoTerms;
+    let progress=catalogProgress.get(key);const terms=category==='forex'?['Forex',...fiatCodes,'Weekend']:cryptoTerms; // 'Weekend': IG:s helgmarknader (t.ex. Weekend EUR/USD) är öppna lör–sön
     if(!progress||progress.cursor===terms.length&&progress.failed.size===0&&now()-progress.updatedAt>300000){progress={cursor:0,markets:progress?.markets??new Map(),updatedAt:now(),failed:new Map(),reason:null};catalogProgress.set(key,progress);}
     // Delresultat återanvänds när minutbudgeten tar slut. Parallella anrop delar samma hämtning.
     const running=pending.get(`catalog:${key}`);if(running)return clone(await running);
