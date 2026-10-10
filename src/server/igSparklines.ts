@@ -155,7 +155,7 @@ export function createIgSparklines(deps: {
     try { return await job; } finally { pending.delete(key); }
   }
   /**
-   * IG först (oförändrat). Bara när IG:s historikkvot är slut eller IG saknar ljus provas Tiingo,
+   * IG först (oförändrat). När IG inte kan leverera just nu (vilket skäl som helst) provas Tiingo,
    * tydligt märkt "ej IG-pris". Tiingo-svaren lagras i Tiingo-modulens egen cache, aldrig i IG-cachen
    * eller igMarketData, så de når aldrig signaler, strategier eller ordrar.
    */
@@ -163,16 +163,18 @@ export function createIgSparklines(deps: {
     const s = await getIg(env, epic, opts);
     if (s.closes.length || !tiingo) return s;
     const quota = s.error === SPARK_QUOTA_TEXT || /historik saknas/i.test(s.error ?? "");
-    if (!quota && !opts.cacheOnly) return s; // tillfälliga väntelägen (läsgräns, minuttak) och andra fel: ingen reserv
+    // Beslut 2026-10-10 (Mike/koordinatorn): kan IG inte leverera minidiagrammet just nu, oavsett skäl (läsgräns,
+    // minuttak, veckokvot, saknad historik, annat fel), visas Tiingo, märkt "ej IG-pris". Tiingos egna tak gäller
+    // (30/h, 45 min cache, paus efter 429). IG provas först vid varje begäran och vinner så fort IG ger ljus.
     let t: TiingoSeries;
-    try { t = await tiingo.get(epic, nameOf(env, epic), { cacheOnly: !!opts.cacheOnly || !quota }); }
-    catch { return quota ? { ...s, note: "Tiingo-reserven misslyckades" } : s; }
+    try { t = await tiingo.get(epic, nameOf(env, epic), { cacheOnly: !!opts.cacheOnly }); }
+    catch { return { ...s, note: "Tiingo-reserven misslyckades" }; }
     if (t.closes.length) {
       return { epic, env, closes: t.closes, interval: SPARK_INTERVAL, at: t.at, source: "tiingo", error: null,
-        note: quota ? "IG:s historikkvot slut" : undefined, sourceLabel: TIINGO_SPARK_LABEL, tiingoTicker: t.ticker ?? undefined, from: t.from, to: t.to };
+        note: quota ? "IG:s historikkvot slut" : s.error ? "IG kunde inte leverera diagrammet just nu" : undefined, sourceLabel: TIINGO_SPARK_LABEL, tiingoTicker: t.ticker ?? undefined, from: t.from, to: t.to };
     }
     // Ingen reserv: IG:s felmeddelande står kvar oförändrat, Tiingos skäl läggs i note
-    return quota && t.note ? { ...s, note: t.note } : s;
+    return t.note ? { ...s, note: t.note } : s;
   }
   return { get, stats: () => ({ ...stats }), blockedUntil: (env: IgEnvironment) => blockedUntil.get(env) ?? 0 };
 }

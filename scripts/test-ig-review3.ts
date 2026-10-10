@@ -562,11 +562,24 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   assert.equal(igMarketData.closed("CS.D.BITCOIN.CEE.IP", "5m", "live").length, 0, "Tiingo-ljus hamnar aldrig i IG:s ljusserier (signaler/strategier)");
   ok("Tiingo-reserv vid IG-kvotfel: märkt ej IG-pris, batchade kryptoanrop, fx per ticker, 45 min cache, cacheOnly hämtar inte");
 
-  // Tillfälliga IG-hinder (läsgräns/minuttak) ger INGEN Tiingo-reserv
+  // Beslut 2026-10-10: kan IG inte leverera just nu (läsgräns/minuttak/kvot/saknad historik) visas Tiingo, märkt ej IG-pris
   const before = urls.length;
-  const wait = SP.createIgSparklines({ now: () => clock, budget: () => ({ backgroundRemaining: 0 }), signalInterval: () => "1m", persist: false, memory: () => [], name: () => "Solana ($1)", tiingo: ti,
-    candles: async () => { throw new Error("ska inte anropas"); } });
-  const w = await wait.get("live", "CS.D.SOLUSD.CFD.IP"); assert.match(w.error!, /läsgräns/); assert.equal(urls.length, before);
+  let waitBudget = 0;
+  const igBars = [{ close: 150, openTime: clock - 600_000 }, { close: 151, openTime: clock - 300_000 }];
+  const wait = SP.createIgSparklines({ now: () => clock, budget: () => ({ backgroundRemaining: waitBudget }), signalInterval: () => "1m", persist: false, memory: () => [], name: () => "Solana ($1)", tiingo: ti,
+    candles: async () => ({ candles: igBars }) });
+  const w = await wait.get("live", "CS.D.SOLUSD.CFD.IP");
+  assert.equal(w.source, "tiingo", "IG:s läsgräns denna minut → Tiingo-reserv"); assert.equal(w.sourceLabel, T.TIINGO_SPARK_LABEL, "gul etikett ej IG-pris");
+  assert.equal(w.error, null); assert.ok(urls.length >= before, "Tiingo-cache eller ett Tiingo-anrop");
+  // IG levererar senare riktiga ljus → IG vinner (ersätter Tiingo)
+  waitBudget = 5;
+  const w2 = await wait.get("live", "CS.D.SOLUSD.CFD.IP");
+  assert.equal(w2.source, "ig", "IG föredras så fort IG levererar"); assert.deepEqual(w2.closes, [150, 151]); assert.equal(w2.sourceLabel, undefined);
+  // Tiingo används bara av minidiagrammen: aldrig av huvuddiagram, signaler eller order
+  for (const f of fs.readdirSync(path.resolve("src"), { recursive: true }) as string[]) {
+    if (!f.endsWith(".ts") || /tiingoIntraday\.ts$|igSparklines\.ts$/.test(f)) continue;
+    assert.ok(!/tiingoIntraday/.test(fs.readFileSync(path.resolve("src", f), "utf8")), `${f} får inte använda Tiingo-intradag`);
+  }
   // IG svarar utan ljus ("historik saknas") → reserv
   const empty = SP.createIgSparklines({ now: () => clock, budget: () => ({ backgroundRemaining: 5 }), signalInterval: () => "1m", persist: false, memory: () => [], name: () => "Solana ($1)", tiingo: ti,
     candles: async () => ({ candles: [] }) });
@@ -576,7 +589,7 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
     candles: async () => { throw new Error(IG_HISTORY_RATE_ERROR); } });
   const p1 = await pol.get("live", "CS.D.POLUSD.CFD.IP"); assert.equal(p1.error, SP.SPARK_QUOTA_TEXT); assert.match(p1.note!, /Tiingo saknar paret/);
   const n1 = urls.length; await pol.get("demo", "CS.D.POLUSD.CFD.IP"); assert.equal(urls.length, n1, "saknat par provas inte om direkt");
-  ok("Tiingo-reserv bara vid kvotfel/tom historik; läsgräns väntar på IG; saknat par behåller IG:s text");
+  ok("Tiingo-reserv närhelst IG inte kan leverera (även läsgräns); IG vinner när IG levererar; Tiingo bara i minidiagram; saknat par behåller IG:s text");
 
   // Saknad nyckel: inget anrop, IG:s text kvar och "Tiingo-nyckel saknas"
   const noKeyUrls: string[] = [];

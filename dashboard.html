@@ -9687,7 +9687,8 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
   }, { rootMargin: "150px" }) : null;
   function want(e){
     const x = P[e]; if(!x || x.loading) return;
-    if(x.at && Date.now() - x.at < CHART_TTL) return;
+    // Tiingo-reserv (ej IG-pris): fråga igen efter 5 min, så att IG:s egna ljus ersätter den så fort IG kan leverera
+    if(x.at && Date.now() - x.at < (x.src ? 5 * 60000 : CHART_TTL)) return;
     if(!queue.includes(e)) queue.push(e);
     pump();
   }
