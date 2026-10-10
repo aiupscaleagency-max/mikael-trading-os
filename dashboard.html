@@ -2109,6 +2109,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         try {
           var rr = await fetch("/api/pending-orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
             symbol: bestCand.symbol, side: bestCand.side, stakePct: Number(b.dataset.pct), source: "popup: köp ändå",
+            strategyId: (window.OT_STRATEGY && OT_STRATEGY.get()) || undefined,
             takeProfit: bestCand.tp || undefined, stopLoss: bestCand.sl || undefined, horizonSec: bestCand.hz * 60,
             reason: "Ditt val: " + bestCand.name + " poäng " + bestCand.score + " (" + bestCand.reasons.join(", ") + ")" }) });
           var dd = await rr.json().catch(function () { return {}; });
@@ -2826,6 +2827,8 @@ body.app-state-onboard .fc-panel{display:none !important}
         <div><label style="font-size:10px;color:#3fb950">TP-pris (vinst)</label><input type="number" id="ot-tp" step="any" min="0" style="width:100%" /></div>
         <div><label style="font-size:10px;color:#f85149">SL-pris (förlust)</label><input type="number" id="ot-sl" step="any" min="0" style="width:100%" /></div>
       </div>
+      <label style="font-size:10px;color:var(--dim)" title="Valfritt. Väljer du en strategi räknas affärens resultat på den strategin i Strategibiblioteket (separat för Demo och Live).">Strategi (valfritt)</label>
+      <select id="ot-strategy" style="width:100%;margin-bottom:6px"><option value="">Ingen strategi</option></select>
       <label style="font-size:10px;color:var(--dim)" title="Innehavstid: servern stänger IG-positionen när tiden gått (upp till 30 min). Skilt från diagramintervall, analysintervall och sessionslängd.">1 · Innehavstid (hur länge positionen hålls)</label>
       <div class="bet-tf" id="ot-tf" style="margin-bottom:4px">
         <button type="button" data-tf="0" class="active" title="Ingen tidsstängning">Ingen</button>
@@ -9312,6 +9315,8 @@ document.addEventListener("DOMContentLoaded", boot);
     }
     if(typeof STATE !== "undefined" && STATE.killActive){ alert("Kill switch är aktiverad. Inga nya positioner."); return; }
     const body = { symbol: s, side, stakePct: pct(), source: "orderpanel", orderType: otType };
+    const strategyId = window.OT_STRATEGY ? OT_STRATEGY.get() : "";
+    if(strategyId) body.strategyId = strategyId;
     if(otType === "LIMIT"){
       const p = parseFloat($("ot-price").value);
       if(!(p > 0)){ alert("Skriv ett limitpris, eller välj Market."); return; }
@@ -10615,6 +10620,32 @@ window.IGS = (function(){
       else if(w) w.close();
     }catch(e){ if(w) w.close(); document.getElementById("tl-prt-note").textContent = "Kunde inte läsa PRT-adressen: " + e.message; }
   });
+})();
+</script>
+<script>
+// F1: valfri strategi för nya ordrar (orderpanelen och "Köp ändå" i popupen). Senaste val sparas per miljö.
+window.OT_STRATEGY = (function(){
+  var list = [];
+  function env(){ return (window.IG && IG.st && IG.st.env) === "live" ? "live" : "demo"; }
+  function key(){ return "ot-strategy-" + env(); }
+  function saved(){ try { return localStorage.getItem(key()) || ""; } catch (e) { return ""; } }
+  function save(v){ try { if (v) localStorage.setItem(key(), v); else localStorage.removeItem(key()); } catch (e) { /* utan lagring: valet glöms */ } }
+  function el(){ return document.getElementById("ot-strategy"); }
+  function render(){
+    var sel = el(); if (!sel) return;
+    var esc = (window.IG && IG.esc) || function (t) { return String(t); };
+    sel.innerHTML = '<option value="">Ingen strategi</option>' + list.map(function (x) { return '<option value="' + esc(x.id) + '">' + esc(x.name || x.id) + '</option>'; }).join("");
+    var v = saved();
+    sel.value = list.some(function (x) { return x.id === v; }) ? v : "";
+  }
+  function load(){
+    fetch("/api/strategy-library").then(function (r) { return r.json(); }).then(function (d) { list = (d && d.strategies) || []; render(); }).catch(function () { render(); });
+  }
+  function get(){ var sel = el(); return sel && sel.value ? sel.value : ""; }
+  document.addEventListener("change", function (e) { if (e.target && e.target.id === "ot-strategy") save(e.target.value); });
+  if (window.IG && IG.on) IG.on("env", render);
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", load); else load();
+  return { get: get, reload: load };
 })();
 </script>
 </body>

@@ -120,6 +120,18 @@ const lib = (env: "demo" | "live") => strategyLibrary({ pdfRoot: tmp }).strategi
   ok("F1: strategi-id följer ordern och visas per miljö i Strategibiblioteket");
 }
 
+// ══ F1: Strategi-val i orderpanelen och popupens "Köp ändå" skickar strategyId ══
+{
+  const dash = fs.readFileSync(path.resolve("dashboard.html"), "utf8");
+  assert.match(dash, /<select id="ot-strategy"[^>]*><option value="">Ingen strategi<\/option><\/select>/, "orderpanelen har valet Strategi med Ingen strategi som standard");
+  const submit = dash.slice(dash.indexOf('source: "orderpanel"'), dash.indexOf('source: "orderpanel"') + 400);
+  assert.match(submit, /if\(strategyId\) body\.strategyId = strategyId;/, "orderpanelens POST-body får strategyId");
+  assert.match(dash, /source: "popup: köp ändå",\s*strategyId: \(window\.OT_STRATEGY && OT_STRATEGY\.get\(\)\) \|\| undefined,/, "popupens Köp ändå skickar strategyId");
+  assert.match(dash, /"ot-strategy-" \+ env\(\)/, "senaste val sparas per miljö");
+  assert.match(dash, /function saved\(\)\{ try \{ return localStorage\.getItem/, "localStorage läses inom try/catch");
+  ok("F1: Strategi-val i orderpanelen och Köp ändå skickar strategyId, sparat per miljö");
+}
+
 // ══ F4: "Fråga agenten" i varje sidhuvud ══
 {
   const html = fs.readFileSync(path.resolve("dashboard.html"), "utf8");
