@@ -198,6 +198,14 @@ export class IgBroker implements BrokerAdapter {
     if (!opts.fresh) this.positionsJob = job;
     try { return (await job).map((p) => ({ ...p })).concat(this.simPositions()); } finally { if (this.positionsJob === job) this.positionsJob = null; }
   }
+  /** Senast lästa positioner oavsett ålder (samma IG-session), utan IG-anrop. Agenterna använder dem märkta
+   *  "cachad" när IG:s läsgräns stoppar en färsk läsning. null = inga lästa ännu. Order läser alltid färskt. */
+  lastKnownPositions(): { at: number; positions: Position[] } | null {
+    const c = this.positionsCache;
+    const gen = this.status().connectionGeneration ?? null;
+    if (!c || c.gen !== gen) return null;
+    return { at: c.at, positions: c.value.map((p) => ({ ...p })).concat(this.simPositions()) };
+  }
   /** Glöm cachen (efter en order/stängning). */
   invalidatePositions(): void { this.positionsCache = null; this.accountCache = null; }
 

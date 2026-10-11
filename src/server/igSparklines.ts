@@ -5,6 +5,7 @@ import { getIgReadBudget, IG_HISTORY_RATE_ERROR, IG_HISTORY_BLOCK_MS, type IgEnv
 import { getIgCandles } from "../integrations/igMarkets.js";
 import { igMarketData } from "./igMarketData.js";
 import { tiingoIntraday, TIINGO_SPARK_LABEL, type TiingoSeries } from "./tiingoIntraday.js";
+import { igAnalysisActive, IG_ANALYSIS_PAUSE_TEXT } from "../integrations/igAnalysisGate.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Minidiagram för korten på Alla par — skonsamt mot IG:s historikkvot.
@@ -55,7 +56,10 @@ export function createIgSparklines(deps: {
   tiingo?: { get: (epic: string, name: string | null | undefined, opts?: { cacheOnly?: boolean }) => Promise<TiingoSeries> } | null;
   /** Instrumentnamn (för att mappa EPIC → Tiingo-ticker) */
   name?: (env: IgEnvironment, epic: string) => string | null;
+  /** Analys pågår i miljön: inga IG-hämtningar och inga nya Tiingo-anrop (bara cache), se igAnalysisGate. */
+  paused?: (env: IgEnvironment) => boolean;
 } = {}) {
+  const paused = deps.paused ?? igAnalysisActive;
   const candles = deps.candles ?? (getIgCandles as unknown as CandlesFn);
   const budget = deps.budget ?? getIgReadBudget;
   const memory = deps.memory ?? ((epic, iv, env) => igMarketData.closed(epic, iv, env));
@@ -106,6 +110,8 @@ export function createIgSparklines(deps: {
   }
   /** Varför en IG-hämtning inte får göras just nu (null = får hämta). */
   function blockReason(env: IgEnvironment): string | null {
+    // Analys har förtur: agenterna får IG-läsbudgeten medan de analyserar i miljön
+    if (paused(env)) return "diagram " + IG_ANALYSIS_PAUSE_TEXT;
     if (now() < (blockedUntil.get(env) ?? 0)) return SPARK_QUOTA_TEXT;
     const a = allowance.get(env);
     if (a !== undefined && (a.left < SPARK_ALLOWANCE_RESERVE || (a.total !== null && a.left < a.total * SPARK_ALLOWANCE_SHARE))) return SPARK_QUOTA_TEXT;
@@ -167,7 +173,8 @@ export function createIgSparklines(deps: {
     // minuttak, veckokvot, saknad historik, annat fel), visas Tiingo, märkt "ej IG-pris". Tiingos egna tak gäller
     // (30/h, 45 min cache, paus efter 429). IG provas först vid varje begäran och vinner så fort IG ger ljus.
     let t: TiingoSeries;
-    try { t = await tiingo.get(epic, nameOf(env, epic), { cacheOnly: !!opts.cacheOnly }); }
+    // Under analys: bara Tiingo-cachen, så att agenterna får Tiingos anropsutrymme
+    try { t = await tiingo.get(epic, nameOf(env, epic), { cacheOnly: !!opts.cacheOnly || paused(env) }); }
     catch { return { ...s, note: "Tiingo-reserven misslyckades" }; }
     if (t.closes.length) {
       return { epic, env, closes: t.closes, interval: SPARK_INTERVAL, at: t.at, source: "tiingo", error: null,

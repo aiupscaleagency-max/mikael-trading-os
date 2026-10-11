@@ -9,6 +9,7 @@ import { searchNews, getRedditTop } from "../data/news.js";
 import type { OrderRequest, OrderResult, Position } from "../types.js";
 import type { Config } from "../config.js";
 import { log } from "../logger.js";
+import { igAgentData, igEnvOf } from "../server/igAgentData.js";
 
 // Verktygen som Claude kan anropa. Varje verktyg har en JSON-schema-
 // definition som skickas till API:et, plus en handler som faktiskt kör.
@@ -71,6 +72,14 @@ export const TOOLS: Record<string, ToolDef> = {
       input_schema: { type: "object", properties: {} },
     },
     handler: async (_input, ctx) => {
+      // IG: läsgräns får aldrig krascha verktyget; strömmens ACCOUNT-fält används då (märkt cachad)
+      const igEnv = ctx.broker instanceof IgBroker ? igEnvOf(ctx.broker) : null;
+      if (igEnv) {
+        const r = await igAgentData.account(igEnv, () => ctx.broker.getAccount());
+        if (!r.account) return { environment: igEnv === "live" ? "IG Live" : "IG Demo", källa: r.source, error: "Saldot kunde inte läsas just nu" };
+        const a = r.account;
+        return { environment: igEnv === "live" ? "IG Live" : "IG Demo", källa: r.source, currency: a.currency ?? null, balance: a.balance ?? null, available: a.available ?? null, profitLoss: a.profitLoss ?? null };
+      }
       const account = await ctx.broker.getAccount();
       if (account.currency) {
         // IG: pengar i kontovalutan, aldrig märkta som USDT
@@ -95,11 +104,21 @@ export const TOOLS: Record<string, ToolDef> = {
       input_schema: { type: "object", properties: {} },
     },
     handler: async (_input, ctx) => {
-      const positions = await ctx.broker.getPositions();
+      // IG: vid läsgräns används senast kända positioner (märkt cachad) i stället för ett fel
+      let igSource: string | null = null;
+      let positions: Position[];
+      if (ctx.broker instanceof IgBroker) {
+        const b = ctx.broker;
+        const r = await igAgentData.positions(() => b.getPositions(), () => b.lastKnownPositions());
+        if (!r.positions) return { källa: r.source, error: "Positionerna kunde inte läsas just nu" };
+        positions = r.positions; igSource = r.source;
+        if (!positions.length) return { källa: igSource, positions: [] };
+      } else positions = await ctx.broker.getPositions();
       if (positions.some((p) => p.dealId)) {
         // IG: P/L från IG:s regler (riktning + punktvärde) i kontovalutan; saknas = null, aldrig gissat
-        return positions.map((p) => ({ epic: p.symbol, name: p.name ?? p.symbol, direction: p.direction === "SELL" ? "KORT" : "LÅNG", size: p.quantity, entry: p.avgEntryPrice, current: p.currentPrice,
+        const rows = positions.map((p) => ({ epic: p.symbol, name: p.name ?? p.symbol, direction: p.direction === "SELL" ? "KORT" : "LÅNG", size: p.quantity, entry: p.avgEntryPrice, current: p.currentPrice,
           pnl: p.pnlVerified ? Number(p.unrealizedPnlUsdt.toFixed(2)) : null, currency: p.pnlCurrency ?? null, stopLoss: p.stopLevel ?? null, takeProfit: p.limitLevel ?? null, dealId: p.dealId }));
+        return igSource ? { källa: igSource, positions: rows } : rows;
       }
       // Berika med entry-pris från memory state
       const enriched = positions.map((p) => {
@@ -133,7 +152,14 @@ export const TOOLS: Record<string, ToolDef> = {
       },
     },
     handler: async (input, ctx) => {
-      return await ctx.broker.getTicker(str(input, "symbol"));
+      const symbol = str(input, "symbol");
+      // IG: IG-strömmens pris först (inget REST-anrop), sedan IG REST med förtur, sist Tiingo (märkt ej IG-pris)
+      const igEnv = ctx.broker instanceof IgBroker ? igEnvOf(ctx.broker) : null;
+      if (igEnv) {
+        const t = await igAgentData.ticker(igEnv, symbol, () => ctx.broker.getTicker(symbol));
+        return { symbol, källa: t.source, price: t.price, bid: t.bid ?? null, offer: t.offer ?? null, changePct: t.changePct24h, prisålderSek: t.ageSec ?? null, ...(t.note ? { obs: t.note } : {}) };
+      }
+      return await ctx.broker.getTicker(symbol);
     },
   },
 
@@ -163,11 +189,26 @@ export const TOOLS: Record<string, ToolDef> = {
       const symbol = str(input, "symbol");
       const interval = str(input, "interval");
       const limit = optNum(input, "limit") ?? 100;
-      const klines = await ctx.broker.getKlines(symbol, interval, limit);
+      // IG: ljus ur IG-minnet → IG REST (om kvot och budget finns) → Tiingo (märkt ej IG-pris). Källan står alltid i svaret.
+      const igEnv = ctx.broker instanceof IgBroker ? igEnvOf(ctx.broker) : null;
+      let sourceInfo: Record<string, unknown> = {};
+      let klines: Awaited<ReturnType<BrokerAdapter["getKlines"]>>;
+      if (igEnv) {
+        const r = await igAgentData.klines(igEnv, symbol, interval, limit, () => ctx.broker.getKlines(symbol, interval, limit));
+        const live = r.igLive ? { pris: +r.igLive.price.toPrecision(8), källa: r.igLive.source, ålderSek: r.igLive.ageSec } : null;
+        if (!r.klines.length) return { symbol, interval, källa: "ingen", error: `Inga ljus för ${interval}: ${r.note ?? "okänt skäl"}`, senastePrisIgLive: live };
+        klines = r.klines;
+        sourceInfo = {
+          källa: r.source,
+          senastePrisIgLive: live,
+          ...(r.sourceKey === "tiingo" ? { obs: `Indikatorerna bygger på Tiingo (ej IG-pris)${r.deviationPct != null ? `, sista stängning avviker ${r.deviationPct} % från IG-livepriset` : ""}. Ordrar prissätts alltid av IG.${r.note ? ` (${r.note})` : ""}` } : r.note ? { obs: r.note } : {}),
+        };
+      } else klines = await ctx.broker.getKlines(symbol, interval, limit);
       const indicators = computeIndicators(klines);
       return {
         symbol,
         interval,
+        ...sourceInfo,
         candlesAnalyzed: klines.length,
         indicators,
         // Skicka även de senaste 5 candlesarna så Claude ser formen
@@ -552,8 +593,20 @@ export const TOOLS: Record<string, ToolDef> = {
       // M4: bara turens egen miljö. Den andra IG-miljön läses aldrig (ingen Live-inloggning under en Demo-tur).
       for (const [name, broker] of Object.entries(ctx.brokers).filter(([, b]) => b === ctx.broker)) {
         try {
-          const account = await broker.getAccount();
-          const positions = await broker.getPositions();
+          // IG: läsgräns → strömmens saldo och senast kända positioner (märkt cachad), aldrig ett krasch-fel
+          let account: Awaited<ReturnType<BrokerAdapter["getAccount"]>>;
+          let positions: Position[];
+          if (broker instanceof IgBroker && igEnvOf(broker)) {
+            const env = igEnvOf(broker)!;
+            const a = await igAgentData.account(env, () => broker.getAccount());
+            const p = await igAgentData.positions(() => broker.getPositions(), () => broker.lastKnownPositions());
+            if (!a.account || !p.positions) throw new Error(`${!a.account ? `saldo ${a.source}` : ""}${!a.account && !p.positions ? "; " : ""}${!p.positions ? `positioner ${p.source}` : ""}`);
+            account = a.account; positions = p.positions;
+            if (/cachad/.test(a.source + p.source)) summary.push({ broker: name, mode: "källa", account: { totalValueUsdt: 0 }, positions: [{ källa: `saldo: ${a.source}; positioner: ${p.source}` }] });
+          } else {
+            account = await broker.getAccount();
+            positions = await broker.getPositions();
+          }
           summary.push({
             broker: name,
             mode: broker.mode,

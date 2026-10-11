@@ -3,6 +3,7 @@
 // Analys/sessioner ligger i vårt eget agentflöde (JEV → Teknisk + Risk → Hanna).
 import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igFxIsFresh,igPairQuote,igStaleFx,igFxPlausibility,FX_STALE_MAX_MS,type IgAccountFx} from "./igRules.js";
 import {callIgAuthenticated,getIgReadBudget,isIgTemporaryRateError,getIgStatus,type IgEnvironment} from "./igConnection.js";
+import {igAnalysisActive} from "./igAnalysisGate.js";
 import fs from "node:fs";
 import path from "node:path";
 import {dataPath} from "../dataDir.js";
@@ -43,7 +44,9 @@ export function normalizeIgCandles(prices:unknown,timeframe:IgTimeframe,now:numb
   candles.sort((a,b)=>a.openTime-b.openTime);
   return {candles,rejected,forming};
 }
-export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:typeof getIgStatus;now?:()=>number}={}) {
+export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:typeof getIgStatus;now?:()=>number;paused?:(mode:IgEnvironment)=>boolean}={}) {
+  // Analys har förtur: katalogens läsningar pausas i miljön medan agenterna analyserar (igAnalysisGate).
+  const paused=deps.paused??igAnalysisActive;
   const call=deps.call??callIgAuthenticated,status=deps.status??getIgStatus,now=deps.now??Date.now;
   const cache=new Map<string,{at:number,value:any}>(),pending=new Map<string,Promise<any>>();
   const fixtureReads:{environment:IgEnvironment;at:number}[]=[];
@@ -51,6 +54,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
   let lastBudgetWarn=0;
   function catalogueBudget(mode:IgEnvironment,category:'forex'|'crypto'|null=null){
     while(catalogueReads.length&&now()-catalogueReads[0]!.at>=60000)catalogueReads.shift();
+    if(paused(mode))return false;
     const global=readBudget(mode);
     // Katalogen får alltid en egen liten andel (högst 10 läsningar per minut) så länge det finns bakgrundsutrymme utöver orderreserven.
     // Tidigare krav (fler än 2 lediga + under 36 i hela appen) gjorde att katalogen aldrig kom igång när orderavstämningen låg på samma sekund.

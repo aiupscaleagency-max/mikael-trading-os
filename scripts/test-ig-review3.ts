@@ -577,7 +577,8 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   assert.equal(w2.source, "ig", "IG föredras så fort IG levererar"); assert.deepEqual(w2.closes, [150, 151]); assert.equal(w2.sourceLabel, undefined);
   // Tiingo används bara av minidiagrammen: aldrig av huvuddiagram, signaler eller order
   for (const f of fs.readdirSync(path.resolve("src"), { recursive: true }) as string[]) {
-    if (!f.endsWith(".ts") || /tiingoIntraday\.ts$|igSparklines\.ts$/.test(f)) continue;
+    // Beslut 2026-10-11: agenternas analysverktyg (igAgentData.ts) får använda Tiingo som märkt research-reserv
+    if (!f.endsWith(".ts") || /tiingoIntraday\.ts$|igSparklines\.ts$|igAgentData\.ts$/.test(f)) continue;
     assert.ok(!/tiingoIntraday/.test(fs.readFileSync(path.resolve("src", f), "utf8")), `${f} får inte använda Tiingo-intradag`);
   }
   // IG svarar utan ljus ("historik saknas") → reserv
@@ -622,7 +623,12 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   const importers: string[] = [];
   const walk = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walk(p); else if (/\.ts$/.test(f.name) && /tiingoIntraday/.test(fs.readFileSync(p, "utf8"))) importers.push(path.relative(path.resolve("src"), p)); } };
   walk(path.resolve("src"));
-  assert.deepEqual(importers.sort(), ["server/igSparklines.ts", "server/tiingoIntraday.ts"], "Tiingo-intradag används bara för minidiagram");
+  assert.deepEqual(importers.sort(), ["server/igAgentData.ts", "server/igSparklines.ts", "server/tiingoIntraday.ts"], "Tiingo-intradag används bara för minidiagram och agenternas analys");
+  // Agenternas Tiingo-väg når aldrig order, signaler, strategier, IG:s ljusserier eller huvuddiagrammet
+  for (const f of ["integrations/igOrders.ts", "server/orderGate.ts", "brokers/ig.ts", "server/signalEngine.ts", "server/strategyRunner.ts", "server/igMarketData.ts", "server/igRoutes.ts", "server/api.ts", "server/candleSource.ts"]) {
+    const src = fs.readFileSync(path.resolve("src", f), "utf8");
+    assert.ok(!/igAgentData|tiingoIntraday|createTiingoBars/.test(src), `${f} får inte använda agenternas Tiingo-reserv`);
+  }
   const routes = fs.readFileSync(path.resolve("src/server/igRoutes.ts"), "utf8");
   assert.ok(!/tiingoIntraday|TIINGO_SPARK/.test(routes.slice(routes.indexOf('"/api/market/klines"'))), "huvuddiagrammets klines blandas aldrig med Tiingo");
   ok("Tiingo-intradag är endast visning: aldrig i signaler, strategier, ordrar eller huvuddiagrammets IG-ljus");

@@ -8,6 +8,7 @@ import { getIgMarket, getIgCandles, searchIgMarkets, igMarketCategory, type IgTi
 import { igStreaming } from "../integrations/igStreaming.js";
 import { tickIgOrders } from "../integrations/igOrders.js";
 import { tickIgCatalogues } from "../integrations/igMarketDirectory.js";
+import { igAnalysisActive } from "../integrations/igAnalysisGate.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // IG-marknadsdata för hela servern (ersätter Bybit/Binance-strömmarna).
@@ -74,6 +75,8 @@ export function createIgMarketData(deps: {
   // Senaste REST-snapshotens fördröjningsbesked per "env|epic", bundet till strömmens sessionsgeneration.
   const delayEvidence = new Map<string, { delayTime: number | null; streamingPricesAvailable: boolean | null; generation: string | null; at: number }>();
   const lastRestTry = new Map<string, number>(); // "env|epic" → senaste REST-reservläsning
+  // Senaste ACCOUNT-uppdateringen från IG-strömmen per miljö (saldo, tillgängligt, P/L). Läses av agenterna när REST är begränsat.
+  const streamAccounts = new Map<IgEnvironment, { profitLoss: number | null; available: number | null; balance: number | null; margin: number | null; equity: number | null; at: number }>();
   let signalInterval = "1m";
   const k = (env: IgEnvironment, epic: string, iv?: string) => iv ? `${env}|${epic}|${iv}` : `${env}|${epic}`;
   // Demo-simulering: bevakade EPICs som bara finns på IG Live hämtar pris/ljus från Live (läsning), aldrig från Demo.
@@ -323,6 +326,8 @@ export function createIgMarketData(deps: {
     try { await restFallbackOnce(env); } finally { restFallbackBusy.delete(env); }
   }
   async function restFallbackOnce(env: IgEnvironment): Promise<void> {
+    // Analys har förtur: bevakningslistans REST-reserv väntar medan agenterna analyserar i miljön
+    if (igAnalysisActive(env)) return;
     let b: { backgroundRemaining: number };
     try { b = budget(env); } catch { return; }
     if (!(b.backgroundRemaining >= REST_FALLBACK_MIN_BACKGROUND)) return;
@@ -381,7 +386,7 @@ export function createIgMarketData(deps: {
     ["quote", (env: IgEnvironment, q: any) => onQuote(env, q)],
     ["candle", (env: IgEnvironment, c: any) => onCandle(env, c)],
     ["status", (env: IgEnvironment, s: any) => events.emit("stream-status", env, s)],
-    ["account", (env: IgEnvironment, a: any) => events.emit("account", env, a)],
+    ["account", (env: IgEnvironment, a: any) => { if (a && typeof a === "object") streamAccounts.set(env, { ...a, at: now() }); events.emit("account", env, a); }],
     ["trade", (env: IgEnvironment, t: any) => events.emit("trade", env, t)],
   ];
   async function tick(): Promise<void> {
@@ -443,6 +448,8 @@ export function createIgMarketData(deps: {
     quote: (epic: string, env = activeEnv) => quotes.get(k(env, epic)) ?? null,
     quotes: (env = activeEnv) => [...quotes.entries()].filter(([key]) => key.startsWith(`${env}|`)).map(([, q]) => q),
     setRestQuote, dataState, restFallback,
+    /** Senaste kontouppdateringen från IG-strömmen (ingen REST-läsning). null = ingen än. */
+    streamAccount: (env: IgEnvironment) => { const a = streamAccounts.get(env); return a ? { ...a } : null; },
     streamStatus: (env = activeEnv) => stream.summary(env),
     /** Avvisade strömposter med IG:s kod/text (billig; bygger ingen sammanfattning). */
     streamFailed: (env: IgEnvironment) => ((stream as { failedKeys?: (m: IgEnvironment) => Array<{ key: string; code: number | null; message: string | null; at: number }> }).failedKeys?.(env) ?? []),

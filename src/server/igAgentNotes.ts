@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { dataPath } from "../dataDir.js";
+import { sortTips, type AgentTip } from "../orchestrator/headTips.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Agenternas senaste besked per instrument (Alla par + Agentsessioner).
@@ -25,7 +26,16 @@ export interface AgentNote {
   /** Teknisk analytiker: riktning, poäng och nyckelsignaler, kort */
   technical: string | null;
   trigger: string | null;
+  /** Hannas konkreta tips (rang, KÖP/SÄLJ/AVVAKTA, entry/TP/SL, storlek, horisont, säkerhet). Saknas i äldre anteckningar. */
+  tip?: AgentTip | null;
+  /** Analysomgången anteckningen hör till (agentsessionens id eller analysens start), för "Bästa först" över omgångar */
+  runId?: string | null;
 }
+
+// Pågående agentsession sätter sitt id här, så att alla dess omgångar räknas som EN analys i topplistan.
+let currentRunId: string | null = null;
+export function setNotesRunId(id: string | null): void { currentRunId = id; }
+export function notesRunId(): string | null { return currentRunId; }
 
 export interface TechnicalLike { symbol: string; bias?: string; score?: number; keySignals?: string[] }
 export interface PickLike { symbol: string; action: string; confidence?: string; reasoning?: string }
@@ -56,6 +66,7 @@ export function technicalText(t: TechnicalLike | undefined): string | null {
 export function buildAgentNotes(p: {
   env: NoteEnv; symbols: string[]; picks: PickLike[]; technical: TechnicalLike[]; summary?: string; trigger?: string | null;
   nameOf?: (epic: string) => string | null; at?: string;
+  tips?: AgentTip[]; runId?: string | null;
 }): AgentNote[] {
   const at = p.at ?? new Date().toISOString();
   return [...new Set(p.symbols)].filter((e) => typeof e === "string" && e).map((epic) => {
@@ -68,6 +79,8 @@ export function buildAgentNotes(p: {
       verdict: pick?.reasoning ? String(pick.reasoning).slice(0, 320) : holdExcerpt(p.summary, epic, p.nameOf?.(epic) ?? null),
       technical: technicalText(tech),
       trigger: p.trigger ?? null,
+      ...(p.tips ? { tip: p.tips.find((t) => t.epic === epic) ?? null } : {}),
+      ...(p.runId ? { runId: p.runId } : {}),
     };
   });
 }
@@ -112,7 +125,17 @@ export function createAgentNotes(deps: { file?: (env: NoteEnv) => string; persis
     for (const [k, v] of m) if (!epics || epics.includes(k)) out[k] = v;
     return out;
   }
-  return { record, get };
+  /** Agenternas topplista: senaste analysomgången (alla dess omgångar), bästa först. Bara anteckningar med tips. */
+  function top(env: NoteEnv): { runId: string | null; at: string | null; items: AgentNote[] } {
+    const withTip = [...load(env).values()].filter((n) => n.tip);
+    if (!withTip.length) return { runId: null, at: null, items: [] };
+    const latest = withTip.reduce((a, b) => (a.at >= b.at ? a : b));
+    const run = latest.runId ?? null;
+    const items = withTip.filter((n) => (run ? n.runId === run : n.at === latest.at));
+    const ranked = sortTips(items.map((n) => ({ ...n.tip!, note: n }))).map((x) => x.note);
+    return { runId: run, at: latest.at, items: ranked };
+  }
+  return { record, get, top };
 }
 
 export const agentNotes = createAgentNotes();

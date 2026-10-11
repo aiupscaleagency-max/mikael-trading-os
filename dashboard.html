@@ -2947,6 +2947,8 @@ body.app-state-onboard .fc-panel{display:none !important}
     </div>
     <div id="pp-status" class="pp-status"></div>
   </div>
+  <!-- Agenternas topplista: Hannas tips från senaste analysen, bästa först (/api/ig/agent-top). Knappen fyller bara orderpanelen. -->
+  <div id="pp-top" class="pp-topbox" style="display:none"></div>
   <div id="pp-grid" class="pp-grid"><div style="padding:20px;color:var(--dim)">Laddar par…</div></div>
   <div style="margin:0 24px 24px"><button type="button" id="pp-more" class="pp-btn" style="display:none">Visa fler</button></div>
 </section>
@@ -9503,6 +9505,13 @@ document.addEventListener("DOMContentLoaded", boot);
 #page-pairs .pp-btn:disabled{opacity:.45;cursor:not-allowed}
 #page-pairs .pp-chip{font-size:11px;font-weight:800;letter-spacing:.5px;padding:4px 10px;border-radius:4px;border:1px solid var(--border)}
 #page-pairs .pp-status{font-size:12px;min-height:16px}
+#page-pairs .pp-topbox{margin:0 24px 12px;border:1px solid #3fb950;border-radius:8px;padding:10px 12px;background:rgba(63,185,80,.05)}
+#page-pairs .pp-topbox h3{margin:0 0 6px;font-size:14px;color:#fff;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+#page-pairs .pp-topbox table{width:100%;border-collapse:collapse;font-size:12px}
+#page-pairs .pp-topbox td,#page-pairs .pp-topbox th{padding:3px 6px;text-align:left;vertical-align:top;border-top:1px solid var(--border)}
+#page-pairs .pp-topbox th{font-size:10px;color:var(--dim);text-transform:uppercase;border-top:none}
+.agtip-btn{padding:3px 8px;border:1px solid #fbbf24;background:transparent;color:#fbbf24;border-radius:5px;font-weight:700;cursor:pointer;font-size:11px;white-space:nowrap}
+.pp-tip{display:block;margin-top:2px;color:#e2e8f0}
 #page-pairs .pp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;margin:0 24px 24px}
 .pp-col{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;min-width:0}
 .pp-col.pp-sel{border-color:var(--cyan)}
@@ -9813,6 +9822,21 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
       if(d.env && d.env !== IG.st.env) return;
       notes = d.notes || {}; paintAgents();
     }catch(_){}
+    loadTop();
+  }
+  // Agenternas topplista: Hannas tips från senaste analysen (alla omgångar i en session), bästa först
+  async function loadTop(){
+    const box = $("pp-top"); if(!box || !window.AGTIP) return;
+    try{
+      const d = await (await fetch("/api/ig/agent-top")).json();
+      if(d.env && d.env !== IG.st.env) return;
+      const items = d.items || [];
+      if(!items.length){ box.style.display = "none"; box.innerHTML = ""; return; }
+      const t = d.at ? new Date(d.at).toLocaleString("sv-SE", { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" }) : "";
+      box.style.display = "";
+      box.innerHTML = `<h3>🏆 Agenternas topplista <span style="font-size:11px;font-weight:600;color:var(--dim)">Bästa först · senaste analysen ${esc(t)} · ${esc(d.label || IG.envLabel())} · knappen fyller bara orderpanelen, inget skickas utan Godkänn</span></h3>`
+        + AGTIP.table(items.map(n=>({ ...n.tip, name: n.name || IG.label(n.epic) })));
+    }catch(_){}
   }
   function paintAgents(){
     const picks = (lastAnalysis && lastAnalysis.picks) || [];
@@ -9826,7 +9850,8 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
         const t = n.at ? new Date(n.at).toLocaleString("sv-SE", { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" }) : "";
         el.innerHTML = `<span class="pp-k">Agenterna (senaste analys)</span><b style="color:${col2}">${esc(ACTION[n.action] || n.action)}</b>${n.confidence ? " · säkerhet " + esc({low:"låg",medium:"medel",high:"hög"}[n.confidence] || n.confidence) : ""} <span style="color:var(--dim);font-size:10px">${esc(t)}</span>`
           + `<br><span style="color:#c9d1d9"><b style="color:var(--dim);font-weight:700">Hanna:</b> ${esc(String(n.verdict || "").slice(0,220))}</span>`
-          + (n.technical ? `<br><span style="color:var(--dim)"><b style="font-weight:700">Teknisk analytiker:</b> ${esc(String(n.technical).slice(0,160))}</span>` : "");
+          + (n.technical ? `<br><span style="color:var(--dim)"><b style="font-weight:700">Teknisk analytiker:</b> ${esc(String(n.technical).slice(0,160))}</span>` : "")
+          + (n.tip && window.AGTIP ? `<span class="pp-tip"><b style="color:var(--dim);font-weight:700">AGENTERNA tipsar:</b> ${AGTIP.line(n.tip)}${AGTIP.button(n.tip)}</span>` : "");
         return;
       }
       const p = picks.find(q=>q.symbol === e);
@@ -10380,6 +10405,66 @@ window.MK = (function(){
 </script>
 
 <script>
+/* Agenternas tips (Hanna, Mike 2026-10-11): visning på Alla par-korten, topplistan och Agentsessioner,
+   plus "Öppna i orderpanelen" som bara FYLLER orderpanelen på Trade (utkast). Inget skickas: du trycker
+   Köp/Sälj och sedan Godkänn som vanligt. Ordern prissätts av IG. */
+window.AGTIP = (function(){
+  const esc = IG.esc;
+  const ACT = { buy:"KÖP", sell:"SÄLJ", hold:"AVVAKTA" };
+  const COL = { buy:"#3fb950", sell:"#f85149", hold:"#8b95a7" };
+  const CONF = { low:"låg", medium:"medel", high:"hög" };
+  const CS = { low:1, medium:2, high:3 };
+  const reg = {};
+  const px = (v)=> v == null ? "–" : (IG.px ? IG.px(v) : String(v));
+  function score(t){ return (t.action === "hold" ? 0 : 1000) + (CS[t.confidence] || 1) * 100 - Math.min(99, t.rank || 99); }
+  function sort(list){ return [...list].sort((a, b)=>score(b) - score(a)); }
+  function line(t){
+    if(!t) return "";
+    const lv = [t.entry != null ? `entry ${px(t.entry)}` : "", t.takeProfit != null ? `TP ${px(t.takeProfit)}` : "", t.stopLoss != null ? `SL ${px(t.stopLoss)}` : ""].filter(Boolean).join(" · ");
+    return `<b>#${esc(t.rank)}</b> <b style="color:${COL[t.action] || "#8b95a7"}">${esc(ACT[t.action] || t.action)}</b>`
+      + (lv ? ` · ${esc(lv)}` : "") + (t.sizeText ? ` · ${esc(t.sizeText)}` : "") + ` · ${esc(t.horizonMin)} min · säkerhet ${esc(CONF[t.confidence] || t.confidence)}`
+      + `<br><span style="color:var(--dim)">${esc(String(t.why || "").slice(0, 200))}${t.note ? ` (${esc(t.note)})` : ""}</span>`;
+  }
+  function button(t){
+    if(!t || (t.action !== "buy" && t.action !== "sell")) return "";
+    const id = t.epic + "|" + t.action; reg[id] = t;
+    return ` <button type="button" class="agtip-btn" data-agtip="${esc(id)}" title="Fyller orderpanelen på Trade med tipsets riktning, TP, SL, insats och horisont. Skickar inget.">Öppna i orderpanelen</button>`;
+  }
+  function table(list){
+    const rows = list.map(t=>{
+      const lv = (v)=> v == null ? "–" : esc(px(v));
+      return `<tr><td><b>${esc(t.rank)}</b></td><td title="${esc(t.epic)}">${esc(t.name || IG.label(t.epic))}</td><td style="font-weight:800;color:${COL[t.action] || "#8b95a7"}">${esc(ACT[t.action] || t.action)}</td>`
+        + `<td>${esc(String(t.why || "").slice(0, 160))}${t.note ? ` <span style="color:var(--dim)">(${esc(t.note)})</span>` : ""}</td><td>${lv(t.entry)}</td><td style="color:#3fb950">${lv(t.takeProfit)}</td><td style="color:#f85149">${lv(t.stopLoss)}</td>`
+        + `<td>${esc(t.sizeText || "–")}</td><td>${esc(t.horizonMin)} min</td><td>${esc(CONF[t.confidence] || t.confidence)}</td><td>${button(t)}</td></tr>`;
+    }).join("");
+    return `<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="font-size:10px;color:var(--dim);text-transform:uppercase"><th>#</th><th>Instrument</th><th>Råd</th><th>Varför</th><th>Entry</th><th>TP</th><th>SL</th><th>Storlek</th><th>Horisont</th><th>Säkerhet</th><th></th></tr>${rows}</table></div>`;
+  }
+  // Fyller orderpanelen (utkast). Samma väg som "Kopiera till Trade" på Signaler. Skickar aldrig något.
+  function prefill(t){
+    if(!t || !IG.isEpic(t.epic)) return;
+    if(typeof openChartFor === "function") openChartFor(t.epic);
+    const $ = (id)=>document.getElementById(id);
+    const set = (id, v)=>{ const el = $(id); if(el && v != null){ el.value = v; el.dispatchEvent(new Event("input")); } };
+    document.querySelector('.ot-type[data-ot="MARKET"]')?.click();
+    if(t.sizePct != null) set("ot-pct", t.sizePct);
+    const tpsl = $("ot-tpsl");
+    if(t.takeProfit != null || t.stopLoss != null){ if(tpsl && !tpsl.checked){ tpsl.checked = true; tpsl.dispatchEvent(new Event("change")); } set("ot-tp", t.takeProfit); set("ot-sl", t.stopLoss); }
+    const unit = $("ot-tf-unit"); if(unit) unit.value = "60";
+    set("ot-tf-custom", t.horizonMin);
+    const side = $(t.action === "buy" ? "ot-buy" : "ot-sell");
+    if(side){ side.style.outline = "3px solid #fbbf24"; setTimeout(()=>{ side.style.outline = ""; }, 8000); side.scrollIntoView({ block:"center" }); }
+    if(typeof pushInAppAlert === "function") pushInAppAlert(`📋 Utkast i orderpanelen: ${t.action === "buy" ? "KÖP" : "SÄLJ"} ${IG.label(t.epic)}${t.takeProfit != null ? " · TP " + px(t.takeProfit) : ""}${t.stopLoss != null ? " · SL " + px(t.stopLoss) : ""}${t.sizePct != null ? " · " + t.sizePct + " %" : ""} · ${t.horizonMin} min (${IG.envLabel()}). Inget är skickat: tryck ${t.action === "buy" ? "Köp" : "Sälj"} och sedan Godkänn om du vill.`, 9000);
+  }
+  document.addEventListener("click", (ev)=>{
+    const b = ev.target.closest("[data-agtip]"); if(!b) return;
+    ev.preventDefault(); ev.stopPropagation();
+    prefill(reg[b.dataset.agtip]);
+  }, true);
+  return { line, button, table, sort, prefill };
+})();
+</script>
+
+<script>
 /* Urval + agentsessioner + schema (krav E). Servern äger urvalet (/api/ig/selection), sessionen
    (/api/ig/session…) och schemat (/api/ig/schedule). Analysen görs av agenterna
    (JEV-förkontroll → teknisk analytiker → Hanna), inte av IG. */
@@ -10425,7 +10510,10 @@ window.IGS = (function(){
     const rows = x.items.slice(0, 500).map(i=>`<tr><td style="padding:2px 6px;white-space:nowrap" title="${esc(i.epic)}">${esc(IG.label(i.epic))}</td><td style="padding:2px 6px;color:${ST_COL[i.status]}">${esc(i.status)}</td><td style="padding:2px 6px;font-weight:700;color:${i.action === "buy" ? "#3fb950" : i.action === "sell" ? "#f85149" : "#8b95a7"}">${esc(ACT[i.action] || i.action || "")}</td><td style="padding:2px 6px;color:var(--dim)">${esc(i.result || "")}</td></tr>`).join("");
     const OC = { "föreslagen":"#fbbf24", "accepterad":"#3fb950", "avvisad":"#f85149", "okänd":"#f0b90b", "stoppad":"#f85149", "nekad":"#8b95a7", "utgick":"#8b95a7" };
     const att = (x.attempts || []).length ? `<div class="igs-attempt-list" style="margin-top:6px;font-size:11px">${(x.attempts || []).map(a=>`<div><b>#${a.no}</b> ${esc(a.side === "SELL" ? "SÄLJ" : "KÖP")} ${esc(a.epic ? IG.label(a.epic) : "–")} · <span style="color:${OC[a.outcome] || "#8b95a7"}">${esc(a.outcome)}</span>${a.note ? ` <span style="color:var(--dim)">(${esc(a.note)})</span>` : ""}</div>`).join("")}</div>` : "";
-    return head + att + `<details ${x.status === "running" ? "open" : ""} style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--dim)">Kö per instrument</summary><div style="max-height:260px;overflow:auto"><table style="width:100%;font-size:11px;border-collapse:collapse">${rows}</table></div></details>`;
+    // Hannas tips per instrument från sessionens omgångar, bästa först (knappen fyller bara orderpanelen)
+    const tipped = (x.items || []).filter(i=>i.tip);
+    const best = tipped.length && window.AGTIP ? `<div style="margin-top:8px"><b style="font-size:12px">🏆 Agenternas tips · Bästa först</b> <span style="font-size:11px;color:var(--dim)">(${tipped.length} av ${x.items.length} instrument har tips; inget skickas utan Godkänn)</span>${AGTIP.table(AGTIP.sort(tipped.map(i=>({ ...i.tip, name: IG.label(i.epic) }))))}</div>` : "";
+    return head + att + best + `<details ${x.status === "running" ? "open" : ""} style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--dim)">Kö per instrument</summary><div style="max-height:260px;overflow:auto"><table style="width:100%;font-size:11px;border-collapse:collapse">${rows}</table></div></details>`;
   }
   function scheduleHtml(d){
     const cap = d.capacity || {};

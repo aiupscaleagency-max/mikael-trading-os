@@ -3,8 +3,10 @@
 //
 //  Används bara när IG:s historikkvot är slut (eller IG saknar ljus) för en EPIC.
 //  Tiingos priser är INTE IG:s priser: de får aldrig nå signalmotorn, strategierna,
-//  agenterna eller orderprissättningen. Modulen importeras därför bara av igSparklines.ts
-//  (kontrolleras i testerna) och skriver aldrig in något i igMarketData.
+//  huvuddiagrammet eller orderprissättningen. Modulen importeras därför bara av
+//  igSparklines.ts (minidiagram) och igAgentData.ts (agenternas analys/research, märkt
+//  "ej IG-pris"; ordrar prissätts alltid av IG). Kontrolleras i testerna. Skriver aldrig in
+//  något i igMarketData.
 //
 //  Endpoints (verifierade mot Tiingos dokumentation, 2026-10-10):
 //   - Krypto: GET https://api.tiingo.com/tiingo/crypto/prices?tickers=btcusd,ethusd&startDate=YYYY-MM-DD&resampleFreq=5min
@@ -214,3 +216,193 @@ export function createTiingoIntraday(deps: {
 
 // En gemensam instans för Demo och Live (Tiingo är inte IG-kontodata)
 export const tiingoIntraday = createTiingoIntraday();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Agenternas research-reserv (Mike 2026-10-11): hela OHLC-ljus från Tiingo när IG
+//  varken har ljus i minnet eller kan lämna historik (veckokvoten slut / läsgränsen nådd).
+//  Bara analys: igAgentData.ts märker allt "källa: Tiingo (ej IG-pris)". Egen instans med
+//  eget anropstak (TIINGO_AGENT_MAX_PER_HOUR, standard 20) så att minidiagrammens 30/h
+//  och agenternas tillsammans håller sig inom Tiingos gratisnivå (ca 50/h).
+//   - 1min-hämtningen räcker för 1m, 5m och 15m (slås ihop lokalt), 1hour för 1h/4h, 1day för 1d.
+//   - Kryptotickers samlas i ETT anrop per upplösning (högst 20). Svarar Tiingo HTTP 400 på
+//     ett samlat anrop provas tickers en och en, så att ett okänt par inte förgiftar resten.
+//   - Bara stängda ljus. Felaktiga rader hoppas över (fylls aldrig ut).
+//   - Kan Tiingo inte nås (tak, paus, fel) används äldre cache, märkt "cachad".
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type TiingoFreq = "1min" | "1hour" | "1day";
+export interface TiingoBar { openTime: number; closeTime: number; open: number; high: number; low: number; close: number; volume: number }
+export interface TiingoBarsResult {
+  ticker: string | null; freq: TiingoFreq; bars: TiingoBar[]; at: number;
+  /** Förklaring när inga ljus finns (null = ljus finns) */
+  note: string | null;
+  /** Svaret kom ur cachen; stale = äldre än den vanliga livslängden (Tiingo kunde inte nås nu) */
+  cached?: boolean; stale?: boolean;
+}
+export const TIINGO_AGENT_LABEL = "Tiingo (ej IG-pris)";
+export const TIINGO_FREQ_MS: Record<TiingoFreq, number> = { "1min": 60_000, "1hour": 3_600_000, "1day": 86_400_000 };
+/** Hur länge ett lyckat svar räknas som färskt, per upplösning */
+export const TIINGO_BARS_TTL_MS: Record<TiingoFreq, number> = { "1min": 2 * 60_000, "1hour": 20 * 60_000, "1day": 6 * 3_600_000 };
+/** Hur gammal cache som får användas (märkt cachad) när Tiingo inte kan nås */
+export const TIINGO_BARS_STALE_MS: Record<TiingoFreq, number> = { "1min": 30 * 60_000, "1hour": 3 * 3_600_000, "1day": 2 * 86_400_000 };
+/** Hur långt bakåt varje upplösning hämtas (räcker för ca 150 ljus i de sammanslagna tidsramarna) */
+const TIINGO_BARS_LOOKBACK_MS: Record<TiingoFreq, number> = { "1min": 40 * 3_600_000, "1hour": 26 * 86_400_000, "1day": 320 * 86_400_000 };
+export const TIINGO_HINT_TTL_MS = 5 * 60_000;
+export const tiingoAgentMaxPerHour = () => Math.max(1, Number(process.env.TIINGO_AGENT_MAX_PER_HOUR) || 20);
+
+function toBars(rows: unknown, freq: TiingoFreq, now: number): TiingoBar[] {
+  const ms = TIINGO_FREQ_MS[freq], out: TiingoBar[] = [], seen = new Set<number>();
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const t = typeof (r as any)?.date === "string" ? Date.parse((r as any).date) : NaN;
+    const o = Number((r as any)?.open), h = Number((r as any)?.high), l = Number((r as any)?.low), c = Number((r as any)?.close);
+    const v = Number((r as any)?.volume);
+    if (![t, o, h, l, c].every(Number.isFinite) || o <= 0 || c <= 0 || h < Math.max(o, c) || l > Math.min(o, c) || seen.has(t)) continue;
+    if (t + ms > now) continue; // ljuset bildas fortfarande: bara stängda ljus
+    seen.add(t);
+    out.push({ openTime: t, closeTime: t + ms, open: o, high: h, low: l, close: c, volume: Number.isFinite(v) && v >= 0 ? v : 0 });
+  }
+  return out.sort((a, b) => a.openTime - b.openTime);
+}
+
+export function createTiingoBars(deps: {
+  fetch?: FetchFn;
+  key?: () => string | null | undefined;
+  now?: () => number;
+  batchMs?: number;
+  maxPerHour?: () => number;
+} = {}) {
+  const doFetch: FetchFn = deps.fetch ?? ((url, init) => fetch(url, init) as unknown as ReturnType<FetchFn>);
+  const key = deps.key ?? tiingoKey;
+  const now = deps.now ?? Date.now;
+  const batchMs = deps.batchMs ?? 150;
+  const maxPerHour = deps.maxPerHour ?? tiingoAgentMaxPerHour;
+  const cache = new Map<string, TiingoBarsResult>(); // "ticker|freq"
+  const calls: number[] = [];
+  let cooldownUntil = 0;
+  const stats = { requests: 0 };
+  const queues = new Map<TiingoFreq, Map<string, Array<(r: TiingoBarsResult) => void>>>();
+  const timers = new Map<TiingoFreq, ReturnType<typeof setTimeout>>();
+  const inflight = new Map<string, Promise<TiingoBarsResult>>();
+  const hints = new Map<string, number>(); // kryptoticker → giltig till (tas med i nästa samlade anrop)
+  const ck = (t: string, f: TiingoFreq) => `${t}|${f}`;
+
+  function lookup(t: string, f: TiingoFreq, maxAge: number): TiingoBarsResult | null {
+    const hit = cache.get(ck(t, f));
+    if (!hit) return null;
+    const age = now() - hit.at;
+    const ttl = hit.bars.length ? maxAge : TIINGO_FAIL_TTL_MS;
+    return age < ttl ? { ...hit, cached: true, stale: hit.bars.length > 0 && age >= TIINGO_BARS_TTL_MS[f] } : null;
+  }
+  function capReason(): string | null {
+    if (now() < cooldownUntil) return "Tiingo pausat efter anropsbegränsning";
+    while (calls.length && now() - calls[0]! >= 3_600_000) calls.shift();
+    if (calls.length >= maxPerHour()) return `Tiingo-gräns för agenterna nådd (${maxPerHour()} anrop/timme)`;
+    return null;
+  }
+  async function request(url: string, token: string): Promise<{ data: unknown; status: number; note: string | null }> {
+    calls.push(now()); stats.requests++;
+    try {
+      const r = await doFetch(url, { headers: { Authorization: `Token ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
+      if (!r.ok) {
+        if (r.status === 429) cooldownUntil = now() + TIINGO_COOLDOWN_MS;
+        return { data: null, status: r.status, note: r.status === 401 || r.status === 403 ? "Tiingo nekade nyckeln" : r.status === 429 ? "Tiingo begränsade antal anrop" : `Tiingo svarade HTTP ${r.status}` };
+      }
+      return { data: await r.json(), status: r.status, note: null };
+    } catch { return { data: null, status: 0, note: "Tiingo kunde inte nås" }; }
+  }
+  const startDate = (f: TiingoFreq) => new Date(now() - TIINGO_BARS_LOOKBACK_MS[f]).toISOString().slice(0, 10);
+  /** Tillfälligt hinder (tak, paus, nätfel): äldre cache om den finns, annars förklaringen. Cachas inte. */
+  function fallback(t: string, f: TiingoFreq, note: string): TiingoBarsResult {
+    return lookup(t, f, TIINGO_BARS_STALE_MS[f]) ?? { ticker: t, freq: f, bars: [], at: now(), note };
+  }
+  function store(t: string, f: TiingoFreq, r: TiingoBarsResult): TiingoBarsResult { cache.set(ck(t, f), r); return r; }
+
+  async function fetchCryptoPart(f: TiingoFreq, part: string[], token: string): Promise<Map<string, TiingoBarsResult>> {
+    const out = new Map<string, TiingoBarsResult>();
+    const qs = new URLSearchParams({ tickers: part.join(","), startDate: startDate(f), resampleFreq: f }).toString();
+    const { data, status, note } = await request(`https://api.tiingo.com/tiingo/crypto/prices?${qs}`, token);
+    if (note) {
+      // Ett okänt par kan få Tiingo att avvisa hela det samlade anropet: prova då en och en (inom taket)
+      if (status === 400 && part.length > 1) {
+        for (const t of part) {
+          const why = capReason();
+          if (why) { out.set(t, fallback(t, f, why)); continue; }
+          for (const [k, v] of await fetchCryptoPart(f, [t], token)) out.set(k, v);
+        }
+        return out;
+      }
+      const temporary = status === 0 || status === 429 || status >= 500;
+      for (const t of part) out.set(t, temporary ? fallback(t, f, note) : store(t, f, { ticker: t, freq: f, bars: [], at: now(), note }));
+      return out;
+    }
+    for (const t of part) {
+      const entry = Array.isArray(data) ? data.find((d: any) => d?.ticker === t) : null;
+      const bars = entry ? toBars((entry as any).priceData, f, now()) : [];
+      out.set(t, store(t, f, { ticker: t, freq: f, bars, at: now(), note: bars.length ? null : entry ? "Tiingo saknar ljus för paret" : "Tiingo saknar paret" }));
+    }
+    return out;
+  }
+
+  async function flush(f: TiingoFreq): Promise<void> {
+    timers.delete(f);
+    const batch = queues.get(f) ?? new Map(); queues.set(f, new Map());
+    const wanted = [...batch.keys()];
+    // Kommande instrument (t.ex. sessionens nästa omgångar) följer med i samma anrop, så länge det finns plats
+    for (const [t, until] of hints) {
+      if (until < now()) { hints.delete(t); continue; }
+      if (!wanted.includes(t) && !lookup(t, f, TIINGO_BARS_TTL_MS[f])) wanted.push(t);
+    }
+    const resolve = (t: string, r: TiingoBarsResult) => { for (const fn of batch.get(t) ?? []) fn(r); };
+    const must = [...batch.keys()];
+    for (let i = 0; i < must.length; i += TIINGO_BATCH_MAX) {
+      const own = must.slice(i, i + TIINGO_BATCH_MAX);
+      const extra = i === 0 ? wanted.filter((t) => !batch.has(t)).slice(0, TIINGO_BATCH_MAX - own.length) : [];
+      const part = [...own, ...extra];
+      const token = key();
+      const why = token ? capReason() : TIINGO_NO_KEY;
+      if (why || !token) { for (const t of own) resolve(t, fallback(t, f, why ?? TIINGO_NO_KEY)); continue; }
+      const res = await fetchCryptoPart(f, part, token);
+      for (const t of own) resolve(t, res.get(t) ?? fallback(t, f, "Tiingo svarade inte för paret"));
+    }
+  }
+
+  async function fetchFx(t: string, f: TiingoFreq): Promise<TiingoBarsResult> {
+    const token = key();
+    const why = token ? capReason() : TIINGO_NO_KEY;
+    if (why || !token) return fallback(t, f, why ?? TIINGO_NO_KEY);
+    const qs = new URLSearchParams({ startDate: startDate(f), resampleFreq: f }).toString();
+    const { data, status, note } = await request(`https://api.tiingo.com/tiingo/fx/${encodeURIComponent(t)}/prices?${qs}`, token);
+    if (note) return status === 0 || status === 429 || status >= 500 ? fallback(t, f, note) : store(t, f, { ticker: t, freq: f, bars: [], at: now(), note });
+    const bars = toBars(data, f, now());
+    return store(t, f, { ticker: t, freq: f, bars, at: now(), note: bars.length ? null : "Tiingo saknar intradagsdata för paret" });
+  }
+
+  /** OHLC-ljus för en EPIC i given upplösning. */
+  async function bars(epic: string, name: string | null | undefined, f: TiingoFreq): Promise<TiingoBarsResult> {
+    const m = tiingoTickerFor(epic, name);
+    if (!m) return { ticker: null, freq: f, bars: [], at: now(), note: "ingen Tiingo-motsvarighet" };
+    const hit = lookup(m.ticker, f, TIINGO_BARS_TTL_MS[f]);
+    if (hit) return hit;
+    if (!key()) return fallback(m.ticker, f, TIINGO_NO_KEY);
+    const k = ck(m.ticker, f);
+    const running = inflight.get(k);
+    if (running) return running;
+    const job = m.kind === "fx" ? fetchFx(m.ticker, f) : new Promise<TiingoBarsResult>((res) => {
+      let q = queues.get(f);
+      if (!q) { q = new Map(); queues.set(f, q); }
+      const list = q.get(m.ticker) ?? [];
+      list.push(res); q.set(m.ticker, list);
+      if (!timers.has(f)) timers.set(f, setTimeout(() => { void flush(f); }, batchMs));
+    });
+    inflight.set(k, job);
+    try { return await job; } finally { inflight.delete(k); }
+  }
+  /** Kommande instrument (kryptotickers) som får följa med i nästa samlade anrop. Inget anrop görs här. */
+  function hint(list: Array<{ epic: string; name?: string | null }>): void {
+    for (const x of list.slice(0, 200)) {
+      const m = tiingoTickerFor(x.epic, x.name);
+      if (m?.kind === "crypto") hints.set(m.ticker, now() + TIINGO_HINT_TTL_MS);
+    }
+  }
+  return { bars, hint, stats: () => ({ ...stats, callsLastHour: calls.filter((t) => now() - t < 3_600_000).length }) };
+}

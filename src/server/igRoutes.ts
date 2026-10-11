@@ -43,6 +43,7 @@ import { igDemoSimRouter } from "./igDemoSimLive.js";
 //   GET  /api/market/prices?symbols=a,b → kvoter med ålder/tillstånd
 //   GET  /api/market/sparkline?epic=    → minidiagram för Alla par (minne/cache först, skonsamt mot historikkvoten)
 //   GET  /api/ig/agent-notes?epics=a,b → agenternas senaste besked per instrument (även avstå)
+//   GET  /api/ig/agent-top              → agenternas topplista från senaste analysen (Hannas tips, bästa först)
 //   GET  /api/market/stream?epics=a,b   → SSE: quote, candle, stream-status (IG Lightstreamer via servern)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -429,6 +430,12 @@ export async function handleIgRoutes(
       return true;
     }
     // Agenternas senaste besked per instrument och miljö (även HOLD/avstå). Se igAgentNotes.ts.
+    // Agenternas topplista: senaste analysomgången, bästa först (bara läsning, aldrig en order)
+    if (p === "/api/ig/agent-top" && method === "GET") {
+      const t = agentNotes.top(env);
+      send(res, 200, { env, label: envLabel(env), runId: t.runId, at: t.at, items: t.items.map((n) => ({ ...n, name: igMarketData.nameOf(n.epic, env) })) });
+      return true;
+    }
     if (p === "/api/ig/agent-notes" && method === "GET") {
       const list = (url.searchParams.get("epics") ?? "").split(",").map((x) => x.trim()).filter((x) => EPIC_RE.test(x)).slice(0, 500);
       send(res, 200, { env, label: envLabel(env), notes: agentNotes.get(env, list.length ? list : undefined) });
