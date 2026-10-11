@@ -85,7 +85,7 @@ export function tiingoTickerFor(epic: string, name?: string | null): TiingoTicke
   // Inget användbart namn: försök med EPIC:ens instrumentdel (CS.D.EURUSD.MINI.IP, CS.D.ETHUSD.CFD.IP, CS.D.BITCOIN.CEE.IP)
   const parts = /^[A-Z]{2}\.D\.([A-Z0-9]+)\.([A-Z0-9]+)\./.exec(epic);
   const seg = parts?.[1] ?? "";
-  // IG:s euro-kontrakt för krypto (CFE, CNE, CNEM = "(E1)"/"(E0.1)") prissätts i euro
+  // IG:s euro-kontrakt för krypto (CFE, CNE, CNEM = "(E1)"/"(E0.1)") har euro per punkt men prissätts i USD → USD-ticker
   if (CRYPTO_BY_EPIC[seg]) return { ticker: CRYPTO_BY_EPIC[seg] + "usd", kind: "crypto" }; // euro-kontrakt prissätts i USD (se quoteFromContract)
   const m = /^([A-Z]+?)(USD|EUR|XBT)$/.exec(seg);
   if (m && CRYPTO_BY_EPIC[m[1]!] && !FIAT.has(m[1]!)) return { ticker: CRYPTO_BY_EPIC[m[1]!] + (m[2] === "XBT" ? "btc" : m[2]!.toLowerCase()), kind: "crypto" };

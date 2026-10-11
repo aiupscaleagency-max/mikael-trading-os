@@ -504,7 +504,7 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   assert.equal(map("CS.D.ADAUSD.CFE.IP", null), "adausd", "utan namn: euro-kontrakt (CFE) prissätts i USD");
   assert.equal(map("IX.D.FTSE.DAILY.IP", "FTSE 100"), null, "okänt instrument: ingen gissning");
   T.TIINGO_SPARK_LABEL === "Tiingo-diagram (ej IG-pris)" || assert.fail("etiketten måste säga ej IG-pris");
-  ok("Tiingo-mappning: EPIC/namn → ticker (Bitcoin Cash, kryss mot BTC, E1 = euro, forex, index = ingen)");
+  ok("Tiingo-mappning: EPIC/namn → ticker (Bitcoin Cash, kryss mot BTC, E1 = USD-pris, forex, index = ingen)");
 
   let clock = Date.parse("2026-10-10T10:00:00Z");
   const urls: string[] = []; const auths: string[] = [];

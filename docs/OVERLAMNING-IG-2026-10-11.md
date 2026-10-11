@@ -92,7 +92,7 @@ Senaste riktiga analys: 2026-10-11 08:41 av 7 krypton (Arbitrum, Sui, Near, Card
 | # | Vad | Detalj |
 |---|---|---|
 | 1 | **Skapa EN PR** `claude/ig-agent-data` → `claude/ig-on-vibrant` | Stäng #77 som ersatt. Mike slår ihop. |
-| 2 | **Eurokontrakt (E1/CFE) får fel Tiingo-ticker** | Cardano (E1) jämfördes mot `adausd` och avvek cirka 11 %. Rätta mappningen i `src/server/tiingoIntraday.ts` `tiingoTickerFor` så att EPIC `.CFE.`/`(E1)` ger `...eur`. Testa och granska. |
+| 2 | ✅ KLART: eurokontrakt (E1) | IG prissätter E1 i USD, samma kurs som $1 (kontrollerat live). De mappas nu till USD-tickern. |
 | 3 | Tiingo HTTP 400 på några minidiagram | Cosmos, Dogecoin, Litecoin, Near, Polkadot. Retry per ticker finns nu för agenterna; kontrollera att minidiagrammen också gör så. |
 | 4 | IG Live-läsbudgeten är ofta full | Katalogkrypning + diagram + sim. Katalogen står kvar på "delvis". Överväg att spara katalogen längre och krypa mer sällan. |
 | 5 | Weekend EUR/USD utan priser | IG-sidan: IG uppdaterar inte priset. Visas ärligt som "inaktuellt". |
