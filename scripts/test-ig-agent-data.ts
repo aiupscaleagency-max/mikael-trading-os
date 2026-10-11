@@ -379,4 +379,13 @@ const ctx = { broker, brokers: { ig: broker }, risk: {} as any, config: {} as an
   ok("Under analys: katalog, minidiagrammens IG-hämtningar och Tiingo-anrop pausas i miljön; förturen släpps (och löper ut efter 10 min)");
 }
 
+{
+  // Positionsläsningen (1 + en marknadsläsning per öppen position) får ALDRIG förtur: orderreserven ska vara orörd
+  const src = fs.readFileSync(path.resolve("src/server/igAgentData.ts"), "utf8");
+  const fn = src.slice(src.indexOf("async function positions("), src.indexOf("function hint("));
+  assert.match(fn, /withoutIgPriority\(read\)/, "positioner läses utan förtur");
+  assert.doesNotMatch(fn, /analysisRead\(|withIgPriority\(/, "positioner använder aldrig förtur");
+  ok("Positionsläsningen för analysen går utan förtur (orderreserven påverkas inte, oavsett antal öppna positioner)");
+}
+
 console.log("Agenternas data: alla tester godkända (endast mocks, inga nätverksanrop)");

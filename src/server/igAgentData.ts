@@ -254,10 +254,11 @@ export function createIgAgentData(deps: {
 
   /** Positioner: färsk/cachad läsning → senast kända (märkt cachad). Kastar aldrig för en läsgräns. */
   async function positions(read: () => Promise<Position[]>, lastKnown: (() => { at: number; positions: Position[] } | null) | null, env: IgEnvironment | null = null): Promise<{ positions: Position[] | null; source: string }> {
-    // Med förtur: mäklarens cache är singleflight och 30 s, så det blir högst ungefär en läsning per tur.
-    // Utan förtur gav en fullt upptagen bakgrundsbudget fel varje gång, och den senast kända listan
-    // nollställs när IG-sessionen förnyas (varje timme), så cachen räcker inte ensam.
-    try { return { positions: await (env ? analysisRead(env, read) : read()), source: "IG (positioner)" }; }
+    // ALDRIG med förtur: en positionsläsning kostar 1 + en marknadsläsning per öppen position (ig.ts readPositions),
+    // så den kunde äta orderreserven. Utan förtur stoppar läsbudgeten den i stället, och den senast kända listan
+    // (märkt "cachad") tar över. Ordervägen läser alltid själv färska positioner.
+    void env;
+    try { return { positions: await withoutIgPriority(read), source: "IG (positioner)" }; }
     catch (e) {
       const c = lastKnown?.();
       if (c) return { positions: c.positions, source: `IG (cachad, ${Math.round((now() - c.at) / 1000)} s gammal)` };
