@@ -107,6 +107,19 @@ const ok = (m: string) => console.log("PASS: " + m);
   // Ingen Tiingo-motsvarighet/fel: tom bakgrund med förklaring, aldrig undantag
   const none = createIgChartBackdrop({ tiingo: { bars: async () => ({ ticker: null, freq: "1min", bars: [], at: now, note: "ingen Tiingo-motsvarighet" }) } as any, now: () => now });
   const n2 = await none.get({ ...base, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null }); assert.equal(n2!.bars.length, 0); assert.match(n2!.note!, /motsvarighet/);
+  // 15 min cache per EPIC/upplösning: diagrammets 30 s-omladdning kostar inga nya Tiingo-anrop
+  const before = asked.length;
+  for (let i = 0; i < 5; i++) await bd.get({ ...base, interval: "15m", igBars: 0, historyError: "x", igFirstOpenMs: null });
+  assert.equal(asked.length, before, "1min-svaret återanvänds (även för 15m)");
+  // Långsamt Tiingo: klines väntar högst waitMs, bakgrunden kommer vid nästa laddning
+  let release: () => void = () => {};
+  const slow = createIgChartBackdrop({ now: () => now, waitMs: 20, tiingo: { bars: (_e: string, _n: unknown, f: any) => new Promise((res) => { release = () => res({ ticker: "ethusd", freq: f, bars: minute, at: now, note: null }); }) } as any });
+  const t0 = Date.now();
+  assert.equal(await slow.get({ ...base, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null }), null);
+  assert.ok(Date.now() - t0 < 1000, "diagrammet väntar inte på Tiingo");
+  release(); await new Promise((r) => setTimeout(r, 5));
+  const later = await slow.get({ ...base, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null });
+  assert.ok(later && later.bars.length > 0, "nästa laddning visar bakgrunden ur cachen");
   const thr = createIgChartBackdrop({ tiingo: { bars: async () => { throw new Error("nät"); } } as any, now: () => now });
   assert.equal(await thr.get({ ...base, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null }), null);
 
@@ -117,6 +130,6 @@ const ok = (m: string) => console.log("PASS: " + m);
   assert.match(lrc, /applyIndicators\(bars\)/);
   assert.match(html, /\(grå = Tiingo\)/);
   assert.match(html, /time,open,high,low,close,source/); assert.match(html, /"Tiingo \(ej IG-pris\)"\]\.join/);
-  ok("Huvuddiagrammets Tiingo-bakgrund: bara när IG-historik saknas, omsamplad till diagrammets intervall, före IG-ljusen, ±3 % mot IG-live, märkt och utanför signaler/indikatorer; CSV märker källan");
+  ok("Huvuddiagrammets Tiingo-bakgrund: väntar högst 1,2 s, 15 min cache, bara när IG-historik saknas, omsamplad till diagrammets intervall, före IG-ljusen, ±3 % mot IG-live, märkt och utanför signaler/indikatorer; CSV märker källan");
 }
 console.log("Diagram/ordersynk: alla tester godkända (endast mocks, inga nätverksanrop)");

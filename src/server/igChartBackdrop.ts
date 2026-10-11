@@ -21,6 +21,11 @@ export const CHART_BACKDROP_LABEL = "Tiingo-historik (ej IG-pris) + IG-live";
 export const CHART_BACKDROP_MIN_IG_BARS = 30;
 const FREQ: Record<string, TiingoFreq> = { "1m": "1min", "5m": "1min", "15m": "1min", "30m": "1min", "1h": "1hour", "4h": "1hour", "1d": "1day" };
 const FREQ_MS: Record<TiingoFreq, number> = { "1min": 60e3, "1hour": 3600e3, "1day": 86400e3 };
+/** Klines-svaret väntar högst så här länge på Tiingo; annars skickas diagrammet utan bakgrund (den kommer vid nästa laddning) */
+export const CHART_BACKDROP_WAIT_MS = 1200;
+/** Bakgrunden är bara historik bakom IG-ljusen: samma Tiingo-svar återanvänds 15 min per ticker/upplösning.
+ *  Diagrammet laddas om var 30:e s när strömmen saknas; utan denna cache skulle det äta agenternas Tiingo-tak (20/h). */
+export const CHART_BACKDROP_TTL_MS = 15 * 60_000;
 
 export interface ChartBackdrop {
   source: "tiingo"; label: string; ticker: string | null;
@@ -32,9 +37,29 @@ export interface ChartBackdrop {
 export function createIgChartBackdrop(deps: {
   tiingo?: { bars: (epic: string, name: string | null | undefined, f: TiingoFreq) => Promise<TiingoBarsResult> } | null;
   now?: () => number;
+  /** Tester: väntetid på Tiingo (standard CHART_BACKDROP_WAIT_MS) */
+  waitMs?: number;
 } = {}) {
   const tiingo = deps.tiingo === undefined ? tiingoBarsShared : deps.tiingo;
   const now = deps.now ?? Date.now;
+  const waitMs = deps.waitMs ?? CHART_BACKDROP_WAIT_MS;
+  const cache = new Map<string, { at: number; t: TiingoBarsResult }>();   // "epic|freq"
+  const inflight = new Map<string, Promise<TiingoBarsResult | null>>();
+  /** Tiingo-ljus för EPIC/upplösning: cache (15 min) → pågående hämtning → ny hämtning. Väntar högst waitMs. */
+  async function source(epic: string, name: string | null, f: TiingoFreq): Promise<TiingoBarsResult | null> {
+    const k = `${epic}|${f}`, hit = cache.get(k);
+    if (hit && now() - hit.at < CHART_BACKDROP_TTL_MS) return hit.t;
+    let job = inflight.get(k);
+    if (!job) {
+      job = tiingo!.bars(epic, name, f).then((t) => { if (t.bars.length) cache.set(k, { at: now(), t }); return t; }, () => null)
+        .finally(() => inflight.delete(k));
+      inflight.set(k, job);
+    }
+    // Hinner Tiingo inte svara: inget väntande diagram; svaret hamnar i cachen och visas vid nästa laddning
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>((res) => { timer = setTimeout(() => res(null), waitMs); });
+    try { return await Promise.race([job, late]); } finally { clearTimeout(timer); }
+  }
   /**
    * Bakgrund för huvuddiagrammet, eller null när den inte behövs/inte kan visas.
    * igFirstOpenMs = första IG-ljusets öppningstid (ms) eller null; livePrice = IG:s mittkurs (för rimlighetskontroll).
@@ -46,8 +71,8 @@ export function createIgChartBackdrop(deps: {
     if (!args.historyError && args.igBars >= CHART_BACKDROP_MIN_IG_BARS) return null;
     const f = FREQ[args.interval], dst = IV_MS[args.interval];
     if (!f || !dst) return null;
-    let t: TiingoBarsResult;
-    try { t = await tiingo.bars(args.epic, args.name, f); } catch { return null; }
+    const t = await source(args.epic, args.name, f);
+    if (!t) return null;
     if (!t.bars.length) return { source: "tiingo", label: CHART_BACKDROP_LABEL, ticker: t.ticker, bars: [], note: t.note ?? "Tiingo saknar ljus", deviationPct: null, cached: !!t.cached };
     let k = aggregateBars(t.bars, FREQ_MS[f], dst, now());
     if (args.igFirstOpenMs !== null) k = k.filter((b) => b.openTime < args.igFirstOpenMs!); // IG-ljusen vinner där de finns
