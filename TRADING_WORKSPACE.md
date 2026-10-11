@@ -99,3 +99,10 @@ Verifierad inbäddning: en verklig läsande browserkontroll av `https://agentic-
 Dator 1:s b72bed0 sammanförd med fortsättningsbranchen. Äldre brokeradaptrar, legacy-CLI, marknadsströmmar och orderrutter är borttagna. Endast IG och Tiingo används för marknadsdata. JEV/Gateway och Supabase-inloggningen finns kvar. Marknadsöversikt, separata Demo/Live-formulär, strategijämförelser, analysminne och scheman använder samma handelsyta.
 
 Aggregatljus blir kompletta först med alla verifierade delperioder. Vid anslutning mitt i perioden visas delvis underlag och REST-avstämning görs när perioden stänger. Historikcache förnyas vid periodgränsen.
+
+
+## Verifiering 2026-10-11 — återupptaget arbete
+
+Den aktiva LaunchAgent-servern använder `~/ai_upscale_work/mikael-trading-os`, inte den äldre kopian under projects/. Nya frontendfixar bevarar verifierade marknadsdata när historik nekas, väljer reserv efter avvisat sparat instrument och skiljer inaktuell analys samt otillgängliga positioner från klara/tomma resultat. ProRealTime öppnas från Inställningar via My IG enligt IG:s startguide; personlig workspace-inbäddning har inte verifierats.
+
+Verklig Demo-kontoläsning och IG Lightstreamer-priser/ett partiellt pågående ljus verifierade i browsern. Markera alla gav 198 hämtade instrument i sessionsdialogen; katalogens antal ändras under hämtning och är inte hela IG-utbudet. Urvalet avmarkerades efter kontroll. Ingen verklig agentsession, betald analys eller order startades. Befintlig orderexekvering är avstängd; inga credentials eller konton ändrades. Detta är inte en fullständig live-orderverifiering.
