@@ -9,7 +9,7 @@ import { searchNews, getRedditTop } from "../data/news.js";
 import type { OrderRequest, OrderResult, Position } from "../types.js";
 import type { Config } from "../config.js";
 import { log } from "../logger.js";
-import { igAgentData, igEnvOf } from "../server/igAgentData.js";
+import { igAgentData, igEnvOf, NO_IG_PRICE_TEXT } from "../server/igAgentData.js";
 
 // Verktygen som Claude kan anropa. Varje verktyg har en JSON-schema-
 // definition som skickas till API:et, plus en handler som faktiskt kör.
@@ -109,7 +109,7 @@ export const TOOLS: Record<string, ToolDef> = {
       let positions: Position[];
       if (ctx.broker instanceof IgBroker) {
         const b = ctx.broker;
-        const r = await igAgentData.positions(() => b.getPositions(), () => b.lastKnownPositions());
+        const r = await igAgentData.positions(() => b.getPositions(), () => b.lastKnownPositions(), igEnvOf(b));
         if (!r.positions) return { källa: r.source, error: "Positionerna kunde inte läsas just nu" };
         positions = r.positions; igSource = r.source;
         if (!positions.length) return { källa: igSource, positions: [] };
@@ -157,7 +157,8 @@ export const TOOLS: Record<string, ToolDef> = {
       const igEnv = ctx.broker instanceof IgBroker ? igEnvOf(ctx.broker) : null;
       if (igEnv) {
         const t = await igAgentData.ticker(igEnv, symbol, () => ctx.broker.getTicker(symbol));
-        return { symbol, källa: t.source, price: t.price, bid: t.bid ?? null, offer: t.offer ?? null, changePct: t.changePct24h, prisålderSek: t.ageSec ?? null, ...(t.note ? { obs: t.note } : {}) };
+        return { symbol, källa: t.source, price: t.price, bid: t.bid ?? null, offer: t.offer ?? null, changePct: t.changePct24h, prisålderSek: t.ageSec ?? null, ...(t.note ? { obs: t.note } : {}),
+          ...(t.noIgPrice ? { varning: NO_IG_PRICE_TEXT, igPrisVerifierat: false } : {}) };
       }
       return await ctx.broker.getTicker(symbol);
     },
@@ -201,6 +202,7 @@ export const TOOLS: Record<string, ToolDef> = {
         sourceInfo = {
           källa: r.source,
           senastePrisIgLive: live,
+          ...(r.sourceKey === "tiingo" && !r.igLive ? { varning: NO_IG_PRICE_TEXT, igPrisVerifierat: false } : {}),
           ...(r.sourceKey === "tiingo" ? { obs: `Indikatorerna bygger på Tiingo (ej IG-pris)${r.deviationPct != null ? `, sista stängning avviker ${r.deviationPct} % från IG-livepriset` : ""}. Ordrar prissätts alltid av IG.${r.note ? ` (${r.note})` : ""}` } : r.note ? { obs: r.note } : {}),
         };
       } else klines = await ctx.broker.getKlines(symbol, interval, limit);
@@ -588,6 +590,8 @@ export const TOOLS: Record<string, ToolDef> = {
         mode: string;
         account: { totalValueUsdt: number };
         positions: unknown[];
+        /** IG: varifrån saldo/positioner kom (t.ex. "cachad") */
+        källa?: string;
       }> = [];
 
       // M4: bara turens egen miljö. Den andra IG-miljön läses aldrig (ingen Live-inloggning under en Demo-tur).
@@ -596,13 +600,14 @@ export const TOOLS: Record<string, ToolDef> = {
           // IG: läsgräns → strömmens saldo och senast kända positioner (märkt cachad), aldrig ett krasch-fel
           let account: Awaited<ReturnType<BrokerAdapter["getAccount"]>>;
           let positions: Position[];
+          let källa: string | undefined;
           if (broker instanceof IgBroker && igEnvOf(broker)) {
             const env = igEnvOf(broker)!;
             const a = await igAgentData.account(env, () => broker.getAccount());
-            const p = await igAgentData.positions(() => broker.getPositions(), () => broker.lastKnownPositions());
+            const p = await igAgentData.positions(() => broker.getPositions(), () => broker.lastKnownPositions(), env);
             if (!a.account || !p.positions) throw new Error(`${!a.account ? `saldo ${a.source}` : ""}${!a.account && !p.positions ? "; " : ""}${!p.positions ? `positioner ${p.source}` : ""}`);
             account = a.account; positions = p.positions;
-            if (/cachad/.test(a.source + p.source)) summary.push({ broker: name, mode: "källa", account: { totalValueUsdt: 0 }, positions: [{ källa: `saldo: ${a.source}; positioner: ${p.source}` }] });
+            källa = `saldo: ${a.source}; positioner: ${p.source}`;
           } else {
             account = await broker.getAccount();
             positions = await broker.getPositions();
@@ -618,6 +623,7 @@ export const TOOLS: Record<string, ToolDef> = {
               current: p.currentPrice,
               pnl: Number(p.unrealizedPnlUsdt.toFixed(2)),
             })),
+            ...(källa ? { källa } : {}),
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

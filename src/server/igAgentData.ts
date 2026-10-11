@@ -1,5 +1,5 @@
 import type { Account, Kline, Position, Ticker } from "../types.js";
-import { getIgReadBudget, getIgHistoryBlockedUntil, withIgPriority, IG_HISTORY_RATE_ERROR, IG_HISTORY_BLOCK_MS, type IgEnvironment } from "../integrations/igConnection.js";
+import { getIgReadBudget, getIgHistoryBlockedUntil, withIgPriority, withoutIgPriority, IG_HISTORY_RATE_ERROR, IG_HISTORY_BLOCK_MS, IG_ORDER_READ_NEED, type IgEnvironment } from "../integrations/igConnection.js";
 import { igMarketData, type IgQuote } from "./igMarketData.js";
 import { createTiingoBars, TIINGO_AGENT_LABEL, type TiingoFreq, type TiingoBarsResult } from "./tiingoIntraday.js";
 
@@ -27,6 +27,14 @@ export const TIINGO_MAX_DEVIATION_PCT = 3;
 export const IG_QUOTE_FRESH_MS = 60_000;
 /** Äldre IG-pris (från strömmen eller REST) får användas, märkt med ålder, upp till så här länge */
 export const IG_QUOTE_MAX_AGE_MS = 30 * 60_000;
+/** Analysens egen lilla förturskvot: högst så många läsningar med förtur per minut och miljö */
+export const ANALYSIS_PRIORITY_PER_MIN = 3;
+/** Värsta antal IG-läsningar en förturs-läsning kan kosta (marknad + växelkurs) */
+export const ANALYSIS_PRIORITY_READ_COST = 2;
+/** Väntan på ett första strömpris innan REST provas (strömmen prenumereras vid turens start) */
+export const STREAM_WAIT_MS = 3_000;
+/** Text när inget IG-pris finns: nivåer från Tiingo får aldrig tas för IG-nivåer */
+export const NO_IG_PRICE_TEXT = "ingen IG-livekurs; nivåerna måste kontrolleras mot IG innan order";
 /** IG REST-historik kräver minst så mycket bakgrundsutrymme (marknad + priser), så att orderreserven aldrig rörs */
 export const IG_REST_MIN_BACKGROUND = 2;
 
@@ -77,14 +85,19 @@ export interface AgentKlines {
   deviationPct?: number | null;
   cached?: boolean;
 }
-export interface AgentTicker extends Ticker { source: string; bid?: number | null; offer?: number | null; ageSec?: number | null; note?: string | null }
+export interface AgentTicker extends Ticker { source: string; bid?: number | null; offer?: number | null; ageSec?: number | null; note?: string | null;
+  /** true = inget IG-pris alls (bara Tiingo): nivåer måste kontrolleras mot IG innan order */
+  noIgPrice?: boolean }
 
 export function createIgAgentData(deps: {
   memory?: (epic: string, iv: string, env: IgEnvironment) => Bar[];
   dataEnv?: (env: IgEnvironment, epic: string) => IgEnvironment;
   quote?: (epic: string, env: IgEnvironment) => IgQuote | null;
   name?: (env: IgEnvironment, epic: string) => string | null;
-  budget?: (env: IgEnvironment) => { backgroundRemaining: number };
+  budget?: (env: IgEnvironment) => { backgroundRemaining: number; remaining?: number };
+  /** Väntetid (ms) på första strömpriset innan REST; tester sätter 0 */
+  streamWaitMs?: number;
+  sleep?: (ms: number) => Promise<void>;
   historyBlockedUntil?: (env: IgEnvironment) => number;
   tiingo?: { bars: (epic: string, name: string | null | undefined, f: TiingoFreq) => Promise<TiingoBarsResult>; hint: (list: Array<{ epic: string; name?: string | null }>) => void } | null;
   streamAccount?: (env: IgEnvironment) => { balance: number | null; available: number | null; profitLoss: number | null; at: number } | null;
@@ -95,6 +108,28 @@ export function createIgAgentData(deps: {
   const quoteOf = deps.quote ?? ((epic, env) => igMarketData.quote(epic, env));
   const nameOf = deps.name ?? ((env, epic) => igMarketData.nameOf(epic, env));
   const budget = deps.budget ?? getIgReadBudget;
+  const streamWaitMs = deps.streamWaitMs ?? STREAM_WAIT_MS;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  // Analysens förturskvot per miljö: tidsstämplar för startade förturs-läsningar + pågående
+  const prioUsed = new Map<IgEnvironment, number[]>();
+  const prioInFlight = new Map<IgEnvironment, number>();
+  /**
+   * Läser med orderns förtur BARA när det är säkert för order: högst ANALYSIS_PRIORITY_PER_MIN per minut och miljö,
+   * och bara om IG_ORDER_READ_NEED läsningar fortfarande finns kvar efter de pågående förturs-läsningarnas värsta kostnad.
+   * Annars körs läsningen utan förtur (då stoppar läsbudgeten den hellre än att äta orderreserven) och anroparen faller
+   * tillbaka på ström/cache/Tiingo. En Godkänn, stängning eller tidsstopp samma minut har alltså alltid sin reserv kvar.
+   */
+  async function analysisRead<T>(env: IgEnvironment, read: () => Promise<T>): Promise<T> {
+    const list = (prioUsed.get(env) ?? []).filter((t) => now() - t < 60_000);
+    prioUsed.set(env, list);
+    const inflight = prioInFlight.get(env) ?? 0;
+    let remaining = 0;
+    try { const b = budget(env); remaining = Number.isFinite(b.remaining) ? b.remaining! : b.backgroundRemaining + IG_ORDER_READ_NEED; } catch { remaining = 0; }
+    const safe = list.length < ANALYSIS_PRIORITY_PER_MIN && remaining >= IG_ORDER_READ_NEED + ANALYSIS_PRIORITY_READ_COST * (inflight + 1);
+    if (!safe) return withoutIgPriority(read); // utan förtur: orderreserven rörs aldrig
+    list.push(now()); prioInFlight.set(env, inflight + 1);
+    try { return await withIgPriority(read); } finally { prioInFlight.set(env, Math.max(0, (prioInFlight.get(env) ?? 1) - 1)); }
+  }
   const historyBlockedUntil = deps.historyBlockedUntil ?? getIgHistoryBlockedUntil;
   const tiingo = deps.tiingo === undefined ? createTiingoBars() : deps.tiingo;
   const streamAccount = deps.streamAccount ?? ((env) => igMarketData.streamAccount(env));
@@ -177,12 +212,14 @@ export function createIgAgentData(deps: {
 
   /** Pris för agenterna: IG-strömmen (≤60 s) → IG REST med förtur → äldre IG-pris → Tiingo (märkt). */
   async function ticker(env: IgEnvironment, epic: string, rest: (() => Promise<Ticker>) | null): Promise<AgentTicker> {
-    const fresh = igLive(env, epic, IG_QUOTE_FRESH_MS);
+    let fresh = igLive(env, epic, IG_QUOTE_FRESH_MS);
+    // Strömmen prenumereras vid turens start: vänta kort på ett första strömpris innan REST provas
+    for (let waited = 0; !fresh && waited < streamWaitMs; waited += 250) { await sleep(250); fresh = igLive(env, epic, IG_QUOTE_FRESH_MS); }
     if (fresh) return { symbol: epic, price: fresh.price, bid: fresh.bid, offer: fresh.offer, changePct24h: fresh.changePct ?? 0, volume24h: 0, source: `${fresh.source} (IG-pris)`, ageSec: fresh.ageSec, note: null };
     const notes: string[] = [];
     if (rest) {
       try {
-        const t = await withIgPriority(rest);
+        const t = await analysisRead(env, rest);
         return { ...t, source: "IG REST (IG-pris)", ageSec: 0, note: null };
       } catch (e) { notes.push(`IG REST: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`); }
     }
@@ -192,7 +229,7 @@ export function createIgAgentData(deps: {
       try {
         const t = await tiingo.bars(epic, nameOf(env, epic), "1min");
         const last = t.bars[t.bars.length - 1];
-        if (last) return { symbol: epic, price: last.close, changePct24h: 0, volume24h: 0, source: `${SOURCE_TIINGO}, senaste stängda minutljus`, ageSec: Math.round((now() - last.closeTime) / 1000), note: [...notes, "IG-livepris saknas; ordrar prissätts ändå av IG"].join("; ") };
+        if (last) return { symbol: epic, price: last.close, changePct24h: 0, volume24h: 0, source: `${SOURCE_TIINGO}, senaste stängda minutljus`, ageSec: Math.round((now() - last.closeTime) / 1000), note: [...notes, `${NO_IG_PRICE_TEXT} (ordrar prissätts ändå av IG)`].join("; "), noIgPrice: true };
         notes.push(`Tiingo: ${t.note ?? "inget pris"}`);
       } catch { notes.push("Tiingo-reserven misslyckades"); }
     }
@@ -202,7 +239,7 @@ export function createIgAgentData(deps: {
   /** Saldo: mäklarens (cachade) läsning → IG-strömmens ACCOUNT-fält. Kastar aldrig för en läsgräns. */
   async function account(env: IgEnvironment, read: () => Promise<Account>): Promise<{ account: Account | null; source: string }> {
     // Analysen läser med förtur (orderreserven), en läsning per 30 s tack vare mäklarens cache
-    try { return { account: await withIgPriority(read), source: "IG (konto)" }; }
+    try { return { account: await analysisRead(env, read), source: "IG (konto)" }; }
     catch (e) {
       const a = streamAccount(env);
       if (a && (a.balance !== null || a.available !== null)) {
@@ -216,11 +253,11 @@ export function createIgAgentData(deps: {
   }
 
   /** Positioner: färsk/cachad läsning → senast kända (märkt cachad). Kastar aldrig för en läsgräns. */
-  async function positions(read: () => Promise<Position[]>, lastKnown: (() => { at: number; positions: Position[] } | null) | null): Promise<{ positions: Position[] | null; source: string }> {
+  async function positions(read: () => Promise<Position[]>, lastKnown: (() => { at: number; positions: Position[] } | null) | null, env: IgEnvironment | null = null): Promise<{ positions: Position[] | null; source: string }> {
     // Med förtur: mäklarens cache är singleflight och 30 s, så det blir högst ungefär en läsning per tur.
     // Utan förtur gav en fullt upptagen bakgrundsbudget fel varje gång, och den senast kända listan
     // nollställs när IG-sessionen förnyas (varje timme), så cachen räcker inte ensam.
-    try { return { positions: await withIgPriority(read), source: "IG (positioner)" }; }
+    try { return { positions: await (env ? analysisRead(env, read) : read()), source: "IG (positioner)" }; }
     catch (e) {
       const c = lastKnown?.();
       if (c) return { positions: c.positions, source: `IG (cachad, ${Math.round((now() - c.at) / 1000)} s gammal)` };
@@ -232,7 +269,7 @@ export function createIgAgentData(deps: {
   function hint(env: IgEnvironment, epics: string[]): void {
     try { tiingo?.hint(epics.map((e) => ({ epic: e, name: nameOf(env, e) }))); } catch { /* bara en optimering */ }
   }
-  return { klines, ticker, account, positions, igLive, hint, fromMemory };
+  return { klines, ticker, account, positions, igLive, hint, fromMemory, analysisRead };
 }
 
 // Gemensam instans (Demo och Live). let + useIgAgentData så att testerna kan byta till mockade källor.

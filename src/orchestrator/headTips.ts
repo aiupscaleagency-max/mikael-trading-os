@@ -27,6 +27,8 @@ export interface AgentTip {
   confidence: TipConfidence;
   /** Förklaring när nivåer togs bort eller instrumentet saknade tips */
   note: string | null;
+  /** true = inget IG-livepris fanns vid analysen: nivåerna är overifierade och måste kontrolleras mot IG innan order */
+  unverifiedLevels?: boolean;
 }
 
 export const TIP_HORIZONS = [1, 5, 15, 30];
@@ -100,7 +102,7 @@ export function sortTips<T extends Pick<AgentTip, "action" | "confidence" | "ran
  * Tolkar Hannas TIPS_JSON. Varje analyserat instrument får exakt ett tips (saknas det: AVVAKTA med förklaring).
  * Nivåer som inte är logiska för riktningen tas bort (inga gissade nivåer). Storleken begränsas till insats-steget.
  */
-export function parseHeadTips(text: string, symbols: string[], opts: { maxStakePct: number; stakeAmount?: number | null; currency?: string | null; defaultHorizonMin?: number }): { tips: AgentTip[]; cleanedText: string; found: boolean } {
+export function parseHeadTips(text: string, symbols: string[], opts: { maxStakePct: number; minStakePct?: number; stakeAmount?: number | null; currency?: string | null; defaultHorizonMin?: number }): { tips: AgentTip[]; cleanedText: string; found: boolean } {
   const block = findTipsBlock(String(text ?? ""));
   let rows: unknown[] = [];
   if (block) {
@@ -131,7 +133,8 @@ export function parseHeadTips(text: string, symbols: string[], opts: { maxStakeP
     }
     if (action === "hold" && !(okBuy || okSell)) { tp = null; sl = null; }
     const rawPct = num(o.sizePct ?? o.size);
-    const sizePct = action === "hold" ? null : +Math.min(maxPct, Math.max(0.1, rawPct ?? maxPct)).toFixed(1);
+    // Utan angiven storlek: LÄGSTA insats-steget (aldrig högsta)
+    const sizePct = action === "hold" ? null : +Math.min(maxPct, Math.max(0.1, rawPct ?? Math.min(maxPct, opts.minStakePct ?? 1))).toFixed(1);
     const amount = sizePct !== null && finite(opts.stakeAmount) && opts.stakeAmount > 0 ? opts.stakeAmount * sizePct / maxPct : null;
     tips.push({
       epic, rank: Math.max(1, Math.round(num(o.rank) ?? 99)), action,
@@ -148,4 +151,14 @@ export function parseHeadTips(text: string, symbols: string[], opts: { maxStakeP
   for (const epic of wanted) if (!seen.has(epic)) tips.push({ epic, rank: 99, action: "hold", why: "Hanna gav inget tips för instrumentet", entry: null, takeProfit: null, stopLoss: null, sizePct: null, sizeText: null, horizonMin: nearestHorizon(null, defH), confidence: "low", note: block ? "saknades i Hannas tipslista" : "Hanna skickade ingen tipslista" });
   tips.forEach((t, i) => { t.rank = i + 1; });
   return { tips, cleanedText, found: !!block && rows.length > 0 };
+}
+
+/** Text när nivåerna inte kunde jämföras med ett IG-pris (samma som agentverktygen visar) */
+export const TIP_UNVERIFIED_TEXT = "ingen IG-livekurs; nivåerna måste kontrolleras mot IG innan order";
+/** Märker ett tips som overifierat (inget IG-livepris vid analysen). */
+export function markUnverified(t: AgentTip): AgentTip {
+  if (t.unverifiedLevels) return t;
+  t.unverifiedLevels = true;
+  t.note = t.note ? `${t.note}; ${TIP_UNVERIFIED_TEXT}` : TIP_UNVERIFIED_TEXT;
+  return t;
 }

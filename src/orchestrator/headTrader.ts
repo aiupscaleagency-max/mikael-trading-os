@@ -43,8 +43,8 @@ const headTraderModel = () => modelFor("head", "claude-sonnet-4-6");
 // gjorde att destrukturering av det gav typfel trots att fältet finns
 // i objektet som faktiskt skickas in.
 import type { AllReports } from "./orchestrator.js";
-import { currentStake } from "../risk/stakeLadder.js";
-import { tipsPromptBlock, parseHeadTips, type AgentTip } from "./headTips.js";
+import { currentStake, stakeStartPct } from "../risk/stakeLadder.js";
+import { tipsPromptBlock, parseHeadTips, markUnverified, type AgentTip } from "./headTips.js";
 import { igAgentData, igEnvOf } from "../server/igAgentData.js";
 import { DIRECT_ANALYSIS_MAX } from "../server/igSessions.js";
 
@@ -187,8 +187,10 @@ export async function runHeadTrader(params: {
       if (igEnv) {
         const stake = currentStake();
         const { getHorizonMin } = await import("../server/tradeHorizon.js");
-        const parsed = parseHeadTips(rawText, params.symbols ?? [], { maxStakePct: stake?.pct ?? 1, stakeAmount: stake?.amount ?? null, currency: stake?.currency ?? null, defaultHorizonMin: getHorizonMin() });
+        const parsed = parseHeadTips(rawText, params.symbols ?? [], { maxStakePct: stake?.pct ?? 1, minStakePct: stakeStartPct(), stakeAmount: stake?.amount ?? null, currency: stake?.currency ?? null, defaultHorizonMin: getHorizonMin() });
         tips = parsed.tips; summaryText = parsed.cleanedText || rawText;
+        // Inget IG-livepris för instrumentet (bara Tiingo): nivåerna märks overifierade
+        for (const t of tips) if (!igAgentData.igLive(igEnv, t.epic)) markUnverified(t);
         if (!parsed.found) log.warn("[Head Trader] TIPS_JSON saknades eller kunde inte läsas; alla instrument märks AVVAKTA utan tips");
       }
 

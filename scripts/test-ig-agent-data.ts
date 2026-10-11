@@ -59,6 +59,7 @@ const agent = AD.createIgAgentData({
   historyBlockedUntil: () => historyBlocked,
   tiingo,
   streamAccount: () => streamAcc,
+  streamWaitMs: 0,
   now,
 });
 AD.useIgAgentData(agent);
@@ -153,7 +154,7 @@ const ctx = { broker, brokers: { ig: broker }, risk: {} as any, config: {} as an
   assert.ok(JSON.stringify(all).includes("cachad"), "get_all_positions säger cachad"); assert.ok(!JSON.stringify(all).includes("error"));
   // Risk-analytikern använder samma vägar (ingen krasch-väg kvar för IG)
   const riskSrc = fs.readFileSync(path.resolve("src/orchestrator/advancedSpecialists.ts"), "utf8");
-  assert.match(riskSrc, /igAgentData\.positions\(\(\) => broker\.getPositions\(\), \(\) => broker\.lastKnownPositions\(\)\)/);
+  assert.match(riskSrc, /igAgentData\.positions\(\(\) => broker\.getPositions\(\), \(\) => broker\.lastKnownPositions\(\), igEnv\)/);
   assert.match(riskSrc, /igAgentData\.account\(igEnv/);
   positionsMode = "ok";
   ok("Läsgräns: positioner/saldo från cache och IG-strömmens ACCOUNT, märkt cachad; Risk-analytikern kraschar inte");
@@ -220,6 +221,57 @@ const ctx = { broker, brokers: { ig: broker }, risk: {} as any, config: {} as an
   } finally { globalThis.fetch = prevFetch; positionsMode = "ok"; }
 }
 
+// ══ 6d. Analysens IG-läsningar äter aldrig orderreserven ══
+{
+  const { igPriorityActive, withIgPriority, IG_ORDER_READ_NEED } = await import("../src/integrations/igConnection.js");
+  let R = 20; let prioReads = 0;
+  // Samma regel som igConnection.consumeRead: utan förtur måste bakgrundsutrymme (R − reserv) finnas, med förtur räcker R > 0
+  const consume = (cost: number) => { for (let i = 0; i < cost; i++) { if (R === 0 || (!igPriorityActive() && R - IG_ORDER_READ_NEED <= 0)) throw new Error(IG_READ_RATE_ERROR); R--; } if (igPriorityActive()) prioReads++; };
+  const ag = AD.createIgAgentData({ memory: () => [], dataEnv: (e) => e, quote: () => null, name: () => null, tiingo: null, streamWaitMs: 0, now,
+    budget: () => ({ remaining: R, backgroundRemaining: Math.max(0, R - IG_ORDER_READ_NEED) }), streamAccount: () => null, historyBlockedUntil: () => 0 });
+  const tickers = Array.from({ length: 10 }, (_, i) => ag.ticker("live", `CS.D.T${i}USD.CFD.IP`, async () => { consume(2); return { symbol: "x", price: 1, changePct24h: 0, volume24h: 0 }; }));
+  const acc = ag.account("live", async () => { consume(1); return { balances: [], totalValueUsdt: 1, updatedAt: clock }; });
+  const pos = ag.positions(async () => { consume(1); return []; }, () => null, "live");
+  await Promise.allSettled([...tickers, acc, pos]);
+  assert.ok(R >= IG_ORDER_READ_NEED, `orderreserven kvar (${R} ≥ ${IG_ORDER_READ_NEED})`);
+  assert.ok(prioReads <= AD.ANALYSIS_PRIORITY_PER_MIN, "högst 3 förturs-läsningar per minut för analysen");
+  assert.ok(prioReads >= 1, "förturen används när det är säkert");
+  // En order samma minut (Godkänn/stängning/tidsstopp) får hela sin reserv
+  await withIgPriority(async () => consume(IG_ORDER_READ_NEED));
+  assert.equal(R, 0);
+  ok("10 parallella analys-ticker + saldo + positioner lämnar IG_ORDER_READ_NEED läsningar åt en order med förtur");
+}
+
+// ══ 6e. Tiingo-pris utan IG-livekurs märks tydligt ══
+{
+  delete quotes["CS.D.ARBUSD.CFD.IP"];
+  const t: any = await runTool("get_ticker", { symbol: "CS.D.ARBUSD.CFD.IP" }, ctx);
+  assert.equal(t.varning, AD.NO_IG_PRICE_TEXT); assert.equal(t.igPrisVerifierat, false);
+  assert.equal(AD.NO_IG_PRICE_TEXT, "ingen IG-livekurs; nivåerna måste kontrolleras mot IG innan order");
+  const i: any = await runTool("get_indicators", { symbol: "CS.D.ARBUSD.CFD.IP", interval: "1m" }, ctx);
+  assert.equal(i.källa, "Tiingo (ej IG-pris)"); assert.equal(i.varning, AD.NO_IG_PRICE_TEXT);
+  const all: any = await runTool("get_all_positions", {}, ctx);
+  assert.ok(all.brokers.every((b: any) => b.mode !== "källa"), "ingen låtsad kontorad i portföljsammanfattningen");
+  ok("Tiingo utan IG-livekurs: \"ingen IG-livekurs; nivåerna måste kontrolleras mot IG innan order\"; portföljen utan låtsad rad");
+}
+
+// ══ 6f. XSS: tipstexter escapas i Alla par, topplistan och Agentsessioner ══
+{
+  const html = fs.readFileSync(path.resolve("dashboard.html"), "utf8");
+  const escSrc = /function esc\(t\) \{ return String\(t == null \? "" : t\)\.replace\(\/\[&<>"'\]\/g[^\n]*\}/.exec(html)![0];
+  const esc = new Function(`${escSrc}; return esc;`)();
+  const start = html.indexOf("window.AGTIP = (function(){"), end = html.indexOf("})();", start) + 5;
+  const win: any = {};
+  new Function("window", "IG", "document", html.slice(start, end))(win, { esc, px: (v: unknown) => String(v), label: (e: string) => e, isEpic: () => true, envLabel: () => "IG Live" }, { addEventListener() {}, getElementById() { return null; }, querySelector() { return null; } });
+  const evil = '<img src=x onerror=alert(1)>';
+  const tip = { epic: `CS.D.X.IP"><script>alert(1)</script>`, rank: `<b>1</b>`, action: "buy", why: evil, entry: 1, takeProfit: 2, stopLoss: 0.5, sizePct: 1, sizeText: evil, horizonMin: `<i>5</i>`, confidence: evil, note: evil, unverifiedLevels: true, name: evil };
+  for (const out of [win.AGTIP.line(tip), win.AGTIP.table([tip]), win.AGTIP.button(tip)]) {
+    assert.ok(!/<img|<script|<i>|<b>1/.test(out), "inga råa taggar från tipstexten"); assert.ok(!/"><script/.test(out));
+  }
+  assert.match(win.AGTIP.line(tip), /&lt;img src=x onerror=alert\(1\)&gt;/);
+  ok("XSS: Hannas tipstext (varför, not, storlek, namn, EPIC) escapas i kort, topplista och sessioner");
+}
+
 // ══ 7. Hannas tips: rang per instrument även vid HOLD ══
 {
   const { parseHeadTips, sortTips } = await import("../src/orchestrator/headTips.js");
@@ -241,6 +293,13 @@ const ctx = { broker, brokers: { ig: broker }, risk: {} as any, config: {} as an
   assert.equal(nea!.epic, "CS.D.NEAUSD.CFD.IP"); assert.equal(nea!.action, "hold"); assert.match(nea!.why, /inget tips/);
   assert.ok(!r.cleanedText.includes("TIPS_JSON") && r.cleanedText.includes("[3] Bevaka"), "sammanfattningen visas utan JSON-blocket");
   const none = parseHeadTips("Bara text, ingen lista.", syms.slice(0, 2), { maxStakePct: 1 });
+  // Utan angiven storlek: lägsta insats-steget, inte det högsta
+  const noSize = parseHeadTips(`TIPS_JSON: [{"epic":"CS.D.AVXUSD.CFD.IP","rank":1,"action":"KÖP","why":"x","entry":25,"tp":26,"sl":24}]`, ["CS.D.AVXUSD.CFD.IP"], { maxStakePct: 3, minStakePct: 1 });
+  assert.equal(noSize.tips[0]!.sizePct, 1, "standardstorlek = lägsta steget");
+  const { markUnverified } = await import("../src/orchestrator/headTips.js");
+  const uv = markUnverified({ ...noSize.tips[0]! });
+  assert.equal(uv.unverifiedLevels, true); assert.match(uv.note!, /ingen IG-livekurs; nivåerna måste kontrolleras mot IG innan order/);
+  assert.match(fs.readFileSync(path.resolve("src/orchestrator/headTrader.ts"), "utf8"), /if \(!igAgentData\.igLive\(igEnv, t\.epic\)\) markUnverified\(t\)/, "tips utan IG-livepris märks overifierade");
   assert.equal(none.found, false); assert.equal(none.tips.length, 2); assert.ok(none.tips.every((t) => t.action === "hold"));
   assert.deepEqual(sortTips([{ action: "hold", confidence: "high", rank: 1 }, { action: "buy", confidence: "low", rank: 3 }, { action: "sell", confidence: "high", rank: 2 }] as any).map((t: any) => t.rank), [2, 3, 1], "Bästa först: handlingsbara, säkerhet, rang");
   // Prompten ber om tips (additivt) och Hanna-prompten innehåller kravet

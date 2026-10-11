@@ -70,7 +70,7 @@ export async function runRiskAnalyst(
   const igEnv = igEnvOf(broker);
   if (igEnv && broker instanceof IgBroker) {
     const a = await igAgentData.account(igEnv, () => broker.getAccount());
-    const p = await igAgentData.positions(() => broker.getPositions(), () => broker.lastKnownPositions());
+    const p = await igAgentData.positions(() => broker.getPositions(), () => broker.lastKnownPositions(), igEnv);
     account = a.account ?? { balances: [], totalValueUsdt: 0, updatedAt: Date.now(), balance: null, available: null };
     positions = p.positions ?? [];
     dataSource = `saldo: ${a.source}; positioner: ${p.source}${p.positions ? "" : " (okänt antal öppna positioner, räkna försiktigt)"}`;

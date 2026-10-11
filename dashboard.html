@@ -10422,7 +10422,7 @@ window.AGTIP = (function(){
     if(!t) return "";
     const lv = [t.entry != null ? `entry ${px(t.entry)}` : "", t.takeProfit != null ? `TP ${px(t.takeProfit)}` : "", t.stopLoss != null ? `SL ${px(t.stopLoss)}` : ""].filter(Boolean).join(" · ");
     return `<b>#${esc(t.rank)}</b> <b style="color:${COL[t.action] || "#8b95a7"}">${esc(ACT[t.action] || t.action)}</b>`
-      + (lv ? ` · ${esc(lv)}` : "") + (t.sizeText ? ` · ${esc(t.sizeText)}` : "") + ` · ${esc(t.horizonMin)} min · säkerhet ${esc(CONF[t.confidence] || t.confidence)}`
+      + (lv ? ` · ${t.unverifiedLevels ? '<b style="color:#f0b90b" title="Inget IG-livepris vid analysen">⚠ overifierade nivåer</b> ' : ""}${esc(lv)}` : "") + (t.sizeText ? ` · ${esc(t.sizeText)}` : "") + ` · ${esc(t.horizonMin)} min · säkerhet ${esc(CONF[t.confidence] || t.confidence)}`
       + `<br><span style="color:var(--dim)">${esc(String(t.why || "").slice(0, 200))}${t.note ? ` (${esc(t.note)})` : ""}</span>`;
   }
   function button(t){
@@ -10434,7 +10434,7 @@ window.AGTIP = (function(){
     const rows = list.map(t=>{
       const lv = (v)=> v == null ? "–" : esc(px(v));
       return `<tr><td><b>${esc(t.rank)}</b></td><td title="${esc(t.epic)}">${esc(t.name || IG.label(t.epic))}</td><td style="font-weight:800;color:${COL[t.action] || "#8b95a7"}">${esc(ACT[t.action] || t.action)}</td>`
-        + `<td>${esc(String(t.why || "").slice(0, 160))}${t.note ? ` <span style="color:var(--dim)">(${esc(t.note)})</span>` : ""}</td><td>${lv(t.entry)}</td><td style="color:#3fb950">${lv(t.takeProfit)}</td><td style="color:#f85149">${lv(t.stopLoss)}</td>`
+        + `<td>${esc(String(t.why || "").slice(0, 160))}${t.note ? ` <span style="color:var(--dim)">(${esc(t.note)})</span>` : ""}</td><td>${t.unverifiedLevels ? '<b style="color:#f0b90b" title="Inget IG-livepris vid analysen: kontrollera nivåerna mot IG innan order">⚠</b> ' : ""}${lv(t.entry)}</td><td style="color:#3fb950">${lv(t.takeProfit)}</td><td style="color:#f85149">${lv(t.stopLoss)}</td>`
         + `<td>${esc(t.sizeText || "–")}</td><td>${esc(t.horizonMin)} min</td><td>${esc(CONF[t.confidence] || t.confidence)}</td><td>${button(t)}</td></tr>`;
     }).join("");
     return `<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="font-size:10px;color:var(--dim);text-transform:uppercase"><th>#</th><th>Instrument</th><th>Råd</th><th>Varför</th><th>Entry</th><th>TP</th><th>SL</th><th>Storlek</th><th>Horisont</th><th>Säkerhet</th><th></th></tr>${rows}</table></div>`;
@@ -10453,7 +10453,7 @@ window.AGTIP = (function(){
     set("ot-tf-custom", t.horizonMin);
     const side = $(t.action === "buy" ? "ot-buy" : "ot-sell");
     if(side){ side.style.outline = "3px solid #fbbf24"; setTimeout(()=>{ side.style.outline = ""; }, 8000); side.scrollIntoView({ block:"center" }); }
-    if(typeof pushInAppAlert === "function") pushInAppAlert(`📋 Utkast i orderpanelen: ${t.action === "buy" ? "KÖP" : "SÄLJ"} ${IG.label(t.epic)}${t.takeProfit != null ? " · TP " + px(t.takeProfit) : ""}${t.stopLoss != null ? " · SL " + px(t.stopLoss) : ""}${t.sizePct != null ? " · " + t.sizePct + " %" : ""} · ${t.horizonMin} min (${IG.envLabel()}). Inget är skickat: tryck ${t.action === "buy" ? "Köp" : "Sälj"} och sedan Godkänn om du vill.`, 9000);
+    if(typeof pushInAppAlert === "function") pushInAppAlert(`📋 Utkast i orderpanelen: ${t.action === "buy" ? "KÖP" : "SÄLJ"} ${IG.label(t.epic)}${t.takeProfit != null ? " · TP " + px(t.takeProfit) : ""}${t.stopLoss != null ? " · SL " + px(t.stopLoss) : ""}${t.sizePct != null ? " · " + t.sizePct + " %" : ""} · ${t.horizonMin} min (${IG.envLabel()}). Inget är skickat: tryck ${t.action === "buy" ? "Köp" : "Sälj"} och sedan Godkänn om du vill.${t.unverifiedLevels ? " ⚠ Ingen IG-livekurs vid analysen: kontrollera nivåerna mot IG innan order." : ""}`, 9000);
   }
   document.addEventListener("click", (ev)=>{
     const b = ev.target.closest("[data-agtip]"); if(!b) return;
