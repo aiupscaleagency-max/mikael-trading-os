@@ -4474,8 +4474,18 @@ async function loadRealCandles(sym, tf){
   const bd = (d.backdrop && Array.isArray(d.backdrop.bars)) ? d.backdrop.bars.filter(b=>!bars.length || b.time < bars[0].time) : [];
   igMain.backdrop = bd.length ? { label: d.backdrop.label || "Tiingo-historik (ej IG-pris) + IG-live", n: bd.length } : null;
   igMain.backdropNote = !bd.length && d.backdrop && d.backdrop.note ? d.backdrop.note : null;
+  // Behåll prisernas decimaler även för forex och små kryptopriser.
+  const visibleBars = [...bd, ...bars];
+  const precision = visibleBars.reduce((digits, b)=>Math.max(digits, ...[b.open,b.high,b.low,b.close].map(p=>{
+    const fraction = Number(p).toFixed(8).replace(/0+$/, "").split(".")[1];
+    return fraction ? fraction.length : 0;
+  })), 2);
+  candleSeries.applyOptions({priceFormat:{type:"price", precision, minMove:10 ** -precision}});
+  const fitHistory = igMain.key !== sym+"|"+tf || !candleSeries.data().length;
   candleSeries.setData([...bd.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close,color:"#4b5563",wickColor:"#6b7280",borderColor:"#6b7280"})),
     ...bars.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close}))]);
+  // Visa hela historiken vid första laddning/byte, men behåll zoom vid uppdatering.
+  if(fitHistory && visibleBars.length) chart.timeScale().fitContent();
   if(bars.length){ applyIndicators(bars); updatePriceHeader(bars); }
   else { clearPriceHeader(); if(d.quote && d.quote.mid != null) document.getElementById("cur-price").textContent = IG.px(d.quote.mid) + IG.plain(d.quote); }
   if(d.quote && d.quote.mid != null) STATE.livePrices[sym] = d.quote.mid;
