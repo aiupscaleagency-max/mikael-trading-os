@@ -21,6 +21,7 @@ import { userAction } from "./agentActivity.js";
 import { log } from "../logger.js";
 import { strategyLibrary } from "./igStrategyLibrary.js";
 import { getTiingoStatus } from "../data/tiingoHistory.js";
+import { igReadStats } from "../integrations/igReadStats.js";
 import { igCourse } from "../integrations/igCourse.js";
 import { DEMO_SIM_LABEL, demoSimRow } from "../integrations/igDemoSim.js";
 import { igDemoSimRouter } from "./igDemoSimLive.js";
@@ -35,6 +36,7 @@ import { igDemoSimRouter } from "./igDemoSimLive.js";
 //   POST /api/ig/stake-quote            → storlek, marginal, SL/TP i kontovaluta för en insats (skickar inget)
 //   POST /api/ig/positions/:dealId/close → "Sälj nu": lägger en stängning i Väntande ordrar (GODKÄNN krävs)
 //   GET  /api/ig/history                → IG-transaktioner/aktivitet 30 dagar (aktiv miljö)
+//   GET  /api/ig/read-stats             → IG-läsningar per förbrukare (katalog, minidiagram, sim, bevakning, agenter, vy) + taken
 //   GET  /api/market/watchlist          → bevakade EPICs med namn
 //   POST /api/market/watchlist {epic}   → lägg till (verifieras mot IG)
 //   DELETE /api/market/watchlist/:epic  → ta bort
@@ -173,6 +175,11 @@ export async function handleIgRoutes(
   const env = igMarketData.getActiveEnv();
   const activeIg = (): IgBroker | null => { const b = brokers[activeBroker() ?? ""]; return b instanceof IgBroker ? b : null; };
   try {
+    // IG-läsningar per förbrukare (katalog, minidiagram, sim, bevakning, agenter, vy) + taken. Bara antal, inga data.
+    if (p === "/api/ig/read-stats" && method === "GET") {
+      send(res, 200, igReadStats.snapshot(getIgReadBudget));
+      return true;
+    }
     if (p === "/api/ig/status" && method === "GET") {
       const st = getIgStatus();
       send(res, 200, {

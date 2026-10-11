@@ -8,6 +8,7 @@ import { getIgMarket, getIgCandles, searchIgMarkets, igMarketCategory, type IgTi
 import { igStreaming } from "../integrations/igStreaming.js";
 import { tickIgOrders } from "../integrations/igOrders.js";
 import { tickIgCatalogues } from "../integrations/igMarketDirectory.js";
+import { withIgReadConsumer } from "../integrations/igReadStats.js";
 import { igAnalysisActive } from "../integrations/igAnalysisGate.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -414,7 +415,8 @@ export function createIgMarketData(deps: {
   function start(): void {
     if (timer) return;
     for (const [ev, fn] of listeners) stream.events.on(ev, fn);
-    const run = () => void tick().catch((err) => log.warn(`[ig] marknadsdata: ${err instanceof Error ? err.message : String(err)}`));
+    // Bevakningens varv (kvoter utan ström, diagramhistorik) räknas som "bevakning" i GET /api/ig/read-stats
+    const run = () => void withIgReadConsumer("bevakning", () => tick()).catch((err) => log.warn(`[ig] marknadsdata: ${err instanceof Error ? err.message : String(err)}`));
     run();
     timer = setInterval(run, 15_000); timer.unref?.();
     slow = setInterval(() => {

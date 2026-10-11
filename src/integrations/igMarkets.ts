@@ -2,7 +2,9 @@
 // Utdrag ur Codex igWorkspace.ts (codex/ig-continuation-20261007): endast läsvägar.
 // Analys/sessioner ligger i vårt eget agentflöde (JEV → Teknisk + Risk → Hanna).
 import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igFxIsFresh,igPairQuote,igStaleFx,igFxPlausibility,FX_STALE_MAX_MS,type IgAccountFx} from "./igRules.js";
-import {callIgAuthenticated,getIgReadBudget,isIgTemporaryRateError,getIgStatus,type IgEnvironment} from "./igConnection.js";
+import {callIgAuthenticated,getIgReadBudget,isIgTemporaryRateError,getIgStatus,getIgAccountIdentity,IG_READ_RATE_ERROR,type IgEnvironment} from "./igConnection.js";
+import {igReadStats,IG_BACKGROUND_CAPS,withIgReadConsumer,type createIgReadStats} from "./igReadStats.js";
+import crypto from "node:crypto";
 import {igAnalysisActive} from "./igAnalysisGate.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -44,10 +46,26 @@ export function normalizeIgCandles(prices:unknown,timeframe:IgTimeframe,now:numb
   candles.sort((a,b)=>a.openTime-b.openTime);
   return {candles,rejected,forming};
 }
-export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:typeof getIgStatus;now?:()=>number;paused?:(mode:IgEnvironment)=>boolean}={}) {
+/** En hel sökgenomgång av katalogen (≈65 läsningar) görs högst en gång per dygn och inloggat konto.
+ *  IG:s instrumentlistor ändras sällan; tidigare började sökningen om från noll var 5:e minut (≈13 läsningar/min,
+ *  mer än hela bakgrundsutrymmet på 12/min). */
+export const IG_CATALOGUE_FULL_REFRESH_MS=24*3600_000;
+/** Efter en hel genomgång: ett sökord per kategori och 2 min uppfriskas (≈1 läsning/min per miljö), så att
+ *  sökradernas kurser/förändring (topplistor) håller sig ungefär en timme färska i stället för ett dygn. */
+export const IG_CATALOGUE_TRICKLE_MS=120_000;
+type ReadStats=ReturnType<typeof createIgReadStats>;
+export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:typeof getIgStatus;now?:()=>number;paused?:(mode:IgEnvironment)=>boolean;
+  /** Räknare per förbrukare (standard: serverns gemensamma i produktion, ingen i tester med egen call) */
+  readStats?:ReadStats|null;
+  /** Sparad katalog-genomgång (tester sätter egen fil/konto; standard i produktion: data-katalogen + inloggat konto) */
+  crawlFile?:((mode:IgEnvironment)=>string)|null;crawlAccount?:(mode:IgEnvironment)=>string|null}={}) {
   // Analys har förtur: katalogens läsningar pausas i miljön medan agenterna analyserar (igAnalysisGate).
   const paused=deps.paused??igAnalysisActive;
   const call=deps.call??callIgAuthenticated,status=deps.status??getIgStatus,now=deps.now??Date.now;
+  const stats=deps.readStats!==undefined?deps.readStats:(deps.call?null:igReadStats);
+  const crawlFile=deps.crawlFile!==undefined?deps.crawlFile:(deps.call?null:(mode:IgEnvironment)=>dataPath(`ig-catalogue-crawl-${mode}.json`));
+  // Kontonyckel för den sparade genomgången: hash av konto-id (id:t självt sparas aldrig)
+  const crawlAccount=deps.crawlAccount??((mode:IgEnvironment)=>{const id=getIgAccountIdentity(mode)?.accountId;return id?crypto.createHash("sha256").update(`${mode}:${id}`).digest("hex").slice(0,16):null;});
   const cache=new Map<string,{at:number,value:any}>(),pending=new Map<string,Promise<any>>();
   const fixtureReads:{environment:IgEnvironment;at:number}[]=[];
   const catalogueReads:{environment:IgEnvironment;at:number;category:'forex'|'crypto'|null}[]=[];
@@ -59,12 +77,15 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     // Katalogen får alltid en egen liten andel (högst 10 läsningar per minut) så länge det finns bakgrundsutrymme utöver orderreserven.
     // Tidigare krav (fler än 2 lediga + under 36 i hela appen) gjorde att katalogen aldrig kom igång när orderavstämningen låg på samma sekund.
     const bg=(global as {backgroundRemaining?:number}).backgroundRemaining;
-    const ok=global.remaining>0&&(bg===undefined||bg>0)&&catalogueReads.filter(r=>r.environment===mode).length<10&&(category===null||catalogueReads.filter(r=>r.environment===mode&&r.category===category).length<5);
+    // Rättvist tak (igReadStats): katalogen högst IG_BACKGROUND_CAPS.katalog.perMinute/min och bara när bakgrundsutrymmet
+    // ligger över golvet, så att kurser/konto/positioner/diagram alltid har läsningar kvar. Hälften per kategori.
+    const cap=IG_BACKGROUND_CAPS.katalog,perCategory=Math.max(1,Math.ceil(cap.perMinute/2));
+    const ok=global.remaining>0&&(bg===undefined||bg>=cap.floor)&&catalogueReads.filter(r=>r.environment===mode).length<cap.perMinute&&(category===null||catalogueReads.filter(r=>r.environment===mode&&r.category===category).length<perCategory);
     if(!ok&&!deps.call&&now()-lastBudgetWarn>60000){lastBudgetWarn=now();console.warn(`[ig] katalog ${mode} väntar på läsutrymme: kvar ${global.remaining}, bakgrund ${bg??'?'}, appen ${global.appUsed}, katalog ${catalogueReads.filter(r=>r.environment===mode).length}/min`);}
     return ok;
   }
   // Fyra sökläsningar per kategori reserverar plats åt den andra även när HTTP-klienter kommer först.
-  async function catalogueReadFor(category:'forex'|'crypto'|null,...args:Parameters<typeof call>){if(!catalogueBudget(args[0],category))throw Error("Katalogens läsutrymme är slut för denna minut");catalogueReads.push({environment:args[0],at:now(),category});return read(...args);}
+  async function catalogueReadFor(category:'forex'|'crypto'|null,...args:Parameters<typeof call>){if(!catalogueBudget(args[0],category))throw Error("Katalogens läsutrymme är slut för denna minut");catalogueReads.push({environment:args[0],at:now(),category});return withIgReadConsumer('katalog',()=>read(...args));} // räknas alltid som katalog, även när en HTTP-vy startade hämtningen
   const catalogueRead=(...args:Parameters<typeof call>)=>catalogueReadFor(null,...args);
   // Produktionsanrop räknas centralt i anslutningen; injicerade testanrop får samma miljöbudget.
   function readBudget(mode:IgEnvironment){
@@ -76,7 +97,12 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
   const clone=<T>(v:T):T=>JSON.parse(JSON.stringify(v));
   const connectionIdentity=(mode:IgEnvironment)=>{const c=status().environments[mode];return c.status==="connected" ? c.connectionGeneration ?? `${c.checkedAt}:${c.account?.accountId}` : null;};
   function consumeRead(mode:IgEnvironment){if(!deps.call)return;if(readBudget(mode).remaining===0)throw Error("IG-läsbudgeten är slut för denna minut");fixtureReads.push({environment:mode,at:now()});}
-  async function read(...args:Parameters<typeof call>){consumeRead(args[0]);return call(...args);}
+  async function read(...args:Parameters<typeof call>){
+    consumeRead(args[0]);
+    // Mätning per förbrukare (GET /api/ig/read-stats). Nekad av budgeten/IG = "avvisad" (ingen data kom).
+    try{const data=await call(...args);stats?.record(args[0],args[1]);return data;}
+    catch(e){stats?.record(args[0],args[1],e instanceof Error&&e.message===IG_READ_RATE_ERROR);throw e;}
+  }
   /** Läser en cachad post utan att hämta något (ingen IG-läsning). */
   function peek<T>(key:string,ttl:number):T|undefined{const environment=key.split(":")[1] as IgEnvironment,hit=cache.get(`${key}:account:${connectionIdentity(environment)}`);return hit&&now()-hit.at<ttl?clone(hit.value) as T:undefined;}
   async function cached<T>(key:string,ttl:number,job:()=>Promise<T>):Promise<T> {
@@ -136,7 +162,24 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     if(p.unsupported)return null;
     return {environment:mode,category,status:p.done&&p.unclassified===0?'ready':'partial',complete:p.done&&p.unclassified===0,traversalComplete:p.done,progress:{reason:p.reason,failures:p.failures,page:p.page,categoryIndex:p.index,lastProgressAt:p.at,retryAt:p.retryAt},unclassifiedInstruments:p.unclassified,error:p.failures?'IG-kategorin kunde inte hämtas; nytt försök sker automatiskt och sökreserv används vid upprepade fel':null,markets:[...p.markets.values()].filter(m=>m.category===category).sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:p.at,remainingSearches:p.done?0:Math.max(1,(p.codes?.length??1)-p.index),source:'IG aktiverade kontokategorier',note:p.done?'Alla hämtade Forex- och kryptoinstrument i IG-kontots aktiverade valutakategorier.':'Kontokategorier hämtas automatiskt inom IG:s läskvot.'};
   }
-  const catalogProgress=new Map<string,{cursor:number;markets:Map<string,any>;updatedAt:number;failed:Map<string,{attempts:number;retryAt:number}>;reason:string|null;lastCompleteAt?:number|null}>();
+  const catalogProgress=new Map<string,{cursor:number;markets:Map<string,any>;updatedAt:number;failed:Map<string,{attempts:number;retryAt:number}>;reason:string|null;lastCompleteAt?:number|null;trickle?:number;trickleAt?:number}>();
+  // ── Sparad genomgång: överlever omstart och ny inloggning (ny connectionGeneration) i upp till ett dygn ──
+  // Bara EPIC/namn/typ/kategori, inga priser och inget konto-id (bara en hash). Annat konto = ingen återanvändning.
+  type CrawlFile={account:string;categories:Record<string,{completedAt:number;markets:any[]}>};
+  function loadCrawl(mode:IgEnvironment):CrawlFile|null{if(!crawlFile)return null;try{const d=JSON.parse(fs.readFileSync(crawlFile(mode),'utf8'));return d&&typeof d.account==='string'&&d.categories&&typeof d.categories==='object'?d:null;}catch{return null;}}
+  function seedFromCrawl(mode:IgEnvironment,category:'forex'|'crypto'){
+    const account=crawlAccount(mode),d=loadCrawl(mode),c=d?.categories?.[category];
+    if(!account||!d||d.account!==account||!c||!Number.isFinite(c.completedAt)||now()-c.completedAt>=IG_CATALOGUE_FULL_REFRESH_MS||!Array.isArray(c.markets))return null;
+    const markets=new Map<string,any>();
+    for(const r of c.markets)if(typeof r?.epic==='string'&&/^[A-Za-z0-9._-]{1,100}$/.test(r.epic)&&typeof r.name==='string')markets.set(r.epic,{epic:r.epic,name:r.name,type:str(r.type),category,expiry:str(r.expiry),bid:null,offer:null,percentageChange:null,netChange:null,high:null,low:null,updateTimeUTC:null,marketStatus:null,streamingPricesAvailable:r.streamingPricesAvailable===true,delayTime:null,scalingFactor:null,saved:true});
+    return {completedAt:c.completedAt,markets};
+  }
+  function saveCrawl(mode:IgEnvironment,category:'forex'|'crypto',completedAt:number,markets:any[]){
+    const account=crawlAccount(mode);if(!crawlFile||!account)return;
+    const prev=loadCrawl(mode),d:CrawlFile=prev&&prev.account===account?prev:{account,categories:{}};
+    d.categories[category]={completedAt,markets:markets.map(m=>({epic:m.epic,name:m.name,type:m.type??null,expiry:m.expiry??null,streamingPricesAvailable:m.streamingPricesAvailable===true}))};
+    try{fs.mkdirSync(path.dirname(crawlFile(mode)),{recursive:true});fs.writeFileSync(crawlFile(mode),JSON.stringify(d));}catch{/* bara en reserv */}
+  }
   // Cross-environment discovery transfers identifiers only. Every visible Demo row is
   // independently read from Demo; no Live name, quote or market status is copied.
   const demoCandidates=new Map<string,Map<string,{at:number;row:any|null}>>();
@@ -184,12 +227,24 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     if(!discovery&&enabled&&enabled.markets.length>0&&(!enabled.traversalComplete&&enabled.progress.failures<2||enabled.traversalComplete&&enabled.unclassifiedInstruments===0))return enabled;
     const identity=connectionIdentity(mode),key=`${mode}:${identity}:${category}`;
     let progress=catalogProgress.get(key);const terms=category==='forex'?['Forex',...fiatCodes,'Weekend']:cryptoTerms; // 'Weekend': IG:s helgmarknader (t.ex. Weekend EUR/USD) är öppna lör–sön
-    if(!progress||progress.cursor===terms.length&&progress.failed.size===0&&now()-progress.updatedAt>300000){progress={cursor:0,markets:progress?.markets??new Map(),updatedAt:now(),failed:new Map(),reason:null,lastCompleteAt:progress?.lastCompleteAt??null};catalogProgress.set(key,progress);}
+    // Ny inloggning/omstart: en sparad hel genomgång (samma konto, < 24 h) återanvänds i stället för ≈65 nya sökningar
+    if(!progress){const seeded=seedFromCrawl(mode,category);if(seeded){progress={cursor:terms.length,markets:seeded.markets,updatedAt:seeded.completedAt,failed:new Map(),reason:null,lastCompleteAt:seeded.completedAt,trickle:0,trickleAt:0};catalogProgress.set(key,progress);}}
+    // Hel genomgång klar utan fel: ny genomgång från noll först efter ett dygn (tidigare 5 min)
+    if(!progress||progress.cursor===terms.length&&progress.failed.size===0&&now()-(progress.lastCompleteAt??progress.updatedAt)>=IG_CATALOGUE_FULL_REFRESH_MS){progress={cursor:0,markets:progress?.markets??new Map(),updatedAt:now(),failed:new Map(),reason:null,lastCompleteAt:progress?.lastCompleteAt??null};catalogProgress.set(key,progress);}
     // Delresultat återanvänds när minutbudgeten tar slut. Parallella anrop delar samma hämtning.
     const running=pending.get(`catalog:${key}`);if(running)return clone(await running);
+    // Sökraderna kan vara upp till ett dygn gamla (sparad/klar genomgång): kategoriraderna (hämtas om var 5:e min)
+    // och Demo-beläggen är färskare och vinner därför vid samma EPIC i sammanslagningen nedan.
     const job=(async()=>{
       let blocked=false;
       const retried=new Set<string>();
+      // Genomgången är klar: bara en långsam uppfriskning (ett sökord per IG_CATALOGUE_TRICKLE_MS), inom katalogens tak
+      const settled=progress!.cursor===terms.length&&progress!.failed.size===0&&progress!.lastCompleteAt!=null;
+      if(settled&&now()-(progress!.trickleAt??0)>=IG_CATALOGUE_TRICKLE_MS&&catalogueBudget(mode,category)){
+        const term=terms[(progress!.trickle??0)%terms.length]!;progress!.trickleAt=now();progress!.trickle=((progress!.trickle??0)+1)%terms.length;
+        try{const result=await searchMarkets(mode,term,category);for(const m of result.markets){if(m.type!=='CURRENCIES'||igMarketCategory(m)!==category)continue;progress!.markets.set(m.epic,{...m,category});}progress!.updatedAt=now();}
+        catch{/* uppfriskningen är bara bekvämlighet; nästa sökord om 2 min */}
+      }
       while(progress!.cursor<terms.length||[...progress!.failed].some(([term,f])=>f.retryAt<=now()&&!retried.has(term))){
         if(!catalogueBudget(mode,category)){blocked=true;progress!.reason='budget';break;}
         const normal=progress!.cursor<terms.length,term=normal?terms[progress!.cursor]!: [...progress!.failed].find(([t,f])=>f.retryAt<=now()&&!retried.has(t))![0];
@@ -216,8 +271,8 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
       }
       if(connectionIdentity(mode)!==identity)throw Error('IG-kontosessionen ändrades under kataloghämtningen');
       // Alla sökord gick igenom utan fel: tidpunkten sparas (överlever omtagningen var 5:e minut)
-      if(!blocked&&progress!.cursor===terms.length&&progress!.failed.size===0)progress!.lastCompleteAt=now();
-      return {environment:mode,category,status:blocked?'partial':'ready',complete:false,searchCompletedAt:progress!.lastCompleteAt??null,error:null,markets:[...new Map([...(enabled?.markets??[]),...(discovery?.markets??[]),...progress!.markets.values()].map(m=>[m.epic,m])).values()].sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:progress!.updatedAt,remainingSearches:terms.length-progress!.cursor+[...progress!.failed].filter(([term])=>terms.indexOf(term)<progress!.cursor).length,source:'IG kontosökning',progress:{discovery:discovery?.progress??null,category:enabled?.progress??null,search:{reason:progress!.reason,failedTerms:[...progress!.failed.keys()]}},categoryError:progress!.failed.size?'En eller flera IG-sökningar misslyckades; övriga termer hämtas och felande termer återförsöks':enabled?.error??null,unclassifiedInstruments:enabled?.unclassifiedInstruments??0,note:blocked?'Hämtningen är delvis klar och fortsätter automatiskt inom IG:s läskvot.':'Alla hämtade IG-instrument. Ytterligare instrument kan sökas hos IG; fullständigheten kan inte verifieras.'};
+      if(!settled&&!blocked&&progress!.cursor===terms.length&&progress!.failed.size===0){progress!.lastCompleteAt=now();saveCrawl(mode,category,progress!.lastCompleteAt,[...progress!.markets.values()]);}
+      return {environment:mode,category,status:blocked?'partial':'ready',complete:false,searchCompletedAt:progress!.lastCompleteAt??null,error:null,markets:[...new Map([...progress!.markets.values(),...(enabled?.markets??[]),...(discovery?.markets??[])].map(m=>[m.epic,m])).values()].sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:progress!.updatedAt,remainingSearches:terms.length-progress!.cursor+[...progress!.failed].filter(([term])=>terms.indexOf(term)<progress!.cursor).length,source:'IG kontosökning',progress:{discovery:discovery?.progress??null,category:enabled?.progress??null,search:{reason:progress!.reason,failedTerms:[...progress!.failed.keys()]}},categoryError:progress!.failed.size?'En eller flera IG-sökningar misslyckades; övriga termer hämtas och felande termer återförsöks':enabled?.error??null,unclassifiedInstruments:enabled?.unclassifiedInstruments??0,note:blocked?'Hämtningen är delvis klar och fortsätter automatiskt inom IG:s läskvot.':'Alla hämtade IG-instrument. Ytterligare instrument kan sökas hos IG; fullständigheten kan inte verifieras.'};
     })();pending.set(`catalog:${key}`,job);try{return clone(await job);}finally{pending.delete(`catalog:${key}`);}
   }
   async function marketOverview(mode:IgEnvironment,epics:string[]=[]){

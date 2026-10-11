@@ -1,5 +1,6 @@
 import type { Account, Kline, Position, Ticker } from "../types.js";
 import { getIgReadBudget, getIgHistoryBlockedUntil, withIgPriority, withoutIgPriority, IG_HISTORY_RATE_ERROR, IG_HISTORY_BLOCK_MS, IG_ORDER_READ_NEED, type IgEnvironment } from "../integrations/igConnection.js";
+import { withIgReadConsumer } from "../integrations/igReadStats.js";
 import { igMarketData, type IgQuote } from "./igMarketData.js";
 import { createTiingoBars, tiingoBarsShared, TIINGO_AGENT_LABEL, type TiingoFreq, type TiingoBarsResult } from "./tiingoIntraday.js";
 
@@ -126,9 +127,10 @@ export function createIgAgentData(deps: {
     let remaining = 0;
     try { const b = budget(env); remaining = Number.isFinite(b.remaining) ? b.remaining! : b.backgroundRemaining + IG_ORDER_READ_NEED; } catch { remaining = 0; }
     const safe = list.length < ANALYSIS_PRIORITY_PER_MIN && remaining >= IG_ORDER_READ_NEED + ANALYSIS_PRIORITY_READ_COST * (inflight + 1);
-    if (!safe) return withoutIgPriority(read); // utan förtur: orderreserven rörs aldrig
+    const tagged = () => withIgReadConsumer("agenter", read); // räknas på agenterna i GET /api/ig/read-stats
+    if (!safe) return withoutIgPriority(tagged); // utan förtur: orderreserven rörs aldrig
     list.push(now()); prioInFlight.set(env, inflight + 1);
-    try { return await withIgPriority(read); } finally { prioInFlight.set(env, Math.max(0, (prioInFlight.get(env) ?? 1) - 1)); }
+    try { return await withIgPriority(tagged); } finally { prioInFlight.set(env, Math.max(0, (prioInFlight.get(env) ?? 1) - 1)); }
   }
   const historyBlockedUntil = deps.historyBlockedUntil ?? getIgHistoryBlockedUntil;
   const tiingo = deps.tiingo === undefined ? createTiingoBars() : deps.tiingo;

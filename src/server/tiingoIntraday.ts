@@ -11,7 +11,7 @@
 //  Endpoints (verifierade mot Tiingos dokumentation, 2026-10-10):
 //   - Krypto: GET https://api.tiingo.com/tiingo/crypto/prices?tickers=btcusd,ethusd&startDate=YYYY-MM-DD&resampleFreq=5min
 //             → [{ ticker, baseCurrency, quoteCurrency, priceData: [{ date, open, high, low, close, ... }] }]
-//             Flera tickers kommaseparerade i ETT anrop (dokumenterat).
+//             Flera tickers kommaseparerade i ETT anrop, HÖGST 5 (fler → HTTP 400 för hela anropet, se TIINGO_BATCH_MAX).
 //   - Forex:  GET https://api.tiingo.com/tiingo/fx/<ticker>/prices?startDate=YYYY-MM-DD&resampleFreq=5min
 //             → [{ date, ticker, open, high, low, close }]  (en ticker per anrop; bara /fx/top tar tickers=)
 //  Nyckeln skickas som header (Authorization: Token …), aldrig i URL:en, så den inte hamnar i loggar/fel.
@@ -145,16 +145,18 @@ export function createTiingoIntraday(deps: {
     return null;
   }
   function day(msAgo: number): string { return new Date(now() - msAgo).toISOString().slice(0, 10); }
-  async function request(url: string, token: string): Promise<{ data: unknown; note: string | null }> {
+  async function request(url: string, token: string): Promise<{ data: unknown; status: number; note: string | null }> {
     calls.push(now()); stats.requests++;
     try {
       const r = await doFetch(url, { headers: { Authorization: `Token ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(8000) });
       if (!r.ok) {
         if (r.status === 429) cooldownUntil = now() + TIINGO_COOLDOWN_MS;
-        return { data: null, note: r.status === 401 || r.status === 403 ? "Tiingo nekade nyckeln" : r.status === 429 ? "Tiingo begränsade antal anrop" : `Tiingo svarade HTTP ${r.status}` };
+        // Diagnostik utan URL eller nyckel: tidigare syntes Tiingo-fel bara i minidiagrammets text, aldrig i loggen
+        console.warn(`[tiingo] minidiagram → HTTP ${r.status}`);
+        return { data: null, status: r.status, note: r.status === 401 || r.status === 403 ? "Tiingo nekade nyckeln" : r.status === 429 ? "Tiingo begränsade antal anrop" : `Tiingo svarade HTTP ${r.status}` };
       }
-      return { data: await r.json(), note: null };
-    } catch { return { data: null, note: "Tiingo kunde inte nås" }; }
+      return { data: await r.json(), status: r.status, note: null };
+    } catch { return { data: null, status: 0, note: "Tiingo kunde inte nås" }; }
   }
   function settle(t: string, s: TiingoSeries, permanent: boolean): TiingoSeries {
     // Tillfälliga hinder (gräns/paus) cachas inte; riktiga svar och fel cachas
@@ -172,14 +174,34 @@ export function createTiingoIntraday(deps: {
       const token = key();
       const why = token ? capReason() : TIINGO_NO_KEY;
       if (why || !token) { for (const t of part) resolve(t, { ticker: t, closes: [], from: null, to: null, at: now(), note: why }); continue; }
-      const qs = new URLSearchParams({ tickers: part.join(","), startDate: day(86_400_000), resampleFreq: "5min" }).toString();
-      const { data, note } = await request(`https://api.tiingo.com/tiingo/crypto/prices?${qs}`, token);
-      for (const t of part) {
-        if (note) { resolve(t, settle(t, { ticker: t, closes: [], from: null, to: null, at: now(), note }, !/begränsade/.test(note))); continue; }
-        const entry = Array.isArray(data) ? data.find((d: any) => d?.ticker === t) : null;
-        resolve(t, settle(t, entry ? toSeries(t, (entry as any).priceData, now()) : { ticker: t, closes: [], from: null, to: null, at: now(), note: "Tiingo saknar paret" }, true));
-      }
+      for (const [t, s] of await fetchCryptoPart(part, token)) resolve(t, s);
     }
+  }
+
+  /** Ett samlat kryptoanrop. HTTP 400 på flera tickers: varje ticker provas för sig (inom taket), så att ett
+   *  avvisat samlat anrop aldrig cachas som fel på enskilda par. "Tiingo saknar paret" cachas bara per ticker. */
+  async function fetchCryptoPart(part: string[], token: string): Promise<Map<string, TiingoSeries>> {
+    const out = new Map<string, TiingoSeries>();
+    const qs = new URLSearchParams({ tickers: part.join(","), startDate: day(86_400_000), resampleFreq: "5min" }).toString();
+    const { data, status, note } = await request(`https://api.tiingo.com/tiingo/crypto/prices?${qs}`, token);
+    if (note) {
+      if (status === 400 && part.length > 1) {
+        for (const t of part) {
+          const why = capReason();
+          if (why) { out.set(t, { ticker: t, closes: [], from: null, to: null, at: now(), note: why }); continue; } // tak: cachas inte
+          for (const [k, v] of await fetchCryptoPart([t], token)) out.set(k, v);
+        }
+        return out;
+      }
+      // Samma regel som tidigare: allt utom anropsbegränsning cachas (15 min), nu per ticker
+      for (const t of part) out.set(t, settle(t, { ticker: t, closes: [], from: null, to: null, at: now(), note }, !/begränsade/.test(note)));
+      return out;
+    }
+    for (const t of part) {
+      const entry = Array.isArray(data) ? data.find((d: any) => d?.ticker === t) : null;
+      out.set(t, settle(t, entry ? toSeries(t, (entry as any).priceData, now()) : { ticker: t, closes: [], from: null, to: null, at: now(), note: "Tiingo saknar paret" }, true));
+    }
+    return out;
   }
 
   async function fetchFx(t: string): Promise<TiingoSeries> {
