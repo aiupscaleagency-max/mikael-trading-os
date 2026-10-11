@@ -7,6 +7,7 @@ import { getIgOrderState } from "../integrations/igOrders.js";
 import { igPositionLimitReason } from "../integrations/igRiskLimits.js";
 import { getIgMarket, getIgCandles, type IgTimeframe } from "../integrations/igMarkets.js";
 import { previewIgOrder, confirmIgOrder, closeIgPosition } from "../integrations/igOrders.js";
+import { isSimDealId, DEMO_SIM_SHORT, type IgDemoSim } from "../integrations/igDemoSim.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // IG som mäklare. TEST = IG Demo (virtuella pengar på IG:s demokonto),
@@ -47,6 +48,10 @@ export interface IgDeps {
   now: () => number;
   /** M1: verifierade positioner markerar accepterade order som observerade */
   observe: (env: IgEnvironment, positions: { dealId: string | null }[]) => void;
+  /** Demo-simulering (bara IG Demo; ignoreras i Live): Live-instrument som saknas på IG Demo
+   *  fylls av igDemoSim mot Live-pris med låtsaspengar. Skickar aldrig något till IG. */
+  sim?: IgDemoSim | null;
+  simRouter?: { route: (epic: string) => Promise<"ig" | "sim">; known: (epic: string) => boolean } | null;
 }
 
 const defaultDeps: IgDeps = {
@@ -109,6 +114,34 @@ export class IgBroker implements BrokerAdapter {
     this.name = env === "live" ? "ig" : "ig-demo";
     this.mode = env === "live" ? "live" : "paper";
     this.d = { ...defaultDeps, ...deps };
+    // Live har aldrig någon simulering, oavsett vad som skickas in.
+    if (env !== "demo") { this.d.sim = null; this.d.simRouter = null; }
+  }
+
+  // ── Demo-simulering (bara IG Demo) ──
+  /** Synkront: visas/handlas EPIC:en som Demo-simulering (positivt belägg att Demo saknar den)? */
+  isSimEpic(epic: string): boolean { return this.env === "demo" && !!this.d.sim && !!this.d.simRouter?.known(epic); }
+  /** Vid order/kvot: ska EPIC:en gå till simuleringen? Kastar med klartext om det inte går att avgöra. */
+  private async simFor(epic: string): Promise<boolean> {
+    if (this.env !== "demo" || !this.d.sim || !this.d.simRouter) return false;
+    return (await this.d.simRouter.route(epic)) === "sim";
+  }
+  private simPositions(): Position[] {
+    if (this.env !== "demo" || !this.d.sim) return [];
+    return this.d.sim.positionsView().map((p) => ({
+      symbol: p.epic, baseAsset: p.name, quoteAsset: "SEK", quantity: p.size, avgEntryPrice: p.level, currentPrice: p.currentPrice ?? 0,
+      unrealizedPnlUsdt: p.upnl ?? 0, openedAt: p.openedAt, dealId: p.dealId, direction: p.direction, name: `${p.name} · ${DEMO_SIM_SHORT}`,
+      pnlCurrency: "SEK", pnlVerified: p.pnlVerified, stopLevel: p.stopLevel, limitLevel: p.limitLevel, sim: true,
+    }));
+  }
+  /** Kontot som en order på EPIC:en räknas mot: simuleringens saldo för simulerade instrument, annars IG-kontot. */
+  async getAccountFor(epic: string): Promise<Account> {
+    if (!(await this.simFor(epic).catch(() => false))) return this.getAccount();
+    const a = this.d.sim!.account();
+    return {
+      balances: [{ asset: a.currency, free: Math.max(0, a.available), locked: a.margin }], totalValueUsdt: a.balance, updatedAt: this.d.now(),
+      currency: a.currency, balance: a.balance, available: a.available, profitLoss: a.profitLoss,
+    };
   }
 
   /** IG-status för miljön (utan hemligheter). */
@@ -159,11 +192,11 @@ export class IgBroker implements BrokerAdapter {
     await this.ensureConnected();
     const gen = this.status().connectionGeneration ?? null;
     const c = this.positionsCache;
-    if (!opts.fresh && c && c.gen === gen && this.d.now() - c.at < IG_POSITIONS_CACHE_MS) return c.value.map((p) => ({ ...p }));
-    if (!opts.fresh && this.positionsJob) return (await this.positionsJob).map((p) => ({ ...p }));
+    if (!opts.fresh && c && c.gen === gen && this.d.now() - c.at < IG_POSITIONS_CACHE_MS) return c.value.map((p) => ({ ...p })).concat(this.simPositions());
+    if (!opts.fresh && this.positionsJob) return (await this.positionsJob).map((p) => ({ ...p })).concat(this.simPositions());
     const job = this.readPositions(gen);
     if (!opts.fresh) this.positionsJob = job;
-    try { return (await job).map((p) => ({ ...p })); } finally { if (this.positionsJob === job) this.positionsJob = null; }
+    try { return (await job).map((p) => ({ ...p })).concat(this.simPositions()); } finally { if (this.positionsJob === job) this.positionsJob = null; }
   }
   /** Glöm cachen (efter en order/stängning). */
   invalidatePositions(): void { this.positionsCache = null; this.accountCache = null; }
@@ -201,6 +234,11 @@ export class IgBroker implements BrokerAdapter {
   }
 
   async getTicker(symbol: string): Promise<Ticker> {
+    if (await this.simFor(this.epic(symbol))) {
+      const { quote: q } = await this.d.sim!.quote(symbol);
+      if (!q) throw new Error(`${DEMO_SIM_SHORT}: inget färskt Live-pris för instrumentet`);
+      return { symbol, price: (q.bid + q.offer) / 2, changePct24h: 0, volume24h: 0 };
+    }
     await this.ensureConnected();
     const m = await this.d.market(this.env, this.epic(symbol));
     const q = m.quote;
@@ -212,12 +250,16 @@ export class IgBroker implements BrokerAdapter {
     await this.ensureConnected();
     const tf = TF[interval];
     if (!tf) throw new Error(`IG stöder inte intervallet ${interval}`);
-    const c = await this.d.candles(this.env, this.epic(symbol), tf, Math.min(200, Math.max(20, Math.round(limit) || 100)));
+    // Demo-simulering: diagrammet är Live-instrumentets (läsning), samma som i Live-vyn
+    const src: IgEnvironment = (await this.simFor(this.epic(symbol))) ? "live" : this.env;
+    const c = await this.d.candles(src, this.epic(symbol), tf, Math.min(200, Math.max(20, Math.round(limit) || 100)));
     return (c.candles as any[]).map((b) => ({ openTime: b.openTime, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume ?? 0, closeTime: b.closeTime }));
   }
 
   /** Storlek och pengar för en insats (marginal) i kontovalutan. Skickar inget. */
   async stakeQuote(input: { epic: string; direction: "BUY" | "SELL"; stake: number; stopLoss?: number; takeProfit?: number; size?: number }): Promise<IgStakeQuote> {
+    // Demo-simulering: storlek och budget mot simuleringens saldo, IG Live-reglerna för instrumentet
+    if (await this.simFor(this.epic(input.epic))) return this.d.sim!.stakeQuote(input);
     await this.ensureConnected();
     const m = await this.d.market(this.env, this.epic(input.epic));
     const q = m.quote, r = m.calculationRules ?? {};
@@ -272,9 +314,14 @@ export class IgBroker implements BrokerAdapter {
 
   /** Öppna positioners marginal och exponering i kontovalutan (positioner ur cachen, IG-regler per instrument).
    *  verified=false om någon position inte kan räknas säkert (då visas inget påhittat). */
-  async portfolioMargin(): Promise<{ margin: number; exposure: number; positions: number; verified: boolean; currency: string | null }> {
+  async portfolioMargin(epic?: string): Promise<{ margin: number; exposure: number; positions: number; verified: boolean; currency: string | null }> {
+    // Demo-simulering: simuleringens egna öppna positioner (egen budget, eget saldo)
+    if (epic && (await this.simFor(epic).catch(() => false))) {
+      const a = this.d.sim!.account(), ps = this.d.sim!.positionsView();
+      return { margin: a.margin, exposure: ps.reduce((t, p) => t + p.level * p.size * p.pointValue, 0), positions: ps.length, verified: true, currency: a.currency };
+    }
     const acc = await this.getAccount().catch(() => null);
-    const ps = await this.getPositions();
+    const ps = (await this.getPositions()).filter((p) => !p.sim);
     let margin = 0, exposure = 0, verified = !!acc?.currency;
     for (const p of ps) {
       try {
@@ -289,7 +336,8 @@ export class IgBroker implements BrokerAdapter {
 
   /** Standardnivåer om agenten inte gav SL/TP: procent från priset, minst IG:s minsta avstånd × 1,5. */
   async defaultLevels(epic: string, direction: "BUY" | "SELL"): Promise<{ stopLoss: number; takeProfit: number }> {
-    const m = await this.d.market(this.env, this.epic(epic));
+    // Demo-simulering: Live-instrumentets kvot och minsta avstånd (läsning)
+    const m = (await this.simFor(this.epic(epic))) ? (await this.d.sim!.quote(epic)).market as any : await this.d.market(this.env, this.epic(epic));
     const entry = direction === "BUY" ? m.quote.offer : m.quote.bid;
     if (!finite(entry)) throw new Error("IG-kvot saknas");
     const slPct = Number(process.env.IG_DEFAULT_SL_PCT ?? 0.3) / 100, tpPct = Number(process.env.IG_DEFAULT_TP_PCT ?? 0.6) / 100;
@@ -303,6 +351,8 @@ export class IgBroker implements BrokerAdapter {
 
   async placeOrder(order: OrderRequest): Promise<OrderResult> {
     if (!this.d.enabled(this.env)) throw new IgExecutionOffError(this.env);
+    // Demo-simulering: avgörs FÖRE IG-vägen och utanför orderns läsförtur. Når aldrig igOrders/IG.
+    if (this.env === "demo" && this.d.sim && (order.closeDealId ? isSimDealId(order.closeDealId) : await this.simFor(this.epic(order.symbol)))) return this.placeSimOrder(order);
     // Orderns läsningar (granskning + bekräftelse) har förtur i läsbudgeten
     try { return await withIgPriority(() => this.placeOrderInner(order)); } finally { this.invalidatePositions(); }
   }
@@ -343,9 +393,43 @@ export class IgBroker implements BrokerAdapter {
     return result;
   }
 
+  /** Demo-simulering: samma orderflöde (storlek, SL/TP, budget) men fylls av igDemoSim mot Live-pris. */
+  private async placeSimOrder(order: OrderRequest): Promise<OrderResult> {
+    if (order.closeDealId) return this.closePosition(order.closeDealId, order.symbol);
+    const epic = this.epic(order.symbol);
+    if (order.type === "LIMIT") throw new Error(`${DEMO_SIM_SHORT}: limitorder stöds inte för Live-instrument i Demo. Använd marknadsorder.`);
+    const direction = order.side;
+    let { stopLoss, takeProfit } = order;
+    if (!finite(stopLoss) || !finite(takeProfit)) {
+      const lv = await this.defaultLevels(epic, direction);
+      stopLoss = finite(stopLoss) ? stopLoss : lv.stopLoss;
+      takeProfit = finite(takeProfit) ? takeProfit : lv.takeProfit;
+    }
+    let size = order.quantity;
+    if (!finite(size)) {
+      const stake = order.stakeAmount;
+      if (!finite(stake) || stake <= 0) throw new Error("IG-order kräver insats (kontovaluta) eller antal kontrakt");
+      const sq = await this.d.sim!.stakeQuote({ epic, direction, stake, stopLoss, takeProfit });
+      if (!sq.ok || !sq.size) throw new Error(sq.reason || "Storleken kunde inte räknas fram");
+      size = sq.size;
+    }
+    const p = await this.d.sim!.open({ epic, direction, size: size!, stopLevel: stopLoss, targetLevel: takeProfit, orderType: "MARKET" });
+    return {
+      orderId: p.dealId, symbol: epic, side: direction, type: "MARKET", status: "accepted", executedQty: p.size, cummulativeQuoteQty: p.margin,
+      avgFillPrice: p.level, timestamp: this.d.now(), dealId: p.dealId, fillLevel: p.level, error: undefined,
+    };
+  }
+
   /** Stänger en IG-position (DELETE /positions/otc med dealId). */
   async closePosition(dealId: string, symbol = ""): Promise<OrderResult> {
     if (!this.d.enabled(this.env)) throw new IgExecutionOffError(this.env);
+    // Demo-simulering: stängs i simuleringen till Live-pris. Skickar aldrig något till IG.
+    if (this.env === "demo" && this.d.sim && isSimDealId(dealId)) {
+      const t = await this.d.sim.close(dealId, "stängd");
+      return { orderId: dealId, symbol: symbol || t.epic, side: t.direction === "BUY" ? "SELL" : "BUY", type: "MARKET", status: "confirmed", executedQty: t.size, cummulativeQuoteQty: 0, avgFillPrice: t.closeLevel, timestamp: this.d.now(), dealId };
+    }
+    // Extra skydd: en simuleringsposition (SIM-) får aldrig skickas till IG, oavsett miljö
+    if (isSimDealId(dealId)) throw new Error("Demo-simuleringens position kan inte stängas via IG (" + this.env + "). Inget skickades.");
     await this.ensureConnected();
     const plan = await withIgPriority(() => this.d.close(this.env, dealId)).finally(() => this.invalidatePositions());
     if (plan.status === "unknown") throw new Error(`IG-stängningens utfall är okänt (${plan.error ?? ""}). Skickas inte om; kontrollera i IG.`);

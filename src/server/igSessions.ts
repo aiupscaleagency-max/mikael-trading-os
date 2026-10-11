@@ -66,7 +66,9 @@ export function capacityError(count: number, durationMinutes: number): string | 
   return count > cap ? `Urvalet (${count}) ryms inte: ${durationMinutes} min × ${SESSION_PER_MINUTE}/min = ${cap} instrument. Välj ny tid (längre session) eller ett mindre urval.` : null;
 }
 
-export interface BatchResult { picks: Array<{ symbol: string; action: string; reasoning?: string }>; stopped?: Array<{ symbol: string; why: string }>; status?: string; reason?: string }
+export interface BatchResult { picks: Array<{ symbol: string; action: string; reasoning?: string }>; stopped?: Array<{ symbol: string; why: string }>; status?: string; reason?: string;
+  /** Agenternas besked per instrument även vid avstå (Hanna + teknisk analytiker), se igAgentNotes.ts */
+  notes?: Array<{ epic: string; verdict: string; technical: string | null }> }
 export interface IgSessionDeps {
   /** IG-inloggningens identitet per miljö (null = inte ansluten) */
   binding: (env: IgEnvironment) => string | null;
@@ -232,7 +234,11 @@ export function createIgSessions(deps: IgSessionDeps) {
         it.status = "analyserad";
         if (stop) { it.action = "avstå"; it.result = `JEV stoppade: ${stop.why}`; }
         else if (pick) { it.action = pick.action; it.result = (pick.reasoning ?? "").slice(0, 300) || null; }
-        else { it.action = "avstå"; it.result = "Inget förslag — sessionen avstod"; }
+        else {
+          it.action = "avstå";
+          const n = r.notes?.find((y) => y.epic === it.epic);
+          it.result = n ? `Avstår: ${n.verdict}${n.technical ? ` · Teknisk: ${n.technical}` : ""}`.slice(0, 500) : "Inget förslag — sessionen avstod";
+        }
       }
     } catch (e) {
       const cur = load(env).session;

@@ -76,6 +76,11 @@ export function createIgMarketData(deps: {
   const lastRestTry = new Map<string, number>(); // "env|epic" → senaste REST-reservläsning
   let signalInterval = "1m";
   const k = (env: IgEnvironment, epic: string, iv?: string) => iv ? `${env}|${epic}|${iv}` : `${env}|${epic}`;
+  // Demo-simulering: bevakade EPICs som bara finns på IG Live hämtar pris/ljus från Live (läsning), aldrig från Demo.
+  let liveSourced: ((env: IgEnvironment, epic: string) => boolean) | null = null;
+  const isLiveSourced = (env: IgEnvironment, epic: string) => env === "demo" && !!liveSourced && (() => { try { return liveSourced!(env, epic); } catch { return false; } })();
+  /** Bevakningslistans EPICs som läses från miljön själv (simulerade Live-instrument undantagna). */
+  const ownWatch = (env: IgEnvironment) => loadWatch(env).filter((e) => !isLiveSourced(env, e));
 
   // ── Bevakningslista (EPICs, max 10 per miljö) ──
   function loadWatch(env: IgEnvironment): string[] {
@@ -106,18 +111,18 @@ export function createIgMarketData(deps: {
   }
 
   /** Lägg till ett instrument. Det måste finnas i IG för miljön (verifieras mot /markets/{epic}). */
-  async function addWatch(epic: string, env = activeEnv): Promise<{ epic: string; name: string | null }> {
+  async function addWatch(epic: string, env = activeEnv, verifyEnv: IgEnvironment = env): Promise<{ epic: string; name: string | null }> {
     if (!/^[A-Za-z0-9._-]{1,100}$/.test(epic)) throw new Error("Ogiltig IG-EPIC");
     const list = loadWatch(env);
     if (list.includes(epic)) return { epic, name: nameOf(epic, env) };
     if (list.length >= MAX_WATCH) throw new Error(`Högst ${MAX_WATCH} instrument följs samtidigt. Ta bort ett först.`);
-    const m = await market(env, epic); // kastar om EPIC inte finns på kontot
+    const m = await market(verifyEnv, epic); // kastar om EPIC inte finns på kontot (Demo-simulering: verifieras mot Live)
     if (m.epic !== epic) throw new Error("IG svarade för fel instrument");
-    rememberName(env, epic, m.name, m.category);
+    if (verifyEnv === env || !nameOf(epic, env)) rememberName(env, epic, m.name, m.category);
     list.push(epic);
     saveWatch(env);
-    if (env === activeEnv) { void ensureSeries(env, epic, signalInterval); syncStream(env); }
-    return { epic, name: m.name ?? null };
+    if (env === activeEnv) { void ensureSeries(verifyEnv, epic, signalInterval).catch(() => undefined); if (verifyEnv !== env) requestStream([epic], verifyEnv); syncStream(env); }
+    return { epic, name: verifyEnv === env ? m.name ?? null : nameOf(epic, env) ?? m.name ?? null };
   }
   function removeWatch(epic: string, env = activeEnv): void {
     const list = loadWatch(env);
@@ -195,7 +200,7 @@ export function createIgMarketData(deps: {
   }
   const isPinned = (env: IgEnvironment, key: string) => {
     const [epic, iv] = key.split("|");
-    if (iv === signalInterval && loadWatch(env).includes(epic!)) return 2; // bevakningslistans signalserie först
+    if (iv === signalInterval && ownWatch(env).includes(epic!)) return 2; // bevakningslistans signalserie först
     for (const set of pins.values()) if (set.has(`${env}|${key}`)) return 1;
     return 0;
   };
@@ -203,7 +208,7 @@ export function createIgMarketData(deps: {
   function activeSeries(env: IgEnvironment): string[] {
     const m = watchedSeries.get(env) ?? new Map<string, number>();
     for (const set of pins.values()) for (const x of set) if (x.startsWith(`${env}|`)) { const key = x.slice(env.length + 1); if (!m.has(key)) m.set(key, 0); }
-    for (const epic of loadWatch(env)) if (!m.has(`${epic}|${signalInterval}`)) m.set(`${epic}|${signalInterval}`, 0);
+    for (const epic of ownWatch(env)) if (!m.has(`${epic}|${signalInterval}`)) m.set(`${epic}|${signalInterval}`, 0);
     watchedSeries.set(env, m);
     for (const [key, at] of m) if (!isPinned(env, key) && now() - at > SERIES_TTL_MS) m.delete(key);
     return [...m.entries()].sort((a, b) => isPinned(env, b[0]) - isPinned(env, a[0]) || b[1] - a[1]).map(([key]) => key);
@@ -322,7 +327,7 @@ export function createIgMarketData(deps: {
     try { b = budget(env); } catch { return; }
     if (!(b.backgroundRemaining >= REST_FALLBACK_MIN_BACKGROUND)) return;
     const gen = stream.summary(env).generation ?? null;
-    for (const epic of loadWatch(env)) {
+    for (const epic of ownWatch(env)) {
       const key = k(env, epic), q = quotes.get(key), ev = delayEvidence.get(key);
       const stale = !q || q.observedAt === null || now() - q.observedAt > 60_000;
       const needsDelayProof = !!q && !stale && q.source === "stream" && q.delayTime === null && !(gen !== null && ev?.generation === gen);
@@ -342,7 +347,7 @@ export function createIgMarketData(deps: {
   function streamEpics(env: IgEnvironment): string[] {
     const extra = extraStreamEpics.get(env) ?? new Map();
     for (const [e, at] of extra) if (now() - at > 120_000) extra.delete(e);
-    return [...new Set([...loadWatch(env), ...extra.keys()])].slice(0, 30);
+    return [...new Set([...ownWatch(env), ...extra.keys()])].filter((e) => !isLiveSourced(env, e)).slice(0, 30);
   }
   function syncStream(env: IgEnvironment): void {
     if (status().environments[env].status !== "connected") return;
@@ -383,7 +388,10 @@ export function createIgMarketData(deps: {
     const env = activeEnv;
     if (!(await ensureConnected(env))) return;
     await seedDefaultWatch(env);
-    for (const epic of loadWatch(env)) void ensureSeries(env, epic, signalInterval);
+    for (const epic of ownWatch(env)) void ensureSeries(env, epic, signalInterval);
+    // Demo-simulering: bevakade Live-instrument följs i Live-strömmen och Live-historiken (läsning)
+    const simWatch = loadWatch(env).filter((e) => isLiveSourced(env, e));
+    if (simWatch.length) { for (const epic of simWatch) void ensureSeries("live", epic, signalInterval).catch(() => undefined); requestStream(simWatch, "live"); }
     syncStream(env);
     // Serier utan IG-diagramplats (15m, 30m, 4h, 1d, eller fler än 4 diagram): hämta via REST när
     // ett ljus stängt. Serier som ingen följer längre hämtas inte alls.
@@ -424,6 +432,10 @@ export function createIgMarketData(deps: {
     watchlist: (env = activeEnv) => [...loadWatch(env)],
     watchlistDetailed: (env = activeEnv) => loadWatch(env).map((epic) => ({ epic, name: nameOf(epic, env), category: names.get(k(env, epic))?.category ?? null })),
     addWatch, removeWatch, seedDefaultWatch, nameOf, rememberName,
+    /** Demo-simulering: vilka Demo-EPICs som läses från Live (sätts av servern). */
+    setLiveSourced(fn: ((env: IgEnvironment, epic: string) => boolean) | null) { liveSourced = fn; },
+    /** Miljön som pris/ljus för EPIC:en läses från (Demo-simulering: Live). */
+    dataEnv: (env: IgEnvironment, epic: string): IgEnvironment => (isLiveSourced(env, epic) ? "live" : env),
     ensureSeries, refreshHistory, requestStream,
     closed: (epic: string, iv: string, env = activeEnv) => series.get(k(env, epic, iv))?.closed ?? [],
     forming: (epic: string, iv: string, env = activeEnv) => series.get(k(env, epic, iv))?.forming ?? null,
@@ -432,6 +444,8 @@ export function createIgMarketData(deps: {
     quotes: (env = activeEnv) => [...quotes.entries()].filter(([key]) => key.startsWith(`${env}|`)).map(([, q]) => q),
     setRestQuote, dataState, restFallback,
     streamStatus: (env = activeEnv) => stream.summary(env),
+    /** Avvisade strömposter med IG:s kod/text (billig; bygger ingen sammanfattning). */
+    streamFailed: (env: IgEnvironment) => ((stream as { failedKeys?: (m: IgEnvironment) => Array<{ key: string; code: number | null; message: string | null; at: number }> }).failedKeys?.(env) ?? []),
     watchedSeries: (env = activeEnv) => activeSeries(env),
     streamedSeries: (env = activeEnv) => [...(streamedKeys.get(env) ?? [])],
     touchSeries, pinSeries,

@@ -132,7 +132,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     if(p.unsupported)return null;
     return {environment:mode,category,status:p.done&&p.unclassified===0?'ready':'partial',complete:p.done&&p.unclassified===0,traversalComplete:p.done,progress:{reason:p.reason,failures:p.failures,page:p.page,categoryIndex:p.index,lastProgressAt:p.at,retryAt:p.retryAt},unclassifiedInstruments:p.unclassified,error:p.failures?'IG-kategorin kunde inte hämtas; nytt försök sker automatiskt och sökreserv används vid upprepade fel':null,markets:[...p.markets.values()].filter(m=>m.category===category).sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:p.at,remainingSearches:p.done?0:Math.max(1,(p.codes?.length??1)-p.index),source:'IG aktiverade kontokategorier',note:p.done?'Alla hämtade Forex- och kryptoinstrument i IG-kontots aktiverade valutakategorier.':'Kontokategorier hämtas automatiskt inom IG:s läskvot.'};
   }
-  const catalogProgress=new Map<string,{cursor:number;markets:Map<string,any>;updatedAt:number;failed:Map<string,{attempts:number;retryAt:number}>;reason:string|null}>();
+  const catalogProgress=new Map<string,{cursor:number;markets:Map<string,any>;updatedAt:number;failed:Map<string,{attempts:number;retryAt:number}>;reason:string|null;lastCompleteAt?:number|null}>();
   // Cross-environment discovery transfers identifiers only. Every visible Demo row is
   // independently read from Demo; no Live name, quote or market status is copied.
   const demoCandidates=new Map<string,Map<string,{at:number;row:any|null}>>();
@@ -180,7 +180,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     if(!discovery&&enabled&&enabled.markets.length>0&&(!enabled.traversalComplete&&enabled.progress.failures<2||enabled.traversalComplete&&enabled.unclassifiedInstruments===0))return enabled;
     const identity=connectionIdentity(mode),key=`${mode}:${identity}:${category}`;
     let progress=catalogProgress.get(key);const terms=category==='forex'?['Forex',...fiatCodes,'Weekend']:cryptoTerms; // 'Weekend': IG:s helgmarknader (t.ex. Weekend EUR/USD) är öppna lör–sön
-    if(!progress||progress.cursor===terms.length&&progress.failed.size===0&&now()-progress.updatedAt>300000){progress={cursor:0,markets:progress?.markets??new Map(),updatedAt:now(),failed:new Map(),reason:null};catalogProgress.set(key,progress);}
+    if(!progress||progress.cursor===terms.length&&progress.failed.size===0&&now()-progress.updatedAt>300000){progress={cursor:0,markets:progress?.markets??new Map(),updatedAt:now(),failed:new Map(),reason:null,lastCompleteAt:progress?.lastCompleteAt??null};catalogProgress.set(key,progress);}
     // Delresultat återanvänds när minutbudgeten tar slut. Parallella anrop delar samma hämtning.
     const running=pending.get(`catalog:${key}`);if(running)return clone(await running);
     const job=(async()=>{
@@ -211,7 +211,9 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
         }
       }
       if(connectionIdentity(mode)!==identity)throw Error('IG-kontosessionen ändrades under kataloghämtningen');
-      return {environment:mode,category,status:blocked?'partial':'ready',complete:false,error:null,markets:[...new Map([...(enabled?.markets??[]),...(discovery?.markets??[]),...progress!.markets.values()].map(m=>[m.epic,m])).values()].sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:progress!.updatedAt,remainingSearches:terms.length-progress!.cursor+[...progress!.failed].filter(([term])=>terms.indexOf(term)<progress!.cursor).length,source:'IG kontosökning',progress:{discovery:discovery?.progress??null,category:enabled?.progress??null,search:{reason:progress!.reason,failedTerms:[...progress!.failed.keys()]}},categoryError:progress!.failed.size?'En eller flera IG-sökningar misslyckades; övriga termer hämtas och felande termer återförsöks':enabled?.error??null,unclassifiedInstruments:enabled?.unclassifiedInstruments??0,note:blocked?'Hämtningen är delvis klar och fortsätter automatiskt inom IG:s läskvot.':'Alla hämtade IG-instrument. Ytterligare instrument kan sökas hos IG; fullständigheten kan inte verifieras.'};
+      // Alla sökord gick igenom utan fel: tidpunkten sparas (överlever omtagningen var 5:e minut)
+      if(!blocked&&progress!.cursor===terms.length&&progress!.failed.size===0)progress!.lastCompleteAt=now();
+      return {environment:mode,category,status:blocked?'partial':'ready',complete:false,searchCompletedAt:progress!.lastCompleteAt??null,error:null,markets:[...new Map([...(enabled?.markets??[]),...(discovery?.markets??[]),...progress!.markets.values()].map(m=>[m.epic,m])).values()].sort((a,b)=>a.name.localeCompare(b.name,'sv')),updatedAt:progress!.updatedAt,remainingSearches:terms.length-progress!.cursor+[...progress!.failed].filter(([term])=>terms.indexOf(term)<progress!.cursor).length,source:'IG kontosökning',progress:{discovery:discovery?.progress??null,category:enabled?.progress??null,search:{reason:progress!.reason,failedTerms:[...progress!.failed.keys()]}},categoryError:progress!.failed.size?'En eller flera IG-sökningar misslyckades; övriga termer hämtas och felande termer återförsöks':enabled?.error??null,unclassifiedInstruments:enabled?.unclassifiedInstruments??0,note:blocked?'Hämtningen är delvis klar och fortsätter automatiskt inom IG:s läskvot.':'Alla hämtade IG-instrument. Ytterligare instrument kan sökas hos IG; fullständigheten kan inte verifieras.'};
     })();pending.set(`catalog:${key}`,job);try{return clone(await job);}finally{pending.delete(`catalog:${key}`);}
   }
   async function marketOverview(mode:IgEnvironment,epics:string[]=[]){

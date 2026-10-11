@@ -369,4 +369,263 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   ok("IG:s veckokvot för historik ger tydlig text och nytt försök först efter en timme, inte varje minut");
 }
 
+// ══ Alla par: hela katalogen, delat urval, agenternas besked vid HOLD, skonsamma minidiagram ══
+{
+  const html = fs.readFileSync(path.resolve("dashboard.html"), "utf8");
+  const a = html.indexOf("// ── Sidan Alla par (IG): hela katalogen"), b = html.indexOf("})();", html.indexOf("Ingen periodisk omhämtning av diagram", a));
+  assert.ok(a > 0 && b > a, "Alla par-skriptet finns");
+  const pp = html.slice(a, b);
+  // 1. Katalogen (inte bara bevakningslistan): Krypto som standard + Forex/Bevakade/Alla + sökning + Visa fler
+  assert.match(pp, /let filter = "crypto"/, "Krypto är standardfiltret");
+  assert.match(pp, /MK\.data\[cat\]\.markets/, "korten byggs från IG-katalogen (MK.data)");
+  assert.match(pp, /if\(f === "watch"\) return watch;/, "Bevakade är bara ett av filtren");
+  assert.ok(!/const list = \(IG\.st\.watchlist \|\| \[\]\)\.filter\(IG\.isEpic\);\s*order = list;/.test(pp), "sidan begränsas inte längre till bevakningslistan");
+  for (const f of ["crypto", "forex", "watch", "all"]) assert.ok(html.includes(`data-pp-f="${f}"`), `filterknapp ${f}`);
+  assert.ok(html.includes('id="pp-q"') && html.includes('id="pp-more"'), "sökning och Visa fler finns");
+  // Kvotskydd i webbläsaren: inga minidiagram för alla kort, ingen REST-kvot för alla kort
+  assert.match(pp, /new IntersectionObserver/, "diagram laddas bara för synliga kort");
+  assert.match(pp, /const CONC = 6/, "högst 6 diagram åt gången");
+  assert.match(pp, /\/api\/market\/sparkline\?epic=/, "minidiagram via sparkline-cachen");
+  assert.ok(!pp.includes("setInterval(()=>{ if(active()) onScreen.forEach(want)"), "ingen periodisk omhämtning av diagram");
+  assert.ok(!pp.includes("/api/market/klines") && !pp.includes("IG.klines(") && !pp.includes("IG.prices("), "ingen klines/prices-hämtning per kort");
+  // 2. Urvalsknappar använder samma server-endpoints/funktioner som Valutapar
+  assert.match(pp, /MK\.onSelect\(\)/, "urvalet sparas via Valutaparens MK.onSelect → /api/ig/selection");
+  assert.match(pp, /const S = \(\)=> \(window\.MK \? MK\.sel : localSel\)/, "samma urvals-Set som Valutapar");
+  assert.match(pp, /MK\.analyze\(epics\)/, "Analysera valda använder samma /api/run-agent-väg som Valutapar");
+  assert.match(pp, /IGS\.startSession\(\[\.\.\.S\(\)\]\)/, "Starta agentsession med valda använder samma sessionsstart");
+  assert.ok(html.includes('id="pp-session"') && html.includes('id="pp-none"') && html.includes("Markera alla (synliga)"), "knapparna finns i toppraden");
+  // 3. Agenternas besked visas även vid HOLD
+  assert.match(pp, /\/api\/ig\/agent-notes/, "korten läser agenternas besked per instrument");
+  assert.ok(!pp.includes("Inget förslag för det här instrumentet"), "HOLD visar inte längre bara 'Inget förslag'");
+  assert.match(pp, /Hanna:<\/b>/, "Hannas besked visas på kortet");
+  assert.match(pp, /Teknisk analytiker:<\/b>/, "teknisk analytiker visas på kortet");
+  assert.match(pp, /signal saknas \(bevaka för signal\)/);
+  // 4. KÖP/SÄLJ går fortfarande till Väntande ordrar (Godkänn krävs)
+  assert.match(pp, /fetch\("\/api\/pending-orders"/);
+  ok("Alla par: hela IG-katalogen (Krypto standard), delat urval och samma endpoints som Valutapar, besked även vid HOLD");
+
+  const N = await import("../src/server/igAgentNotes.js");
+  const BTC = "CS.D.BITCOIN.CFD.IP", ETH = "CS.D.ETHUSD.CFD.IP";
+  const summary = "Jag lägger ingen order. Läget är HOLD.\n\n**Underlag**\n- Teknisk analytiker: ingen top pick.\n[2] Action: HOLD. Ingen order.";
+  const notes = N.buildAgentNotes({ env: "live", symbols: [BTC, ETH], picks: [], technical: [{ symbol: BTC, bias: "neutral", score: 42, keySignals: ["RSI 51", "EMA platt"] }], summary });
+  assert.equal(notes.length, 2, "en anteckning per analyserat instrument även när Hanna avstod");
+  assert.equal(notes[0]!.action, "hold");
+  assert.match(notes[0]!.verdict, /HOLD/); assert.match(notes[0]!.verdict, /\[2\] Action/);
+  assert.match(notes[0]!.technical!, /riktning neutral · poäng 42 · RSI 51; EMA platt/);
+  assert.equal(notes[1]!.technical, null);
+  const withPick = N.buildAgentNotes({ env: "demo", symbols: [BTC], picks: [{ symbol: BTC, action: "buy", confidence: "high", reasoning: "Utbrott över motstånd" }], technical: [], summary });
+  assert.equal(withPick[0]!.verdict, "Utbrott över motstånd");
+  const store = N.createAgentNotes({ file: (e) => path.join(tmp, `notes-${e}.json`) });
+  store.record(notes); store.record(withPick);
+  assert.equal(store.get("live")[BTC]!.action, "hold", "Live och Demo blandas aldrig");
+  assert.equal(store.get("demo")[BTC]!.action, "buy");
+  store.record(N.buildAgentNotes({ env: "live", symbols: [ETH], picks: [], technical: [], summary }));
+  assert.ok(store.get("live")[BTC], "en ny analys av ETH raderar inte BTC:s besked");
+  assert.equal(N.createAgentNotes({ file: (e) => path.join(tmp, `notes-${e}.json`) }).get("live")[BTC]!.action, "hold", "besked överlever omstart");
+
+  // Sessionens kö: avstå visar agenternas besked i stället för bara "Inget förslag"
+  const { createIgSessions } = await import("../src/server/igSessions.js");
+  let t = Date.parse("2026-10-09T10:00:00Z");
+  const sess = createIgSessions({ binding: () => "demo-g1", activeEnv: () => "demo", guard: async () => null, now: () => t, directory: path.join(tmp, "pp-sess"),
+    runBatch: async (_e, epics) => ({ picks: [], status: "done", notes: epics.map((epic) => ({ epic, verdict: "Hanna avstår: ingen tydlig rörelse", technical: "riktning neutral" })) }) });
+  sess.start("demo", { epics: [BTC], durationMinutes: 15 });
+  await sess.runNext("demo");
+  const item = sess.state("demo").session!.items[0]!;
+  assert.equal(item.action, "avstå");
+  assert.match(item.result!, /Hanna avstår: ingen tydlig rörelse · Teknisk: riktning neutral/);
+  ok("Agenternas besked per instrument sparas per miljö även vid HOLD och syns i agentsessionens kö");
+
+  // Minidiagram: minne → cache → begränsade IG-hämtningar; kvotfel spärrar hela miljön
+  const SP = await import("../src/server/igSparklines.js");
+  let clock = Date.parse("2026-10-10T10:00:00Z"), calls = 0, bg = 5, mode: "ok" | "quota" = "ok";
+  const { IG_HISTORY_RATE_ERROR } = await import("../src/integrations/igConnection.js");
+  const mem: Record<string, Array<{ close: number }>> = { [`${ETH}|1m`]: Array.from({ length: 30 }, (_, i) => ({ close: 100 + i })) };
+  const sp = SP.createIgSparklines({
+    now: () => clock, budget: () => ({ backgroundRemaining: bg }), signalInterval: () => "1m", persist: false,
+    memory: (e, iv) => mem[`${e}|${iv}`] ?? [],
+    candles: async () => { calls++; if (mode === "quota") throw new Error(IG_HISTORY_RATE_ERROR); return { candles: Array.from({ length: 72 }, (_, i) => ({ close: 1 + i })), allowance: { remainingAllowance: 9000 } }; },
+  });
+  const m1 = await sp.get("live", ETH);
+  assert.equal(m1.source, "minne"); assert.equal(calls, 0, "serverns minne används utan IG-läsning");
+  // Låg kvot (under halva veckokvoten): inga fler minidiagram
+  const low = SP.createIgSparklines({ now: () => clock, budget: () => ({ backgroundRemaining: 5 }), signalInterval: () => "1m", persist: false, memory: () => [],
+    candles: async () => { calls++; return { candles: [{ close: 1, openTime: 1 }, { close: 2, openTime: 2 }], allowance: { remainingAllowance: 4000, totalAllowance: 10000 } }; } });
+  const l1 = await low.get("live", "CS.D.L1.CFD.IP"); assert.equal(l1.from, 1); assert.equal(l1.to, 2, "ljusens verkliga tider följer med");
+  const l2 = await low.get("live", "CS.D.L2.CFD.IP"); assert.equal(l2.error, SP.SPARK_QUOTA_TEXT, "under halva veckokvoten stoppas minidiagrammen");
+  calls = 0;
+  const c1 = await sp.get("live", BTC); assert.equal(c1.source, "ig"); assert.equal(calls, 1);
+  clock += 29 * 60_000;
+  const c2 = await sp.get("live", BTC); assert.equal(c2.source, "cache"); assert.equal(calls, 1, "inom TTL ingen ny IG-hämtning");
+  assert.ok(SP.SPARK_TTL_MS >= 30 * 60_000, "TTL minst 30 min");
+  // Minutgräns oavsett antal flikar
+  const many = Array.from({ length: 6 }, (_, i) => `CS.D.T${i}.CFD.IP`);
+  for (const e of many) await sp.get("live", e);
+  assert.equal(calls, 1 + SP.SPARK_MAX_PER_MIN, "högst SPARK_MAX_PER_MIN IG-hämtningar per minut");
+  // Inget bakgrundsutrymme: ingen IG-läsning
+  clock += 61_000; bg = 0;
+  const nb = await sp.get("live", "CS.D.NOBUDGET.CFD.IP"); assert.equal(calls, 1 + SP.SPARK_MAX_PER_MIN); assert.match(nb.error!, /läsgräns/);
+  // Kvoten slut: hela miljön spärras, inga fler försök för andra EPICs
+  bg = 5; mode = "quota";
+  const q1 = await sp.get("live", "CS.D.Q1.CFD.IP"); assert.equal(q1.error, SP.SPARK_QUOTA_TEXT);
+  const before = calls; clock += 61_000;
+  const q2 = await sp.get("live", "CS.D.Q2.CFD.IP"); assert.equal(calls, before, "spärren gäller alla EPICs i miljön"); assert.equal(q2.error, SP.SPARK_QUOTA_TEXT);
+  const d1 = await sp.get("demo", "CS.D.Q2.CFD.IP"); assert.equal(calls, before + 1, "Demo spärras inte av Live-kvoten"); assert.equal(d1.error, SP.SPARK_QUOTA_TEXT);
+  ok("Minidiagram: minne först, cache ≥ 30 min, högst några IG-hämtningar per minut, kvotfel spärrar miljön");
+
+  const { catalogueProgress } = await import("../src/server/igRoutes.js");
+  const done = catalogueProgress({ markets: [1, 2], status: "ready", complete: false, searchCompletedAt: Date.now(), remainingSearches: 0 });
+  assert.equal(done.state, "alla sökningar klara"); assert.equal(done.complete, false, "fullständighet påstås inte");
+  assert.equal(catalogueProgress({ markets: [1], status: "partial", complete: false, remainingSearches: 3 }).state, "delvis");
+  ok("Katalogen: ärlig etikett när alla IG-sökningar gått igenom");
+}
+
+// ══ Tiingo-reserv för minidiagram när IG:s historikkvot är slut (endast visning) ══
+{
+  const T = await import("../src/server/tiingoIntraday.js");
+  const SP = await import("../src/server/igSparklines.js");
+  const { IG_HISTORY_RATE_ERROR } = await import("../src/integrations/igConnection.js");
+  // Mappning från IG:s riktiga katalognamn
+  const map = (e: string, n?: string | null) => T.tiingoTickerFor(e, n)?.ticker ?? null;
+  assert.equal(map("CS.D.BITCOIN.CEE.IP", "Bitcoin ($1)"), "btcusd");
+  assert.equal(map("CS.D.BITCOIN.CNE.IP", "Bitcoin (E1)"), "btceur", "(E1) = euro-kontrakt");
+  assert.equal(map("CS.D.BCHUSD.CFD.IP", "Bitcoin Cash ($1)"), "bchusd", "Bitcoin Cash blir aldrig Bitcoin");
+  assert.equal(map("CS.D.BCHXBT.CFD.IP", "Bitcoin Cash/Bitcoin ($1)"), "bchbtc");
+  assert.equal(map("CS.D.ETHUSD.CFD.IP", "Ether ($1)"), "ethusd");
+  assert.equal(map("CS.D.ETHXBT.CFD.IP", "Ether/Bitcoin ($1)"), "ethbtc");
+  assert.equal(map("CS.D.DOGUSD.CFD.IP", "Dogecoin ($1)"), "dogeusd");
+  assert.equal(map("CS.D.CRYPTOB10.CFD.IP", "Krypto 10 Index"), null, "index har ingen Tiingo-motsvarighet");
+  assert.equal(map("CS.D.EURUSD.CEEM.IP", "EUR/USD Mini"), "eurusd");
+  assert.equal(map("CS.D.USDINR.MINI.IP", "EMFX USD/INR ($1 Mini Contract)"), "usdinr");
+  assert.equal(map("IX.D.SUNEURUSD.CEE.IP", "Weekend EUR/USD"), null, "IG:s helgmarknad: ingen Tiingo-motsvarighet");
+  assert.equal(map("CS.D.GBPUSD.MINI.IP", null), "gbpusd", "utan namn: EPIC:ens par");
+  assert.equal(map("CS.D.LNKUSD.CFD.IP", null), "linkusd");
+  assert.equal(map("CS.D.BITCOIN.CEE.IP", null), "btcusd");
+  assert.equal(map("CS.D.BITCOIN.CNE.IP", null), "btceur", "utan namn: euro-kontrakt (CNE) ger euro");
+  assert.equal(map("CS.D.ADAUSD.CFE.IP", null), "adaeur", "utan namn: euro-kontrakt (CFE) ger euro");
+  assert.equal(map("IX.D.FTSE.DAILY.IP", "FTSE 100"), null, "okänt instrument: ingen gissning");
+  T.TIINGO_SPARK_LABEL === "Tiingo-diagram (ej IG-pris)" || assert.fail("etiketten måste säga ej IG-pris");
+  ok("Tiingo-mappning: EPIC/namn → ticker (Bitcoin Cash, kryss mot BTC, E1 = euro, forex, index = ingen)");
+
+  let clock = Date.parse("2026-10-10T10:00:00Z");
+  const urls: string[] = []; const auths: string[] = [];
+  const bars = (n: number, base: number) => Array.from({ length: n }, (_, i) => ({ date: new Date(clock - (n - i) * 300_000).toISOString(), open: base, high: base, low: base, close: base + i }));
+  const fakeFetch = async (url: string, init: { headers: Record<string, string> }) => {
+    urls.push(url); auths.push(init.headers.Authorization ?? "");
+    const u = new URL(url);
+    if (u.pathname === "/tiingo/crypto/prices") {
+      const list = (u.searchParams.get("tickers") ?? "").split(",");
+      return { ok: true, status: 200, json: async () => list.filter((t) => t !== "polusd").map((t) => ({ ticker: t, baseCurrency: t.slice(0, -3), quoteCurrency: t.slice(-3), priceData: bars(100, 10) })) };
+    }
+    if (/^\/tiingo\/fx\/[a-z]{6}\/prices$/.test(u.pathname)) return { ok: true, status: 200, json: async () => bars(80, 1) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  let keyVal: string | null = "test-nyckel";
+  const ti = T.createTiingoIntraday({ fetch: fakeFetch as any, key: () => keyVal, now: () => clock, batchMs: 0 });
+  // IG svarar med kvotfel (403 exceeded-account-historical-data-allowance → IG_HISTORY_RATE_ERROR)
+  let igCalls = 0;
+  const names: Record<string, string> = { "CS.D.BITCOIN.CEE.IP": "Bitcoin ($1)", "CS.D.ETHUSD.CFD.IP": "Ether ($1)", "CS.D.BCHUSD.CFD.IP": "Bitcoin Cash ($1)", "CS.D.EURUSD.CEEM.IP": "EUR/USD Mini", "CS.D.CRYPTOB10.CFD.IP": "Krypto 10 Index" };
+  const memSeen: string[] = [];
+  const sp = SP.createIgSparklines({ now: () => clock, budget: () => ({ backgroundRemaining: 5 }), signalInterval: () => "1m", persist: false,
+    memory: (e, iv) => { memSeen.push(`${e}|${iv}`); return []; }, name: (_env, e) => names[e] ?? null, tiingo: ti,
+    candles: async () => { igCalls++; throw new Error(IG_HISTORY_RATE_ERROR); } });
+  const [btc, eth, bch] = await Promise.all(["CS.D.BITCOIN.CEE.IP", "CS.D.ETHUSD.CFD.IP", "CS.D.BCHUSD.CFD.IP"].map((e) => sp.get("live", e)));
+  assert.equal(btc.source, "tiingo"); assert.equal(btc.sourceLabel, "Tiingo-diagram (ej IG-pris)"); assert.equal(btc.error, null);
+  assert.equal(btc.closes.length, T.TIINGO_POINTS, "72 × 5 min"); assert.equal(btc.tiingoTicker, "btcusd");
+  assert.equal(eth.tiingoTicker, "ethusd"); assert.equal(bch.tiingoTicker, "bchusd");
+  assert.equal(urls.length, 1, "kryptotickers samlas i ETT Tiingo-anrop");
+  assert.match(urls[0]!, /^https:\/\/api\.tiingo\.com\/tiingo\/crypto\/prices\?tickers=btcusd%2Cethusd%2Cbchusd&startDate=\d{4}-\d{2}-\d{2}&resampleFreq=5min$/);
+  assert.ok(!urls[0]!.includes("token"), "nyckeln skickas aldrig i URL:en"); assert.equal(auths[0], "Token test-nyckel");
+  const igAfter = igCalls; // tre parallella förfrågningar hann starta innan spärren sattes
+  // Spärrad miljö + IG:s negativa cache: reserven fungerar ändå (cache, inget nytt anrop)
+  clock += 61_000;
+  const btc2 = await sp.get("live", "CS.D.BITCOIN.CEE.IP");
+  assert.equal(btc2.source, "tiingo"); assert.equal(urls.length, 1, "Tiingo-cachen används (45 min)");
+  // Demo delar Tiingo-cachen (inte IG-kontodata)
+  const btcDemo = await sp.get("demo", "CS.D.BITCOIN.CEE.IP");
+  assert.equal(btcDemo.source, "tiingo"); assert.equal(btcDemo.env, "demo"); assert.equal(urls.length, 1);
+  // Forex: en ticker per anrop mot /tiingo/fx/<ticker>/prices
+  const fx = await sp.get("live", "CS.D.EURUSD.CEEM.IP");
+  assert.equal(fx.source, "tiingo"); assert.equal(fx.tiingoTicker, "eurusd");
+  assert.match(urls[1]!, /^https:\/\/api\.tiingo\.com\/tiingo\/fx\/eurusd\/prices\?startDate=\d{4}-\d{2}-\d{2}&resampleFreq=5min$/);
+  // Ingen motsvarighet: IG:s kvottext står kvar
+  const idx = await sp.get("live", "CS.D.CRYPTOB10.CFD.IP");
+  assert.equal(idx.error, SP.SPARK_QUOTA_TEXT); assert.equal(idx.closes.length, 0); assert.equal(urls.length, 2, "inget Tiingo-anrop utan mappning");
+  assert.equal(igCalls, igAfter + 1, "IG:s kvotspärr gäller fortfarande hela miljön: bara Demos första försök läste IG");
+  // cacheOnly: läser Tiingo-cachen men hämtar aldrig
+  const co = await sp.get("live", "CS.D.BITCOIN.CEE.IP", { cacheOnly: true }); assert.equal(co.source, "tiingo");
+  const co2 = await sp.get("live", "CS.D.SOLUSD.CFD.IP", { cacheOnly: true }); assert.equal(co2.closes.length, 0); assert.equal(urls.length, 2, "cacheOnly gör inga anrop");
+  // Efter 45 min hämtas på nytt
+  clock += T.TIINGO_TTL_MS;
+  await sp.get("live", "CS.D.BITCOIN.CEE.IP"); assert.equal(urls.length, 3, "TTL 45 min");
+  // Aldrig in i signalseriernas minne: memory() bara läst, inget skrivs till igMarketData
+  const { igMarketData } = await import("../src/server/igMarketData.js");
+  assert.equal(igMarketData.closed("CS.D.BITCOIN.CEE.IP", "5m", "live").length, 0, "Tiingo-ljus hamnar aldrig i IG:s ljusserier (signaler/strategier)");
+  ok("Tiingo-reserv vid IG-kvotfel: märkt ej IG-pris, batchade kryptoanrop, fx per ticker, 45 min cache, cacheOnly hämtar inte");
+
+  // Beslut 2026-10-10: kan IG inte leverera just nu (läsgräns/minuttak/kvot/saknad historik) visas Tiingo, märkt ej IG-pris
+  const before = urls.length;
+  let waitBudget = 0;
+  const igBars = [{ close: 150, openTime: clock - 600_000 }, { close: 151, openTime: clock - 300_000 }];
+  const wait = SP.createIgSparklines({ now: () => clock, budget: () => ({ backgroundRemaining: waitBudget }), signalInterval: () => "1m", persist: false, memory: () => [], name: () => "Solana ($1)", tiingo: ti,
+    candles: async () => ({ candles: igBars }) });
+  const w = await wait.get("live", "CS.D.SOLUSD.CFD.IP");
+  assert.equal(w.source, "tiingo", "IG:s läsgräns denna minut → Tiingo-reserv"); assert.equal(w.sourceLabel, T.TIINGO_SPARK_LABEL, "gul etikett ej IG-pris");
+  assert.equal(w.error, null); assert.ok(urls.length >= before, "Tiingo-cache eller ett Tiingo-anrop");
+  // IG levererar senare riktiga ljus → IG vinner (ersätter Tiingo)
+  waitBudget = 5;
+  const w2 = await wait.get("live", "CS.D.SOLUSD.CFD.IP");
+  assert.equal(w2.source, "ig", "IG föredras så fort IG levererar"); assert.deepEqual(w2.closes, [150, 151]); assert.equal(w2.sourceLabel, undefined);
+  // Tiingo används bara av minidiagrammen: aldrig av huvuddiagram, signaler eller order
+  for (const f of fs.readdirSync(path.resolve("src"), { recursive: true }) as string[]) {
+    if (!f.endsWith(".ts") || /tiingoIntraday\.ts$|igSparklines\.ts$/.test(f)) continue;
+    assert.ok(!/tiingoIntraday/.test(fs.readFileSync(path.resolve("src", f), "utf8")), `${f} får inte använda Tiingo-intradag`);
+  }
+  // IG svarar utan ljus ("historik saknas") → reserv
+  const empty = SP.createIgSparklines({ now: () => clock, budget: () => ({ backgroundRemaining: 5 }), signalInterval: () => "1m", persist: false, memory: () => [], name: () => "Solana ($1)", tiingo: ti,
+    candles: async () => ({ candles: [] }) });
+  const e1 = await empty.get("live", "CS.D.SOLUSD.CFD.IP"); assert.equal(e1.source, "tiingo"); assert.equal(e1.tiingoTicker, "solusd");
+  // Tiingo saknar paret → IG-text kvar, förklaring i note, negativ cache
+  const pol = SP.createIgSparklines({ now: () => clock, budget: () => ({ backgroundRemaining: 5 }), signalInterval: () => "1m", persist: false, memory: () => [], name: () => "Polygon ($1)", tiingo: ti,
+    candles: async () => { throw new Error(IG_HISTORY_RATE_ERROR); } });
+  const p1 = await pol.get("live", "CS.D.POLUSD.CFD.IP"); assert.equal(p1.error, SP.SPARK_QUOTA_TEXT); assert.match(p1.note!, /Tiingo saknar paret/);
+  const n1 = urls.length; await pol.get("demo", "CS.D.POLUSD.CFD.IP"); assert.equal(urls.length, n1, "saknat par provas inte om direkt");
+  ok("Tiingo-reserv närhelst IG inte kan leverera (även läsgräns); IG vinner när IG levererar; Tiingo bara i minidiagram; saknat par behåller IG:s text");
+
+  // Saknad nyckel: inget anrop, IG:s text kvar och "Tiingo-nyckel saknas"
+  const noKeyUrls: string[] = [];
+  const tiNo = T.createTiingoIntraday({ fetch: (async (u: string) => { noKeyUrls.push(u); throw new Error("x"); }) as any, key: () => null, now: () => clock, batchMs: 0 });
+  const nk = SP.createIgSparklines({ now: () => clock, budget: () => ({ backgroundRemaining: 5 }), signalInterval: () => "1m", persist: false, memory: () => [], name: () => "Bitcoin ($1)", tiingo: tiNo,
+    candles: async () => { throw new Error(IG_HISTORY_RATE_ERROR); } });
+  const k1 = await nk.get("live", "CS.D.BITCOIN.CEE.IP");
+  assert.equal(k1.error, SP.SPARK_QUOTA_TEXT); assert.equal(k1.note, T.TIINGO_NO_KEY); assert.equal(noKeyUrls.length, 0);
+  // Standardinstansen läser bara process.env.TIINGO_API_KEY (tom i testerna): inget nätverk
+  assert.equal(process.env.TIINGO_API_KEY, "", "testmiljön har ingen Tiingo-nyckel");
+  ok("Saknad Tiingo-nyckel: inget anrop, kortet visar IG:s kvottext + Tiingo-nyckel saknas");
+
+  // Anropstak: högst 30 Tiingo-anrop per timme, sedan inga fler förrän timmen gått
+  const capUrls: string[] = []; let capClock = Date.parse("2026-10-10T12:00:00Z");
+  const tiCap = T.createTiingoIntraday({ fetch: (async (u: string) => { capUrls.push(u); return { ok: true, status: 200, json: async () => [] }; }) as any, key: () => "k", now: () => capClock, batchMs: 0 });
+  const fxs = ["EUR", "GBP", "AUD", "NZD", "USD", "CAD", "CHF", "JPY", "SEK", "NOK", "DKK", "PLN", "HUF", "CZK", "ZAR", "MXN", "SGD", "HKD", "TRY", "ILS"];
+  const pairs: string[] = []; for (const a of fxs) for (const b of fxs) if (a !== b && pairs.length < 40) pairs.push(a + b);
+  for (const pr of pairs) await tiCap.get(`CS.D.${pr}.CFD.IP`, `${pr.slice(0, 3)}/${pr.slice(3)}`);
+  assert.equal(capUrls.length, T.TIINGO_MAX_PER_HOUR, "högst 30 anrop per timme");
+  const capped = await tiCap.get("CS.D.SEKJPY.CFD.IP", "SEK/JPY"); assert.match(capped.note!, /Tiingo-gräns nådd/); assert.ok(!/väntar|läsgräns/.test(capped.note!), "kortets 20 s-omförsök triggas inte");
+  capClock += 3_600_000; await tiCap.get("CS.D.SEKJPY.CFD.IP", "SEK/JPY"); assert.equal(capUrls.length, T.TIINGO_MAX_PER_HOUR + 1, "nästa timme tillåts nya anrop");
+  // HTTP 429 → paus
+  const t429Urls: string[] = [];
+  const ti429 = T.createTiingoIntraday({ fetch: (async (u: string) => { t429Urls.push(u); return { ok: false, status: 429, json: async () => ({}) }; }) as any, key: () => "k", now: () => capClock, batchMs: 0 });
+  await ti429.get("CS.D.EURUSD.CFD.IP", "EUR/USD"); const r429 = await ti429.get("CS.D.GBPUSD.CFD.IP", "GBP/USD");
+  assert.equal(t429Urls.length, 1); assert.match(r429.note!, /pausat/);
+  ok("Tiingo-anropstak 30/timme och paus efter HTTP 429");
+
+  // Endast visning: Tiingo-modulen importeras bara av minidiagrammen, aldrig av signal-, strategi- eller ordermoduler
+  const importers: string[] = [];
+  const walk = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walk(p); else if (/\.ts$/.test(f.name) && /tiingoIntraday/.test(fs.readFileSync(p, "utf8"))) importers.push(path.relative(path.resolve("src"), p)); } };
+  walk(path.resolve("src"));
+  assert.deepEqual(importers.sort(), ["server/igSparklines.ts", "server/tiingoIntraday.ts"], "Tiingo-intradag används bara för minidiagram");
+  const routes = fs.readFileSync(path.resolve("src/server/igRoutes.ts"), "utf8");
+  assert.ok(!/tiingoIntraday|TIINGO_SPARK/.test(routes.slice(routes.indexOf('"/api/market/klines"'))), "huvuddiagrammets klines blandas aldrig med Tiingo");
+  ok("Tiingo-intradag är endast visning: aldrig i signaler, strategier, ordrar eller huvuddiagrammets IG-ljus");
+}
+
 console.log("Granskning 3: alla tester godkända (endast mocks, inga nätverksanrop)");
