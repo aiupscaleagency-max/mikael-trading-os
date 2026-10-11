@@ -6,6 +6,7 @@ import { getIgCandles } from "../integrations/igMarkets.js";
 import { igMarketData } from "./igMarketData.js";
 import { tiingoIntraday, TIINGO_SPARK_LABEL, type TiingoSeries } from "./tiingoIntraday.js";
 import { igAnalysisActive, IG_ANALYSIS_PAUSE_TEXT } from "../integrations/igAnalysisGate.js";
+import { igReadStats, withIgReadConsumer, type createIgReadStats } from "../integrations/igReadStats.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Minidiagram för korten på Alla par — skonsamt mot IG:s historikkvot.
@@ -58,8 +59,11 @@ export function createIgSparklines(deps: {
   name?: (env: IgEnvironment, epic: string) => string | null;
   /** Analys pågår i miljön: inga IG-hämtningar och inga nya Tiingo-anrop (bara cache), se igAnalysisGate. */
   paused?: (env: IgEnvironment) => boolean;
+  /** Läsräknare + rättvist tak (minidiagram högst 4 IG-läsningar/min, golv 3). Standard: serverns i produktion, ingen i tester med egen candles. */
+  readStats?: ReturnType<typeof createIgReadStats> | null;
 } = {}) {
   const paused = deps.paused ?? igAnalysisActive;
+  const readStats = deps.readStats !== undefined ? deps.readStats : (deps.candles ? null : igReadStats);
   const candles = deps.candles ?? (getIgCandles as unknown as CandlesFn);
   const budget = deps.budget ?? getIgReadBudget;
   const memory = deps.memory ?? ((epic, iv, env) => igMarketData.closed(epic, iv, env));
@@ -117,6 +121,8 @@ export function createIgSparklines(deps: {
     if (a !== undefined && (a.left < SPARK_ALLOWANCE_RESERVE || (a.total !== null && a.left < a.total * SPARK_ALLOWANCE_SHARE))) return SPARK_QUOTA_TEXT;
     const b = budget(env);
     if ((b.backgroundRemaining ?? b.remaining ?? 0) <= 0) return "diagram väntar (IG:s läsgräns denna minut)";
+    // Rättvist tak: minidiagrammen får högst sin andel av bakgrundsutrymmet och backar när det är lågt (Tiingo visas då)
+    if (readStats?.backgroundBlock(env, "minidiagram", b.backgroundRemaining)) return "diagram väntar (IG:s läsgräns denna minut)";
     const list = (fetches.get(env) ?? []).filter((t) => now() - t < 60_000);
     fetches.set(env, list);
     if (list.length >= SPARK_MAX_PER_MIN) return "diagram väntar (högst " + SPARK_MAX_PER_MIN + " per minut)";
@@ -140,7 +146,7 @@ export function createIgSparklines(deps: {
       stats.igFetches++;
       let out: Sparkline;
       try {
-        const r = await candles(env, epic, SPARK_INTERVAL, SPARK_POINTS);
+        const r = await withIgReadConsumer("minidiagram", () => candles(env, epic, SPARK_INTERVAL, SPARK_POINTS));
         const left = Number(r.allowance?.remainingAllowance), total = Number(r.allowance?.totalAllowance);
         if (Number.isFinite(left)) allowance.set(env, { left, total: Number.isFinite(total) && total > 0 ? total : null });
         const bars = (r.candles ?? []).filter((c) => Number.isFinite(c.close));

@@ -120,3 +120,19 @@ Kravlistan i sin helhet: `docs/KRAV-IG-2026-10-09.md`. Strategy Library, scheman
 3. `curl -s https://aiupscale-dator1.tail64d627.ts.net:9443/api/ig/agent-top`: visar senaste tipsen.
 4. Läs avsnitt 2 igen. Fortsätt sedan med avsnitt 5, punkt 1.
 5. Rapportera kort till Mike på svenska med en tabell: vad som är gjort, kontrollerat och kvar.
+
+---
+
+## 8. Webbläsartest EFTER VARJE ÄNDRING (Mike-krav 2026-10-11: "allting måste funka och livesynkas")
+
+Säg aldrig "klart" innan detta är gjort i en riktig webbläsare (Playwright/Chromium mot https://agentic-os.tail64d627.ts.net/trading). Gör det i **både TEST och LIVE**:
+
+| # | Kontroll | Godkänt när |
+|---|---|---|
+| 1 | Byt instrument i huvuddiagrammet (`#sym-select`) | Diagrammets etikett och EPIC, orderpanelen `#bet-sym`, Köp/Sälj-panelens kvot och TP/SL (tömda) byts samtidigt |
+| 2 | Byt instrument i orderpanelen | Huvuddiagrammet följer |
+| 3 | Byt tid (1m/5m/15m/1h) | Diagrammet och Snabb-tradens tid följer. Köp/Sälj-innehavstiden (`ot-tf`) är medvetet separat. |
+| 4 | Vänta 30–60 s | Priser, idag-% och sista ljuset ändras i takt med IG (Trade, Alla par, bevakning) |
+| 5 | Byt TEST ↔ LIVE | Saldo, märkning, katalogantal (samma i båda), orderläge och resultat byts |
+| 6 | Alla par | Hela katalogen visas. Demo har sim-märkning på Live-instrument. Diagram (IG eller Tiingo, märkt). Agenternas topplista syns. |
+| 7 | Inga JS-fel | `pageerror` tom |

@@ -4428,6 +4428,7 @@ function initChart(){
 function genCandles(sym, tf, n=300){ return []; }
 
 function loadCandles(sym, tf){
+  syncOrderPanelsToChart(sym, tf); // orderpanelerna följer huvuddiagrammet (instrument + intervall)
   const key = sym+"|"+tf;
   // Byte av instrument: diagrammet töms direkt så ett annat instruments ljus aldrig blir kvar
   const data = STATE.candleData[key] || [];
@@ -4445,13 +4446,15 @@ function clearPriceHeader(){
 // kvoter (bid/offer) och ljus (1m/5m/1h). Webbläsaren pratar aldrig direkt
 // med IG. Historikfel → namn/kvot visas med "historik saknas", inga ljus hittas på.
 const IG_TF = {"1m":1,"5m":1,"15m":1,"30m":1,"1h":1,"4h":1,"1d":1};
-const igMain = { key:null, lastInd:0, hist:null, lastSrc:0 };
+const igMain = { key:null, lastInd:0, hist:null, lastSrc:0, backdrop:null, backdropNote:null };
 function setSourceIndicator(html){ const ind = document.getElementById("data-source-indicator"); if(ind) ind.innerHTML = html; }
 function showIgSource(){
   if(!STATE.symbol){ setSourceIndicator('<span style="color:var(--label)">○</span> Välj ett IG-instrument'); return; }
   const q = IG.quote(STATE.symbol);
   setSourceIndicator(IG.badge(q) + ' <span style="color:var(--label)">' + IG.esc(IG.label(STATE.symbol)) + ' · ' + IG.esc(STATE.symbol) + ' · ' + STATE.tf + ' · ' + IG.envLabel() + '</span>'
-    + (igMain.hist ? ' <span style="color:#f0b90b" title="' + IG.esc(igMain.hist) + '">· ' + (/veckokvot/.test(igMain.hist) ? 'IG:s veckokvot för historik är slut, ljusen byggs från livepriserna' : 'historik saknas') + '</span>' : ''));
+    + (igMain.hist ? ' <span style="color:#f0b90b" title="' + IG.esc(igMain.hist) + '">· ' + (/veckokvot/.test(igMain.hist) ? 'IG:s veckokvot för historik är slut, ljusen byggs från livepriserna' : 'historik saknas') + '</span>' : '')
+    + (igMain.backdrop ? ' <span style="color:#9ca3af" title="Grå ljus = Tiingo, bara visning. Signaler, strategier och order använder bara IG-pris.">· ' + IG.esc(igMain.backdrop.label) + ' (grå = Tiingo)' + (igMain.backdrop.note ? ' · ' + IG.esc(igMain.backdrop.note) : '') + '</span>'
+      : igMain.backdropNote ? ' <span style="color:var(--label)" title="' + IG.esc(igMain.backdropNote) + '">· ingen Tiingo-bakgrund</span>' : ''));
 }
 async function loadRealCandles(sym, tf){
   if(!IG.isEpic(sym)){ showIgSource(); return; }
@@ -4466,8 +4469,13 @@ async function loadRealCandles(sym, tf){
   if(d.env && d.env !== IG.st.env) return; // fel miljö: visas aldrig
   const bars = (d.klines || []).map(b=>({time:b.time, open:b.open, high:b.high, low:b.low, close:b.close, volume:b.volume || 0}));
   if(d.forming && (!bars.length || d.forming.time > bars[bars.length-1].time)) bars.push({time:d.forming.time, open:d.forming.open, high:d.forming.high, low:d.forming.low, close:d.forming.close, volume:d.forming.volume || 0});
-  STATE.candleData[sym+"|"+tf] = bars;
-  candleSeries.setData(bars.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
+  STATE.candleData[sym+"|"+tf] = bars; // bara IG-ljus (indikatorer, rubrik, ström); Tiingo hålls utanför
+  // Tiingo-bakgrund (ENDAST VISNING, ej IG-pris) när IG:s historik saknas: grå ljus före IG-ljusen, IG ritas efter
+  const bd = (d.backdrop && Array.isArray(d.backdrop.bars)) ? d.backdrop.bars.filter(b=>!bars.length || b.time < bars[0].time) : [];
+  igMain.backdrop = bd.length ? { label: d.backdrop.label || "Tiingo-historik (ej IG-pris) + IG-live", n: bd.length } : null;
+  igMain.backdropNote = !bd.length && d.backdrop && d.backdrop.note ? d.backdrop.note : null;
+  candleSeries.setData([...bd.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close,color:"#4b5563",wickColor:"#6b7280",borderColor:"#6b7280"})),
+    ...bars.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close}))]);
   if(bars.length){ applyIndicators(bars); updatePriceHeader(bars); }
   else { clearPriceHeader(); if(d.quote && d.quote.mid != null) document.getElementById("cur-price").textContent = IG.px(d.quote.mid) + IG.plain(d.quote); }
   if(d.quote && d.quote.mid != null) STATE.livePrices[sym] = d.quote.mid;
@@ -4748,10 +4756,59 @@ function fillSymbols(keep){
   if(pick){ sel.value = pick; STATE.symbol = pick; }
   else if(!keep){ STATE.symbol = list[0] || ""; }
 }
+// ── ORDERSYNK START ──
+// Huvuddiagrammet styr orderpanelerna (KRAV-IG-2026-10-09: "Huvuddiagrammet styr orderpanelen" och
+// "Samma fullständiga namn/EPIC i diagram, order och meny"). Alla vägar till ett nytt diagraminstrument
+// (meny, Alla par Diagram/KÖP/SÄLJ, bevakningslistan, Valutapar, tips) går via loadCandles, som anropar
+// syncOrderPanelsToChart. Åt andra hållet: val i Snabb-tradens par/horisont byter diagrammet.
+// Gäller bara den här fliken: inget sparas eller synkas till andra fönster. busy-flaggan hindrar loopar.
+// var (inte const): loadCandles står längre upp i samma skript och får aldrig träffa en ännu odeklarerad const
+var CHART_TF_SEC = {"1m":60,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400};
+var ORDER_SYNC = { sym:null, tf:null, busy:false };
+function syncOrderPanelsToChart(sym, tf){
+  if(ORDER_SYNC.busy) return;
+  ORDER_SYNC.busy = true;
+  try{
+    const symChanged = sym !== ORDER_SYNC.sym, tfChanged = tf !== ORDER_SYNC.tf;
+    ORDER_SYNC.sym = sym; ORDER_SYNC.tf = tf;
+    const bet = document.getElementById("bet-sym");
+    if(bet && sym){
+      if(![...bet.options].some(o=>o.value===sym)){ const o = document.createElement("option"); o.value = sym; o.textContent = (typeof IG !== "undefined" && IG.label) ? IG.label(sym) : sym; bet.appendChild(o); }
+      bet.value = sym;
+    }
+    if(typeof STATE !== "undefined") STATE.betSym = sym || "";
+    // Snabb-tradens tidshorisont följer diagrammets intervall när intervallet byts (egen tid står kvar tills dess)
+    if(tfChanged && CHART_TF_SEC[tf] && typeof STATE !== "undefined"){
+      STATE.betTf = CHART_TF_SEC[tf];
+      document.querySelectorAll("#bet-tf button").forEach(b=>b.classList.toggle("active", Number(b.dataset.tf) === STATE.betTf));
+      const cur = document.getElementById("bet-tf-current"); if(cur) cur.textContent = tf;
+    }
+    const civ = document.getElementById("ot-chart-iv");
+    if(civ && tf && [...civ.options].some(o=>(o.value || o.textContent) === tf)) civ.value = tf;
+    // Köp/Sälj-panelen (egen modul) uppdaterar kvot, insatsberäkning och nollställer TP/SL direkt
+    if(symChanged || tfChanged) document.dispatchEvent(new CustomEvent("chart-instrument", { detail:{ sym, tf, symChanged, tfChanged } }));
+  } finally { ORDER_SYNC.busy = false; }
+}
+/** Val i Snabb-tradens par-meny → huvuddiagrammet byter (och därmed alla orderpaneler). */
+function orderPanelPickedSymbol(sym){
+  if(!sym || ORDER_SYNC.busy || (typeof STATE !== "undefined" && STATE.symbol === sym)) return false;
+  if(typeof openChartFor === "function") openChartFor(sym);
+  return true;
+}
+/** Val av Snabb-tradens horisont som motsvarar ett diagramintervall → diagrammet byter intervall. */
+function orderPanelPickedHorizon(sec){
+  const tf = Object.keys(CHART_TF_SEC).find(k=>CHART_TF_SEC[k] === Number(sec));
+  if(!tf || ORDER_SYNC.busy || (typeof STATE !== "undefined" && STATE.tf === tf)) return false;
+  const btn = document.querySelector(`#tf-group button[data-tf="${tf}"]`);
+  if(btn) btn.click(); else if(typeof STATE !== "undefined"){ STATE.tf = tf; loadCandles(STATE.symbol, tf); }
+  return true;
+}
+// ── ORDERSYNK SLUT ──
 function fillBetSymbols(){
   const sel = document.getElementById("bet-sym");
   if(!sel) return;
-  const keep = sel.value;
+  // Diagrammets instrument vinner (huvuddiagrammet styr orderpanelen)
+  const keep = (typeof STATE !== "undefined" && STATE.symbol) || sel.value;
   sel.innerHTML = "";
   for(const k of ["watch","forex","crypto"]){
     if(!SYMBOLS[k].length) continue;
@@ -4760,7 +4817,9 @@ function fillBetSymbols(){
     SYMBOLS[k].slice(0, 2000).forEach(s=>{ const o=document.createElement("option"); o.value=s; o.textContent=IG.label(s); og.appendChild(o); }); /* hela IG-katalogen, inte bara de första 300 */
     sel.appendChild(og);
   }
-  if(keep && [...sel.options].some(o=>o.value===keep)) sel.value = keep;
+  // Diagrammets instrument finns alltid med (även om det inte är bland listorna), så Snabb-trade aldrig byter till något annat
+  if(keep && ![...sel.options].some(o=>o.value===keep)){ const o=document.createElement("option"); o.value=keep; o.textContent=IG.label(keep); sel.insertBefore(o, sel.firstChild); }
+  if(keep) sel.value = keep;
 }
 
 /* ======================================================================
@@ -7703,7 +7762,9 @@ function wire(){
     e.target.classList.add("active");
     STATE.betTf = parseInt(e.target.dataset.tf,10);
     log_ok(`Tidshorisont: ${formatTfHuman(STATE.betTf)}`);
+    orderPanelPickedHorizon(STATE.betTf); // horisont = diagramintervall → diagrammet följer
   });
+  document.getElementById("bet-sym")?.addEventListener("change", e=>{ orderPanelPickedSymbol(e.target.value); });
   // Custom-tid input: "30 sek" / "8 min" / "1 tim" osv
   function applyCustomTf(){
     const inp = document.getElementById("bet-tf-custom");
@@ -9455,6 +9516,12 @@ document.addEventListener("DOMContentLoaded", boot);
   }
   $("ot-instr").addEventListener("click", (ev)=>{ const b = ev.target.closest("[data-oti]"); if(b){ openChartFor(b.dataset.oti); renderInstr(); } });
   IG.on("watchlist", renderInstr); IG.on("env", renderInstr);
+  // Huvuddiagrammet bytte instrument/intervall: kvot, insats och snabbval följer direkt (inte först vid nästa 0,5 s-varv).
+  // Nytt instrument: TP/SL från förra instrumentet töms (de vore fel nivåer); tips/utkast fyller i efter bytet.
+  document.addEventListener("chart-instrument", (ev)=>{
+    const d = ev.detail || {};
+    if(d.symChanged){ ["ot-tp","ot-sl"].forEach(id=>{ const el = $(id); if(el) el.value = ""; }); sqKey = ""; renderQuote(); renderInstr(); void renderEst(); }
+  });
   // ── D3: fyra separata tidsval ──
   async function loadTimes(){
     try{ const t = await (await fetch("/api/ig/times")).json(); if(t.analysisInterval) $("ot-ana-iv").value = t.analysisInterval; if(t.sessionMinutes) $("ot-sess-min").value = String(t.sessionMinutes); }catch(_){}
@@ -10692,9 +10759,12 @@ window.IGS = (function(){
     const sym = (typeof STATE !== "undefined" && STATE.symbol) || "", tf = (typeof STATE !== "undefined" && STATE.tf) || "1m";
     if(!IG.isEpic(sym)){ $("tl-csv-msg").textContent = "Välj ett IG-instrument på Trade först."; return; }
     const d = await IG.klines(sym, tf, 500);
-    const rows = (d.klines || []).map(k=>[new Date(k.time*1000).toISOString(), k.open, k.high, k.low, k.close].join(","));
+    // Varje rad märks med källa: IG (stängda mid-ljus) eller Tiingo (ej IG-pris, bara visningsbakgrund före IG-ljusen)
+    const bd = (d.backdrop && Array.isArray(d.backdrop.bars)) ? d.backdrop.bars : [];
+    const rows = [...bd.map(k=>[new Date(k.time*1000).toISOString(), k.open, k.high, k.low, k.close, "Tiingo (ej IG-pris)"].join(",")),
+      ...(d.klines || []).map(k=>[new Date(k.time*1000).toISOString(), k.open, k.high, k.low, k.close, "IG"].join(","))];
     if(!rows.length){ $("tl-csv-msg").textContent = d.historyError || "Inga stängda ljus."; return; }
-    const blob = new Blob([`# ${IG.label(sym)} (${sym}) ${tf} ${d.label || IG.envLabel()} · stängda mid-ljus\ntime,open,high,low,close\n` + rows.join("\n")], { type:"text/csv" });
+    const blob = new Blob([`# ${IG.label(sym)} (${sym}) ${tf} ${d.label || IG.envLabel()} · stängda mid-ljus${bd.length ? " · " + (d.backdrop.label || "Tiingo-historik (ej IG-pris) + IG-live") : ""}\ntime,open,high,low,close,source\n` + rows.join("\n")], { type:"text/csv" });
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${sym}_${tf}_${IG.st.env}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
     $("tl-csv-msg").textContent = `${rows.length} ljus.`;
   });

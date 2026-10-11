@@ -1,6 +1,7 @@
 import {callIgAuthenticated,getIgReadBudget,getIgStatus,type IgEnvironment} from './igConnection.js';
 import {getIgCatalogue,getIgCandles,igMarketCategory} from './igMarkets.js';
 import {igAnalysisActive} from './igAnalysisGate.js';
+import {withIgReadConsumer} from './igReadStats.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {dataPath} from '../dataDir.js';
@@ -59,13 +60,17 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
    if(paused(mode))continue; // agenterna analyserar i miljön: katalogen väntar till nästa varv
    const binding=identity(mode),previous=scans.get(mode);
    // Så länge katalogen är delvis klar försöker vi var 15:e sekund (budgeten begränsar ändå antalet läsningar).
-   const partial=['forex','crypto'].some(c=>latest.get(`${mode}:${c}`)?.value?.complete!==true);
+   // "Klar" = complete ELLER en hel sökgenomgång utan kvarvarande/felande sökord. complete kan förbli false för alltid
+   // (oklassificerade instrument i IG:s kategorier, eller sökvägen som aldrig kan bevisa fullständighet); då ska vi inte
+   // försöka var 15:e sekund. complete själv ändras inte: UI:t visar fortfarande "delvis" ärligt.
+   const settled=(v:any)=>v?.complete===true||Number.isFinite(v?.searchCompletedAt)&&v?.remainingSearches===0&&!(v?.progress?.search?.failedTerms?.length);
+   const partial=['forex','crypto'].some(c=>!settled(latest.get(`${mode}:${c}`)?.value));
    if(previous?.binding===binding&&now()-previous.at<(partial?14000:65000))continue;
    const cryptoFirst=previous?.binding===binding?!previous.cryptoFirst:false;
    scans.set(mode,{binding,at:now(),cryptoFirst});
    for(const category of cryptoFirst?['crypto','forex']:['forex','crypto']){
     if(identity(mode)!==binding)break;
-    try{await catalogue(mode,category);}catch{/* Nästa begränsade cykel försöker igen; HTTP-anrop visar felet. */}
+    try{await withIgReadConsumer('katalog',()=>catalogue(mode,category));}catch{/* Nästa begränsade cykel försöker igen; HTTP-anrop visar felet. */}
    }
   }}finally{scanning=false;}
  }
