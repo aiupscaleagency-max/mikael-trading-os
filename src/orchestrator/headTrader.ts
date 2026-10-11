@@ -43,7 +43,10 @@ const headTraderModel = () => modelFor("head", "claude-sonnet-4-6");
 // gjorde att destrukturering av det gav typfel trots att fältet finns
 // i objektet som faktiskt skickas in.
 import type { AllReports } from "./orchestrator.js";
-import { currentStake } from "../risk/stakeLadder.js";
+import { currentStake, stakeStartPct } from "../risk/stakeLadder.js";
+import { tipsPromptBlock, parseHeadTips, markUnverified, type AgentTip } from "./headTips.js";
+import { igAgentData, igEnvOf } from "../server/igAgentData.js";
+import { DIRECT_ANALYSIS_MAX } from "../server/igSessions.js";
 
 /** Insats-principen (Mike 2026-10-03), på IG: en andel av IG-saldot som marginal, 1 % → högst 3 %. */
 function stakeBlock(): string {
@@ -65,6 +68,8 @@ export interface HeadTraderResult {
   toolCalls: Array<{ name: string; input: unknown; output: unknown }>;
   placedOrders: Array<{ request: OrderRequest; result: OrderResult }>;
   killSwitchToggled: boolean;
+  /** IG: Hannas tips per analyserat instrument, rangordnade (även vid HOLD). Saknas för andra mäklare. */
+  tips?: AgentTip[];
 }
 
 export async function runHeadTrader(params: {
@@ -89,7 +94,9 @@ export async function runHeadTrader(params: {
   ]);
   const performance = memory ? `${pastPerf}\n\n${memory}` : pastPerf;
 
-  const systemPrompt = buildHeadTraderPrompt(config, state, performance);
+  const igEnv = igEnvOf(broker);
+  // IG: krav på tips per instrument läggs till prompten (additivt; modell/provider oförändrade)
+  const systemPrompt = buildHeadTraderPrompt(config, state, performance) + (igEnv ? tipsPromptBlock() : "");
   const briefingContent = formatAllReports(reports);
 
   const toolCtx: ToolContext = {
@@ -108,15 +115,24 @@ export async function runHeadTrader(params: {
   // hämta dem ett anrop i taget. Bara när JEV valt få par (annars blir paketet för stort).
   let indicatorPack = "";
   const picked = params.symbols ?? [];
-  if (picked.length > 0 && picked.length <= 5) {
+  // IG: upp till direktanalysens 10 instrument (tidigare 5, så 7 valda fick inget paket). Källa per rad + IG-livepris.
+  if (picked.length > 0 && picked.length <= (igEnv ? DIRECT_ANALYSIS_MAX : 5)) {
     // Tidsramar efter Mikes horisont (1–30 min → korta ramar)
     const { shortIntervals } = await import("../server/tradeHorizon.js");
     const jobs = picked.flatMap((sym) => shortIntervals().map((iv) => ({ sym, iv })));
     const rows = (await Promise.all(jobs.map(async ({ sym, iv }) => {
-      try { return `${sym} ${iv}: ${JSON.stringify(computeIndicators(await broker.getKlines(sym, iv, 150)))}`; }
+      try {
+        if (igEnv) {
+          const r = await igAgentData.klines(igEnv, sym, iv, 150, () => broker.getKlines(sym, iv, 150));
+          const live = r.igLive ? ` · IG-livepris ${+r.igLive.price.toPrecision(8)} (${r.igLive.source}${r.igLive.ageSec !== null ? `, ${r.igLive.ageSec} s` : ""})` : " · IG-livepris saknas";
+          if (!r.klines.length) return `${sym} ${iv}: inga ljus (${r.note ?? "okänt skäl"})${live}`;
+          return `${sym} ${iv} [källa: ${r.source}${live}]: ${JSON.stringify(computeIndicators(r.klines))}`;
+        }
+        return `${sym} ${iv}: ${JSON.stringify(computeIndicators(await broker.getKlines(sym, iv, 150)))}`;
+      }
       catch { return null; } // Hanna kan hämta själv med get_indicators
     }))).filter((r): r is string => r !== null);
-    if (rows.length) indicatorPack = `\n\n──── INDIKATORER (redan hämtade, anropa inte get_indicators för dessa igen; changePct24 = ändring över de senaste 24 ljusen i den tidsramen, inte 24 timmar) ────\n${rows.join("\n")}`;
+    if (rows.length) indicatorPack = `\n\n──── INDIKATORER (redan hämtade, anropa inte get_indicators för dessa igen; changePct24 = ändring över de senaste 24 ljusen i den tidsramen, inte 24 timmar; "Tiingo (ej IG-pris)" = research-data, ordrar prissätts av IG) ────\n${rows.join("\n")}`;
   }
 
   // Smalt team: säg det rakt ut, så att stubb-rapporterna inte räknas som HOLD-röster
@@ -165,6 +181,19 @@ export async function runHeadTrader(params: {
         .join("\n")
         .trim();
 
+      // IG: Hannas tips per instrument (TIPS_JSON) tolkas och tas bort ur den läsbara sammanfattningen
+      let tips: AgentTip[] | undefined;
+      let summaryText = rawText;
+      if (igEnv) {
+        const stake = currentStake();
+        const { getHorizonMin } = await import("../server/tradeHorizon.js");
+        const parsed = parseHeadTips(rawText, params.symbols ?? [], { maxStakePct: stake?.pct ?? 1, minStakePct: stakeStartPct(), stakeAmount: stake?.amount ?? null, currency: stake?.currency ?? null, defaultHorizonMin: getHorizonMin() });
+        tips = parsed.tips; summaryText = parsed.cleanedText || rawText;
+        // Inget IG-livepris för instrumentet (bara Tiingo): nivåerna märks overifierade
+        for (const t of tips) if (!igAgentData.igLive(igEnv, t.epic)) markUnverified(t);
+        if (!parsed.found) log.warn("[Head Trader] TIPS_JSON saknades eller kunde inte läsas; alla instrument märks AVVAKTA utan tips");
+      }
+
       return {
         decision: {
           role: "head_trader",
@@ -177,12 +206,13 @@ export async function runHeadTrader(params: {
             reasoning: "Se fulltext",
             confidence: "high" as const,
           })),
-          briefingSummary: rawText,
+          briefingSummary: summaryText,
           rawText,
         },
         toolCalls: recordedToolCalls,
         placedOrders: toolCtx.sideEffects.placedOrders,
         killSwitchToggled: toolCtx.sideEffects.killSwitchToggled,
+        ...(tips ? { tips } : {}),
       };
     }
 

@@ -11,6 +11,8 @@ import {AsyncLocalStorage} from "node:async_hooks";
 const priorityContext=new AsyncLocalStorage<boolean>();
 export function withIgPriority<T>(fn:()=>Promise<T>):Promise<T>{return priorityContext.run(true,fn);}
 export function igPriorityActive():boolean{return priorityContext.getStore()===true;}
+/** Läsningar som INTE får använda orderns förtur (t.ex. Demo-simuleringens Live-priser), även om anroparen kör i withIgPriority. */
+export function withoutIgPriority<T>(fn:()=>Promise<T>):Promise<T>{return priorityContext.run(false,fn);}
 /** B1: läsningar en godkänd order behöver i värsta fall (granskning: konto, positioner, arbetsorder,
  *  transaktioner, marknad, valuta + marknad per position; bekräftelsen återanvänder granskningens läsningar
  *  under 5 s). confirms/ räknas inte mot spärren. */
@@ -245,7 +247,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
   }
   // Endast serverintern åtkomst. Returneras aldrig av status-/HTTP-rutterna.
   function streamingSession(mode:IgEnvironment){const current=status(mode),s=sessions.get(mode);if(current.status!=="connected"||!s?.streamingEndpoint)return null;let endpoint:URL;try{endpoint=new URL(s.streamingEndpoint);}catch{return null;}if(endpoint.protocol!=="https:"||!/(^|\.)(ig\.com|marketdatasystems\.com)$/.test(endpoint.hostname))return null;return {endpoint:endpoint.href,accountId:s.accountId,password:`CST-${s.cst}|XST-${s.xst}`,generation:current.connectionGeneration!};}
-  return {getAccountIdentity:(mode:IgEnvironment)=>{const current=status(mode),session=sessions.get(mode);return current.status==="connected"&&session&&current.connectionGeneration?{accountId:session.accountId,generation:current.connectionGeneration}:null;},getStreamingSession:streamingSession,getReadBudget:readBudget,getStatus:()=>({environments:{demo:status("demo"),live:status("live")}}),testConnection,testWithSharedLogin,callAuthenticated:authenticated,getAccounts:readAccounts,getPositions:readPositions};
+  return {getAccountIdentity:(mode:IgEnvironment)=>{const current=status(mode),session=sessions.get(mode);return current.status==="connected"&&session&&current.connectionGeneration?{accountId:session.accountId,generation:current.connectionGeneration}:null;},getStreamingSession:streamingSession,getReadBudget:readBudget,getHistoryBlockedUntil:(mode:IgEnvironment)=>{validMode(mode);return historyBlockedUntil.get(mode)??0;},getStatus:()=>({environments:{demo:status("demo"),live:status("live")}}),testConnection,testWithSharedLogin,callAuthenticated:authenticated,getAccounts:readAccounts,getPositions:readPositions};
 }
 const connection=createIgConnection();
 export const getIgStatus=connection.getStatus;
@@ -258,6 +260,9 @@ export const callIgAuthenticated=connection.callAuthenticated;
 export const testIgConnectionWithSharedLogin=connection.testWithSharedLogin;
 
 export const getIgReadBudget=connection.getReadBudget;
+
+/** Endast läsning: tidpunkt (ms) då IG:s veckokvot för historik senast spärrade miljön (0 = ingen spärr). Används av agenternas datakälla. */
+export const getIgHistoryBlockedUntil=connection.getHistoryBlockedUntil;
 
 export const getIgStreamingSession=connection.getStreamingSession;
 

@@ -29,7 +29,9 @@ export const DIRECT_ANALYSIS_MAX = 10;
 const EPIC_RE = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$/;
 
 export type ItemStatus = "väntar" | "analyseras" | "analyserad" | "misslyckad" | "hoppad";
-export interface IgSessionItem { epic: string; status: ItemStatus; action: string | null; result: string | null; at: number | null }
+export interface IgSessionItem { epic: string; status: ItemStatus; action: string | null; result: string | null; at: number | null;
+  /** Hannas tips för instrumentet (rang i omgången, KÖP/SÄLJ/AVVAKTA, nivåer, storlek, horisont, säkerhet) */
+  tip?: import("../orchestrator/headTips.js").AgentTip | null }
 export interface IgAgentSession {
   id: string; env: IgEnvironment; binding: string; trigger: "manuell" | "schema"; slot: string | null;
   epics: string[]; strategy: string | null; analysisInterval: string; durationMinutes: number; perMinute: number;
@@ -66,7 +68,9 @@ export function capacityError(count: number, durationMinutes: number): string | 
   return count > cap ? `Urvalet (${count}) ryms inte: ${durationMinutes} min × ${SESSION_PER_MINUTE}/min = ${cap} instrument. Välj ny tid (längre session) eller ett mindre urval.` : null;
 }
 
-export interface BatchResult { picks: Array<{ symbol: string; action: string; reasoning?: string }>; stopped?: Array<{ symbol: string; why: string }>; status?: string; reason?: string }
+export interface BatchResult { picks: Array<{ symbol: string; action: string; reasoning?: string }>; stopped?: Array<{ symbol: string; why: string }>; status?: string; reason?: string;
+  /** Agenternas besked per instrument även vid avstå (Hanna + teknisk analytiker), se igAgentNotes.ts */
+  notes?: Array<{ epic: string; verdict: string; technical: string | null; tip?: import("../orchestrator/headTips.js").AgentTip | null }> }
 export interface IgSessionDeps {
   /** IG-inloggningens identitet per miljö (null = inte ansluten) */
   binding: (env: IgEnvironment) => string | null;
@@ -228,11 +232,16 @@ export function createIgSessions(deps: IgSessionDeps) {
         const stop = r.stopped?.find((y) => y.symbol === it.epic);
         const pick = r.picks.find((p) => p.symbol === it.epic);
         it.at = now();
+        { const tn = r.notes?.find((y) => y.epic === it.epic); if (tn?.tip) it.tip = tn.tip; }
         if (failed) { it.status = "misslyckad"; it.result = r.reason ?? "Omgången misslyckades"; continue; }
         it.status = "analyserad";
         if (stop) { it.action = "avstå"; it.result = `JEV stoppade: ${stop.why}`; }
         else if (pick) { it.action = pick.action; it.result = (pick.reasoning ?? "").slice(0, 300) || null; }
-        else { it.action = "avstå"; it.result = "Inget förslag — sessionen avstod"; }
+        else {
+          it.action = "avstå";
+          const n = r.notes?.find((y) => y.epic === it.epic);
+          it.result = n ? `Avstår: ${n.verdict}${n.technical ? ` · Teknisk: ${n.technical}` : ""}`.slice(0, 500) : "Inget förslag — sessionen avstod";
+        }
       }
     } catch (e) {
       const cur = load(env).session;

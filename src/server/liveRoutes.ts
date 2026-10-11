@@ -141,7 +141,8 @@ function liveStatus() {
 async function igBars(coin: string, interval: string) {
   const epic = pairOf(coin);
   if (!epic) throw new Error(`${coin} finns inte som IG-EPIC i bevakningslistan`);
-  const env = igMarketData.getActiveEnv();
+  // Demo-simulering: Live-instrument som saknas på IG Demo läses från Live
+  const env = igMarketData.dataEnv(igMarketData.getActiveEnv(), epic);
   await igMarketData.ensureSeries(env, epic, interval);
   const bars = igMarketData.closed(epic, interval, env);
   if (!bars.length) throw new Error(igMarketData.historyError(epic, interval, env) ?? "historik saknas");

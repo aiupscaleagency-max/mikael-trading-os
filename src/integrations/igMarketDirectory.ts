@@ -1,12 +1,15 @@
 import {callIgAuthenticated,getIgReadBudget,getIgStatus,type IgEnvironment} from './igConnection.js';
 import {getIgCatalogue,getIgCandles,igMarketCategory} from './igMarkets.js';
+import {igAnalysisActive} from './igAnalysisGate.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {dataPath} from '../dataDir.js';
 const numeric=(x:unknown)=>typeof x==='number'&&Number.isFinite(x)?x:null;
 export function enrichIgDirectoryMarket(m:Record<string,any>){const bid=numeric(m.bid),offer=numeric(m.offer),changePercent=numeric(m.percentageChange??m.changePercent);return {...m,changePercent,movementPercent:changePercent===null?null:Math.abs(changePercent),spread:bid!==null&&offer!==null&&offer>=bid?offer-bid:null,trendScore:null,sentimentLongPercent:null};}
 export const igDirectoryRankings={gainers:{available:true,field:'changePercent',direction:'desc',period:'IG:s sessionsförändring; inte en egen rullande 24h-beräkning'},losers:{available:true,field:'changePercent',direction:'asc'},movers:{available:true,field:'movementPercent',direction:'desc'},spread:{available:true,field:'spread',direction:'asc',note:'Endast jämförbart inom samma prisenhet'},trend:{available:false,reason:'Kräver verifierade stängda ljus med gemensam period'},mostBought:{available:false,reason:'Verifierad kundsentimentdata saknas; är inte handelsvolym'},profits:{available:false,reason:'Marknadsuppgång är inte realiserad strategivinst'}};
-export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;status?:typeof getIgStatus;budget?:typeof getIgReadBudget;fallback?:typeof getIgCatalogue;now?:()=>number;candles?:typeof getIgCandles;persist?:boolean}={}){
+export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;status?:typeof getIgStatus;budget?:typeof getIgReadBudget;fallback?:typeof getIgCatalogue;now?:()=>number;candles?:typeof getIgCandles;persist?:boolean;paused?:(mode:IgEnvironment)=>boolean}={}){
+ // Analys har förtur: katalogkrypningen pausas i miljön medan agenterna analyserar (igAnalysisGate).
+ const paused=deps.paused??igAnalysisActive;
  const call=deps.call??callIgAuthenticated,status=deps.status??getIgStatus,budget=deps.budget??getIgReadBudget,fallback=deps.fallback??getIgCatalogue,now=deps.now??Date.now;
  const candles=deps.candles??getIgCandles;
  const cache=new Map<string,{at:number;value:any}>(),pending=new Map<string,Promise<any>>();
@@ -32,7 +35,7 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
  const remainingSearches=Number.isInteger(result.remainingSearches)&&result.remainingSearches>=0?result.remainingSearches:null;
  const rows=[...markets.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name),'sv'));const hasChanges=rows.some(m=>m.changePercent!==null),hasSpread=rows.some(m=>m.spread!==null);
  const rankings=structuredClone(igDirectoryRankings);rankings.gainers.available=hasChanges;rankings.losers.available=hasChanges;rankings.movers.available=hasChanges;rankings.spread.available=hasSpread;
- const value={environment:mode,category,markets:rows,complete,status:complete?'ready':'partial',source,note,error:result.error??result.categoryError??null,progress:result.progress??null,updatedAt:now(),remainingSearches,unclassifiedInstruments:unclassified,rankings};cache.set(key,{at:now(),value});latest.set(`${mode}:${category}`,{binding,value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}}
+ const searchCompletedAt=Number.isFinite(result.searchCompletedAt)?result.searchCompletedAt:null;const value={environment:mode,category,markets:rows,complete,searchCompletedAt,status:complete?'ready':'partial',source,note,error:result.error??result.categoryError??null,progress:result.progress??null,updatedAt:now(),remainingSearches,unclassifiedInstruments:unclassified,rankings};cache.set(key,{at:now(),value});latest.set(`${mode}:${category}`,{binding,value});return value;})();pending.set(key,job);try{return structuredClone(await job);}finally{pending.delete(key);}}
  /** Senast hämtade katalog utan IG-anrop (null om ingen finns eller om miljön inte längre är ansluten med samma inloggning). */
  function peek(mode:IgEnvironment,category:'forex'|'crypto'){const l=latest.get(`${mode}:${category}`);if(!l)return null;const c=status().environments[mode];if(c.status!=='connected'||c.connectionGeneration!==l.binding)return null;return structuredClone(l.value);}
  async function enrich(mode:IgEnvironment,epic:string){
@@ -53,6 +56,7 @@ export function createIgMarketDirectory(deps:{call?:typeof callIgAuthenticated;s
   if(scanning)return;scanning=true;
   try{for(const mode of ['demo','live'] as const){
    if(status().environments[mode].status!=='connected')continue;
+   if(paused(mode))continue; // agenterna analyserar i miljön: katalogen väntar till nästa varv
    const binding=identity(mode),previous=scans.get(mode);
    // Så länge katalogen är delvis klar försöker vi var 15:e sekund (budgeten begränsar ändå antalet läsningar).
    const partial=['forex','crypto'].some(c=>latest.get(`${mode}:${c}`)?.value?.complete!==true);

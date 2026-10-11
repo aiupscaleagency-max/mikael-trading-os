@@ -12,6 +12,9 @@ import type {
   PortfolioReport,
 } from "./types.js";
 import { log } from "../logger.js";
+import { igAgentData, igEnvOf } from "../server/igAgentData.js";
+import { IgBroker } from "../brokers/ig.js";
+import type { Account, Position } from "../types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Advanced Specialist Agents — utökade analyser för risk, kvant,
@@ -61,10 +64,23 @@ export async function runRiskAnalyst(
 ): Promise<RiskReport> {
   log.agent("[Team] Risk-analytiker startar…");
 
-  const [account, positions] = await Promise.all([
-    broker.getAccount(),
-    broker.getPositions(),
-  ]);
+  // IG (Mike 2026-10-11): en läsgräns får aldrig krascha Risk. Saldo från kontot eller IG-strömmens ACCOUNT-fält,
+  // positioner färska eller senast kända, och källan ("cachad") skickas med till analytikern.
+  let account: Account, positions: Position[], dataSource: string | null = null;
+  const igEnv = igEnvOf(broker);
+  if (igEnv && broker instanceof IgBroker) {
+    const a = await igAgentData.account(igEnv, () => broker.getAccount());
+    const p = await igAgentData.positions(() => broker.getPositions(), () => broker.lastKnownPositions(), igEnv);
+    account = a.account ?? { balances: [], totalValueUsdt: 0, updatedAt: Date.now(), balance: null, available: null };
+    positions = p.positions ?? [];
+    dataSource = `saldo: ${a.source}; positioner: ${p.source}${p.positions ? "" : " (okänt antal öppna positioner, räkna försiktigt)"}`;
+    if (!a.account && !p.positions) log.warn(`[Risk] ${dataSource}`);
+  } else {
+    [account, positions] = await Promise.all([
+      broker.getAccount(),
+      broker.getPositions(),
+    ]);
+  }
 
   const totalExposure = positions.reduce(
     (sum, p) => sum + p.quantity * p.currentPrice,
@@ -90,6 +106,7 @@ export async function runRiskAnalyst(
     totalUnrealizedPnl,
     riskLimits: config,
     positionCount: positions.length,
+    ...(dataSource ? { källa: dataSource, kontovaluta: account.currency ?? null, tillgängligt: account.available ?? null } : {}),
   });
 
   const client = createLlmClient(apiKey);

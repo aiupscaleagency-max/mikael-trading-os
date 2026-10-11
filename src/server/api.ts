@@ -16,6 +16,7 @@ import { getCostSummary } from "../cost/tracker.js";
 import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
 import { igMarketData } from "./igMarketData.js";
 import { setIgLateAcceptedHook, setIgLateDealHook } from "../integrations/igOrders.js";
+import { startIgDemoSim } from "./igDemoSimLive.js";
 import { handleIgRoutes, liveReadAllowed, liveOrdersAllowed } from "./igRoutes.js";
 import { getIgTimes, setIgTimes, ANALYSIS_INTERVALS, SESSION_MINUTES } from "./igTimes.js";
 import { type createIgSessions, DIRECT_ANALYSIS_MAX } from "./igSessions.js";
@@ -369,7 +370,8 @@ export async function createIgPendingOrder(b: Record<string, unknown>, broker: I
   const sessionAttempt = gate.sessionAttempt;
   const fail = <T extends { ok: false; error: string }>(r: T): T => { reportSessionAttempt(sessionAttempt, "stoppad", r.error); return r; };
   let account, ticker;
-  try { [account, ticker] = await Promise.all([broker.getAccount(), broker.getTicker(symbol)]); }
+  // Demo-simulering: insatsen räknas på simuleringens saldo för Live-instrument som saknas på IG Demo
+  try { [account, ticker] = await Promise.all([broker.getAccountFor(symbol), broker.getTicker(symbol)]); }
   catch (err) { return fail({ ok: false, status: 409, error: err instanceof Error ? err.message : String(err) }); }
   if (takeProfit === undefined || stopLoss === undefined) {
     const lv = await broker.defaultLevels(symbol, side).catch(() => null);
@@ -1063,6 +1065,8 @@ export function startServer(
   // TP/SL-bevakning (src/server/liveTpSl.ts, för Bybit-marknadsköp) startas inte.
   void startLiveTpSl;
   startTradeHorizon(brokers, broadcastEvent);
+  // Demo-simulering: TP/SL för simulerade positioner; en stängd position behöver ingen tidsstängning.
+  startIgDemoSim((t) => { cancelTimedExitForDeal(t.dealId); broadcastEvent("timed-exit", { symbol: t.epic, dealId: t.dealId, state: "closed", sim: true, reason: t.reason }); });
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);

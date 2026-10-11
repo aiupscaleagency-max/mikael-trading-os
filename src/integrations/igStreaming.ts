@@ -13,6 +13,7 @@ export function normalizeIgDelayFlag(value:unknown):number|null{
 }
 export interface IgDelayEvidence {epic:string;streamingPricesAvailable:boolean;quote:{delayTime:number|null;marketStatus:string|null;receivedAt:number;observedAt:number|null}}
 export function createIgStreaming(deps:{verifyPrice?:(mode:IgEnvironment,epic:string)=>Promise<IgDelayEvidence>;identity?:(mode:IgEnvironment)=>StreamingIdentity|null;sdk?:any;now?:()=>number;verifyEveryMs?:number}={}){
+ const loggedFailures=new Set<string>();
  const verifyEveryMs=deps.verifyEveryMs??50000;
  const identity=deps.identity??getIgStreamingSession,now=deps.now??Date.now;
  const events=new EventEmitter();const states=new Map<IgEnvironment,any>();
@@ -61,7 +62,9 @@ export function createIgStreaming(deps:{verifyPrice?:(mode:IgEnvironment,epic:st
   for(const [key,sub] of current.subscriptions){if(!wanted.has(key)){current.client.unsubscribe(sub);current.subscriptions.delete(key);current.failed.delete(key);if(key.startsWith('price:'))current.quotes.delete(key.slice(6));}}
   for(const [key,w] of wanted){if(current.subscriptions.has(key))continue;const sub=new current.sdk.Subscription(w.mode,w.items,w.fields);if(w.adapter)sub.setDataAdapter(w.adapter);sub.setRequestedSnapshot('yes');
    sub.addListener({onSubscription:()=>{if(states.get(mode)===current)current.failed.delete(key);},onSubscriptionError:(code:unknown,message:unknown)=>{if(states.get(mode)!==current)return;// Spara VILKEN post IG avvisade (nyckeln innehåller bara EPIC/skala), så att UI kan säga att instrumentet saknar ström.
-    current.failed.set(key,{code:typeof code==='number'?code:null,message:typeof message==='string'?message.slice(0,120):null,at:now()});current.lastError=`En IG-prenumeration kunde inte verifieras (${key})`;events.emit('status',mode,summary(mode));},onItemUpdate:(update:any)=>{
+    current.failed.set(key,{code:typeof code==='number'?code:null,message:typeof message==='string'?message.slice(0,120):null,at:now()});
+    // Logga IG:s faktiska felkod/text en gång per post och kod (inga nycklar eller tokens), så att vi ser vad IG skickar.
+    {const tag=`${mode}|${key}|${String(code)}`;if(!loggedFailures.has(tag)){loggedFailures.add(tag);console.warn(`[ig] ${mode} prenumeration ${key.replace(/[^A-Za-z0-9._:-]/g,'')} avvisad: kod ${String(code)} ${typeof message==='string'?message.slice(0,120):''}`);}}current.lastError=`En IG-prenumeration kunde inte verifieras (${key})`;events.emit('status',mode,summary(mode));},onItemUpdate:(update:any)=>{
     if(states.get(mode)!==current||identity(mode)?.generation!==current.generation)return;
     const fields:Record<string,string|null>={};for(const f of w.fields)fields[f]=update.getValue(f);const receivedAt=now();
     const numeric=(v:unknown)=>typeof v==='string'&&v.trim()!==''&&Number.isFinite(Number(v))?Number(v):null;
@@ -84,7 +87,9 @@ export function createIgStreaming(deps:{verifyPrice?:(mode:IgEnvironment,epic:st
  }
  function active(mode:IgEnvironment){const s=states.get(mode);return s&&identity(mode)?.generation===s.generation?s:null;}
  function summary(mode:IgEnvironment){const s=active(mode);return {transport:'WebSocket',upstream:'IG Lightstreamer PRICE',status:s?.status??'DISCONNECTED',generation:s?.generation??null,lastPriceAt:s?.lastPriceAt??null,subscriptions:s?.subscriptions.size??0,freshPrices:s?[...s.quotes.values()].filter((q:any)=>now()-q.observedAt<=60000&&verifiedQuote(s,q).delayTime===0&&now()-q.observedAt>=0).length:0,error:s?.lastError??null,failed:s?[...s.failed.keys()]:[]};}
+ /** Avvisade prenumerationer med IG:s kod/text (billig, bygger ingen sammanfattning). */
+ function failedKeys(mode:IgEnvironment):Array<{key:string;code:number|null;message:string|null;at:number}>{const s=active(mode);return s?[...s.failed.entries()].map(([key,v]:[string,any])=>({key,code:v?.code??null,message:v?.message??null,at:v?.at??0})):[];}
  function quotes(mode:IgEnvironment){const s=active(mode);return s?[...s.quotes.values()].map(q=>verifiedQuote(s,q)):[];}
- return {events,ensure,stop,summary,quotes,close:()=>{for(const mode of [...states.keys()])stop(mode);}};
+ return {events,ensure,stop,summary,failedKeys,quotes,close:()=>{for(const mode of [...states.keys()])stop(mode);}};
 }
 export const igStreaming=createIgStreaming({verifyPrice:async(mode,epic)=>{const {getIgMarket}=await import('./igMarkets.js');const m=await getIgMarket(mode,epic);return {epic:m.epic,streamingPricesAvailable:m.instrument.streamingPricesAvailable,quote:m.quote};}});

@@ -35,6 +35,9 @@ export function setStakeHistory(pnls: number[], balance: number | null, currency
   ladders.set(env, { pnls: pnls.filter((x) => Number.isFinite(x)), balance, currency, at: Date.now() });
 }
 
+/** Lägsta insats-steget (startnivån, STAKE_PCT_START, standard 1 %). */
+export function stakeStartPct(): number { return Number(process.env.STAKE_PCT_START ?? 1) || 1; }
+
 export function currentStake(env: StakeEnv = envProvider()): StakeLevel | null {
   const demo = ladders.get(env) ?? { pnls: [], balance: null, currency: null, at: 0 };
   const label = env === "live" ? "IG Live" : "IG Demo";

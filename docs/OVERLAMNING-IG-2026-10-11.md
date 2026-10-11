@@ -1,0 +1,122 @@
+# Överlämning: Mikes Trading-OS på IG (11 oktober 2026, kl. 09:15)
+
+> **Skrivet MEDAN arbetet pågår, före det sista steget var klart.**
+> Mike bad om filen nu så att ChatGPT, Hermes eller en ny Claude kan ta vid utan strul om hans veckogräns tar slut.
+> Allt nedan stämde när det skrevs. Kontrollera alltid läget med kommandona i avsnitt 7 innan du gör något.
+> Läs HELA filen först. Mike skriver svenska och vill ha korta, raka svar med tabeller.
+
+---
+
+## 1. Slutmålet (oförhandlingsbart)
+
+Mikes egen Trading-OS (AI-team + dashboard) som handlar på **IG**. **TEST = IG Demo** och **LIVE = IG Live**. De två ska vara **exakt likadana**:
+
+- samma instrument (allt Forex och krypto som IG erbjuder),
+- samma sidor, knappar och agenter,
+- samma resultatfönster och samma live-synk av priser och diagram.
+
+Enda skillnaden är låtsaspengar eller riktiga pengar. Mike ska kunna:
+1. se alla valutor och krypton, välja själv och lägga trades (Köp/Sälj → Väntande ordrar → **Godkänn**),
+2. bocka i par och köra **Analysera valda** eller **Agentsession**, och få **konkreta tips per par**: rang, köp/sälj/avvakta, ingång, TP, SL, storlek, tid och säkerhet,
+3. öva i Demo på exakt samma instrument som i Live.
+
+Allt som fanns i den gamla Bybit-versionen ska finnas kvar: popup, tidshorisont 1/5/15/30 min med automatisk stängning, resultatfönster, minne, JEV, AI-team och agentträd. Mike: **"Det ska funka EXAKT likadant som förut, bara optimera layouten lite och byta till IG."**
+
+---
+
+## 2. Hårda regler (bryt ALDRIG)
+
+1. **Godkänn aldrig en order åt Mike.** Lägg aldrig order själv, varken Demo eller Live. Mike trycker själv.
+2. **LIVE handlar med riktiga pengar.** Mike låste upp det själv 2026-10-10. `.env` i `~/mto-ig` har `MODE=live`, `LIVE_TRADING_CONFIRMED=true`, `IG_ORDER_EXECUTION_ENABLED_LIVE=true` och `IG_ORDER_EXECUTION_ENABLED_DEMO=true`. `EXECUTION_MODE` är approve: allt kräver Godkänn. Ändra ALDRIG dessa utan att Mike uttryckligen ber om det.
+3. **Inga nycklar i chatt, kod, commits eller loggar.** IG-nycklarna ligger i `~/.config/aiupscale/trading-ig.json`. Tiingo läses från `TIINGO_API_KEY` eller kursens `keys.json` (`src/data/tiingoHistory.ts` `tiingoKey()`). Skriv aldrig ut värden.
+4. **Byt inte modell, LLM-ordning, JEV-ordning eller kostnadstak** utan att fråga Mike och visa priser.
+5. **Lägg till, bygg inte om.** Ändra bara det Mike ber om. Gör inga "passa på"-ändringar.
+6. **Rör inte skrivstoppet** i `src/integrations/igConnection.ts` (lager A och B), inte heller `igOrders.ts` eller `orderGate.ts`, utan granskning.
+7. **Analys får aldrig äta orderreserven** (12 läsningar/min per miljö). Se `analysisRead` i `src/server/igAgentData.ts`.
+8. **Döda processer bara via PID** (`lsof -tiTCP:3940 -sTCP:LISTEN`), aldrig `pkill -f`. Ingen destruktiv git: ingen reset --hard, ingen force-push.
+9. **Arbetssätt:** kodare → **granskare (separat agent) → APPROVE** → push → driftsätt → kontrollera på skärmen → rapportera. Säg aldrig "klart" utan att ha sett det på skärmen.
+10. **Rör inte den gamla boten** `com.aiupscale.trading-os` på :3939. Den är pausad med `launchctl bootout`; Mike bestämmer.
+
+---
+
+## 3. Var allt finns
+
+| Vad | Var |
+|---|---|
+| GitHub | `aiupscaleagency-max/mikael-trading-os` |
+| **Senaste kod (allt ihop)** | gren **`claude/ig-agent-data`**, commit **`bdbf374`** |
+| Körande instans | `~/mto-ig`, detached på `bdbf374`, port **3940** (startad med `nohup`, ingen launchd) |
+| Utvecklings-worktree | `~/mto-live` (gren `claude/ig-agent-data`). `~/mto-allpairs` är en äldre worktree och används inte. |
+| Data och logg | `~/mto-ig/data-ig/` (`bot.log`, `ig-sessions/`, `ig-agent-notes-*.json`, `ig-demo-sim.json`, `ig-sparklines-*.json`) |
+| Sidan för Mike | **Agentic-OS → Trading: https://agentic-os.tail64d627.ts.net/trading** (iframe mot :9443) |
+| Direkt | https://aiupscale-dator1.tail64d627.ts.net:9443 (Tailscale serve → 127.0.0.1:3940) |
+| Dator | **Dator 1** (Mikes Mac). Det är den enda han jobbar på. |
+
+**Grenkedja och PR:er** (rörig, så läs noga):
+- `claude/ig-on-vibrant`: basgrenen för IG. Där ingår PR #75 (Live-läsning).
+- PR #76 slogs ihop in i `claude/ig-live-read-catalog`, inte in i basen.
+- **PR #77 (`claude/ig-demo-sim`) är öppen** men ersätts av grenen `claude/ig-agent-data`, som innehåller ALLT (#75, #76, #77 och agentdata).
+- **Rätt nästa steg:** EN PR från `claude/ig-agent-data` till `claude/ig-on-vibrant`. Mike slår ihop den själv. Agenterna får inte slå ihop; auto-läget stoppar det.
+
+**Driftsätta en ny version.** Mike kör raden själv i Terminal. Agentens säkerhetsspärr stoppar omstarter när riktiga pengar är upplåsta.
+```
+cd ~/mto-ig && git fetch -q origin <GREN> && git checkout -q --detach <COMMIT> && npx tsc --noEmit -p . && kill $(lsof -tiTCP:3940 -sTCP:LISTEN); sleep 3; nohup npx tsx src/run.ts --serve >> data-ig/bot.log 2>&1 &
+```
+
+**Kontroller före push:** `npx tsc --noEmit -p .`, `npm run test:ig` (alla gröna, cirka 115 PASS) och `node scripts/check-dashboard-scripts.mjs` (28 skript, 0 fel).
+
+---
+
+## 4. Vad som FUNGERAR nu (kontrollerat på skärmen 10–11 okt)
+
+| Funktion | Läge |
+|---|---|
+| Byte Demo ↔ Live | ✅ Uppdaterar saldo, märkning, instrument och orderläge. Ingen inloggning krävs. |
+| Live-saldo | 500 SEK (riktiga pengar). Demo: IG Demo 100 000 SEK, simulering 100 000 SEK. |
+| Alla par | ✅ Hela katalogen (Live: Krypto 38, Forex 199, Alla 237) med filter, sök och Visa fler. Kort har kryssruta, pris, minidiagram, signal, agenter, KÖP/SÄLJ och Analysera. |
+| Demo = Live | ✅ Demo visar samma 38/199/237. Instrument som IG Demo saknar är märkta "Demo-simulering · Live-pris · låtsaspengar" och fylls som papper mot Lives bid/offer (`src/integrations/igDemoSim.ts`). Simuleringen gör aldrig skrivande IG-anrop. |
+| Bevis för "saknas i Demo" | IG Demo-strömmen avvisar med **kod 21 "Invalid group"**, eller Demo svarar 404. Beviset gäller per Demo-konto i 6 h. Ett instrument med riktigt Demo-pris blir aldrig sim. |
+| Live-synk | ✅ Korten på skärmen (högst 20) uppdateras på varje IG-tick: pris, idag-%, status och diagrammets sista punkt. |
+| Minidiagram | IG först, Tiingo när IG inte kan leverera, märkt "Tiingo-diagram (ej IG-pris)". IG:s historikkvot per vecka är SLUT på både Demo och Live; den återställs av IG. |
+| Agentanalys | ✅ Riktig data: IG-ljus från minnet, IG REST om kvoten tillåter, annars Tiingo med ±3 %-kontroll mot IG-livepris. Hanna ger **tips per instrument med rang** (`src/orchestrator/headTips.ts`). |
+| Agenternas topplista | ✅ Överst i Alla par. "Öppna i orderpanelen" fyller bara i panelen, Godkänn krävs. Route: `GET /api/ig/agent-top`. |
+| Agentsession | ✅ Kör alla valda (5 per minut). Resultat per instrument under Agentsessioner. |
+| Säkerhet | Skrivstopp i 2 lager i igConnection. Kill switch. Approve-läge. Analysen kan inte äta orderreserven (granskad). |
+
+Senaste riktiga analys: 2026-10-11 08:41 av 7 krypton (Arbitrum, Sui, Near, Cardano $1, Cardano E1, Avalanche, Bitcoin Cash). Alla blev AVVAKTA med konkreta nivåer, till exempel Arbitrum köp över 0,1955, TP 0,1975, SL 0,1938.
+
+---
+
+## 5. Kvar att göra (i prioritetsordning)
+
+| # | Vad | Detalj |
+|---|---|---|
+| 1 | **Skapa EN PR** `claude/ig-agent-data` → `claude/ig-on-vibrant` | Stäng #77 som ersatt. Mike slår ihop. |
+| 2 | ✅ KLART: eurokontrakt (E1) | IG prissätter E1 i USD, samma kurs som $1 (kontrollerat live). De mappas nu till USD-tickern. |
+| 3 | Tiingo HTTP 400 på några minidiagram | Cosmos, Dogecoin, Litecoin, Near, Polkadot. Retry per ticker finns nu för agenterna; kontrollera att minidiagrammen också gör så. |
+| 4 | IG Live-läsbudgeten är ofta full | Katalogkrypning + diagram + sim. Katalogen står kvar på "delvis". Överväg att spara katalogen längre och krypa mer sällan. |
+| 5 | Weekend EUR/USD utan priser | IG-sidan: IG uppdaterar inte priset. Visas ärligt som "inaktuellt". |
+| 6 | Mike testar en riktig liten order | Först i Demo, sedan Live. **Agenten gör det INTE.** Kontrollera efteråt i `bot.log` och på ig.com. |
+| 7 | Launchd för instans 2 | Bara om Mike ber om det. Den gamla boten `com.aiupscale.trading-os` på :3939 är pausad. |
+
+Kravlistan i sin helhet: `docs/KRAV-IG-2026-10-09.md`. Strategy Library, scheman, PTQA-kursen och resten där är INTE genomgångna punkt för punkt. Gör en funktionsmatris mot den listan när ovanstående är klart.
+
+---
+
+## 6. Lärdomar (det som gick fel, gör inte om)
+
+- Live var först låst även för **läsning**, så Demo/Live-bytet "funkade inte". Läsning och order är NU separerade.
+- Agenterna fick **ingen data** (IG:s läsgräns + slut veckokvot) och svarade bara HOLD. Lös dataproblem först, inte prompten.
+- Alla par visade bara bevakade instrument. Mike vill se **hela katalogen** i den gamla kortlayouten.
+- Säg aldrig "klart" innan du har sett det på skärmen. Mike har märkt varje överdrift.
+- Fråga Mike direkt när en gammal regel krockar med vad han vill nu. Exempel: "inga riktiga order under utveckling" gentemot "jag ska kunna köra live". Jobba inte vidare i flera timmar på en gissning.
+
+---
+
+## 7. Starta här (ny agent)
+
+1. `cd ~/mto-ig && git rev-parse --short HEAD`: ska vara `bdbf374` eller nyare.
+2. `curl -s https://aiupscale-dator1.tail64d627.ts.net:9443/api/mode`: visar `execution` och `executionMode`, som ska vara approve.
+3. `curl -s https://aiupscale-dator1.tail64d627.ts.net:9443/api/ig/agent-top`: visar senaste tipsen.
+4. Läs avsnitt 2 igen. Fortsätt sedan med avsnitt 5, punkt 1.
+5. Rapportera kort till Mike på svenska med en tabell: vad som är gjort, kontrollerat och kvar.

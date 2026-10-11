@@ -8,6 +8,9 @@ import { computeIndicators } from "../indicators/ta.js";
 import type { StrategyEngine } from "../strategies/types.js";
 import type { MacroReport, TechnicalReport, SentimentReport } from "./types.js";
 import { log } from "../logger.js";
+import { igAgentData, igEnvOf } from "../server/igAgentData.js";
+import { DIRECT_ANALYSIS_MAX } from "../server/igSessions.js";
+import type { Kline } from "../types.js";
 import { trackClaudeCall } from "../cost/tracker.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -130,7 +133,27 @@ export async function runTechnicalAnalyst(
     ticker: { price: number; changePct24h: number; volume24h: number };
   }> = [];
 
-  for (const symbol of symbols.slice(0, 6)) {
+  // IG (Mike 2026-10-11): alla valda instrument (upp till direktanalysens 10, tidigare bara 6), parallellt så att
+  // Tiingo-reservens kryptoanrop samlas i ett. Ljus: IG-minnet → IG REST (om kvoten finns) → Tiingo (märkt ej IG-pris),
+  // på de korta tidsramarna för Mikes horisont. Andra mäklare: oförändrat (4h + ticker).
+  const igEnv = igEnvOf(broker);
+  const igRows: Array<Record<string, unknown>> = [];
+  if (igEnv) {
+    const { shortIntervals } = await import("../server/tradeHorizon.js");
+    const ivs = shortIntervals();
+    await Promise.all(symbols.slice(0, DIRECT_ANALYSIS_MAX).map(async (symbol) => {
+      const perIv: Record<string, unknown> = {};
+      let ok = false;
+      await Promise.all(ivs.map(async (iv) => {
+        const r = await igAgentData.klines(igEnv, symbol, iv, 150, () => broker.getKlines(symbol, iv, 150)).catch((e) => ({ klines: [], source: "ingen", note: e instanceof Error ? e.message : String(e), igLive: null } as { klines: Kline[]; source: string; note: string | null; igLive: unknown }));
+        if (r.klines.length) { ok = true; perIv[iv] = { källa: r.source, indicators: computeIndicators(r.klines), ...(r.note ? { obs: r.note } : {}) }; }
+        else perIv[iv] = { källa: "ingen", saknas: r.note };
+      }));
+      const t = await igAgentData.ticker(igEnv, symbol, () => broker.getTicker(symbol)).catch((e) => ({ error: e instanceof Error ? e.message : String(e) }));
+      if (!ok) log.warn(`[Teknisk] Inga ljus för ${symbol} från någon källa`);
+      igRows.push({ symbol, ticker: t, timeframes: perIv });
+    }));
+  } else for (const symbol of symbols.slice(0, 6)) {
     try {
       const [klines, ticker] = await Promise.all([
         broker.getKlines(symbol, "4h", 100),
@@ -154,7 +177,9 @@ export async function runTechnicalAnalyst(
     }
   }
 
-  const dataContext = JSON.stringify({ analyses, motorSignals });
+  const dataContext = igEnv
+    ? JSON.stringify({ analyses: igRows, motorSignals, källor: "Varje tidsram anger 'källa'. 'Tiingo (ej IG-pris)' = research-data från Tiingo när IG inte kunde leverera ljus; ticker.källa visar IG-livepriset. Analysera ALLA symboler i listan, även de med Tiingo-data, och nämn källan i keySignals." })
+    : JSON.stringify({ analyses, motorSignals });
 
   const client = createLlmClient(apiKey);
   const response = await client.messages.create({

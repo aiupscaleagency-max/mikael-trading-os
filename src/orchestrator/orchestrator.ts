@@ -1,5 +1,5 @@
 import type { Config } from "../config.js";
-import { track, agentSkip, turnPhase, turnEnd, analysisStart, analysisEnd, getAnalysis, type AnalysisOrder } from "../server/agentActivity.js";
+import { track, agentSkip, turnPhase, turnEnd, analysisStart, analysisEnd, getAnalysis, type AnalysisOrder, type AnalysisResult } from "../server/agentActivity.js";
 import type { AgentState } from "../memory/store.js";
 import type { BrokerAdapter } from "../brokers/adapter.js";
 import type { RiskManager } from "../risk/riskManager.js";
@@ -70,7 +70,34 @@ export interface OrchestratorResult {
   };
 }
 
-export async function runOrchestratedTurn(params: {
+type TurnParams = Parameters<typeof runOrchestratedTurnInner>[0];
+
+/**
+ * En analys-tur. IG (Mike 2026-10-11): medan turen pågår har analysen förtur i miljön: katalogkrypning,
+ * minidiagrammens IG-hämtningar och bevakningslistans REST-reserv pausas (igAnalysisGate), och IG-strömmen
+ * ombeds skicka livepriser för de valda instrumenten (kostar inga REST-läsningar). Förturen släpps alltid.
+ */
+export async function runOrchestratedTurn(params: TurnParams): Promise<OrchestratorResult> {
+  const env = params.broker.name === "ig" ? "live" : params.broker.name === "ig-demo" ? "demo" : null;
+  if (!env) return runOrchestratedTurnInner(params);
+  const { beginIgAnalysis } = await import("../integrations/igAnalysisGate.js");
+  const release = beginIgAnalysis(env);
+  try {
+    try {
+      const { igMarketData } = await import("../server/igMarketData.js");
+      const { igAgentData } = await import("../server/igAgentData.js");
+      const list = (params.symbols?.length ? params.symbols : [...params.config.crypto.symbols]).slice(0, 30);
+      // Livepriser via strömmen (Demo-simulering: Live-strömmen) för de valda instrumenten
+      const byEnv = new Map<"demo" | "live", string[]>();
+      for (const e of list) { const de = igMarketData.dataEnv(env, e); byEnv.set(de, [...(byEnv.get(de) ?? []), e]); }
+      for (const [de, epics] of byEnv) igMarketData.requestStream(epics, de);
+      igAgentData.hint(env, list);
+    } catch { /* bara förberedelse; analysen körs ändå */ }
+    return await runOrchestratedTurnInner(params);
+  } finally { release(); }
+}
+
+async function runOrchestratedTurnInner(params: {
   config: Config;
   state: AgentState;
   broker: BrokerAdapter;
@@ -83,6 +110,8 @@ export async function runOrchestratedTurn(params: {
 }): Promise<OrchestratorResult> {
   const { config, state, broker, brokers, risk, engines, userInstruction } = params;
   const apiKey = config.anthropicApiKey;
+  // Miljön som analysen körs i (låst vid start): ett byte Demo↔Live mitt i turen får inte märka beskeden fel. Bara IG-mäklare sparar besked.
+  const notesEnv: "demo" | "live" | null = broker.name === "ig" ? "live" : broker.name === "ig-demo" ? "demo" : null;
 
   const totalStart = Date.now();
   // "Kör analys" har redan startat posten; annars är det schemat.
@@ -299,14 +328,32 @@ export async function runOrchestratedTurn(params: {
         const usd = Number(i.quote_qty);
         return { symbol: String(i.symbol ?? "?"), side: String(i.side ?? "?"), usd: Number.isFinite(usd) ? usd : null, status };
       });
+    const picks = headTrader.decision.actions.map((a) => ({
+      symbol: a.symbol, action: a.action, sizeUsd: a.sizeUsd, confidence: a.confidence, reasoning: a.reasoning.slice(0, 300),
+    }));
+    // Besked per instrument (även när Hanna avstod): Hannas beslut + teknisk analytiker, per miljö och EPIC
+    let notes: AnalysisResult["notes"];
+    try {
+      const { igMarketData } = await import("../server/igMarketData.js");
+      const { buildAgentNotes, agentNotes } = await import("../server/igAgentNotes.js");
+      if (!notesEnv) throw new Error("inte IG");
+      const env = notesEnv;
+      const { notesRunId } = await import("../server/igAgentNotes.js");
+      notes = buildAgentNotes({
+        env, symbols: allSymbols, picks, technical: technical.analyses ?? [], summary: headTrader.decision.briefingSummary,
+        trigger: getAnalysis()?.trigger ?? null, nameOf: (e) => igMarketData.nameOf(e, env),
+        // Hannas tips per instrument; en agentsession räknas som EN omgång i topplistan
+        tips: headTrader.tips, runId: notesRunId() ?? `analys-${getAnalysis()?.startedAt ?? Date.now()}`,
+      });
+      agentNotes.record(notes);
+    } catch { /* anteckningarna är bara en spegel */ }
     analysisEnd({
       status: "done",
       regime: headTrader.decision.regime,
       summary: headTrader.decision.briefingSummary.slice(0, 1500),
-      picks: headTrader.decision.actions.map((a) => ({
-        symbol: a.symbol, action: a.action, sizeUsd: a.sizeUsd, confidence: a.confidence, reasoning: a.reasoning.slice(0, 300),
-      })),
+      picks,
       orders,
+      ...(notes ? { notes } : {}),
     });
   } catch { /* bara en spegel */ }
   return {

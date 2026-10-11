@@ -248,6 +248,8 @@ export interface AnalysisResult {
   summary?: string;
   picks: AnalysisPick[];
   orders: AnalysisOrder[];
+  /** Besked per analyserat instrument, även vid HOLD (se igAgentNotes.ts) */
+  notes?: Array<{ epic: string; env: "demo" | "live"; at: string; action: string; confidence: string | null; verdict: string; technical: string | null; trigger: string | null; tip?: import("../orchestrator/headTips.js").AgentTip | null; runId?: string | null }>;
 }
 
 let lastAnalysis: AnalysisResult | null = null;

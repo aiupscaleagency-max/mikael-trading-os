@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import type { BrokerAdapter } from "./brokers/adapter.js";
 import { IgBroker } from "./brokers/ig.js";
+import { igDemoSim, igDemoSimRouter } from "./server/igDemoSimLive.js";
 import { igMarketData } from "./server/igMarketData.js";
 import { beginIgTurn, configureIgTurnGuard, endIgTurn, igTurnStale } from "./server/igTurnGuard.js";
 import { getIgStatus } from "./integrations/igConnection.js";
@@ -14,6 +15,8 @@ import {
 import { loadState, saveState, appendDecision } from "./memory/store.js";
 import { Scheduler, createDefaultSchedule } from "./scheduler.js";
 import { runOrchestratedTurn } from "./orchestrator/orchestrator.js";
+import { setNotesRunId } from "./server/igAgentNotes.js";
+import { igAgentData } from "./server/igAgentData.js";
 import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback, setIgSessions } from "./server/api.js";
 import { createIgSessions } from "./server/igSessions.js";
 import { analysisStart, analysisEnd, getAnalysis } from "./server/agentActivity.js";
@@ -50,7 +53,9 @@ import { CryptoMomentumEngine } from "./strategies/cryptoMomentum.js";
 // demokonto), LIVE = IG Live. Bybit, Binance, Alpaca, Kraken, Oanda och Blofin
 // skapas inte längre (filerna finns kvar i git men används inte).
 function createBrokers(): Record<string, BrokerAdapter> {
-  return { "ig-demo": new IgBroker("demo"), ig: new IgBroker("live") };
+  // Demo-simulering (Mike 2026-10-10): Live-instrument som saknas på IG Demo övas med Live-pris och låtsaspengar.
+  // Bara Demo-mäklaren får simuleringen; Live är oförändrad.
+  return { "ig-demo": new IgBroker("demo", { sim: igDemoSim, simRouter: igDemoSimRouter }), ig: new IgBroker("live") };
 }
 
 /** Agenternas och signalmotorns par = IG-bevakningslistan (EPICs) för aktiv miljö. */
@@ -453,16 +458,20 @@ async function main(): Promise<void> {
     runBatch: async (env, epics, ctx) => {
       const names = epics.map((e) => `${igMarketData.nameOf(e, env) ?? e} (${e})`).join(", ");
       const instruction = `Agentsession (${ctx.scheduled ? "schemalagd" : "manuell"}${ctx.strategy ? `, strategi ${ctx.strategy}` : ""}, analysintervall ${ctx.analysisInterval}): analysera bara ${names}. `
-        + "Ge köp (lång), sälj (kort) eller avstå per instrument. Avstå hellre än att gissa.";
+        + "Ge köp (lång), sälj (kort) eller avstå per instrument. Avstå hellre än att gissa. Ge ändå tips (TIPS_JSON) för varje instrument.";
       analysisStart(ctx.scheduled ? "schema" : "manuell", instruction);
       setSessionAnalysisInterval(ctx.analysisInterval);
+      // Alla omgångar i sessionen räknas som EN analys i agenternas topplista; nästa omgångars instrument
+      // följer med i samma Tiingo-anrop (färre anrop när IG inte kan leverera ljus).
+      setNotesRunId(`session-${ctx.sessionId}`);
+      try { igAgentData.hint(env, (sessions.state(env).session?.items ?? []).filter((i) => i.status === "väntar").map((i) => i.epic).slice(0, 20)); } catch { /* bara en optimering */ }
       const out: { jevStopped?: { symbol: string; why: string }[] } = {};
       try { await runOnce(brokers, engines, instruction, true, ctx.scheduled, epics, out); }
-      finally { setSessionAnalysisInterval(null); }
+      finally { setSessionAnalysisInterval(null); setNotesRunId(null); }
       const a = getAnalysis();
       if (a?.status === "running") analysisEnd({ status: "stopped", reason: out.jevStopped?.length === epics.length ? "JEV stoppade alla instrument i omgången" : "Omgången kördes inte (kill switch eller ingen mäklare)" });
       const done = getAnalysis();
-      return { picks: done?.picks ?? [], stopped: out.jevStopped, status: out.jevStopped?.length === epics.length ? "done" : done?.status, reason: done?.reason };
+      return { picks: done?.picks ?? [], stopped: out.jevStopped, status: out.jevStopped?.length === epics.length ? "done" : done?.status, reason: done?.reason, notes: done?.notes };
     },
     onChange: (env) => broadcastEvent("ig-session", { env }),
   });
