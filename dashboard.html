@@ -4453,7 +4453,7 @@ function showIgSource(){
   const q = IG.quote(STATE.symbol);
   setSourceIndicator(IG.badge(q) + ' <span style="color:var(--label)">' + IG.esc(IG.label(STATE.symbol)) + ' · ' + IG.esc(STATE.symbol) + ' · ' + STATE.tf + ' · ' + IG.envLabel() + '</span>'
     + (igMain.hist ? ' <span style="color:#f0b90b" title="' + IG.esc(igMain.hist) + '">· ' + (/veckokvot/.test(igMain.hist) ? 'IG:s veckokvot för historik är slut, ljusen byggs från livepriserna' : 'historik saknas') + '</span>' : '')
-    + (igMain.backdrop ? ' <span style="color:#9ca3af" title="Grå ljus = Tiingo, bara visning. Signaler, strategier och order använder bara IG-pris.">· ' + IG.esc(igMain.backdrop.label) + ' (grå = Tiingo)</span>'
+    + (igMain.backdrop ? ' <span style="color:#9ca3af" title="Grå ljus = Tiingo, bara visning. Signaler, strategier och order använder bara IG-pris.">· ' + IG.esc(igMain.backdrop.label) + ' (grå = Tiingo)' + (igMain.backdrop.note ? ' · ' + IG.esc(igMain.backdrop.note) : '') + '</span>'
       : igMain.backdropNote ? ' <span style="color:var(--label)" title="' + IG.esc(igMain.backdropNote) + '">· ingen Tiingo-bakgrund</span>' : ''));
 }
 async function loadRealCandles(sym, tf){
@@ -4817,7 +4817,9 @@ function fillBetSymbols(){
     SYMBOLS[k].slice(0, 2000).forEach(s=>{ const o=document.createElement("option"); o.value=s; o.textContent=IG.label(s); og.appendChild(o); }); /* hela IG-katalogen, inte bara de första 300 */
     sel.appendChild(og);
   }
-  if(keep && [...sel.options].some(o=>o.value===keep)) sel.value = keep;
+  // Diagrammets instrument finns alltid med (även om det inte är bland listorna), så Snabb-trade aldrig byter till något annat
+  if(keep && ![...sel.options].some(o=>o.value===keep)){ const o=document.createElement("option"); o.value=keep; o.textContent=IG.label(keep); sel.insertBefore(o, sel.firstChild); }
+  if(keep) sel.value = keep;
 }
 
 /* ======================================================================
