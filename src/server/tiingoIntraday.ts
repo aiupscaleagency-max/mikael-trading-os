@@ -25,7 +25,10 @@ export const TIINGO_FAIL_TTL_MS = 15 * 60_000;   // fel/saknat par: samma ticker
 export const TIINGO_MAX_PER_HOUR = 30;           // gratisnivån tillåter ca 50/timme; vi tar högst 30
 export const TIINGO_COOLDOWN_MS = 10 * 60_000;   // efter HTTP 429: paus
 export const TIINGO_POINTS = 72;                 // 72 × 5 min = 6 timmar, samma som IG-minidiagrammen
-export const TIINGO_BATCH_MAX = 20;              // högst så många kryptotickers per anrop
+// Tiingo tar högst 5 kryptotickers per anrop. Fler ger HTTP 400 för HELA anropet
+// ("Error: A limit of 5 tickers may be requested at a time", verifierat mot Tiingo 2026-10-11).
+// Det var orsaken till att slumpvisa par (Cosmos, Dogecoin, Litecoin, Near, Polkadot …) fick "HTTP 400".
+export const TIINGO_BATCH_MAX = 5;               // högst så många kryptotickers per anrop
 export const TIINGO_NO_KEY = "Tiingo-nyckel saknas";
 
 export type TiingoKind = "crypto" | "fx";
@@ -407,3 +410,8 @@ export function createTiingoBars(deps: {
   }
   return { bars, hint, stats: () => ({ ...stats, callsLastHour: calls.filter((t) => now() - t < 3_600_000).length }) };
 }
+
+// En gemensam instans för agenternas analys OCH huvuddiagrammets Tiingo-bakgrund (igChartBackdrop.ts), så att
+// de delar samma anropstak (TIINGO_AGENT_MAX_PER_HOUR, standard 20/h) och samma cache. Totalt mot Tiingo blir
+// det då oförändrat: minidiagram 30/h + agenter/huvuddiagram 20/h.
+export const tiingoBarsShared = createTiingoBars();

@@ -9,6 +9,7 @@ import { getIgMarketDirectory, getIgDirectoryEnrichment, peekIgMarketDirectory, 
 import { getIgOrderState, resolveIgUnknown, answerIgLateExit } from "../integrations/igOrders.js";
 import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
 import { igSparklines } from "./igSparklines.js";
+import { igChartBackdrop } from "./igChartBackdrop.js";
 import { agentNotes } from "./igAgentNotes.js";
 import { currentStake } from "../risk/stakeLadder.js";
 import { igOrderMoneyView } from "../integrations/igRiskLimits.js";
@@ -456,10 +457,20 @@ export async function handleIgRoutes(
       // Miljön är bunden vid begärans start: allt nedan läses ur samma miljö (aldrig blandat)
       const closed = igMarketData.closed(epic, iv, src).slice(-limit);
       const forming = igMarketData.forming(epic, iv, src);
+      // Tiingo-bakgrund (ENDAST VISNING) när IG inte kan fylla diagrammet: skickas separat som "backdrop",
+      // blandas aldrig in i klines/forming och når aldrig igMarketData, signaler, strategier eller ordrar.
+      const historyError = igMarketData.historyError(epic, iv, src);
+      let backdrop: Awaited<ReturnType<typeof igChartBackdrop.get>> = null;
+      try {
+        const q = igMarketData.quote(epic, src);
+        const mid = q && Number.isFinite(q.bid) && Number.isFinite(q.offer) ? (Number(q.bid) + Number(q.offer)) / 2 : null;
+        backdrop = await igChartBackdrop.get({ env: src, epic, name: (meta.name as string) ?? igMarketData.nameOf(epic, src), interval: iv, limit,
+          igBars: closed.length, historyError, igFirstOpenMs: closed[0]?.openTime ?? forming?.openTime ?? null, livePrice: mid });
+      } catch { backdrop = null; }
       send(res, 200, {
         env, label: envLabel(env), symbol: epic, epic, interval: iv, ...meta, name: (meta.name as string) ?? igMarketData.nameOf(epic, env),
         klines: closed.map(chartBar), forming: forming ? chartBar(forming) : null,
-        historyError: igMarketData.historyError(epic, iv, src), quote: sim ? simQuoteView(igMarketData.quote(epic, src), epic) : quoteView(igMarketData.quote(epic, env), epic, env),
+        historyError, backdrop, quote: sim ? simQuoteView(igMarketData.quote(epic, src), epic) : quoteView(igMarketData.quote(epic, env), epic, env),
         streamed: igMarketData.streamedSeries(src).includes(`${epic}|${iv}`), envChanged: env !== igMarketData.getActiveEnv(),
         source: sim ? `${DEMO_SIM_LABEL} · IG Live REST-historik (stängda mid-ljus) + Lightstreamer` : `${envLabel(env)} · REST-historik (stängda mid-ljus) + Lightstreamer`, at: Date.now(),
         ...(sim ? { sim: true, simLabel: DEMO_SIM_LABEL } : {}),

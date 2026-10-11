@@ -1,7 +1,7 @@
 import type { Account, Kline, Position, Ticker } from "../types.js";
 import { getIgReadBudget, getIgHistoryBlockedUntil, withIgPriority, withoutIgPriority, IG_HISTORY_RATE_ERROR, IG_HISTORY_BLOCK_MS, IG_ORDER_READ_NEED, type IgEnvironment } from "../integrations/igConnection.js";
 import { igMarketData, type IgQuote } from "./igMarketData.js";
-import { createTiingoBars, TIINGO_AGENT_LABEL, type TiingoFreq, type TiingoBarsResult } from "./tiingoIntraday.js";
+import { createTiingoBars, tiingoBarsShared, TIINGO_AGENT_LABEL, type TiingoFreq, type TiingoBarsResult } from "./tiingoIntraday.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Agenternas marknadsdata för IG-instrument (Mike 2026-10-11).
@@ -274,7 +274,7 @@ export function createIgAgentData(deps: {
 }
 
 // Gemensam instans (Demo och Live). let + useIgAgentData så att testerna kan byta till mockade källor.
-export let igAgentData = createIgAgentData();
+export let igAgentData = createIgAgentData({ tiingo: tiingoBarsShared }); // delad med huvuddiagrammets Tiingo-bakgrund (samma tak)
 /** Endast tester: byt instans (t.ex. med falsk Tiingo-fetch och falsk läsbudget). */
 export function useIgAgentData(x: ReturnType<typeof createIgAgentData>): void { igAgentData = x; }
 export { TIINGO_AGENT_LABEL };

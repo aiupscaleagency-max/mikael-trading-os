@@ -578,7 +578,8 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   // Tiingo används bara av minidiagrammen: aldrig av huvuddiagram, signaler eller order
   for (const f of fs.readdirSync(path.resolve("src"), { recursive: true }) as string[]) {
     // Beslut 2026-10-11: agenternas analysverktyg (igAgentData.ts) får använda Tiingo som märkt research-reserv
-    if (!f.endsWith(".ts") || /tiingoIntraday\.ts$|igSparklines\.ts$|igAgentData\.ts$/.test(f)) continue;
+    // Beslut 2026-10-11 (Mike): huvuddiagrammets Tiingo-bakgrund (igChartBackdrop.ts) är ENDAST VISNING, se testet nedan
+    if (!f.endsWith(".ts") || /tiingoIntraday\.ts$|igSparklines\.ts$|igAgentData\.ts$|igChartBackdrop\.ts$/.test(f)) continue;
     assert.ok(!/tiingoIntraday/.test(fs.readFileSync(path.resolve("src", f), "utf8")), `${f} får inte använda Tiingo-intradag`);
   }
   // IG svarar utan ljus ("historik saknas") → reserv
@@ -623,7 +624,20 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   const importers: string[] = [];
   const walk = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walk(p); else if (/\.ts$/.test(f.name) && /tiingoIntraday/.test(fs.readFileSync(p, "utf8"))) importers.push(path.relative(path.resolve("src"), p)); } };
   walk(path.resolve("src"));
-  assert.deepEqual(importers.sort(), ["server/igAgentData.ts", "server/igSparklines.ts", "server/tiingoIntraday.ts"], "Tiingo-intradag används bara för minidiagram och agenternas analys");
+  assert.deepEqual(importers.sort(), ["server/igAgentData.ts", "server/igChartBackdrop.ts", "server/igSparklines.ts", "server/tiingoIntraday.ts"], "Tiingo-intradag används bara för minidiagram, agenternas analys och huvuddiagrammets visningsbakgrund");
+  // Huvuddiagrammets Tiingo-bakgrund: bara igRoutes (klines-svaret) får importera den; aldrig order, signaler, strategier eller IG:s ljusserier
+  const backdropUsers: string[] = [];
+  const walk2 = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walk2(p); else if (/\.ts$/.test(f.name) && !/igChartBackdrop\.ts$/.test(f.name) && /import[^;]*igChartBackdrop/.test(fs.readFileSync(p, "utf8"))) backdropUsers.push(path.relative(path.resolve("src"), p)); } };
+  walk2(path.resolve("src"));
+  assert.deepEqual(backdropUsers, ["server/igRoutes.ts"], "Tiingo-bakgrunden används bara i klines-svaret");
+  {
+    const r = fs.readFileSync(path.resolve("src/server/igRoutes.ts"), "utf8");
+    // Bakgrunden skickas separat ("backdrop"); klines/forming byggs bara av IG:s serier
+    assert.match(r, /klines: closed\.map\(chartBar\), forming: forming \? chartBar\(forming\) : null/);
+    assert.ok(!/backdrop[^\n]*(setRestQuote|ensureSeries|refreshHistory|onCandle|candleData)/.test(r), "Tiingo-bakgrunden skrivs aldrig in i IG:s serier");
+    const bd = fs.readFileSync(path.resolve("src/server/igChartBackdrop.ts"), "utf8");
+    assert.ok(!/igMarketData|signalEngine|strategyRunner|igOrders|orderGate/.test(bd.replace(/^\s*\/\/.*$/gm, "")), "igChartBackdrop rör aldrig IG:s serier, signaler, strategier eller order");
+  }
   // Agenternas Tiingo-väg når aldrig order, signaler, strategier, IG:s ljusserier eller huvuddiagrammet
   for (const f of ["integrations/igOrders.ts", "server/orderGate.ts", "brokers/ig.ts", "server/signalEngine.ts", "server/strategyRunner.ts", "server/igMarketData.ts", "server/igRoutes.ts", "server/api.ts", "server/candleSource.ts"]) {
     const src = fs.readFileSync(path.resolve("src", f), "utf8");
