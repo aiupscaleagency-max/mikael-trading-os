@@ -96,6 +96,11 @@ export function igPlainRate(price: number | null | undefined, epic: string): num
   if (PIP4_QUOTES.has(quote)) return price >= 1000 ? price * 0.0001 : null;
   return null;
 }
+/** Diagrammets reservhistorik följer den faktiska kvotens enhet, aldrig enbart scalingFactor. */
+export function igBackdropScale(price: number | null, epic: string): number {
+  const plain = igPlainRate(price, epic);
+  return plain !== null && price !== null ? Math.round(price / plain) : 1;
+}
 function quoteView(q: IgQuote | null, epic: string, env: IgEnvironment = igMarketData.getActiveEnv()) {
   const ds = igMarketData.dataState(epic, env);
   const plain = q ? { plainRate: igPlainRate(q.mid, epic) } : {};
@@ -472,7 +477,7 @@ export async function handleIgRoutes(
         const q = igMarketData.quote(epic, src);
         const mid = q && Number.isFinite(q.bid) && Number.isFinite(q.offer) ? (Number(q.bid) + Number(q.offer)) / 2 : null;
         backdrop = await igChartBackdrop.get({ env: src, epic, name: (meta.name as string) ?? igMarketData.nameOf(epic, src), interval: iv, limit,
-          igBars: closed.length, historyError, igFirstOpenMs: closed[0]?.openTime ?? forming?.openTime ?? null, livePrice: mid });
+          igBars: closed.length, historyError, igFirstOpenMs: closed[0]?.openTime ?? forming?.openTime ?? null, livePrice: mid, scale: igBackdropScale(mid, epic) });
       } catch { backdrop = null; }
       send(res, 200, {
         env, label: envLabel(env), symbol: epic, epic, interval: iv, ...meta, name: (meta.name as string) ?? igMarketData.nameOf(epic, env),
