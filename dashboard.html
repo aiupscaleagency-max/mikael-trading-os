@@ -4762,8 +4762,9 @@ function fillSymbols(keep){
 // (meny, Alla par Diagram/KÖP/SÄLJ, bevakningslistan, Valutapar, tips) går via loadCandles, som anropar
 // syncOrderPanelsToChart. Åt andra hållet: val i Snabb-tradens par/horisont byter diagrammet.
 // Gäller bara den här fliken: inget sparas eller synkas till andra fönster. busy-flaggan hindrar loopar.
-const CHART_TF_SEC = {"1m":60,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400};
-const ORDER_SYNC = { sym:null, tf:null, busy:false };
+// var (inte const): loadCandles står längre upp i samma skript och får aldrig träffa en ännu odeklarerad const
+var CHART_TF_SEC = {"1m":60,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400};
+var ORDER_SYNC = { sym:null, tf:null, busy:false };
 function syncOrderPanelsToChart(sym, tf){
   if(ORDER_SYNC.busy) return;
   ORDER_SYNC.busy = true;
