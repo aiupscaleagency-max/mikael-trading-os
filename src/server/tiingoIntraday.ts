@@ -52,12 +52,10 @@ const CRYPTO_BY_EPIC: Record<string, string> = {
 };
 const FIAT = new Set(["AUD", "BRL", "CAD", "CHF", "CNH", "CZK", "DKK", "EUR", "GBP", "HKD", "HUF", "IDR", "ILS", "INR", "JPY", "KRW", "MXN", "NOK", "NZD", "PHP", "PLN", "SEK", "SGD", "THB", "TRY", "TWD", "USD", "ZAR"]);
 
-/** Kvotvaluta ur IG:s kontraktsangivelse: "(E1)" = euro, "($1)" = dollar, "(£1)" = pund. */
-function quoteFromContract(name: string): string {
-  const m = /\(([^)]*)\)/.exec(name);
-  const c = (m?.[1] ?? "").trim();
-  if (/^E\d/.test(c) || c.startsWith("€")) return "eur";
-  if (c.startsWith("£")) return "gbp";
+/** Kvotvaluta för PRISET ur IG:s kontraktsangivelse. IG:s krypto-kontrakt "(E1)"/"(E0.1)" och "(£1)" anger bara
+ *  valutan per punkt (vinst/förlust i euro/pund); själva priset är samma USD-kurs som "($1)" (kontrollerat i drift
+ *  2026-10-11: Bitcoin (E1) = Bitcoin ($1), Ether (E1) = Ether ($1)). Därför jämförs alltid mot USD-tickern. */
+function quoteFromContract(_name: string): string {
   return "usd";
 }
 
@@ -88,10 +86,9 @@ export function tiingoTickerFor(epic: string, name?: string | null): TiingoTicke
   const parts = /^[A-Z]{2}\.D\.([A-Z0-9]+)\.([A-Z0-9]+)\./.exec(epic);
   const seg = parts?.[1] ?? "";
   // IG:s euro-kontrakt för krypto (CFE, CNE, CNEM = "(E1)"/"(E0.1)") prissätts i euro
-  const eurContract = /^(CFE|CNE|CNEM)$/.test(parts?.[2] ?? "");
-  if (CRYPTO_BY_EPIC[seg]) return { ticker: CRYPTO_BY_EPIC[seg] + (eurContract ? "eur" : "usd"), kind: "crypto" };
+  if (CRYPTO_BY_EPIC[seg]) return { ticker: CRYPTO_BY_EPIC[seg] + "usd", kind: "crypto" }; // euro-kontrakt prissätts i USD (se quoteFromContract)
   const m = /^([A-Z]+?)(USD|EUR|XBT)$/.exec(seg);
-  if (m && CRYPTO_BY_EPIC[m[1]!] && !FIAT.has(m[1]!)) return { ticker: CRYPTO_BY_EPIC[m[1]!] + (m[2] === "XBT" ? "btc" : eurContract ? "eur" : m[2]!.toLowerCase()), kind: "crypto" };
+  if (m && CRYPTO_BY_EPIC[m[1]!] && !FIAT.has(m[1]!)) return { ticker: CRYPTO_BY_EPIC[m[1]!] + (m[2] === "XBT" ? "btc" : m[2]!.toLowerCase()), kind: "crypto" };
   if (/^[A-Z]{6}$/.test(seg) && FIAT.has(seg.slice(0, 3)) && FIAT.has(seg.slice(3))) return { ticker: seg.toLowerCase(), kind: "fx" };
   return null;
 }
