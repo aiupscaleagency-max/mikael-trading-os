@@ -5,8 +5,10 @@ import type { IgEnvironment } from "./igConnection.js";
 //
 //  Medan en analys eller en agentsessions omgång pågår i en miljö pausas
 //  bakgrundens IG-läsningar för just den miljön: katalogkrypningen, minidiagrammens
-//  IG-hämtningar, bevakningslistans REST-reserv och Demo-simuleringens förhandskoll.
+//  IG-hämtningar (och deras nya Tiingo-anrop) och bevakningslistans REST-reserv.
 //  Då får agenterna läsbudgeten. Orderavstämning, tidsstängningar och TP/SL pausas ALDRIG.
+//  Demo-simuleringen pausas medvetet inte: dess varv är TP/SL för öppna simulerade positioner,
+//  läser strömpriset först och REST bara utan strömpris (och alltid utan orderns förtur).
 //
 //  Flaggan släpps i finally av den som tog den; som extra skydd löper den ut av sig själv
 //  efter ANALYSIS_GATE_MAX_MS, så en hängd tur aldrig fryser katalogen för gott.

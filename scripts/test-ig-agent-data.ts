@@ -174,6 +174,52 @@ const ctx = { broker, brokers: { ig: broker }, risk: {} as any, config: {} as an
   ok("Tiingo HTTP 400 på samlat anrop: tickers provas en och en, ett okänt par förgiftar inte resten");
 }
 
+// ══ 6b. Glesa minutljus (tunn marknad) och 400 med förhandshämtningar ══
+{
+  const base = Math.floor(clock / 900_000) * 900_000 - 10 * 900_000;
+  const mins = Array.from({ length: 150 }, (_, i) => ({ openTime: base + i * 60_000, open: 1, high: 1.1, low: 0.9, close: 1 + i / 1000, volume: 1 }))
+    .filter((_, i) => i % 15 !== 7); // en saknad minut i varje 15-minutersgrupp
+  const k15 = AD.aggregateBars(mins, 60_000, 900_000, clock);
+  assert.equal(k15.length, 10, "en saknad minut fäller inte 15m-ljuset (≥ 80 % av delljusen räcker)");
+  const sparse = mins.filter((_, i) => i % 3 === 0); // bara var tredje minut: för glest
+  assert.equal(AD.aggregateBars(sparse, 60_000, 900_000, clock).length, 0, "för glesa grupper hoppas över");
+  // HTTP 400 på ett samlat anrop med förhandshämtade tickers: bara de efterfrågade provas en och en
+  const u: string[] = [];
+  const th = createTiingoBars({ key: () => "k", now, batchMs: 0, fetch: (async (url: string) => {
+    u.push(url); const list = (new URL(url).searchParams.get("tickers") ?? "").split(",");
+    if (list.length > 1) return { ok: false, status: 400, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => [{ ticker: list[0], priceData: tiingoRows(10, 200) }] };
+  }) as any });
+  th.hint(["CS.D.ETHUSD.CFD.IP", "CS.D.LTCUSD.CFD.IP", "CS.D.XRPUSD.CFD.IP", "CS.D.DOTUSD.CFD.IP"].map((epic) => ({ epic, name: null })));
+  const r = await th.bars("CS.D.SOLUSD.CFD.IP", "Solana ($1)", "1min");
+  assert.ok(r.bars.length > 100); assert.equal(u.length, 2, "ett samlat anrop + bara den efterfrågade tickern, förhandshämtningarna släpps");
+  assert.match(u[0]!, /tickers=solusd%2Cethusd/, "förhandshämtningar följer med i det samlade anropet");
+  ok("Glesa minutljus ger ändå 15m (≥ 80 %); HTTP 400 med förhandshämtningar kostar bara de efterfrågade anropen");
+}
+
+// ══ 6c. Risk-analytikern med IG:s läsgräns: kör hela analytikern (LLM-svaret mockat), ingen krasch, "cachad" i underlaget ══
+{
+  delete process.env.AI_GATEWAY_API_KEY; delete process.env.OPENROUTER_API_KEY; process.env.ANTHROPIC_API_KEY = "test-ingen-riktig-nyckel";
+  const bodies: string[] = [];
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = typeof input === "string" ? input : input?.url ?? String(input);
+    if (!/anthropic\.com/.test(url)) throw new Error("Nätverk förbjudet i testerna");
+    bodies.push(String(init?.body ?? ""));
+    return new Response(JSON.stringify({ id: "msg_test", type: "message", role: "assistant", model: "claude-haiku-4-5-20251001", stop_reason: "end_turn", stop_sequence: null,
+      content: [{ type: "text", text: JSON.stringify({ portfolioHeat: 5, overallRisk: "moderate", warnings: [], recommendation: "ok", suggestedPositionSize: 100 }) }], usage: { input_tokens: 10, output_tokens: 10 } }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    positionsMode = "limit"; clock += 61_000;
+    const { runRiskAnalyst } = await import("../src/orchestrator/advancedSpecialists.js");
+    const rep = await runRiskAnalyst("test-ingen-riktig-nyckel", broker, { maxPositionUsd: 100, maxTotalExposureUsd: 500, maxDailyLossUsd: 50, maxOpenPositions: 3 });
+    assert.equal(rep.role, "risk_analyst"); assert.equal(rep.riskLevel, "medium");
+    assert.equal(bodies.length, 1, "analytikern nådde LLM-steget i stället för att krascha på IG:s läsgräns");
+    assert.match(bodies[0]!, /cachad/, "underlaget säger att positionerna/saldot är cachade");
+    ok("Risk-analytikern vid läsgräns: ingen krasch, kör på cachat saldo/positioner märkta cachad (LLM-svaret mockat)");
+  } finally { globalThis.fetch = prevFetch; positionsMode = "ok"; }
+}
+
 // ══ 7. Hannas tips: rang per instrument även vid HOLD ══
 {
   const { parseHeadTips, sortTips } = await import("../src/orchestrator/headTips.js");

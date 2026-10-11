@@ -248,6 +248,8 @@ export const TIINGO_BARS_STALE_MS: Record<TiingoFreq, number> = { "1min": 30 * 6
 /** Hur långt bakåt varje upplösning hämtas (räcker för ca 150 ljus i de sammanslagna tidsramarna) */
 const TIINGO_BARS_LOOKBACK_MS: Record<TiingoFreq, number> = { "1min": 40 * 3_600_000, "1hour": 26 * 86_400_000, "1day": 320 * 86_400_000 };
 export const TIINGO_HINT_TTL_MS = 5 * 60_000;
+/** Högst så många förhandshämtade tickers per samlat anrop (håller svaret litet inom tidsgränsen) */
+export const TIINGO_HINT_MAX = 8;
 export const tiingoAgentMaxPerHour = () => Math.max(1, Number(process.env.TIINGO_AGENT_MAX_PER_HOUR) || 20);
 
 function toBars(rows: unknown, freq: TiingoFreq, now: number): TiingoBar[] {
@@ -317,14 +319,16 @@ export function createTiingoBars(deps: {
   }
   function store(t: string, f: TiingoFreq, r: TiingoBarsResult): TiingoBarsResult { cache.set(ck(t, f), r); return r; }
 
-  async function fetchCryptoPart(f: TiingoFreq, part: string[], token: string): Promise<Map<string, TiingoBarsResult>> {
+  /** own = tickers som någon väntar på; övriga i part är förhandshämtningar (släpps vid fel, kostar aldrig extra anrop). */
+  async function fetchCryptoPart(f: TiingoFreq, part: string[], token: string, own: string[] = part): Promise<Map<string, TiingoBarsResult>> {
     const out = new Map<string, TiingoBarsResult>();
     const qs = new URLSearchParams({ tickers: part.join(","), startDate: startDate(f), resampleFreq: f }).toString();
     const { data, status, note } = await request(`https://api.tiingo.com/tiingo/crypto/prices?${qs}`, token);
     if (note) {
       // Ett okänt par kan få Tiingo att avvisa hela det samlade anropet: prova då en och en (inom taket)
       if (status === 400 && part.length > 1) {
-        for (const t of part) {
+        // Bara de efterfrågade tickers provas en och en; förhandshämtningarna släpps så att taket inte äts upp
+        for (const t of own) {
           const why = capReason();
           if (why) { out.set(t, fallback(t, f, why)); continue; }
           for (const [k, v] of await fetchCryptoPart(f, [t], token)) out.set(k, v);
@@ -356,12 +360,12 @@ export function createTiingoBars(deps: {
     const must = [...batch.keys()];
     for (let i = 0; i < must.length; i += TIINGO_BATCH_MAX) {
       const own = must.slice(i, i + TIINGO_BATCH_MAX);
-      const extra = i === 0 ? wanted.filter((t) => !batch.has(t)).slice(0, TIINGO_BATCH_MAX - own.length) : [];
+      const extra = i === 0 ? wanted.filter((t) => !batch.has(t)).slice(0, Math.max(0, Math.min(TIINGO_HINT_MAX, TIINGO_BATCH_MAX - own.length))) : [];
       const part = [...own, ...extra];
       const token = key();
       const why = token ? capReason() : TIINGO_NO_KEY;
       if (why || !token) { for (const t of own) resolve(t, fallback(t, f, why ?? TIINGO_NO_KEY)); continue; }
-      const res = await fetchCryptoPart(f, part, token);
+      const res = await fetchCryptoPart(f, part, token, own);
       for (const t of own) resolve(t, res.get(t) ?? fallback(t, f, "Tiingo svarade inte för paret"));
     }
   }

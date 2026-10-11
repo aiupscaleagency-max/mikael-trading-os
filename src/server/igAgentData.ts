@@ -47,7 +47,9 @@ type Bar = { openTime: number; closeTime?: number; open: number; high: number; l
 export function aggregateBars(bars: Bar[], srcMs: number, dstMs: number, now: number): Kline[] {
   if (srcMs === dstMs) return bars.filter((b) => b.openTime + dstMs <= now).map((b) => ({ openTime: b.openTime, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume ?? 0, closeTime: b.openTime + dstMs }));
   if (dstMs % srcMs !== 0) return [];
-  const need = dstMs / srcMs, groups = new Map<number, Bar[]>();
+  // Tunna marknader (t.ex. små altcoins) saknar ibland en minut: en grupp räknas om minst 80 % av delljusen finns.
+  // Open från första befintliga delljuset, close från sista; inget hittas på.
+  const need = dstMs / srcMs, minParts = Math.max(1, Math.ceil(need * 0.8)), groups = new Map<number, Bar[]>();
   for (const b of bars) {
     const g = Math.floor(b.openTime / dstMs) * dstMs;
     const list = groups.get(g) ?? [];
@@ -55,7 +57,7 @@ export function aggregateBars(bars: Bar[], srcMs: number, dstMs: number, now: nu
   }
   const out: Kline[] = [];
   for (const [g, list] of [...groups.entries()].sort((a, b) => a[0] - b[0])) {
-    if (list.length !== need || g + dstMs > now) continue; // ofullständig eller ännu inte stängd: hoppas över
+    if (list.length < minParts || list.length > need || g + dstMs > now) continue; // för glest, dubbletter eller ännu inte stängd: hoppas över
     list.sort((a, b) => a.openTime - b.openTime);
     out.push({ openTime: g, open: list[0]!.open, high: Math.max(...list.map((b) => b.high)), low: Math.min(...list.map((b) => b.low)), close: list[list.length - 1]!.close, volume: list.reduce((t, b) => t + (b.volume ?? 0), 0), closeTime: g + dstMs });
   }
@@ -199,7 +201,8 @@ export function createIgAgentData(deps: {
 
   /** Saldo: mäklarens (cachade) läsning → IG-strömmens ACCOUNT-fält. Kastar aldrig för en läsgräns. */
   async function account(env: IgEnvironment, read: () => Promise<Account>): Promise<{ account: Account | null; source: string }> {
-    try { return { account: await read(), source: "IG (konto)" }; }
+    // Analysen läser med förtur (orderreserven), en läsning per 30 s tack vare mäklarens cache
+    try { return { account: await withIgPriority(read), source: "IG (konto)" }; }
     catch (e) {
       const a = streamAccount(env);
       if (a && (a.balance !== null || a.available !== null)) {
@@ -214,7 +217,10 @@ export function createIgAgentData(deps: {
 
   /** Positioner: färsk/cachad läsning → senast kända (märkt cachad). Kastar aldrig för en läsgräns. */
   async function positions(read: () => Promise<Position[]>, lastKnown: (() => { at: number; positions: Position[] } | null) | null): Promise<{ positions: Position[] | null; source: string }> {
-    try { return { positions: await read(), source: "IG (positioner)" }; }
+    // Med förtur: mäklarens cache är singleflight och 30 s, så det blir högst ungefär en läsning per tur.
+    // Utan förtur gav en fullt upptagen bakgrundsbudget fel varje gång, och den senast kända listan
+    // nollställs när IG-sessionen förnyas (varje timme), så cachen räcker inte ensam.
+    try { return { positions: await withIgPriority(read), source: "IG (positioner)" }; }
     catch (e) {
       const c = lastKnown?.();
       if (c) return { positions: c.positions, source: `IG (cachad, ${Math.round((now() - c.at) / 1000)} s gammal)` };
