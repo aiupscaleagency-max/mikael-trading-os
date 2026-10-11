@@ -115,13 +115,33 @@ const ok = (m: string) => console.log("PASS: " + m);
   let release: () => void = () => {};
   const slow = createIgChartBackdrop({ now: () => now, waitMs: 20, tiingo: { bars: (_e: string, _n: unknown, f: any) => new Promise((res) => { release = () => res({ ticker: "ethusd", freq: f, bars: minute, at: now, note: null }); }) } as any });
   const t0 = Date.now();
-  assert.equal(await slow.get({ ...base, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null }), null);
+  const pending = await slow.get({ ...base, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null });
+  assert.equal(pending?.pending, true, "enbart väntetid ger pending så klienten kan försöka en gång till");
+  assert.equal(pending?.bars.length, 0);
   assert.ok(Date.now() - t0 < 1000, "diagrammet väntar inte på Tiingo");
   release(); await new Promise((r) => setTimeout(r, 5));
   const later = await slow.get({ ...base, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null });
   assert.ok(later && later.bars.length > 0, "nästa laddning visar bakgrunden ur cachen");
   const thr = createIgChartBackdrop({ tiingo: { bars: async () => { throw new Error("nät"); } } as any, now: () => now });
   assert.equal(await thr.get({ ...base, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null }), null);
+
+  // Samma råa Tiingo-cache får olika visningsenhet per begäran, aldrig mellan miljöerna.
+  const demoScaled = await bd.get({ ...base, env: "demo", livePrice: 20_000_000, scale: 10_000, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null });
+  assert.ok(demoScaled && demoScaled.bars.length > 0);
+  assert.equal(demoScaled.bars[0]!.open, 20_000_000);
+  const liveUnscaled = await bd.get({ ...base, scale: 1, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null });
+  assert.equal(liveUnscaled!.bars[0]!.open, 2000, "Demo får inte skala råcachen för Live");
+  const scaledOff = await bd.get({ ...base, livePrice: 22_000_000, scale: 10_000, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null });
+  assert.equal(scaledOff!.bars.length, 0); assert.match(scaledOff!.note!, /avviker/);
+
+  const { igBackdropScale } = await import("../src/server/igRoutes.js");
+  assert.equal(igBackdropScale(11201.05, "CS.D.EURUSD.CEEM.IP"), 10_000);
+  assert.equal(igBackdropScale(1.12024, "CS.D.EURUSD.CEEM.IP"), 1);
+  assert.equal(igBackdropScale(1.32, "CS.D.GBPUSD.MINI.IP"), 1, "scalingFactor 10000 betyder inte att kvoten är i punkter");
+  assert.equal(igBackdropScale(15833.2, "CS.D.USDJPY.MINI.IP"), 100);
+  assert.equal(igBackdropScale(158.332, "CS.D.USDJPY.MINI.IP"), 1);
+  assert.equal(igBackdropScale(82995, "CS.D.BITCOIN.CEEM.IP"), 1);
+  assert.equal(igBackdropScale(null, "CS.D.EURUSD.CEEM.IP"), 1);
 
   // Dashboard: Tiingo-ljusen hålls utanför STATE.candleData (indikatorer/rubrik/ström), ritas grå, märks i källraden och i CSV
   const html = fs.readFileSync(path.resolve("dashboard.html"), "utf8");
@@ -131,5 +151,52 @@ const ok = (m: string) => console.log("PASS: " + m);
   assert.match(html, /\(grå = Tiingo\)/);
   assert.match(html, /time,open,high,low,close,source/); assert.match(html, /"Tiingo \(ej IG-pris\)"\]\.join/);
   ok("Huvuddiagrammets Tiingo-bakgrund: väntar högst 1,2 s, 15 min cache, bara när IG-historik saknas, omsamplad till diagrammets intervall, före IG-ljusen, ±3 % mot IG-live, märkt och utanför signaler/indikatorer; CSV märker källan");
+}
+// ── 3. Kör huvuddiagrammets riktiga frontendkod mot svar och timers under testets kontroll ──
+{
+  const html = fs.readFileSync(path.resolve("dashboard.html"), "utf8");
+  const code = html.slice(html.indexOf("async function loadRealCandles("), html.indexOf('IG.on("quote", q=>{'));
+  let response: any, drawn: any[] = [], format: any, fits = 0, calls = 0, nextTimer = 0;
+  const timers = new Map<number, () => void>();
+  const handlers = new Map<string, () => void>();
+  const bar = (time: number, price: number) => ({ time, open: price, high: price, low: price, close: price });
+  const ctx: any = {
+    STATE: { symbol: "EUR", tf: "1h", candleData: {}, livePrices: {} }, IG_TF: { "1h": 1 },
+    igMain: { key: null, loadId: 0, backdropRetryId: -1 },
+    IG: { st: { env: "live" }, isEpic: () => true, klines: async () => { calls++; return response; }, want: () => {}, on: (event: string, fn: () => void) => handlers.set(event, fn) },
+    candleSeries: { setData: (data: any[]) => { drawn = data; }, data: () => drawn, applyOptions: (o: any) => { format = o.priceFormat; } },
+    chart: { timeScale: () => ({ fitContent: () => fits++ }) },
+    setTimeout: (fn: () => void, ms: number) => { assert.equal(ms, 11000, "återförsöket väntar ut Tiingos 10 s timeout"); timers.set(++nextTimer, fn); return nextTimer; },
+    clearTimeout: (id: number) => timers.delete(id),
+    showIgSource: () => {}, clearPriceHeader: () => {}, applyIndicators: () => {}, updatePriceHeader: () => {}, refreshIgSymbols: () => {},
+  };
+  vm.createContext(ctx); vm.runInContext(code, ctx);
+  const envStart = html.indexOf('IG.on("env", ()=>{');
+  vm.runInContext(html.slice(envStart, html.indexOf("function bybitChartLive()", envStart)), ctx);
+  response = { env: "live", klines: [], backdrop: { bars: [bar(1, 1.120155), bar(2, 1.120165)] } };
+  await ctx.loadRealCandles("EUR", "1h");
+  assert.equal(format.precision, 6); assert.equal(fits, 1); assert.equal(drawn.length, 2);
+  assert.equal(drawn[0].color, "#4b5563"); assert.equal(ctx.STATE.candleData["EUR|1h"].length, 0);
+  await ctx.loadRealCandles("EUR", "1h"); assert.equal(fits, 1, "uppdatering behåller zoom");
+  response = { env: "live", klines: [], backdrop: { bars: [], pending: true } };
+  await ctx.loadRealCandles("EUR", "1h"); await ctx.loadRealCandles("EUR", "1h");
+  assert.equal(nextTimer, 1, "polling lägger inte upp flera återförsök");
+  const retry = timers.get(1)!; timers.delete(1); retry(); await new Promise(setImmediate);
+  assert.equal(nextTimer, 1, "återförsöket får inte starta en ny timerloop");
+  assert.equal(calls, 5);
+  // Ett svar som redan är på väg får inte överleva Live → Demo → Live.
+  let release: (d: any) => void = () => {};
+  response = new Promise((resolve) => { release = resolve; });
+  const old = ctx.loadRealCandles("EUR", "1h");
+  ctx.IG.st.env = "demo"; handlers.get("env")!(); ctx.IG.st.env = "live"; handlers.get("env")!();
+  release({ env: "live", klines: [bar(3, 9999)] }); await old;
+  assert.equal(drawn.length, 0, "gammalt miljösvar återfyller inte det tömda diagrammet");
+  const before = calls; retry(); await new Promise(setImmediate); assert.equal(calls, before, "gammal timer avvisas av generationen");
+  response = { env: "live", klines: [bar(3, 0.00000123)], backdrop: { bars: [bar(1, 0.00000122), bar(3, 9999)] } };
+  await ctx.loadRealCandles("EUR", "1h");
+  assert.equal(format.precision, 8); assert.equal(drawn.length, 2); assert.equal(drawn[1].close, 0.00000123, "IG vinner vid överlapp");
+  response = { env: "live", klines: [], backdrop: { bars: [], note: "Tiingo kunde inte nås" } };
+  await ctx.loadRealCandles("EUR", "1h"); assert.equal(nextTimer, 1, "leverantörsfel startar ingen retry");
+  ok("Huvuddiagram: prisprecision, historik/IG-separation, zoom, ett återförsök och generationsskydd vid miljöbyte");
 }
 console.log("Diagram/ordersynk: alla tester godkända (endast mocks, inga nätverksanrop)");

@@ -4429,6 +4429,8 @@ function genCandles(sym, tf, n=300){ return []; }
 
 function loadCandles(sym, tf){
   syncOrderPanelsToChart(sym, tf); // orderpanelerna följer huvuddiagrammet (instrument + intervall)
+  igMain.loadId++; clearTimeout(igMain.backdropTimer);
+  igMain.hist = null; igMain.backdrop = null; igMain.backdropNote = null;
   const key = sym+"|"+tf;
   // Byte av instrument: diagrammet töms direkt så ett annat instruments ljus aldrig blir kvar
   const data = STATE.candleData[key] || [];
@@ -4446,7 +4448,7 @@ function clearPriceHeader(){
 // kvoter (bid/offer) och ljus (1m/5m/1h). Webbläsaren pratar aldrig direkt
 // med IG. Historikfel → namn/kvot visas med "historik saknas", inga ljus hittas på.
 const IG_TF = {"1m":1,"5m":1,"15m":1,"30m":1,"1h":1,"4h":1,"1d":1};
-const igMain = { key:null, lastInd:0, hist:null, lastSrc:0, backdrop:null, backdropNote:null };
+const igMain = { key:null, lastInd:0, hist:null, lastSrc:0, backdrop:null, backdropNote:null, loadId:0, backdropTimer:null, backdropRetryId:-1 };
 function setSourceIndicator(html){ const ind = document.getElementById("data-source-indicator"); if(ind) ind.innerHTML = html; }
 function showIgSource(){
   if(!STATE.symbol){ setSourceIndicator('<span style="color:var(--label)">○</span> Välj ett IG-instrument'); return; }
@@ -4456,7 +4458,8 @@ function showIgSource(){
     + (igMain.backdrop ? ' <span style="color:#9ca3af" title="Grå ljus = Tiingo, bara visning. Signaler, strategier och order använder bara IG-pris.">· ' + IG.esc(igMain.backdrop.label) + ' (grå = Tiingo)' + (igMain.backdrop.note ? ' · ' + IG.esc(igMain.backdrop.note) : '') + '</span>'
       : igMain.backdropNote ? ' <span style="color:var(--label)" title="' + IG.esc(igMain.backdropNote) + '">· ingen Tiingo-bakgrund</span>' : ''));
 }
-async function loadRealCandles(sym, tf){
+async function loadRealCandles(sym, tf, loadId = igMain.loadId){
+  const env = IG.st.env;
   if(!IG.isEpic(sym)){ showIgSource(); return; }
   if(!IG_TF[tf]){
     candleSeries.setData([]); clearPriceHeader();
@@ -4464,7 +4467,8 @@ async function loadRealCandles(sym, tf){
     return;
   }
   let d;
-  try{ d = await IG.klines(sym, tf, 300); }catch(e){ setSourceIndicator('<span style="color:#f85149">●</span> frånkopplat · ' + IG.esc(e.message)); return; }
+  try{ d = await IG.klines(sym, tf, 300); }catch(e){ if(loadId === igMain.loadId && env === IG.st.env) setSourceIndicator('<span style="color:#f85149">●</span> frånkopplat · ' + IG.esc(e.message)); return; }
+  if(loadId !== igMain.loadId || env !== IG.st.env) return; // även Demo → Live → Demo avvisar gamla svar
   if(STATE.symbol !== sym || STATE.tf !== tf) return; // användaren hann byta
   if(d.env && d.env !== IG.st.env) return; // fel miljö: visas aldrig
   const bars = (d.klines || []).map(b=>({time:b.time, open:b.open, high:b.high, low:b.low, close:b.close, volume:b.volume || 0}));
@@ -4474,8 +4478,26 @@ async function loadRealCandles(sym, tf){
   const bd = (d.backdrop && Array.isArray(d.backdrop.bars)) ? d.backdrop.bars.filter(b=>!bars.length || b.time < bars[0].time) : [];
   igMain.backdrop = bd.length ? { label: d.backdrop.label || "Tiingo-historik (ej IG-pris) + IG-live", n: bd.length } : null;
   igMain.backdropNote = !bd.length && d.backdrop && d.backdrop.note ? d.backdrop.note : null;
+  // Sen historik hamnar i serverns cache. Vänta ut Tiingos 10 s timeout, högst ett återförsök.
+  if(d.backdrop && d.backdrop.pending && igMain.backdropRetryId !== loadId){
+    igMain.backdropRetryId = loadId;
+    clearTimeout(igMain.backdropTimer);
+    igMain.backdropTimer = setTimeout(()=>{
+      if(loadId === igMain.loadId && env === IG.st.env && STATE.symbol === sym && STATE.tf === tf) loadRealCandles(sym, tf, loadId);
+    }, 11000);
+  }
+  // Behåll prisernas decimaler även för forex och små kryptopriser.
+  const visibleBars = [...bd, ...bars];
+  const precision = visibleBars.reduce((digits, b)=>Math.max(digits, ...[b.open,b.high,b.low,b.close].map(p=>{
+    const fraction = Number(p).toFixed(8).replace(/0+$/, "").split(".")[1];
+    return fraction ? fraction.length : 0;
+  })), 2);
+  candleSeries.applyOptions({priceFormat:{type:"price", precision, minMove:10 ** -precision}});
+  const fitHistory = igMain.key !== sym+"|"+tf || !candleSeries.data().length;
   candleSeries.setData([...bd.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close,color:"#4b5563",wickColor:"#6b7280",borderColor:"#6b7280"})),
     ...bars.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close}))]);
+  // Visa hela historiken vid första laddning/byte, men behåll zoom vid uppdatering.
+  if(fitHistory && visibleBars.length) chart.timeScale().fitContent();
   if(bars.length){ applyIndicators(bars); updatePriceHeader(bars); }
   else { clearPriceHeader(); if(d.quote && d.quote.mid != null) document.getElementById("cur-price").textContent = IG.px(d.quote.mid) + IG.plain(d.quote); }
   if(d.quote && d.quote.mid != null) STATE.livePrices[sym] = d.quote.mid;
@@ -4503,6 +4525,8 @@ IG.on("candle", c=>{
 });
 IG.on("env", ()=>{
   // Miljöbyte (Demo ↔ Live): allt gammalt bort, aldrig den andra miljöns priser
+  igMain.loadId++; clearTimeout(igMain.backdropTimer);
+  igMain.key = null; igMain.hist = null; igMain.backdrop = null; igMain.backdropNote = null;
   STATE.candleData = {}; STATE.livePrices = {};
   if(candleSeries) candleSeries.setData([]);
   clearPriceHeader();

@@ -23,6 +23,7 @@ const FREQ: Record<string, TiingoFreq> = { "1m": "1min", "5m": "1min", "15m": "1
 const FREQ_MS: Record<TiingoFreq, number> = { "1min": 60e3, "1hour": 3600e3, "1day": 86400e3 };
 /** Klines-svaret väntar högst så här länge på Tiingo; annars skickas diagrammet utan bakgrund (den kommer vid nästa laddning) */
 export const CHART_BACKDROP_WAIT_MS = 1200;
+const PENDING = Symbol("Tiingo-hämtning pågår");
 /** Bakgrunden är bara historik bakom IG-ljusen: samma Tiingo-svar återanvänds 15 min per ticker/upplösning.
  *  Diagrammet laddas om var 30:e s när strömmen saknas; utan denna cache skulle det äta agenternas Tiingo-tak (20/h). */
 export const CHART_BACKDROP_TTL_MS = 15 * 60_000;
@@ -32,6 +33,8 @@ export interface ChartBackdrop {
   /** Diagramljus (tid i sekunder, som /api/market/klines). Bara ljus FÖRE första IG-ljuset. */
   bars: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>;
   note: string | null; deviationPct: number | null; cached: boolean;
+  /** Hämtningen fortsätter i bakgrunden; klienten får försöka igen en gång. */
+  pending?: boolean;
 }
 
 export function createIgChartBackdrop(deps: {
@@ -46,7 +49,7 @@ export function createIgChartBackdrop(deps: {
   const cache = new Map<string, { at: number; t: TiingoBarsResult }>();   // "epic|freq"
   const inflight = new Map<string, Promise<TiingoBarsResult | null>>();
   /** Tiingo-ljus för EPIC/upplösning: cache (15 min) → pågående hämtning → ny hämtning. Väntar högst waitMs. */
-  async function source(epic: string, name: string | null, f: TiingoFreq): Promise<TiingoBarsResult | null> {
+  async function source(epic: string, name: string | null, f: TiingoFreq): Promise<TiingoBarsResult | null | typeof PENDING> {
     const k = `${epic}|${f}`, hit = cache.get(k);
     if (hit && now() - hit.at < CHART_BACKDROP_TTL_MS) return hit.t;
     let job = inflight.get(k);
@@ -57,7 +60,7 @@ export function createIgChartBackdrop(deps: {
     }
     // Hinner Tiingo inte svara: inget väntande diagram; svaret hamnar i cachen och visas vid nästa laddning
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const late = new Promise<null>((res) => { timer = setTimeout(() => res(null), waitMs); });
+    const late = new Promise<typeof PENDING>((res) => { timer = setTimeout(() => res(PENDING), waitMs); });
     try { return await Promise.race([job, late]); } finally { clearTimeout(timer); }
   }
   /**
@@ -65,16 +68,22 @@ export function createIgChartBackdrop(deps: {
    * igFirstOpenMs = första IG-ljusets öppningstid (ms) eller null; livePrice = IG:s mittkurs (för rimlighetskontroll).
    */
   async function get(args: { env: IgEnvironment; epic: string; name: string | null; interval: string; limit: number;
-    igBars: number; historyError: string | null; igFirstOpenMs: number | null; livePrice: number | null }): Promise<ChartBackdrop | null> {
+    igBars: number; historyError: string | null; igFirstOpenMs: number | null; livePrice: number | null;
+    /** Endast visning: om IG anger forexkvoten i punkter skalas Tiingo till samma enhet. */
+    scale?: number }): Promise<ChartBackdrop | null> {
     if (!tiingo) return null;
     // Bara när IG inte kan fylla diagrammet: historikfel eller för få stängda IG-ljus
     if (!args.historyError && args.igBars >= CHART_BACKDROP_MIN_IG_BARS) return null;
     const f = FREQ[args.interval], dst = IV_MS[args.interval];
     if (!f || !dst) return null;
     const t = await source(args.epic, args.name, f);
+    if (t === PENDING) return { source: "tiingo", label: CHART_BACKDROP_LABEL, ticker: null, bars: [], note: "Tiingo-historik hämtas", deviationPct: null, cached: false, pending: true };
     if (!t) return null;
     if (!t.bars.length) return { source: "tiingo", label: CHART_BACKDROP_LABEL, ticker: t.ticker, bars: [], note: t.note ?? "Tiingo saknar ljus", deviationPct: null, cached: !!t.cached };
     let k = aggregateBars(t.bars, FREQ_MS[f], dst, now());
+    // Råcachen hålls orörd: Demo och Live kan ha olika prisenhet för samma EPIC.
+    const scale = typeof args.scale === "number" && Number.isFinite(args.scale) && args.scale > 0 ? args.scale : 1;
+    if (scale !== 1) k = k.map((b) => ({ ...b, open: b.open * scale, high: b.high * scale, low: b.low * scale, close: b.close * scale }));
     if (args.igFirstOpenMs !== null) k = k.filter((b) => b.openTime < args.igFirstOpenMs!); // IG-ljusen vinner där de finns
     k = k.slice(-args.limit);
     let deviationPct: number | null = null;
