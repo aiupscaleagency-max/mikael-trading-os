@@ -467,6 +467,11 @@ async function main(): Promise<void> {
       try { igAgentData.hint(env, (sessions.state(env).session?.items ?? []).filter((i) => i.status === "väntar").map((i) => i.epic).slice(0, 20)); } catch { /* bara en optimering */ }
       const out: { jevStopped?: { symbol: string; why: string }[] } = {};
       try { await runOnce(brokers, engines, instruction, true, ctx.scheduled, epics, out); }
+      catch (err) {
+        // Sessionskön fångar felet, men den globala analysstatusen måste också avslutas.
+        if (getAnalysis()?.status === "running") analysisEnd({ status: "failed", reason: "Agentsessionens analysomgång misslyckades. Se resultatet i sessionskön." });
+        throw err;
+      }
       finally { setSessionAnalysisInterval(null); setNotesRunId(null); }
       const a = getAnalysis();
       if (a?.status === "running") analysisEnd({ status: "stopped", reason: out.jevStopped?.length === epics.length ? "JEV stoppade alla instrument i omgången" : "Omgången kördes inte (kill switch eller ingen mäklare)" });

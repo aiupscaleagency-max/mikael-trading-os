@@ -16,3 +16,10 @@
 - Reviewer granskade och tre isolerade fixtures passerade, inklusive åtta IGS-kontroller. TypeScript, 28 skript och hela test:ig passerade. Gammal popup-testassertion uppdaterad till befintligt prefill-flöde utan direktorder.
 - JEV kunde inte köras vid review (HTTP 402); befintlig modell/routing bevarad.
 - Browser bekräftar rätt iframe till :9443 och uppdaterad frontend. Full visuell verifiering och faktisk IG-orderlivscykel återstår; inga order, kontobyten eller botomstarter utförda i verifieringen. ProRealTime-inbäddning ej verifierad.
+
+## 2026-10-12 — fastnad sessionsanalys och okända resultat
+- Verklig browser visade avbruten session men global analys fortfarande pågår. runBatch saknade analysisEnd vid kastat fel: catch avslutar endast running som failed och kastar originalfelet vidare; finally bevarad.
+- Fyra isolerade fel-/städkontroller passerar, reviewer godkänner. TypeScript, dashboardskript och hela test:ig passerade igen.
+- Resultatrutorna visar okänt/inte verifierat vid d.error, aldrig falskt nollantal positioner eller nollresultat.
+- Backendfixen är inte aktiverad i körande process. Handoff §5 kräver att Mike gör omstart när riktiga pengar är upplåsta.
+- Verklig Demo-quote EURUSD CEEM visar misstänkt orimlig marginal; reviewer belägger motsägelse mellan kurs-/punktnotation i igRules och UI. Exakt rättning väntar på verifierad instrumentmetadata och FX-notation; ingen blind division infördes.

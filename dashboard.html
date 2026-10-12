@@ -2315,10 +2315,10 @@ body.app-state-onboard .fc-panel{display:none !important}
         document.getElementById("resErr").textContent = d.error ? "⚠ " + d.error + (d.partial ? " (visar det som gick att läsa)" : "") : "";
         var t = d.totals;
         document.getElementById("resTotals").innerHTML =
-          tile("Idag (stängda)", t.today)
-          + tile("Totalt stängda", t.realized, t.trades ? (t.wins + " vinst · " + t.losses + " förlust") : "inga stängda än")
-          + tile("Öppet just nu", t.unrealized, d.open.length + " positioner")
-          + tile("Allt ihop", t.realized + t.unrealized);
+          tile("Idag (stängda)", d.error ? null : t.today, d.error ? "inte fullständigt verifierat" : "")
+          + tile("Totalt stängda", d.error ? null : t.realized, d.error ? "inte fullständigt verifierat" : t.trades ? (t.wins + " vinst · " + t.losses + " förlust") : "inga stängda än")
+          + tile("Öppet just nu", d.error ? null : t.unrealized, d.error ? "positionsantal inte verifierat" : d.open.length + " positioner")
+          + tile("Allt ihop", d.error ? null : t.realized + t.unrealized);
         document.getElementById("resOpen").innerHTML = d.open.length ? d.open.map(function (o) {
           var dir = o.direction === "SELL" ? '<b style="color:' + RED + '">KORT</b>' : '<b style="color:' + GREEN + '">LÅNG</b>';
           var left = o.closeAt ? Math.max(0, Math.round((o.closeAt - Date.now()) / 60000)) : null;
