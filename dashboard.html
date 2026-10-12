@@ -2248,7 +2248,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   (function () {
     function esc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
     var GREEN = "#3fb950", RED = "#f85149", DIM = "#8b95a7";
-    var cur = "";
+    var cur = "", accountGeneration = 0, resultsRevision = 0;
     function money(v) { if (v == null || isNaN(v)) return "–"; return window.IG ? IG.money(v, cur, true) : (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2) + " " + cur; }
     function pct(v) { if (v == null || isNaN(v)) return ""; return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2).replace(".", ",") + " %"; }
     function col(v) { return v == null ? DIM : v > 0 ? GREEN : v < 0 ? RED : DIM; }
@@ -2293,18 +2293,22 @@ body.app-state-onboard .fc-panel{display:none !important}
       } catch (e) { alert("Fel: " + e.message); }
     }
     async function loadConfirmed() {
+      var generation = accountGeneration, environment = window.IG && IG.st.env;
       try {
         var d = await (await fetch("/api/timed-exits")).json();
+        if(generation !== accountGeneration || environment !== (window.IG && IG.st.env)) return;
         var el = document.getElementById("resConfirmed"); if (!el) return;
-        var list = (d.confirmed || []).filter(function (x) { return !!x.live === (label === "IG Live"); }).slice(0, 5);
+        var list = (d.confirmed || []).filter(function (x) { return !!x.live === (environment === "live"); }).slice(0, 5);
         el.innerHTML = list.length ? "Bekräftade tidsstängningar: " + list.map(function (x) { return esc((window.IG && IG.names[x.symbol]) || x.symbol) + " begärd " + hm(x.requestedExitAt) + " · " + (x.how === "closed" ? "stängd" : "redan stängd") + " " + hm(x.confirmedAt) + " ✓"; }).join(" · ") : "";
       } catch (_) {}
     }
     setInterval(loadConfirmed, 15000); setTimeout(loadConfirmed, 800);
     async function load() {
+      var environment = window.IG && IG.st.env, generation = accountGeneration, revision = ++resultsRevision;
       try {
-        var r = await fetch("/api/results"); if (!r.ok) return;
+        var r = await fetch("/api/results"); if (!r.ok) throw new Error("Positionshämtning misslyckades (HTTP " + r.status + ")");
         var d = await r.json();
+        if(generation !== accountGeneration || revision !== resultsRevision || environment !== (window.IG && IG.st.env)) return;
         label = d.label || (d.mode === "LIVE" ? "IG Live" : "IG Demo"); cur = d.currency || "";
         var m = document.getElementById("resMode");
         m.textContent = label + (cur ? " · " + cur : ""); m.style.borderColor = m.style.color = d.mode === "LIVE" ? "#22c55e" : "#f0b90b";
@@ -2320,7 +2324,7 @@ body.app-state-onboard .fc-panel{display:none !important}
           var left = o.closeAt ? Math.max(0, Math.round((o.closeAt - Date.now()) / 60000)) : null;
           return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #222834">'
             + dir + '<b style="color:#e6e6e6;min-width:80px" title="' + esc(o.epic || "") + '">' + esc(o.coin) + '</b>'
-            + '<span>storlek ' + esc(o.qty) + ' @ ' + esc(px(o.avg)) + '</span>'
+            + '<span>kontrakt ' + esc(o.qty) + ' @ ' + esc(px(o.avg)) + '</span>'
             + '<span>nu ' + esc(px(o.price)) + '</span>'
             + '<b style="color:' + col(o.upnl) + '">' + money(o.upnl) + ' ' + pct(o.upnlPct) + '</b>'
             + (o.tp ? '<span style="font-size:12px;color:' + GREEN + '">TP ' + esc(px(o.tp)) + '</span>' : "")
@@ -2332,7 +2336,7 @@ body.app-state-onboard .fc-panel{display:none !important}
             + (o.epic ? '<button type="button" data-reschart="' + esc(o.epic) + '" style="margin-left:auto;padding:3px 10px;border:1px solid #2a3140;background:transparent;color:#c9d1d9;border-radius:6px;cursor:pointer">📈 Diagram</button>' : "")
             + (o.dealId ? '<button type="button" data-sellnow="' + esc(o.dealId) + '" data-name="' + esc(o.coin) + '" style="padding:3px 10px;border:1px solid ' + RED + ';background:#2a1215;color:' + RED + ';border-radius:6px;font-weight:700;cursor:pointer">Sälj nu</button>' : "")
             + '</div>';
-        }).join("") : "Inga öppna positioner.";
+        }).join("") : (d.error ? "Öppna positioner kunde inte verifieras. Se felmeddelandet nedan." : "Inga öppna positioner.");
         document.querySelectorAll("#resOpen [data-sellnow]").forEach(function (b) { b.addEventListener("click", function () { sellNow(b.getAttribute("data-sellnow"), b.getAttribute("data-name")); }); });
         document.querySelectorAll("#resOpen [data-doubleup]").forEach(function (b) { b.addEventListener("click", function () { doubleUp(b.getAttribute("data-doubleup"), b.getAttribute("data-name")); }); });
         document.querySelectorAll("#resOpen [data-rollover]").forEach(function (b) { b.addEventListener("click", function () { rollOver(b.getAttribute("data-rollover"), b.getAttribute("data-name"), Number(b.getAttribute("data-at"))); }); });
@@ -2349,10 +2353,21 @@ body.app-state-onboard .fc-panel{display:none !important}
             + res
             + '<span style="font-size:11px;color:' + DIM + ';margin-left:auto">' + esc(KIND[x.kind] || x.kind) + '</span>'
             + '</div>';
-        }).join("") : "Inga stängda affärer än.";
+        }).join("") : (d.error ? "Stängda affärer kunde inte verifieras. Se felmeddelandet nedan." : "Inga stängda affärer än.");
         document.getElementById("resUpdated").textContent = "uppdaterad " + new Date().toLocaleTimeString("sv-SE");
-      } catch (_) { /* servern nere — behåll senaste vyn */ }
+      } catch (_) { if(generation !== accountGeneration || revision !== resultsRevision || environment !== (window.IG && IG.st.env)) return; document.getElementById("resErr").textContent = "⚠ Positionerna kunde inte uppdateras. Eventuella visade uppgifter är äldre och inte verifierade just nu."; }
     }
+    if(window.IG) IG.on("env", function(){
+      accountGeneration++;
+      document.getElementById("resMode").textContent = IG.envLabel();
+      document.getElementById("resConfirmed").textContent = "";
+      document.getElementById("resOpen").textContent = "Läser öppna positioner för valt IG-konto…";
+      document.getElementById("resTrades").textContent = "Läser affärer för valt IG-konto…";
+      document.getElementById("resTotals").replaceChildren();
+      document.getElementById("resErr").textContent = "";
+      document.getElementById("resUpdated").textContent = "";
+      load();
+    });
     load(); setInterval(load, 5000);
   })();
   </script>
@@ -2819,6 +2834,8 @@ body.app-state-onboard .fc-panel{display:none !important}
       <h3>Köp / Sälj <span class="tag" id="ot-venue">–</span></h3>
       <div id="ot-kill" style="font-size:11px;margin-bottom:6px"></div>
       <label style="font-size:10px;color:var(--dim)">Instrument (snabbval ur bevakningslistan)</label>
+      <label for="ot-instrument-select" style="font-size:12px">Instrument · samma som diagrammet</label>
+      <select id="ot-instrument-select" style="width:100%;margin:4px 0 8px" aria-label="Välj instrument för diagram och order"></select>
       <div id="ot-instr" style="display:flex;gap:4px;flex-wrap:wrap;margin:2px 0 8px"></div>
       <div style="display:flex;gap:6px;margin-bottom:8px">
         <button type="button" class="ot-type active" data-ot="LIMIT">Limit</button>
@@ -9351,6 +9368,26 @@ document.addEventListener("DOMContentLoaded", boot);
   const esc = IG.esc;
   let quoteT = 0, lastSym = null, sq = null, sqKey = "", sqBusy = false;
   function sym(){ return (typeof STATE !== "undefined" && STATE.symbol) || ""; }
+  // Återanvänd positionspanelen och dess knappar, utan extra API-anrop eller dubbla element.
+  const positions = $("resultsBox"), orderCard = $("ot-buy")?.closest(".card");
+  if(positions && orderCard){
+    orderCard.after(positions);
+    positions.setAttribute("data-sec", "Öppna affärer och resultat · aktivt IG-konto");
+    $("resOpen").style.maxHeight = "420px";
+    $("resOpen").style.overflowY = "auto";
+  }
+  function syncInstrumentSelect(){
+    const source = $("sym-select"), target = $("ot-instrument-select");
+    if(!source || !target) return;
+    target.replaceChildren(...Array.from(source.children, item=>item.cloneNode(true)));
+    target.value = sym();
+  }
+  $("ot-instrument-select").addEventListener("change", e=>{ if(IG.isEpic(e.target.value)) openChartFor(e.target.value); });
+  if($("sym-select")) new MutationObserver(syncInstrumentSelect).observe($("sym-select"), { childList:true, subtree:true, characterData:true });
+  document.addEventListener("chart-instrument", syncInstrumentSelect);
+  IG.on("env", syncInstrumentSelect);
+  syncInstrumentSelect();
+
   function renderQuote(){
     const s = sym();
     if(s !== lastSym){ lastSym = s; $("ot-price").value = ""; sq = null; sqKey = ""; }
