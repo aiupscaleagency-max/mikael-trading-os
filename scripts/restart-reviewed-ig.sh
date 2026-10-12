@@ -1,6 +1,8 @@
 #!/bin/bash
 # Körs manuellt av Mike enligt överlämningen; startar aldrig två botar.
-set -euo pipefail
+set -Eeuo pipefail
+trap 'echo "Omstart avbruten på rad $LINENO (felkod $?)." >&2' ERR
+echo "1/4: Kontrollerar Trading-OS…"
 cd "$(dirname "$0")/.."
 mkdir -p data-ig
 if ! mkdir data-ig/restart.lock 2>/dev/null; then
@@ -9,7 +11,9 @@ if ! mkdir data-ig/restart.lock 2>/dev/null; then
 fi
 trap 'rmdir data-ig/restart.lock' EXIT
 trading_root="$(pwd -P)"
-npx tsc --noEmit -p .
+echo "2/4: Kontrollerar TypeScript. Vänta tills kontrollen är klar…"
+./node_modules/.bin/tsc --noEmit -p .
+echo "3/4: Kontrollerar och stoppar den befintliga boten…"
 trading_pid="$(lsof -tiTCP:3940 -sTCP:LISTEN || true)"
 if [[ "$trading_pid" == *$'\n'* ]]; then
   echo 'Flera processer lyssnar på 3940. Omstarten avbröts.' >&2
@@ -33,7 +37,8 @@ if lsof -tiTCP:3940 -sTCP:LISTEN >/dev/null 2>&1; then
   exit 1
 fi
 mkdir -p data-ig
-nohup npx tsx src/run.ts --serve >>data-ig/bot.log 2>&1 </dev/null &
+echo "4/4: Startar boten och väntar på port 3940…"
+nohup ./node_modules/.bin/tsx src/run.ts --serve >>data-ig/bot.log 2>&1 </dev/null &
 for attempt in {1..30}; do
   new_trading_pid="$(lsof -tiTCP:3940 -sTCP:LISTEN || true)"
   if [[ -n "$new_trading_pid" ]]; then

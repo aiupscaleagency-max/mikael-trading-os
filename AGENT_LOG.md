@@ -35,3 +35,5 @@
 ## 2026-10-12 — ekonomiskt V3/V4-underlag
 - Samlar endast whitelisted ekonomiska fält från redan hämtade IG V3/V4-svar och exponerar dem i befintlig klines-meta utan extra anrop. Produktionsresolvern är inte färdig eller verifierad; underlaget behöver läsas efter omstart.
 - Typkontroll grön. JEV-preflight misslyckades med HTTP 402; routing/modeller oförändrade. Senaste usagekontroll: 84 % förbrukat, 16 % kvar; vidare agentarbete begränsas för att skydda Mikes uttryckliga 15–20 %-reserv.
+
+2026-10-12: Omstartshjälpen skriver nu fyra tydliga steg och felrad/felkod vid avbrott. Använder installerad lokal tsc/tsx utan npx-hämtning. Syntaxkontroll grön; skriptet har inte exekverats. Port 3940 kör fortsatt gamla PID 21751; ingen pågående omstart eller restart.lock observerades. Orsaken till Mikes uteblivna terminalutdata är ännu inte fastställd.
