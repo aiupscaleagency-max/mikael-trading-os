@@ -1984,7 +1984,7 @@ body.app-state-onboard .fc-panel{display:none !important}
     var modal = document.getElementById("anaModal"), body = document.getElementById("anaBody");
     var seenEnd = null, cdTimer = null;
     function mmss(ms) { var s = Math.max(0, Math.round(ms / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
-    function closeModal() { modal.classList.remove("open"); if (cdTimer) { clearInterval(cdTimer); cdTimer = null; } }
+    function closeModal() { modalRevision++; bestCand = null; modal.classList.remove("open"); if (cdTimer) { clearInterval(cdTimer); cdTimer = null; } }
     document.getElementById("anaClose").addEventListener("click", closeModal);
     modal.addEventListener("click", function (e) { if (e.target === modal) closeModal(); });
     document.addEventListener("keydown", function (e) { if (e.key === "Escape" && modal.classList.contains("open")) closeModal(); });
@@ -2025,7 +2025,8 @@ body.app-state-onboard .fc-panel{display:none !important}
         + '<div class="am-btns"><button type="button" class="am-ok" data-am="approve" data-id="' + esc(o.id) + '">✓ GODKÄNN</button>'
         + '<button type="button" class="am-no" data-am="reject" data-id="' + esc(o.id) + '">Avvisa</button></div></div>';
     }
-    var bestCand = null;
+    var bestCand = null, modalRevision = 0, renderedEnvironment = null;
+    if(window.IG) IG.on("env", function(){ modalRevision++; bestCand = null; closeModal(); });
     // Bästa läge just nu (indikatorerna på stängda IG-ljus). Lång eller kort — IG tillåter båda.
     async function bestBuy() {
       try {
@@ -2044,7 +2045,8 @@ body.app-state-onboard .fc-panel{display:none !important}
     }
     function stakePctNow() { var v = Number((document.getElementById("ot-pct") || {}).value); return Math.min(3, Math.max(0.1, v > 0 ? v : 1)); }
     async function openModal(a) {
-      var list = [];
+      var revision = ++modalRevision, environment = window.IG && IG.st.env;
+      var list = [], candidate = null;
       try {
         var r = await fetch("/api/pending-orders"); var d = await r.json();
         var since = Date.parse(a.startedAt || 0) - 5000;
@@ -2059,24 +2061,24 @@ body.app-state-onboard .fc-panel{display:none !important}
       if (!list.length) {
         var line = String(a.summary || "").split("\n").map(function (x) { return x.replace(/[*#>]/g, "").trim(); }).filter(Boolean)[0] || "Ingen tydlig signal just nu.";
         html = head + '<div class="am-big" style="color:#8b95a7">VÄNTA – agenterna föreslår inget köp</div><div style="margin-top:6px">' + esc(line) + "</div>";
-        bestCand = await bestBuy();
-        if (bestCand) {
+        candidate = await bestBuy();
+        if (candidate) {
           var pct = stakePctNow(), sq = null;
           try {
-            var qr = await fetch("/api/ig/stake-quote", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ epic: bestCand.symbol, direction: bestCand.side, pct: pct, stopLoss: bestCand.sl, takeProfit: bestCand.tp }) });
+            var qr = await fetch("/api/ig/stake-quote", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ epic: candidate.symbol, direction: candidate.side, pct: pct, stopLoss: candidate.sl, takeProfit: candidate.tp }) });
             sq = await qr.json();
           } catch (_) {}
           var q = sq && (sq.quote || sq);
-          var fake = { side: bestCand.side, stakePct: pct, stakeAmount: q && q.stake, currency: q && q.currency, quoteInfo: q && q.ok ? q : null };
-          var bc = bestCand.side === "BUY" ? "#3fb950" : "#f85149", bv = bestCand.side === "BUY" ? "▲ Köp (lång)" : "▼ Sälj (kort)";
-          html += '<div class="am-row"><div style="font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Bästa läge just nu (indikatorerna, stängda ljus)</div>'
-            + '<div class="am-big"><span style="color:' + bc + '">' + bv + " " + esc(bestCand.name) + '</span> <span style="font-size:11px;color:#8b95a7">' + esc(bestCand.symbol) + "</span> <span style=\"font-size:13px;color:#c9d1d9\">poäng " + esc(bestCand.score) + "</span></div>"
-            + '<div style="color:#8b95a7">' + esc(bestCand.reasons.join(" · ")) + "</div>"
-            + '<div style="margin-top:2px;color:#8b95a7">Pris ~' + esc(bestCand.entry) + (bestCand.tp ? " · målpris " + esc(bestCand.tp) : "") + (bestCand.sl ? " · stop-loss " + esc(bestCand.sl) : "") + " · håll " + bestCand.hz + " min</div>"
+          var fake = { side: candidate.side, stakePct: pct, stakeAmount: q && q.stake, currency: q && q.currency, quoteInfo: q && q.ok ? q : null };
+          var bc = candidate.side === "BUY" ? "#3fb950" : "#f85149", bv = candidate.side === "BUY" ? "▲ Köp (lång)" : "▼ Sälj (kort)";
+          html += '<div class="am-row"><div style="font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:#8b95a7">Separat indikatorsignal från bevakningslistan – inte agenternas rekommendation</div>'
+            + '<div class="am-big"><span style="color:' + bc + '">' + bv + " " + esc(candidate.name) + '</span> <span style="font-size:11px;color:#8b95a7">' + esc(candidate.symbol) + "</span> <span style=\"font-size:13px;color:#c9d1d9\">poäng " + esc(candidate.score) + "</span></div>"
+            + '<div style="color:#8b95a7">' + esc(candidate.reasons.join(" · ")) + "</div>"
+            + '<div style="margin-top:2px;color:#8b95a7">Pris ~' + esc(candidate.entry) + (candidate.tp ? " · målpris " + esc(candidate.tp) : "") + (candidate.sl ? " · stop-loss " + esc(candidate.sl) : "") + " · håll " + candidate.hz + " min</div>"
             + outcome(fake)
             + (q && q.ok === false && (q.reason || q.error) ? '<div style="margin-top:4px;color:#fbbf24;font-size:12px">⚠ ' + esc(q.reason || q.error) + "</div>" : "")
             + '<div style="margin-top:6px;color:#fbbf24;font-size:12px">⚠ Agenterna sa vänta. Detta är ditt eget beslut.</div>'
-            + '<div class="am-btns"><button type="button" class="am-ok" data-am="anyway" data-pct="' + pct + '">' + bv + " ändå " + pct + ' %</button>'
+            + '<div class="am-btns"><button type="button" class="am-ok" data-am="open-panel" data-pct="' + pct + '">Öppna i orderpanelen</button>'
             + '<button type="button" class="am-no" data-am="close">Nej, vänta</button></div></div>';
         } else {
           html += '<div class="am-row">Inget instrument i bevakningslistan har en tydlig signal just nu (lång eller kort).'
@@ -2085,6 +2087,8 @@ body.app-state-onboard .fc-panel{display:none !important}
       } else {
         html = head + list.map(rowHtml).join("");
       }
+      if(revision !== modalRevision || environment !== (window.IG && IG.st.env)) return;
+      bestCand = candidate; renderedEnvironment = environment;
       body.innerHTML = html;
       modal.classList.add("open");
       try {
@@ -2106,19 +2110,12 @@ body.app-state-onboard .fc-panel{display:none !important}
     body.addEventListener("click", async function (e) {
       var b = e.target.closest("button[data-am]"); if (!b) return;
       if (b.dataset.am === "close") { closeModal(); return; }
-      if (b.dataset.am === "anyway" && bestCand) {
-        b.disabled = true;
-        try {
-          var rr = await fetch("/api/pending-orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-            symbol: bestCand.symbol, side: bestCand.side, stakePct: Number(b.dataset.pct), source: "popup: köp ändå",
-            strategyId: (window.OT_STRATEGY && OT_STRATEGY.get()) || undefined,
-            takeProfit: bestCand.tp || undefined, stopLoss: bestCand.sl || undefined, horizonSec: bestCand.hz * 60,
-            reason: "Ditt val: " + bestCand.name + " poäng " + bestCand.score + " (" + bestCand.reasons.join(", ") + ")" }) });
-          var dd = await rr.json().catch(function () { return {}; });
-          var host = b.closest(".am-row");
-          if (dd.ok && dd.pendingOrder) { host.outerHTML = rowHtml(dd.pendingOrder); }
-          else host.insertAdjacentHTML("beforeend", '<div style="margin-top:6px;color:#f85149">⚠ ' + esc(dd.error || ("HTTP " + rr.status)) + "</div>");
-        } catch (err) { alert("Fel: " + err.message); }
+      if (b.dataset.am === "open-panel" && bestCand) {
+        if(renderedEnvironment !== (window.IG && IG.st.env)){ closeModal(); return; }
+        // Förifyll bara befintlig orderpanel; inga order skickas eller köas här.
+        if(!window.AGTIP || typeof AGTIP.prefill !== "function"){ alert("Orderpanelen är inte redo. Försök igen."); return; }
+        AGTIP.prefill({ epic: bestCand.symbol, action: bestCand.side === "SELL" ? "sell" : "buy", sizePct: Number(b.dataset.pct), takeProfit: bestCand.tp, stopLoss: bestCand.sl, horizonMin: bestCand.hz });
+        closeModal();
         return;
       }
       var row = b.closest(".am-row");
