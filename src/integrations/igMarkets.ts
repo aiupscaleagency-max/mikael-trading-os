@@ -1,7 +1,7 @@
 // IG marknadsdata (katalog, instrument, kvot, historik, kontohistorik).
 // Utdrag ur Codex igWorkspace.ts (codex/ig-continuation-20261007): endast läsvägar.
 // Analys/sessioner ligger i vårt eget agentflöde (JEV → Teknisk + Risk → Hanna).
-import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igFxIsFresh,igPairQuote,igStaleFx,igFxPlausibility,FX_STALE_MAX_MS,type IgAccountFx,type IgPriceUnitEvidence} from "./igRules.js";
+import {igResolvePriceUnit,igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igFxIsFresh,igPairQuote,igStaleFx,igFxPlausibility,FX_STALE_MAX_MS,type IgAccountFx,type IgPriceUnitEvidence} from "./igRules.js";
 import {callIgAuthenticated,getIgReadBudget,isIgTemporaryRateError,getIgStatus,getIgAccountIdentity,IG_READ_RATE_ERROR,IG_HISTORY_RATE_ERROR,getIgHistoryBlockedUntil,type IgEnvironment} from "./igConnection.js";
 import {igReadStats,IG_BACKGROUND_CAPS,withIgReadConsumer,type createIgReadStats} from "./igReadStats.js";
 import crypto from "node:crypto";
@@ -322,7 +322,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
         priceSnapshot={marketStatus:s.marketStatus,delayTime:s.delayTime,bid:s.bid,offer:s.offer};
         try{const latest=await read(mode,`markets/${epic}`,"GET","4");if(latest.instrument?.epic===epic)priceUnitObservations.push(observePriceUnit(4,latest));if(latest.instrument?.epic===epic&&latest.snapshot?.scalingFactor===s.scalingFactor){priceSnapshot=latest.snapshot;streamingPricesAvailable=latest.instrument.streamingPricesAvailable===true;}}catch(e){if(e instanceof Error&&e.message.startsWith('IG begränsade antal'))throw e;/* Saknad UTC-tid håller order- och signalgrinden stängd. */}
       }
-      return {environment:mode,epic,priceUnitObservations,priceUnit:deps.priceUnit?.(mode,epic)??null,name:str(i.name),type:str(i.type),category:igMarketCategory({name:i.name,type:i.type}),expiry:str(i.expiry),status:"ready",error:null,
+      return {environment:mode,epic,priceUnitObservations,priceUnit:deps.priceUnit?.(mode,epic)??igResolvePriceUnit(i,s),name:str(i.name),type:str(i.type),category:igMarketCategory({name:i.name,type:i.type}),expiry:str(i.expiry),status:"ready",error:null,
         quote:{...igSnapshotQuote(priceSnapshot,now()),percentageChange:num(priceSnapshot.percentageChange),netChange:num(priceSnapshot.netChange),high:num(priceSnapshot.high),low:num(priceSnapshot.low)},
         instrument:{epic,streamingPricesAvailable,marketId:str(i.marketId),type:str(i.type),expiry:str(i.expiry),unit:str(i.unit),contractSize:metadataNumber(i.contractSize),lotSize:metadataNumber(i.lotSize),valueOfOnePip:metadataNumber(i.valueOfOnePip),onePipMeans:str(i.onePipMeans),scalingFactor:num(s.scalingFactor),decimalPlacesFactor:num(s.decimalPlacesFactor),marginFactor:num(i.marginFactor),marginFactorUnit:str(i.marginFactorUnit),marginDepositBands:clone(i.marginDepositBands??[]),currencies:clone(i.currencies??[]),controlledRiskAllowed:i.controlledRiskAllowed===true,forceOpenAllowed:i.forceOpenAllowed===true,stopsLimitsAllowed:i.stopsLimitsAllowed===true},
         dealingRules:clone(data.dealingRules),updatedAt:now()};
@@ -369,7 +369,6 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     if(currency===base)return {baseCurrency:base,accountCurrency:currency,bid:1,offer:1,receivedAt:now(),observedAt:now(),source:`${base}-konto · ingen valutaomräkning`};
     const key=`${mode}:${base}:${currency}`;
     // Äldre sparade växelkurser saknar bevis för prisrepresentation och får inte kringgå spärren.
-    if(!deps.priceUnit){fxRejected.set(key,'Växelkursens prisrepresentation kunde inte verifieras; ingen storlek räknas');return null;}
     let fresh:IgAccountFx|null=null,rejected:string|null=null;
     try{
       const got=await cached<{fx:IgAccountFx}|{rejected:string}|null>(`fx:${mode}:${base}${currency}`,30000,async()=>{
@@ -404,8 +403,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     const currencies=detail.instrument.currencies;
     const execution=(currencies.find((c:any)=>c.isDefault===true)??(currencies.length===1?currencies[0]:null))?.code;
     const fx=execution&&currency&&execution!==currency?await accountFx(mode,execution):null;
-    // Dessa metadata bevisar inte ensamma om ett forexpris anges som kurs eller punkter.
-    // Reglerna stoppar beräkningen tills separat prisrepresentationsunderlag finns.
+    // Resolvern kräver samstämmiga ekonomiska metadata; saknat underlag stoppar beräkningen.
     const rules=igCalculationRules(detail.instrument,{scalingFactor:detail.instrument.scalingFactor,decimalPlacesFactor:detail.instrument.decimalPlacesFactor},currency,fx,now(),detail.priceUnit??undefined);
     // Orimlig växelkurs: tydligt besked i stället för en storlek (pointValue saknas då redan).
     const fxError=execution&&currency&&execution!==currency&&!fx?accountFxError(mode,execution):null;

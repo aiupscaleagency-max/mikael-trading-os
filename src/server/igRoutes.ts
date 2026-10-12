@@ -9,6 +9,7 @@ import { getIgMarketDirectory, getIgDirectoryEnrichment, peekIgMarketDirectory, 
 import { getIgOrderState, resolveIgUnknown, answerIgLateExit } from "../integrations/igOrders.js";
 import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
 import { igSparklines } from "./igSparklines.js";
+import { chartClosedSeries } from "./igChartSeries.js";
 import { igChartBackdrop } from "./igChartBackdrop.js";
 import { agentNotes } from "./igAgentNotes.js";
 import { currentStake } from "../risk/stakeLadder.js";
@@ -472,7 +473,8 @@ export async function handleIgRoutes(
       try { await igMarketData.ensureSeries(src, epic, iv); } catch { /* historyError visas nedan */ }
       igMarketData.requestStream([epic], src);
       // Miljön är bunden vid begärans start: allt nedan läses ur samma miljö (aldrig blandat)
-      const closed = igMarketData.closed(epic, iv, src).slice(-limit);
+      const chartSeries = chartClosedSeries(iv, (sourceInterval) => igMarketData.closed(epic, sourceInterval, src), Date.now());
+      const closed = chartSeries.candles.slice(-limit);
       const forming = igMarketData.forming(epic, iv, src);
       // Tiingo-bakgrund (ENDAST VISNING) när IG inte kan fylla diagrammet: skickas separat som "backdrop",
       // blandas aldrig in i klines/forming och når aldrig igMarketData, signaler, strategier eller ordrar.
@@ -482,12 +484,13 @@ export async function handleIgRoutes(
         const q = igMarketData.quote(epic, src);
         const mid = q && Number.isFinite(q.bid) && Number.isFinite(q.offer) ? (Number(q.bid) + Number(q.offer)) / 2 : null;
         backdrop = await igChartBackdrop.get({ env: src, epic, name: (meta.name as string) ?? igMarketData.nameOf(epic, src), interval: iv, limit,
+          forex: meta.type === 'CURRENCIES', nativePriceMultiplier: (meta.calculationRules as {nativePriceMultiplier?:number}|undefined)?.nativePriceMultiplier,
           igBars: closed.length, historyError, igFirstOpenMs: closed[0]?.openTime ?? forming?.openTime ?? null, livePrice: mid });
       } catch { backdrop = null; }
       send(res, 200, {
         env, label: envLabel(env), symbol: epic, epic, interval: iv, ...meta, name: (meta.name as string) ?? igMarketData.nameOf(epic, env),
         klines: closed.map(chartBar), forming: forming ? chartBar(forming) : null,
-        historyError, backdrop, quote: sim ? simQuoteView(igMarketData.quote(epic, src), epic) : quoteView(igMarketData.quote(epic, env), epic, env),
+        historyError, aggregatedFrom: chartSeries.aggregatedFrom, backdrop, quote: sim ? simQuoteView(igMarketData.quote(epic, src), epic) : quoteView(igMarketData.quote(epic, env), epic, env),
         streamed: igMarketData.streamedSeries(src).includes(`${epic}|${iv}`), envChanged: env !== igMarketData.getActiveEnv(),
         source: sim ? `${DEMO_SIM_LABEL} · IG Live REST-historik (stängda mid-ljus) + Lightstreamer` : `${envLabel(env)} · REST-historik (stängda mid-ljus) + Lightstreamer`, at: Date.now(),
         ...(sim ? { sim: true, simLabel: DEMO_SIM_LABEL } : {}),

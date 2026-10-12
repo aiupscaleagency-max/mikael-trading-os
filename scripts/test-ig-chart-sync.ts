@@ -104,6 +104,12 @@ const ok = (m: string) => console.log("PASS: " + m);
   // Tiingo avviker > 3 % från IG-livepriset: visas inte
   const off = await bd.get({ ...base, livePrice: 2200, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null });
   assert.equal(off!.bars.length, 0); assert.match(off!.note!, /avviker/);
+  // Verifierad punktnotation för forex skalar endast diagrammets Tiingo-OHLC.
+  const fxBd=createIgChartBackdrop({tiingo:{bars:async()=>({ticker:'eurusd',freq:'1min',bars:minute.map(b=>({...b,open:1.1174,high:1.1175,low:1.1173,close:1.1174})),at:now,note:null})} as any,now:()=>now});
+  const fxArgs={...base,epic:'CS.D.EURUSD.CEEM.IP',name:'EUR/USD Mini',forex:true,interval:'5m',igBars:0,historyError:'x',igFirstOpenMs:null,livePrice:11174};
+  const fxResult=await fxBd.get({...fxArgs,nativePriceMultiplier:10000});
+  assert.equal(fxResult!.bars[0]!.close,11174);assert.equal(fxResult!.bars[0]!.high,11175);assert.equal(fxResult!.deviationPct,0);
+  assert.equal((await fxBd.get(fxArgs))!.bars.length,0,'Saknat representationsbevis blockerar bakgrunden');
   // Ingen Tiingo-motsvarighet/fel: tom bakgrund med förklaring, aldrig undantag
   const none = createIgChartBackdrop({ tiingo: { bars: async () => ({ ticker: null, freq: "1min", bars: [], at: now, note: "ingen Tiingo-motsvarighet" }) } as any, now: () => now });
   const n2 = await none.get({ ...base, interval: "5m", igBars: 0, historyError: "x", igFirstOpenMs: null }); assert.equal(n2!.bars.length, 0); assert.match(n2!.note!, /motsvarighet/);

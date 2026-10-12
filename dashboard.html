@@ -314,8 +314,8 @@ main{display:grid;grid-template-columns:1fr 320px;gap:10px;padding:10px;min-widt
 #page-trade #mainChartCard{grid-area:chart;min-width:0;align-self:stretch}
 /* Diagrammet fyller hela höjden bredvid Handla (ingen tom yta under) */
 @media (min-width:1280px){
-  #page-trade #mainChartCard{display:flex;flex-direction:column}
-  #page-trade #chart{height:auto;flex:1 1 0;min-height:440px;overflow:hidden}
+  #page-trade #mainChartCard{display:flex;flex-direction:column;align-self:start}
+  #page-trade #chart{height:clamp(440px,60vh,720px);flex:0 0 auto;min-height:440px;overflow:hidden}
   #page-trade #chart > div{position:absolute !important;inset:0}
 }
 @media (min-width:1700px){#page-trade .right{align-self:stretch}#page-trade .right > .card{height:100%;box-sizing:border-box}}
@@ -2970,7 +2970,9 @@ body.app-state-onboard .fc-panel{display:none !important}
       <button type="button" class="pp-btn pp-f" data-pp-f="watch">⭐ Bevakade <span data-pp-n="watch"></span></button>
       <button type="button" class="pp-btn pp-f" data-pp-f="all">Alla <span data-pp-n="all"></span></button>
       <input type="search" id="pp-q" placeholder="Sök namn eller EPIC" style="width:200px">
-      <span id="pp-cat" style="font-size:11px"></span>
+      <label><input type="checkbox" id="pp-selected-only"> Visa endast markerade</label>
+      <button type="button" id="pp-search" class="pp-btn">Sök</button><button type="button" id="pp-reset" class="pp-btn">Nollställ filter</button>
+      <span id="pp-filter-state" role="status" aria-live="polite"></span><span id="pp-cat" style="font-size:11px"></span>
     </div>
     <div id="pp-status" class="pp-status"></div>
   </div>
@@ -4479,7 +4481,8 @@ function showIgSource(){
   if(!STATE.symbol){ setSourceIndicator('<span style="color:var(--label)">○</span> Välj ett IG-instrument'); return; }
   const q = IG.quote(STATE.symbol);
   setSourceIndicator(IG.badge(q) + ' <span style="color:var(--label)">' + IG.esc(IG.label(STATE.symbol)) + ' · ' + IG.esc(STATE.symbol) + ' · ' + STATE.tf + ' · ' + IG.envLabel() + '</span>'
-    + (igMain.hist ? ' <span style="color:#f0b90b" title="' + IG.esc(igMain.hist) + '">· ' + (/veckokvot/.test(igMain.hist) ? 'IG:s veckokvot för historik är slut, ljusen byggs från livepriserna' : 'historik saknas') + '</span>' : '')
+    + (igMain.aggregatedFrom?.length ? ' · hela IG-ljus aggregerade från ' + IG.esc(igMain.aggregatedFrom.join(', ')) : '')
+    + (igMain.hist ? ' <span style="color:#f0b90b" title="' + IG.esc(igMain.hist) + '">· ' + (/veckokvot/.test(igMain.hist) ? 'IG:s historikkvot slut; endast tillgängliga IG-ljus visas' : 'historik saknas') + '</span>' : '')
     + (igMain.backdrop ? ' <span style="color:#9ca3af" title="Grå ljus = Tiingo, bara visning. Signaler, strategier och order använder bara IG-pris.">· ' + IG.esc(igMain.backdrop.label) + ' (grå = Tiingo)' + (igMain.backdrop.note ? ' · ' + IG.esc(igMain.backdrop.note) : '') + '</span>'
       : igMain.backdropNote ? ' <span style="color:var(--label)" title="' + IG.esc(igMain.backdropNote) + '">· ingen Tiingo-bakgrund</span>' : ''));
 }
@@ -4513,6 +4516,7 @@ async function loadRealCandles(sym, tf){
   if(bars.length){ applyIndicators(bars); updatePriceHeader(bars); }
   else { clearPriceHeader(); if(d.quote && d.quote.mid != null) document.getElementById("cur-price").textContent = IG.px(d.quote.mid) + IG.plain(d.quote); }
   if(d.quote && d.quote.mid != null) STATE.livePrices[sym] = d.quote.mid;
+  igMain.aggregatedFrom = d.aggregatedFrom || [];
   igMain.key = sym+"|"+tf; igMain.hist = d.historyError || (d.error && !bars.length ? d.error : null);
   IG.want("main", [sym], [sym+"|"+tf]);
   showIgSource();
@@ -4537,7 +4541,7 @@ IG.on("candle", c=>{
 });
 IG.on("env", ()=>{
   // Miljöbyte (Demo ↔ Live): allt gammalt bort, aldrig den andra miljöns priser
-  igMain.request++; igMain.fittedKey = null; igMain.key = null; igMain.hist = null; igMain.backdrop = null; igMain.backdropNote = null;
+  igMain.request++; igMain.fittedKey = null; igMain.key = null; igMain.hist = null; igMain.aggregatedFrom = []; igMain.backdrop = null; igMain.backdropNote = null;
   STATE.candleData = {}; STATE.livePrices = {};
   if(candleSeries) candleSeries.setData([]);
   clearPriceHeader();
@@ -9498,7 +9502,7 @@ document.addEventListener("DOMContentLoaded", boot);
     const pc = (v)=> v == null ? "–" : Number(v).toFixed(2).replace(".", ",") + " %";
     const lines = [];
     lines.push(`<div><b>Saldo</b> ${IG.money(M.balance, mc)} · <b>tillgängligt</b> ${IG.money(M.available, mc)}${M.profitLoss != null ? ` · <b>P/L nu</b> <span style="color:${M.profitLoss >= 0 ? "#3fb950" : "#f85149"}">${IG.money(M.profitLoss, mc, true)}</span>` : ""}</div>`);
-    lines.push(`<div><b>Marginalbudget</b> ${esc(q.pct)} % = ${IG.money(q.stake, c)}${M.maxPositionMargin != null ? ` <span style="color:var(--dim)">(max ${esc(M.maxStakePct)} % = ${IG.money(M.maxPositionMargin, mc)} per position, ${IG.money(M.maxTotalMargin, mc)} totalt)</span>` : ""}</div>`);
+    lines.push(`<div><b>Marginalbudget</b> ${esc(q.pct)} % = ${IG.money(q.stake, mc)}${M.maxPositionMargin != null ? ` <span style="color:var(--dim)">(max ${esc(M.maxStakePct)} % = ${IG.money(M.maxPositionMargin, mc)} per position, ${IG.money(M.maxTotalMargin, mc)} totalt)</span>` : ""}</div>`);
     if(!q.ok){ lines.push(`<div style="color:#f0b90b">⚠ ${esc(M.minContractNote || q.reason || "Storleken kunde inte räknas fram")}</div>`); }
     else {
       lines.push(`<div><b>Beräknad marginal</b> ${IG.money(q.margin, c)} (${pc(M.marginPctOfBalance)} av saldot)</div>`);
@@ -9760,7 +9764,7 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
   const P = {};            // EPIC → { price, chg, bars, iv, missing, at, loading, el }
   const localSel = new Set();
   const S = ()=> (window.MK ? MK.sel : localSel);
-  let filter = "crypto", query = "", shown = 24, items = [], renderedKey = "";
+  let filter = "crypto", draftFilter = "crypto", selectedOnly = false, query = "", shown = 24, items = [], renderedKey = "";
   let analysisRunning = false, busy = new Set(), lastAnalysis = null, notes = {}, signals = [];
   const onScreen = new Set();
   const ACTION = { buy:"KÖP", sell:"SÄLJ", hold:"AVVAKTA", "avstå":"AVVAKTA" };
@@ -9783,7 +9787,7 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
   }
   function filtered(){
     const q = query.trim().toLowerCase();
-    const list = listFor(filter);
+    const list = listFor(filter).filter(m=>!selectedOnly || S().has(m.epic));
     return q ? list.filter(m=>String(m.name || "").toLowerCase().includes(q) || String(m.epic).toLowerCase().includes(q)) : list;
   }
 
@@ -9808,7 +9812,7 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
     const vis = items.slice(0, shown);
     // Demo-simulering ingår i nyckeln: en rad som blir "sim" ritas om med etikett och Live-pris
     const key = IG.st.env + "|" + vis.map(m=>m.epic + (m.sim ? "*" : "")).join(",");
-    counts();
+    counts(); filterStatus();
     const more = $("pp-more");
     more.style.display = items.length > shown ? "" : "none";
     more.textContent = `Visa fler (${items.length - shown} till)`;
@@ -10043,7 +10047,7 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
   function selectionChanged(){
     if(window.MK && typeof MK.onSelect === "function"){ MK.onSelect(); MK.render(); }
     else if(window.IGS) IGS.saveSelection([...S()]);
-    syncChecks();
+    if(selectedOnly) render(); else syncChecks();
   }
 
   async function runAnalysis(epics){
@@ -10101,14 +10105,20 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
   $("pp-run").addEventListener("click", ()=>{ if(S().size) runAnalysis([...S()]); });
   $("pp-session").addEventListener("click", ()=>{ if(S().size && window.IGS) IGS.startSession([...S()]); });
   $("pp-more").addEventListener("click", ()=>{ shown += 48; render(); });
+  function filterStatus(){
+    const dirty=draftFilter!==filter || $("pp-q").value!==query || $("pp-selected-only").checked!==selectedOnly;
+    $("pp-filter-state").textContent=(dirty?"Ändrade filter · tryck Sök. ":"Filter tillämpade. ")+"Visar "+({crypto:"Krypto",forex:"Forex",watch:"Bevakade",all:"alla"}[filter]||filter)+(query?" · sökning: "+query:"")+(selectedOnly?" · endast markerade":"")+" · "+filtered().length+" matchande · "+S().size+" markerade för analys/session (urvalet ändras inte av filter).";
+  }
+  function applyPairFilters(){filter=draftFilter;query=$("pp-q").value;selectedOnly=$("pp-selected-only").checked;shown=24;render();}
   $("pp-filter").addEventListener("click", (ev)=>{
-    const b = ev.target.closest("[data-pp-f]"); if(!b) return;
-    filter = b.dataset.ppF; shown = 24;
-    document.querySelectorAll("#pp-filter [data-pp-f]").forEach(x=>x.classList.toggle("on", x === b));
-    render();
+    const b=ev.target.closest("[data-pp-f]");if(!b)return;
+    draftFilter=b.dataset.ppF;
+    document.querySelectorAll("#pp-filter [data-pp-f]").forEach(x=>x.classList.toggle("on",x===b));filterStatus();
   });
-  let qT = null;
-  $("pp-q").addEventListener("input", ()=>{ clearTimeout(qT); qT = setTimeout(()=>{ query = $("pp-q").value; shown = 24; render(); }, 200); });
+  $("pp-q").addEventListener("input",filterStatus);$("pp-selected-only").addEventListener("change",filterStatus);
+  $("pp-search").addEventListener("click",applyPairFilters);
+  $("pp-filter").addEventListener("keydown",ev=>{if(ev.key==="Enter"&&ev.target.id==="pp-q"){ev.preventDefault();applyPairFilters();}});
+  $("pp-reset").addEventListener("click",()=>{draftFilter="all";$("pp-q").value="";$("pp-selected-only").checked=false;document.querySelectorAll("#pp-filter [data-pp-f]").forEach(x=>x.classList.toggle("on",x.dataset.ppF==="all"));applyPairFilters();});
 
   async function syncPpTf(){
     try{ const d = await (await fetch("/api/trade-horizon")).json(); if(d && d.minutes && $("pp-tf").value != d.minutes){ $("pp-tf").value = String(d.minutes); } }catch(_){}
@@ -10359,13 +10369,13 @@ window.TVW = (function(){
       const bars = (d.klines || []).map(c => ({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close}));
       if(d.forming && (!bars.length || d.forming.time > bars[bars.length-1].time)) bars.push({time:d.forming.time,open:d.forming.open,high:d.forming.high,low:d.forming.low,close:d.forming.close});
       pane.data = bars; pane.candles.setData(bars);
-      pane.hist = d.historyError || null;
+      pane.hist = d.historyError || null; pane.aggregatedFrom = d.aggregatedFrom || [];
       label(pane); head(pane);
     }catch(err){ pane.hist = err.message; head(pane); }
   }
   function head(pane){
     const q = IG.quote(pane.pc.e);
-    pane.el.querySelector(".mc-st").innerHTML = IG.badge(q) + (pane.hist ? ' <span style="color:#f0b90b" title="' + esc(pane.hist) + '">· ' + (/veckokvot/.test(pane.hist) ? 'IG:s historikkvot slut, byggs från livepriser' : 'historik saknas') + '</span>' : "");
+    pane.el.querySelector(".mc-st").innerHTML = IG.badge(q) + (pane.aggregatedFrom?.length ? " · IG-ljus aggregerade från " + esc(pane.aggregatedFrom.join(", ")) : "") + (pane.hist ? ' <span style="color:#f0b90b" title="' + esc(pane.hist) + '">· ' + (/veckokvot/.test(pane.hist) ? 'IG:s historikkvot slut; endast tillgängliga IG-ljus visas' : 'historik saknas') + '</span>' : "");
     const px = pane.el.querySelector(".mc-px");
     const v = q && q.mid != null ? q.mid : pane.data.length ? pane.data[pane.data.length-1].close : null;
     px.textContent = v == null ? "–" : IG.px(v);
@@ -10506,7 +10516,7 @@ window.MK = (function(){
       g.innerHTML = list.length ? list.slice(0, shown[cat]).map(cardHtml).join("") : `<div class="mk-missing" style="padding:8px">${d ? (d.error ? esc(d.error) : "Inga instrument matchar") : "Hämtar katalogen…"}</div>`;
       const more = document.querySelector(`#page-markets [data-more="${cat}"]`);
       if(more){ more.style.display = list.length > 24 ? "" : "none"; more.textContent = shown[cat] >= list.length ? "Visa färre" : `Visa mer (${list.length - shown[cat]} till)`; }
-      const refs = (d && d.liveReferences) || [];
+      const refs = ((d && d.liveReferences) || []).filter(filterFn);
       const re = $("mk-refs-" + cat);
       if(re) re.innerHTML = refs.length ? `<div style="font-size:11px;color:var(--dim);margin:10px 0 6px">Finns på IG Live men inte på Demo (${refs.length}) — katalogreferens, inga Live-priser:</div><div class="mk-grid">${refs.slice(0, 48).map(refHtml).join("")}</div>${refs.length > 48 ? `<div class="mk-missing">+ ${refs.length - 48} till</div>` : ""}` : "";
     });
@@ -10922,13 +10932,24 @@ window.IGS = (function(){
     <select id="mkf-dir" title="Förändring idag enligt IG"><option value="">Upp + ned</option><option value="up">▲ Upp</option><option value="down">▼ Ned</option></select>
     <select id="mkf-trend" title="Trend kräver att du hämtat trend för instrumentet"><option value="">Trend: alla</option><option value="up">Trend upp (hämtade)</option><option value="down">Trend ned (hämtade)</option></select>
     <select id="mkf-sort"><option value="">Sortera: namn</option><option value="move">Störst rörelse</option><option value="up">Mest upp</option><option value="down">Mest ned</option><option value="trend">Trend (hämtade)</option><option value="sent">IG-kundsentiment långa % (hämtade)</option></select>
+    <label><input type="checkbox" id="mkf-selected"> Visa endast markerade</label>
+    <button type="button" id="mkf-search">Sök</button><button type="button" id="mkf-reset">Nollställ filter</button>
+    <span id="mkf-state" role="status" aria-live="polite"></span>
     <span title="IG-kundsentiment = andel IG-kunder med långa positioner. Det är inte volym, inte ditt kontos aktivitet och inte vinst. Det finns ingen &quot;mest vinster&quot;-prognos.">ⓘ sentiment ≠ volym/vinst</span>
   </div>`);
-  const F = ()=>({ cat:$("mkf-cat").value, fav:$("mkf-fav").checked, q:$("mkf-q").value.trim().toLowerCase(), region:$("mkf-region").value, status:$("mkf-status").value, dir:$("mkf-dir").value, trend:$("mkf-trend").value, sort:$("mkf-sort").value });
+  const F = ()=>({ cat:$("mkf-cat").value, selected:$("mkf-selected").checked, fav:$("mkf-fav").checked, q:$("mkf-q").value.trim().toLowerCase(), region:$("mkf-region").value, status:$("mkf-status").value, dir:$("mkf-dir").value, trend:$("mkf-trend").value, sort:$("mkf-sort").value });
+  let appliedFilters = F();
+  function filterStatus(){
+    const dirty=JSON.stringify(F())!==JSON.stringify(appliedFilters);
+    const count=["forex","crypto"].reduce((n,cat)=>n+MK.visible(cat).length,0);
+    $("mkf-state").textContent=(dirty?"Ändrade filter · tryck Sök. ":"Filter tillämpade. ")+"Visar "+(appliedFilters.cat==="forex"?"Forex":appliedFilters.cat==="crypto"?"Krypto":"Forex + Krypto")+(appliedFilters.q?" · sökning: "+appliedFilters.q:"")+(appliedFilters.selected?" · endast markerade":"")+" · "+count+" matchande · "+MK.sel.size+" markerade för analys/session (separat urval).";
+  }
   function apply(){
-    const f = F();
+    const f = F(); appliedFilters={...f};
     document.querySelectorAll("#page-markets .mk-sec[data-cat]").forEach(sec=>{ sec.style.display = !f.cat || sec.dataset.cat === f.cat ? "" : "none"; });
     MK.setFilter((m)=>{
+      if(f.cat && m.category!==f.cat) return false;
+      if(f.selected && !MK.sel.has(m.epic)) return false;
       if(f.fav && !fav.list.has(m.epic)) return false;
       if(f.q && !(String(m.name || "").toLowerCase().includes(f.q) || m.epic.toLowerCase().includes(f.q))) return false;
       if(f.region && !regions(m).includes(f.region)) return false;
@@ -10946,8 +10967,12 @@ window.IGS = (function(){
     MK.setSort({ move: by(m=>num(m.movementPercent ?? (m.changePercent != null ? Math.abs(m.changePercent) : null)), true), up: by(m=>num(m.changePercent), true), down: by(m=>num(m.changePercent), false),
       trend: by(m=>enr[m.epic] ? num(enr[m.epic].trendScore) : null, true), sent: by(m=>enr[m.epic] ? num(enr[m.epic].sentimentLongPercent) : null, true) }[f.sort] || null);
   }
-  ["mkf-cat","mkf-fav","mkf-region","mkf-status","mkf-dir","mkf-trend","mkf-sort"].forEach(id=>$(id).addEventListener("change", apply));
-  $("mkf-q").addEventListener("input", apply);
+  ["mkf-cat","mkf-fav","mkf-selected","mkf-region","mkf-status","mkf-dir","mkf-trend","mkf-sort"].forEach(id=>$(id).addEventListener("change", filterStatus));
+  $("mkf-q").addEventListener("input", filterStatus);
+  $("mkf-search").addEventListener("click",apply);
+  $("mk-filters").addEventListener("keydown",ev=>{if(ev.key==="Enter"&&ev.target.id==="mkf-q"){ev.preventDefault();apply();}});
+  $("mkf-reset").addEventListener("click",()=>{["mkf-cat","mkf-q","mkf-region","mkf-status","mkf-dir","mkf-trend","mkf-sort"].forEach(id=>$(id).value="");$("mkf-fav").checked=false;$("mkf-selected").checked=false;apply();});
+  MK.hooks.after.push(filterStatus);
 
   // Kortets extra rader: live-kvot (om strömmad), signal, agentbedömning, trend/sentiment, favorit
   MK.hooks.card.push((m)=>{

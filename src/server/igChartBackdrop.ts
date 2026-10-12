@@ -13,7 +13,7 @@
 //  Delar Tiingo-instans och anropstak med agenternas analys (tiingoBarsShared).
 // ═══════════════════════════════════════════════════════════════════════════
 import type { IgEnvironment } from "../integrations/igConnection.js";
-import { tiingoBarsShared, type TiingoFreq, type TiingoBarsResult } from "./tiingoIntraday.js";
+import { tiingoBarsShared, tiingoTickerFor, type TiingoFreq, type TiingoBarsResult } from "./tiingoIntraday.js";
 import { aggregateBars, IV_MS, TIINGO_MAX_DEVIATION_PCT } from "./igAgentData.js";
 
 export const CHART_BACKDROP_LABEL = "Tiingo-historik (ej IG-pris) + IG-live";
@@ -65,7 +65,7 @@ export function createIgChartBackdrop(deps: {
    * igFirstOpenMs = första IG-ljusets öppningstid (ms) eller null; livePrice = IG:s mittkurs (för rimlighetskontroll).
    */
   async function get(args: { env: IgEnvironment; epic: string; name: string | null; interval: string; limit: number;
-    igBars: number; historyError: string | null; igFirstOpenMs: number | null; livePrice: number | null }): Promise<ChartBackdrop | null> {
+    igBars: number; historyError: string | null; igFirstOpenMs: number | null; livePrice: number | null; nativePriceMultiplier?: number | null; forex?: boolean }): Promise<ChartBackdrop | null> {
     if (!tiingo) return null;
     // Bara när IG inte kan fylla diagrammet: historikfel eller för få stängda IG-ljus
     if (!args.historyError && args.igBars >= CHART_BACKDROP_MIN_IG_BARS) return null;
@@ -74,7 +74,12 @@ export function createIgChartBackdrop(deps: {
     const t = await source(args.epic, args.name, f);
     if (!t) return null;
     if (!t.bars.length) return { source: "tiingo", label: CHART_BACKDROP_LABEL, ticker: t.ticker, bars: [], note: t.note ?? "Tiingo saknar ljus", deviationPct: null, cached: !!t.cached };
-    let k = aggregateBars(t.bars, FREQ_MS[f], dst, now());
+    // Forex måste ha verifierad representation innan Tiingo-kurser jämförs med IG-punkter.
+    const forex = args.forex === true || tiingoTickerFor(args.epic,args.name)?.kind === "fx";
+    const multiplier = args.nativePriceMultiplier ?? (forex ? null : 1);
+    if(multiplier === null || !Number.isFinite(multiplier) || multiplier <= 0)
+      return {source:'tiingo',label:CHART_BACKDROP_LABEL,ticker:t.ticker,bars:[],note:'Forexprisets representation kunde inte verifieras för Tiingo-diagrammet',deviationPct:null,cached:!!t.cached};
+    let k = aggregateBars(t.bars, FREQ_MS[f], dst, now()).map(b=>({...b,open:b.open*multiplier,high:b.high*multiplier,low:b.low*multiplier,close:b.close*multiplier}));
     if (args.igFirstOpenMs !== null) k = k.filter((b) => b.openTime < args.igFirstOpenMs!); // IG-ljusen vinner där de finns
     k = k.slice(-args.limit);
     let deviationPct: number | null = null;

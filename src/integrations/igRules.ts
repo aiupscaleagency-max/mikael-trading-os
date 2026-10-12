@@ -28,8 +28,21 @@ export function igFxPlausibility(base:string,quote:string,rate:{bid:number;offer
   return null;
 }
 const numeric=(v:unknown)=>typeof v==='number'?v:typeof v==='string'&&/^[0-9]+(?:\.[0-9]+)?$/.test(v.trim())?Number(v):NaN;
-/** Ett separat verifieringsunderlag; IG:s scalingFactor bevisar inte prisrepresentationen. */
+/** Verifierad prisrepresentation från samstämmiga kontrakts- och skalningsfält. */
 export interface IgPriceUnitEvidence { multiplier:number; source:string }
+/** IG scalingFactor multiplicerar pipvärdet till instrumentets native prisnivåer.
+ * Primärkälla: https://labs.ig.com/reference/markets-epic.html
+ * Kontraktsidentiteten verifieras innan omräkningen används; prisets storlek används aldrig.
+ */
+export function igResolvePriceUnit(instrument:Record<string,any>,snapshot:Record<string,any>):IgPriceUnitEvidence|null {
+  if(instrument.type!=='CURRENCIES'||instrument.unit!=='CONTRACTS')return null;
+  const meaning=typeof instrument.onePipMeans==='string'?/^([0-9]+(?:\.[0-9]+)?)\s*(?:([A-Z]{3})\/([A-Z]{3}))?$/.exec(instrument.onePipMeans.trim()):null;
+  const pip=meaning?numeric(meaning[1]):NaN,value=numeric(instrument.valueOfOnePip),contract=numeric(instrument.contractSize),scale=numeric(snapshot.scalingFactor);
+  if(![pip,value,contract,scale].every(v=>Number.isFinite(v)&&v>0)||Math.abs(value/pip-contract)>contract*1e-8)return null;
+  const nativePointValue=value*scale,multiplier=contract/nativePointValue;
+  if(!Number.isFinite(multiplier)||multiplier<=0)return null;
+  return {multiplier,source:'IG scalingFactor × valueOfOnePip · verifierad kontraktsidentitet'};
+}
 export function igFxIsFresh(fx:IgAccountFx|null|undefined,accountCurrency:string,now:number,baseCurrency='USD'){
   if(!fx||fx.baseCurrency!==baseCurrency||fx.accountCurrency!==accountCurrency||!Number.isFinite(fx.bid)||!Number.isFinite(fx.offer)||fx.bid<=0||fx.offer<fx.bid)return false;
   // Senaste kurs vid stängd FX-marknad: bara med säkerhetsmarginal och högst FX_STALE_MAX_MS gammal.
@@ -67,8 +80,8 @@ export function igCalculationRules(instrument:Record<string,any>,snapshot:Record
   const currency=(offered.find((c:any)=>c.isDefault===true)??(offered.length===1?offered[0]:null))?.code??null;
   const contract=numeric(instrument.contractSize),native=value/pip;
   const contractMatches=instrument.type!=='CURRENCIES'||instrument.unit==='CONTRACTS'&&contract>0&&Math.abs(native-contract)<=contract*1e-8;
-  // Kursnoterad och punktnoterad forex kan ha samma scalingFactor och kontraktsmetadata.
-  // Därför får varken prisets storlek, EPIC-suffix eller decimalantal välja omräkningen.
+  // Resolvern verifierar scalingFactor tillsammans med pipvärde och kontraktsidentitet.
+  // Prisets storlek, EPIC-suffix och decimalantal får aldrig välja omräkningen.
   // Även onePipMeans utan valutapar kan vara tvetydigt. Endast enhetskontrakt med
   // pip=1 och scalingFactor=1 har samma ekonomiska enhet utan extra omräkning.
   const forex = instrument.type==='CURRENCIES' && !(pip===1 && scaling===1 && contractMatches);
