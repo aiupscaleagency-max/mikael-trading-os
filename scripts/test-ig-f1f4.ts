@@ -246,10 +246,12 @@ const deal = (o: Record<string, unknown>) => tagStrategyDeal({ env: "demo", stra
   assert.match(dash, /<select id="ot-strategy"[^>]*><option value="">Ingen strategi<\/option><\/select>/, "orderpanelen har valet Strategi med Ingen strategi som standard");
   const submit = dash.slice(dash.indexOf('source: "orderpanel"'), dash.indexOf('source: "orderpanel"') + 400);
   assert.match(submit, /if\(strategyId\) body\.strategyId = strategyId;/, "orderpanelens POST-body får strategyId");
-  assert.match(dash, /source: "popup: köp ändå",\s*strategyId: \(window\.OT_STRATEGY && OT_STRATEGY\.get\(\)\) \|\| undefined,/, "popupens Köp ändå skickar strategyId");
+  const popup = dash.slice(dash.indexOf('if(!window.AGTIP || typeof AGTIP.prefill'), dash.indexOf('if(!window.AGTIP || typeof AGTIP.prefill') + 800);
+  assert.match(popup, /AGTIP\.prefill\(/, "popupen fyller orderpanelen");
+  assert.ok(!popup.includes('fetch("/api/pending-orders"'), "popupen lägger ingen order i kön direkt");
   assert.match(dash, /"ot-strategy-" \+ env\(\)/, "senaste val sparas per miljö");
   assert.match(dash, /function saved\(\)\{ try \{ return localStorage\.getItem/, "localStorage läses inom try/catch");
-  ok("F1: Strategi-val i orderpanelen och Köp ändå skickar strategyId, sparat per miljö");
+  ok("F1: Strategi-val skickas från orderpanelen; popupen förifyller utan order, sparat per miljö");
 }
 
 // ══ F4: "Fråga agenten" i varje sidhuvud ══

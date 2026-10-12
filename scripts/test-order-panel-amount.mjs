@@ -39,3 +39,27 @@ IG.st.env = 'live';
 resolveFetch({ json: async () => ({ ok: true }) });
 assert.equal(await pendingEnv, null);
 console.log('PASS: exakt kontantbelopp, kontobyte, saldobyte, procentläge och gamla instrument-/miljösvar; inga nätverksanrop/order');
+
+// Kör förkontrollen från submit med isolerade svar; kön får aldrig anropas här.
+const submitPrefix = html.slice(html.indexOf('  async function submit(side, closeAll)'), html.indexOf('    const body = { symbol: s, side, stakePct: pct()'));
+const notices = [];
+let preview = { ok: false, reason: 'Minsta kontrakt överstiger budgeten' };
+let checkedSide;
+const guardContext = vm.createContext({
+  CFG: { mode: 'live' }, STATE: { killActive: false }, IG,
+  sym: () => epic, validPct: () => true, quoteKey: () => IG.st.env,
+  stakeQuote: async side => { checkedSide = side; return preview; },
+  alert: value => notices.push(value),
+});
+vm.runInContext(submitPrefix + '\nreturn "verified"; }', guardContext);
+assert.equal(await vm.runInContext('submit("SELL", false)', guardContext), undefined);
+assert.equal(checkedSide, 'SELL');
+assert.match(notices.at(-1), /Minsta kontrakt/);
+preview = null;
+assert.equal(await vm.runInContext('submit("BUY", false)', guardContext), undefined);
+preview = { ok: true };
+assert.equal(await vm.runInContext('submit("SELL", false)', guardContext), 'verified');
+vm.runInContext('stakeQuote = async () => { IG.st.env = "demo"; return {ok: true}; }', guardContext);
+assert.equal(await vm.runInContext('submit("BUY", false)', guardContext), undefined);
+assert.match(notices.at(-1), /ändrades/);
+console.log('PASS: riktningsspecifik förkontroll stoppar otillräcklig marginal, saknad offert och kontobyte före orderkön');
