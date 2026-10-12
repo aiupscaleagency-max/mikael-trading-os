@@ -31,3 +31,7 @@
 - Oberoende agentgranskning godkände avgränsad patch. Slutlig typkontroll, hela test:ig, prisrepresentations-, historikbackoff- och frontendregressioner gröna. Alla tester använder isolerade data/mocks; ingen order skickad.
 - scripts/restart-reviewed-ig.sh är en granskad manuell omstartshjälp med processkontroll och atomiskt lås. Har INTE körts. Port 3940 har fortfarande PID 21751 från 11 oktober 23:04; Mikes tidigare försök gav ingen verifierad omstart. Handoff §5 kräver Mikes egen omstart.
 - Kvar före handelsklart: verifierat verkligt IG-pris-/FX-underlag, omstart och faktisk skärm-/anslutningskontroll. ProRealTime-inbäddning fortfarande ej verifierad.
+
+## 2026-10-12 — ekonomiskt V3/V4-underlag
+- Samlar endast whitelisted ekonomiska fält från redan hämtade IG V3/V4-svar och exponerar dem i befintlig klines-meta utan extra anrop. Produktionsresolvern är inte färdig eller verifierad; underlaget behöver läsas efter omstart.
+- Typkontroll grön. JEV-preflight misslyckades med HTTP 402; routing/modeller oförändrade. Senaste usagekontroll: 84 % förbrukat, 16 % kvar; vidare agentarbete begränsas för att skydda Mikes uttryckliga 15–20 %-reserv.

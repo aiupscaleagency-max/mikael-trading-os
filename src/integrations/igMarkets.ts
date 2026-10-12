@@ -305,12 +305,24 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
         return {data,at:now()};
       });
       const data=metadata.data,i=data.instrument,s=data.snapshot;let priceSnapshot=s,streamingPricesAvailable=i.streamingPricesAvailable===true;
+      // Endast ekonomiska fält från redan hämtade svar; inga kontouppgifter eller extra IG-anrop.
+      const observePriceUnit=(version:number,response:any)=>{
+        const instrument=response.instrument??{},snapshot=response.snapshot??{};
+        const ladder=Array.isArray(snapshot.priceLadder)?snapshot.priceLadder[0]:null;
+        return {version,epic:str(instrument.epic),type:str(instrument.type),unit:str(instrument.unit),
+          contractSize:metadataNumber(instrument.contractSize),lotSize:metadataNumber(instrument.lotSize),
+          onePipMeans:str(instrument.onePipMeans),valueOfOnePip:metadataNumber(instrument.valueOfOnePip),
+          currencies:Array.isArray(instrument.currencies)?instrument.currencies.map((c:any)=>({code:str(c.code),isDefault:c.isDefault===true})):[],
+          bid:num(ladder?.bid??snapshot.bid),offer:num(ladder?.ask??snapshot.offer),
+          scalingFactor:num(snapshot.scalingFactor),decimalPlacesFactor:num(snapshot.decimalPlacesFactor)};
+      };
+      const priceUnitObservations=[observePriceUnit(3,data)];
       // Metadata kan återanvändas, men en äldre V3-kvot blir aldrig en ny färsk kvot.
       if(metadata.at!==now()||igQuoteTimestamp(s.updateTimeUTC,now())===null){
         priceSnapshot={marketStatus:s.marketStatus,delayTime:s.delayTime,bid:s.bid,offer:s.offer};
-        try{const latest=await read(mode,`markets/${epic}`,"GET","4");if(latest.instrument?.epic===epic&&latest.snapshot?.scalingFactor===s.scalingFactor){priceSnapshot=latest.snapshot;streamingPricesAvailable=latest.instrument.streamingPricesAvailable===true;}}catch(e){if(e instanceof Error&&e.message.startsWith('IG begränsade antal'))throw e;/* Saknad UTC-tid håller order- och signalgrinden stängd. */}
+        try{const latest=await read(mode,`markets/${epic}`,"GET","4");if(latest.instrument?.epic===epic)priceUnitObservations.push(observePriceUnit(4,latest));if(latest.instrument?.epic===epic&&latest.snapshot?.scalingFactor===s.scalingFactor){priceSnapshot=latest.snapshot;streamingPricesAvailable=latest.instrument.streamingPricesAvailable===true;}}catch(e){if(e instanceof Error&&e.message.startsWith('IG begränsade antal'))throw e;/* Saknad UTC-tid håller order- och signalgrinden stängd. */}
       }
-      return {environment:mode,epic,priceUnit:deps.priceUnit?.(mode,epic)??null,name:str(i.name),type:str(i.type),category:igMarketCategory({name:i.name,type:i.type}),expiry:str(i.expiry),status:"ready",error:null,
+      return {environment:mode,epic,priceUnitObservations,priceUnit:deps.priceUnit?.(mode,epic)??null,name:str(i.name),type:str(i.type),category:igMarketCategory({name:i.name,type:i.type}),expiry:str(i.expiry),status:"ready",error:null,
         quote:{...igSnapshotQuote(priceSnapshot,now()),percentageChange:num(priceSnapshot.percentageChange),netChange:num(priceSnapshot.netChange),high:num(priceSnapshot.high),low:num(priceSnapshot.low)},
         instrument:{epic,streamingPricesAvailable,marketId:str(i.marketId),type:str(i.type),expiry:str(i.expiry),unit:str(i.unit),contractSize:metadataNumber(i.contractSize),lotSize:metadataNumber(i.lotSize),valueOfOnePip:metadataNumber(i.valueOfOnePip),onePipMeans:str(i.onePipMeans),scalingFactor:num(s.scalingFactor),decimalPlacesFactor:num(s.decimalPlacesFactor),marginFactor:num(i.marginFactor),marginFactorUnit:str(i.marginFactorUnit),marginDepositBands:clone(i.marginDepositBands??[]),currencies:clone(i.currencies??[]),controlledRiskAllowed:i.controlledRiskAllowed===true,forceOpenAllowed:i.forceOpenAllowed===true,stopsLimitsAllowed:i.stopsLimitsAllowed===true},
         dealingRules:clone(data.dealingRules),updatedAt:now()};

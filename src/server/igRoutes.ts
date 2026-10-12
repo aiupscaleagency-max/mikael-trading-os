@@ -457,7 +457,17 @@ export async function handleIgRoutes(
       // Demo-simulering: Live-instrument som saknas på IG Demo läses från Live (src), visas i Demo-vyn märkta
       const src = dataEnvFor(env, epic), sim = src !== env;
       let meta: Record<string, unknown> = {};
-      try { const m = await getIgMarket(src, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(src, epic, m.name, m.category); igMarketData.setRestQuote(src, epic, m.quote, m.instrument?.streamingPricesAvailable); meta = { name: sim ? igMarketData.nameOf(epic, env) ?? m.name : m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus }; }
+      try { const m = await getIgMarket(src, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(src, epic, m.name, m.category); igMarketData.setRestQuote(src, epic, m.quote, m.instrument?.streamingPricesAvailable); // Samma redan hämtade IG-svar ger ett uttryckligt ekonomiskt underlag, aldrig anslutningsuppgifter.
+        const instrument = m.instrument as Record<string, unknown>;
+        const rules = m.calculationRules as Record<string, unknown>;
+        const pick = (value: Record<string, unknown>, keys: string[]) => Object.fromEntries(keys.map((key) => [key, value[key] ?? null]));
+        meta = {
+          name: sim ? igMarketData.nameOf(epic, env) ?? m.name : m.name, type: m.type, category: m.category, marketStatus: m.quote.marketStatus,
+          instrument: { ...pick(instrument, ["epic", "type", "unit", "contractSize", "lotSize", "valueOfOnePip", "onePipMeans", "scalingFactor", "decimalPlacesFactor", "marginFactor", "marginFactorUnit"]),
+            currencies: Array.isArray(instrument.currencies) ? instrument.currencies.map((c) => pick(c as Record<string, unknown>, ["code", "isDefault"])) : [] },
+          calculationRules: pick(rules, ["pointValue", "profitPointValue", "nativePointValue", "pointCurrency", "executionCurrency", "marginRate", "marginBasis", "priceScalingFactor", "nativePriceMultiplier", "priceUnitSource", "verified", "source", "note", "minSize", "fxError"]),
+          priceUnitObservations: (m as unknown as { priceUnitObservations?: unknown }).priceUnitObservations ?? null,
+        }; }
       catch (e) { meta = { metaError: e instanceof Error ? e.message : String(e) }; }
       try { await igMarketData.ensureSeries(src, epic, iv); } catch { /* historyError visas nedan */ }
       igMarketData.requestStream([epic], src);
