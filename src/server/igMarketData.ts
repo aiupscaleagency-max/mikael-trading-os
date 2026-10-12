@@ -169,6 +169,8 @@ export function createIgMarketData(deps: {
     const tf = iv as IgTimeframe;
     if (!IV_MS[iv]) throw new Error(`IG stöder inte intervallet ${iv}`);
     const s = getSeries(env, epic, iv);
+    // Bakgrundshistorik väntar på analysen och på föregående fels återförsökstid.
+    if (igAnalysisActive(env) || now() < (s.historyRetryAt ?? 0)) return;
     try {
       const res = await candles(env, epic, tf, 200);
       if (res.quote) setRestQuote(env, epic, res.quote);
@@ -184,6 +186,8 @@ export function createIgMarketData(deps: {
       }
       else if (fresh.length) { s.closed.push(...fresh); if (s.closed.length > MAX_BUFFER) s.closed.splice(0, s.closed.length - MAX_BUFFER); }
       s.historyError = res.status === "unavailable" ? (res.error ?? "historik saknas") : null;
+      // Även ett normalt svar utan tillgänglig historik behöver vila, inte nya anrop varje varv.
+      s.historyRetryAt = s.historyError ? now() + (res.error === IG_HISTORY_RATE_ERROR ? IG_HISTORY_BLOCK_MS : 60_000) : undefined;
       s.updatedAt = now();
       // Stort glapp (alla hämtade ljus nya): signalera bara det senaste stängda ljuset, inte 200 gamla
       const emitList = last === -Infinity ? [] : fresh.length < got.length ? fresh : fresh.slice(-1);
@@ -405,6 +409,7 @@ export function createIgMarketData(deps: {
     for (const x of activeSeries(env)) {
       const [epic, iv] = x.split("|") as [string, string];
       const s = getSeries(env, epic, iv), last = s.closed[s.closed.length - 1];
+      if (igAnalysisActive(env) || now() < (s.historyRetryAt ?? 0)) continue;
       if (s.historyError && s.closed.length < 50 && now() >= (s.historyRetryAt ?? 0) && !s.seeding) { s.seeding = refreshHistory(env, epic, iv).finally(() => { s.seeding = undefined; }); continue; }
       if (streamUp && streamedKeys.get(env)?.has(x)) continue;
       if (last && now() >= last.closeTime + IV_MS[iv]! + 5_000 && !s.seeding) { s.seeding = refreshHistory(env, epic, iv).finally(() => { s.seeding = undefined; }); }

@@ -196,7 +196,7 @@ const TICKET = { epic: EPIC, direction: "BUY", size: 100, orderType: "MARKET", s
       snapshot: { marketStatus: closed ? "EDITS_ONLY" : "TRADEABLE", delayTime: 0, bid: x.bid, offer: x.offer, updateTimestampUTC: clock - 200, scalingFactor: 1 }, dealingRules: {} };
   };
   const status = () => ({ environments: { demo: { status: "connected", connectionGeneration: "fx-1", account: { accountId: "A", accountType: "CFD", currency: "SEK" } }, live: { status: "disconnected" } } }) as never;
-  const m = createIgMarkets({ call: call as never, status, now: () => clock });
+  const m = createIgMarkets({ call: call as never, status, now: () => clock, priceUnit:()=>({multiplier:1,source:"Isolerad fixture: kursnoterad"}) });
   const gbp = await m.accountFx("demo", "GBP");
   assert.ok(gbp && gbp.bid === 13.0 && gbp.path === "GBP/SEK", "GBP direkt");
   const nok = await m.accountFx("demo", "NOK");

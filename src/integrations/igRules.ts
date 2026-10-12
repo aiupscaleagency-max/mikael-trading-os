@@ -2,7 +2,7 @@
 // FX (granskning 2): valfri noteringsvaluta → kontovaluta. baseCurrency = instrumentets exekveringsvaluta.
 // stale=true: valutamarknaden är stängd (helg) och senaste verifierade kurs används med säkerhetsmarginal
 // (bid sänkt, offer höjd med safetyMargin) och etiketten "senaste växelkurs (fredag)".
-export interface IgAccountFx {baseCurrency:string;accountCurrency:string;bid:number;offer:number;receivedAt:number;observedAt:number;source:string;epic?:string;stale?:boolean;label?:string;safetyMargin?:number;path?:string}
+export interface IgAccountFx {baseCurrency:string;accountCurrency:string;bid:number;offer:number;receivedAt:number;observedAt:number;source:string;epic?:string;stale?:boolean;label?:string;safetyMargin?:number;path?:string;priceUnitVerified?:boolean}
 export const FX_SAFETY_MARGIN=0.02;
 /** Hur länge en senaste verifierad kurs får användas när FX-marknaden är stängd (helg + helgdag). */
 export const FX_STALE_MAX_MS=4*86400000;
@@ -28,6 +28,8 @@ export function igFxPlausibility(base:string,quote:string,rate:{bid:number;offer
   return null;
 }
 const numeric=(v:unknown)=>typeof v==='number'?v:typeof v==='string'&&/^[0-9]+(?:\.[0-9]+)?$/.test(v.trim())?Number(v):NaN;
+/** Ett separat verifieringsunderlag; IG:s scalingFactor bevisar inte prisrepresentationen. */
+export interface IgPriceUnitEvidence { multiplier:number; source:string }
 export function igFxIsFresh(fx:IgAccountFx|null|undefined,accountCurrency:string,now:number,baseCurrency='USD'){
   if(!fx||fx.baseCurrency!==baseCurrency||fx.accountCurrency!==accountCurrency||!Number.isFinite(fx.bid)||!Number.isFinite(fx.offer)||fx.bid<=0||fx.offer<fx.bid)return false;
   // Senaste kurs vid stängd FX-marknad: bara med säkerhetsmarginal och högst FX_STALE_MAX_MS gammal.
@@ -43,27 +45,35 @@ export function igPairQuote(market:Record<string,any>,base:string,quote:string,n
   const code=(cur.find((c:any)=>c?.isDefault===true)??(cur.length===1?cur[0]:null))?.code;
   if(cur.length&&code!==quote)return null;
   if(inst.scalingFactor!==undefined&&inst.scalingFactor!==null&&!(numeric(inst.scalingFactor)>0))return null;
+  const unit=market.priceUnit as IgPriceUnitEvidence|undefined;
+  if(!unit || !Number.isFinite(unit.multiplier) || unit.multiplier<=0 || typeof unit.source!=='string' || !unit.source.trim())return null;
   if(q?.marketStatus!=='TRADEABLE'||q.delayTime!==0||!(q.bid>0)||!(q.offer>=q.bid))return null;
   if(![q.receivedAt,q.observedAt].every((t:number)=>Number.isFinite(t)&&now-t>=0&&now-t<=60000))return null;
-  return {bid:q.bid,offer:q.offer,receivedAt:q.receivedAt,observedAt:q.observedAt,epic:market.epic};
+  return {bid:q.bid/unit.multiplier,offer:q.offer/unit.multiplier,receivedAt:q.receivedAt,observedAt:q.observedAt,epic:market.epic};
 }
 // IG:s exchangeRate-fält anger inte riktning. Bara ett uttryckligen verifierat par används.
 export function igUsdSekFx(market:Record<string,any>,now:number):IgAccountFx|null {
   const q=market.quote,scale=numeric(market.instrument?.scalingFactor);
-  const rules=igCalculationRules(market.instrument??{},{scalingFactor:scale},'SEK',null,now);
+  const rules=igCalculationRules(market.instrument??{},{scalingFactor:scale},'SEK',null,now,market.priceUnit);
   if(!rules.verified||rules.executionCurrency!=='SEK'||market.type!=='CURRENCIES'||!/^USD\s*\/\s*SEK(?:\s+Mini)?\s*$/i.test(market.name??'')||!(scale>0)||q?.marketStatus!=='TRADEABLE'||q.delayTime!==0)return null;
-  const fx:IgAccountFx={baseCurrency:'USD',accountCurrency:'SEK',bid:q.bid,offer:q.offer,receivedAt:q.receivedAt,observedAt:q.observedAt,source:'IG USD/SEK · verifierad native bid/ask',epic:market.epic};
+  const pair=igPairQuote(market,'USD','SEK',now);if(!pair)return null;
+  const fx:IgAccountFx={baseCurrency:'USD',accountCurrency:'SEK',bid:pair.bid,offer:pair.offer,receivedAt:q.receivedAt,observedAt:q.observedAt,source:'IG USD/SEK · verifierad prisrepresentation',epic:market.epic};
   return igFxIsFresh(fx,'SEK',now)?fx:null;
 }
-export function igCalculationRules(instrument:Record<string,any>,snapshot:Record<string,any>,accountCurrency:string|null,fx:IgAccountFx|null=null,now=Date.now()) {
+export function igCalculationRules(instrument:Record<string,any>,snapshot:Record<string,any>,accountCurrency:string|null,fx:IgAccountFx|null=null,now=Date.now(),priceUnit?:IgPriceUnitEvidence) {
   const meaning=typeof instrument.onePipMeans==='string'?/^([0-9]+(?:\.[0-9]+)?)\s*(?:([A-Z]{3})\/([A-Z]{3}))?$/.exec(instrument.onePipMeans.trim()):null;
   const pip=meaning?numeric(meaning[1]):NaN,value=numeric(instrument.valueOfOnePip),scaling=numeric(snapshot.scalingFactor);
   const offered=Array.isArray(instrument.currencies)?instrument.currencies:[];
   const currency=(offered.find((c:any)=>c.isDefault===true)??(offered.length===1?offered[0]:null))?.code??null;
   const contract=numeric(instrument.contractSize),native=value/pip;
   const contractMatches=instrument.type!=='CURRENCIES'||instrument.unit==='CONTRACTS'&&contract>0&&Math.abs(native-contract)<=contract*1e-8;
-  // Bid/ask anges redan i native prisnivå. scalingFactor används för pip-avstånd, aldrig en andra gång för kursvärdet.
-  const nativePointValue=[pip,value,scaling].every(v=>Number.isFinite(v)&&v>0)&&Number.isFinite(native)&&currency&&(!meaning?.[2]||meaning[2]===currency)&&contractMatches?native:null;
+  // Kursnoterad och punktnoterad forex kan ha samma scalingFactor och kontraktsmetadata.
+  // Därför får varken prisets storlek, EPIC-suffix eller decimalantal välja omräkningen.
+  // Även onePipMeans utan valutapar kan vara tvetydigt. Endast enhetskontrakt med
+  // pip=1 och scalingFactor=1 har samma ekonomiska enhet utan extra omräkning.
+  const forex = instrument.type==='CURRENCIES' && !(pip===1 && scaling===1 && contractMatches);
+  const multiplier = forex ? (priceUnit && typeof priceUnit.source==='string' && priceUnit.source.trim() && Number.isFinite(priceUnit.multiplier) && priceUnit.multiplier>0 ? priceUnit.multiplier : null) : 1;
+  const nativePointValue=multiplier!==null&&[pip,value,scaling].every(v=>Number.isFinite(v)&&v>0)&&Number.isFinite(native)&&currency&&(!meaning?.[2]||meaning[2]===currency)&&contractMatches?native/multiplier:null;
   const convert=!!currency&&!!accountCurrency&&currency!==accountCurrency&&igFxIsFresh(fx,accountCurrency,now,currency);
   const pointValue=nativePointValue!==null?(currency===accountCurrency?nativePointValue:convert?nativePointValue*fx!.offer:null):null;
   const profitPointValue=pointValue!==null?(convert?nativePointValue!*fx!.bid:pointValue):null;
@@ -71,7 +81,7 @@ export function igCalculationRules(instrument:Record<string,any>,snapshot:Record
   const percentages=Array.isArray(bands)?[factor,...bands.map((b:any)=>numeric(b.margin))]:[];
   const marginRate=instrument.marginFactorUnit==='PERCENTAGE'&&percentages.length>0&&percentages.every(v=>Number.isFinite(v)&&v>0&&v<=100)?Math.max(...percentages)/100:null;
   const marginBasis=marginRate!==null&&percentages.some(v=>v!==factor)?'Konservativ övre gräns · högsta verifierade IG-marginalband':'IG procentmarginal';
-  return {pointValue,profitPointValue,nativePointValue,pointCurrency:pointValue!==null?accountCurrency:currency??null,executionCurrency:currency??null,marginRate,marginBasis,priceScalingFactor:scaling,fx:convert?fx:null,verified:pointValue!==null,source:'IG native valueOfOnePip / onePipMeans · verifierat mot contractSize',note:pointValue===null?'Punktvärde eller färsk kontovalutaomräkning kunde inte verifieras':`${marginBasis} · bruttoscenario före slippage och okända avgifter`};
+  return {pointValue,profitPointValue,nativePointValue,pointCurrency:pointValue!==null?accountCurrency:currency??null,executionCurrency:currency??null,marginRate,marginBasis,priceScalingFactor:scaling,nativePriceMultiplier:multiplier,priceUnitSource:forex?priceUnit?.source??null:null,fx:convert?fx:null,verified:pointValue!==null,source:'IG valueOfOnePip / onePipMeans · verifierat mot contractSize och prisrepresentation',note:multiplier===null?'Forexprisets representation (kurs eller punkter) kunde inte verifieras; ingen storlek eller marginal räknas':pointValue===null?'Punktvärde eller färsk kontovalutaomräkning kunde inte verifieras':`${marginBasis} · bruttoscenario före slippage och okända avgifter`};
 }
 export function igQuoteTimestamp(time:unknown,receivedAt:number):number|null {
   if(typeof time!=='string'||!/^\d{2}:\d{2}:\d{2}$/.test(time))return null;

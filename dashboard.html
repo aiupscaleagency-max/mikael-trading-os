@@ -9383,7 +9383,7 @@ document.addEventListener("DOMContentLoaded", boot);
   let otType = "MARKET";
   const $ = (id)=>document.getElementById(id);
   const esc = IG.esc;
-  let quoteT = 0, lastSym = null, sq = null, sqKey = "", sqBusy = false;
+  let quoteT = 0, lastSym = null, sq = null, sqKey = "", sqBusy = false, sqRetryKey = "", sqRetryAt = 0;
   function sym(){ return (typeof STATE !== "undefined" && STATE.symbol) || ""; }
   // Återanvänd positionspanelen och dess knappar, utan extra API-anrop eller dubbla element.
   const positions = $("resultsBox"), orderCard = $("ot-buy")?.closest(".card");
@@ -9471,14 +9471,17 @@ document.addEventListener("DOMContentLoaded", boot);
     if(!validPct()) return { error: "Beloppet måste motsvara 0,1–3 % av IG-saldot." };
     const key = quoteKey(direction);
     if(key === sqKey && sq) return sq;
+    if(key === sqRetryKey && Date.now() < sqRetryAt) return sq;
     if(sqBusy) return null;
     sqBusy = true;
     try{
       const r = await fetch("/api/ig/stake-quote", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ epic: s, direction, pct: pct(), takeProfit: tp > 0 ? tp : undefined, stopLoss: sl > 0 ? sl : undefined }) });
       const result = await r.json().catch(()=>null);
       if(key !== quoteKey(direction)) return null;
-      sq = result; sqKey = sq && !sq.error ? key : ""; // ett fel (t.ex. IG:s läsgräns) sparas inte, nästa försök frågar igen
-    }catch(_){ sq = null; }
+      sq = result; sqKey = sq && !sq.error ? key : "";
+      // Samma misslyckade beräkning väntar så att bevakningen inte tränger undan orderläsningar.
+      sqRetryKey = sq?.error ? key : ""; sqRetryAt = sq?.error ? Date.now() + 30000 : 0;
+    }catch(_){ if(key !== quoteKey(direction)) return null; sq = { error: "Beräkningen kunde inte hämtas. Nytt försök om 30 sekunder." }; sqRetryKey = key; sqRetryAt = Date.now() + 30000; }
     finally{ sqBusy = false; }
     return sq;
   }
@@ -9644,7 +9647,7 @@ document.addEventListener("DOMContentLoaded", boot);
 
   document.querySelectorAll(".ot-type").forEach(b=>{ if(b.dataset.ot === "MARKET") b.classList.add("active"); else b.classList.remove("active"); });
   syncType(); syncAmt();
-  setInterval(()=>{ renderQuote(); if(Date.now() - quoteT > 3000){ quoteT = Date.now(); renderEst(); } }, 500);
+  setInterval(()=>{ if(document.hidden) return; renderQuote(); if(Date.now() - quoteT > 3000){ quoteT = Date.now(); renderEst(); } }, 500);
   setInterval(syncVenue, 10000); syncVenue();
   IG.on("env", syncVenue); // Demo ↔ Live: platsen uppdateras direkt
 })();

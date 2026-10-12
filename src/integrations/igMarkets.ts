@@ -1,8 +1,8 @@
 // IG marknadsdata (katalog, instrument, kvot, historik, kontohistorik).
 // Utdrag ur Codex igWorkspace.ts (codex/ig-continuation-20261007): endast läsvägar.
 // Analys/sessioner ligger i vårt eget agentflöde (JEV → Teknisk + Risk → Hanna).
-import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igFxIsFresh,igPairQuote,igStaleFx,igFxPlausibility,FX_STALE_MAX_MS,type IgAccountFx} from "./igRules.js";
-import {callIgAuthenticated,getIgReadBudget,isIgTemporaryRateError,getIgStatus,getIgAccountIdentity,IG_READ_RATE_ERROR,type IgEnvironment} from "./igConnection.js";
+import {igCalculationRules,igQuoteTimestamp,igSnapshotQuote,igFxIsFresh,igPairQuote,igStaleFx,igFxPlausibility,FX_STALE_MAX_MS,type IgAccountFx,type IgPriceUnitEvidence} from "./igRules.js";
+import {callIgAuthenticated,getIgReadBudget,isIgTemporaryRateError,getIgStatus,getIgAccountIdentity,IG_READ_RATE_ERROR,IG_HISTORY_RATE_ERROR,getIgHistoryBlockedUntil,type IgEnvironment} from "./igConnection.js";
 import {igReadStats,IG_BACKGROUND_CAPS,withIgReadConsumer,type createIgReadStats} from "./igReadStats.js";
 import crypto from "node:crypto";
 import {igAnalysisActive} from "./igAnalysisGate.js";
@@ -55,6 +55,9 @@ export const IG_CATALOGUE_FULL_REFRESH_MS=24*3600_000;
 export const IG_CATALOGUE_TRICKLE_MS=120_000;
 type ReadStats=ReturnType<typeof createIgReadStats>;
 export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:typeof getIgStatus;now?:()=>number;paused?:(mode:IgEnvironment)=>boolean;
+  /** Separat verifierat underlag; får aldrig härledas från kursens storlek eller EPIC. */
+  priceUnit?:(mode:IgEnvironment,epic:string)=>IgPriceUnitEvidence|null;
+  historyBlockedUntil?:(mode:IgEnvironment)=>number;
   /** Räknare per förbrukare (standard: serverns gemensamma i produktion, ingen i tester med egen call) */
   readStats?:ReadStats|null;
   /** Sparad katalog-genomgång (tester sätter egen fil/konto; standard i produktion: data-katalogen + inloggat konto) */
@@ -307,7 +310,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
         priceSnapshot={marketStatus:s.marketStatus,delayTime:s.delayTime,bid:s.bid,offer:s.offer};
         try{const latest=await read(mode,`markets/${epic}`,"GET","4");if(latest.instrument?.epic===epic&&latest.snapshot?.scalingFactor===s.scalingFactor){priceSnapshot=latest.snapshot;streamingPricesAvailable=latest.instrument.streamingPricesAvailable===true;}}catch(e){if(e instanceof Error&&e.message.startsWith('IG begränsade antal'))throw e;/* Saknad UTC-tid håller order- och signalgrinden stängd. */}
       }
-      return {environment:mode,epic,name:str(i.name),type:str(i.type),category:igMarketCategory({name:i.name,type:i.type}),expiry:str(i.expiry),status:"ready",error:null,
+      return {environment:mode,epic,priceUnit:deps.priceUnit?.(mode,epic)??null,name:str(i.name),type:str(i.type),category:igMarketCategory({name:i.name,type:i.type}),expiry:str(i.expiry),status:"ready",error:null,
         quote:{...igSnapshotQuote(priceSnapshot,now()),percentageChange:num(priceSnapshot.percentageChange),netChange:num(priceSnapshot.netChange),high:num(priceSnapshot.high),low:num(priceSnapshot.low)},
         instrument:{epic,streamingPricesAvailable,marketId:str(i.marketId),type:str(i.type),expiry:str(i.expiry),unit:str(i.unit),contractSize:metadataNumber(i.contractSize),lotSize:metadataNumber(i.lotSize),valueOfOnePip:metadataNumber(i.valueOfOnePip),onePipMeans:str(i.onePipMeans),scalingFactor:num(s.scalingFactor),decimalPlacesFactor:num(s.decimalPlacesFactor),marginFactor:num(i.marginFactor),marginFactorUnit:str(i.marginFactorUnit),marginDepositBands:clone(i.marginDepositBands??[]),currencies:clone(i.currencies??[]),controlledRiskAllowed:i.controlledRiskAllowed===true,forceOpenAllowed:i.forceOpenAllowed===true,stopsLimitsAllowed:i.stopsLimitsAllowed===true},
         dealingRules:clone(data.dealingRules),updatedAt:now()};
@@ -353,6 +356,8 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     if(!currency||!/^[A-Z]{3}$/.test(currency)||!/^[A-Z]{3}$/.test(base))return null;
     if(currency===base)return {baseCurrency:base,accountCurrency:currency,bid:1,offer:1,receivedAt:now(),observedAt:now(),source:`${base}-konto · ingen valutaomräkning`};
     const key=`${mode}:${base}:${currency}`;
+    // Äldre sparade växelkurser saknar bevis för prisrepresentation och får inte kringgå spärren.
+    if(!deps.priceUnit){fxRejected.set(key,'Växelkursens prisrepresentation kunde inte verifieras; ingen storlek räknas');return null;}
     let fresh:IgAccountFx|null=null,rejected:string|null=null;
     try{
       const got=await cached<{fx:IgAccountFx}|{rejected:string}|null>(`fx:${mode}:${base}${currency}`,30000,async()=>{
@@ -367,9 +372,10 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
           }
         }
         if(!r)return null; // även "ingen färsk kurs" cachas 30 s så att en stängd FX-marknad inte kostar läsningar
-        const reason=igFxPlausibility(base,currency,r,others,loadFxLast()[key]??null,now());
+        const previous=loadFxLast()[key];
+        const reason=igFxPlausibility(base,currency,r,others,previous?.priceUnitVerified===true?previous:null,now());
         if(reason)return {rejected:reason};
-        return {fx:{baseCurrency:base,accountCurrency:currency,bid:r.bid,offer:r.offer,receivedAt:r.receivedAt,observedAt:r.observedAt,source:`IG ${r.path} · verifierad bid/ask`,path:r.path} as IgAccountFx};
+        return {fx:{baseCurrency:base,accountCurrency:currency,bid:r.bid,offer:r.offer,receivedAt:r.receivedAt,observedAt:r.observedAt,source:`IG ${r.path} · verifierad bid/ask och prisrepresentation`,path:r.path,priceUnitVerified:true} as IgAccountFx};
       });
       if(got&&'rejected' in got)rejected=got.rejected;else fresh=got?.fx??null;
     }catch(e){if(e instanceof Error&&e.message.startsWith('IG begränsade antal'))fresh=null;}
@@ -378,7 +384,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     fxRejected.delete(key);
     if(fresh&&igFxIsFresh(fresh,currency,now(),base)){saveFxLast(key,fresh);return fresh;}
     const last=loadFxLast()[key];
-    if(last&&now()-last.observedAt<=FX_STALE_MAX_MS){const stale=igStaleFx(last);return igFxIsFresh(stale,currency,now(),base)?stale:null;}
+    if(last?.priceUnitVerified===true&&now()-last.observedAt<=FX_STALE_MAX_MS){const stale=igStaleFx(last);return igFxIsFresh(stale,currency,now(),base)?stale:null;}
     return null;
   }
   async function market(mode:IgEnvironment,epic:string) {
@@ -386,13 +392,18 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     const currencies=detail.instrument.currencies;
     const execution=(currencies.find((c:any)=>c.isDefault===true)??(currencies.length===1?currencies[0]:null))?.code;
     const fx=execution&&currency&&execution!==currency?await accountFx(mode,execution):null;
-    const rules=igCalculationRules(detail.instrument,{scalingFactor:detail.instrument.scalingFactor},currency,fx,now());
+    // Dessa metadata bevisar inte ensamma om ett forexpris anges som kurs eller punkter.
+    // Reglerna stoppar beräkningen tills separat prisrepresentationsunderlag finns.
+    const rules=igCalculationRules(detail.instrument,{scalingFactor:detail.instrument.scalingFactor,decimalPlacesFactor:detail.instrument.decimalPlacesFactor},currency,fx,now(),detail.priceUnit??undefined);
     // Orimlig växelkurs: tydligt besked i stället för en storlek (pointValue saknas då redan).
     const fxError=execution&&currency&&execution!==currency&&!fx?accountFxError(mode,execution):null;
     return {...detail,calculationRules:{...rules,...(fxError?{note:fxError,fxError}:{}),minSize:detail.dealingRules.minDealSize?.value??null}};
   }
   async function candles(mode:IgEnvironment,epic:string,timeframe:IgTimeframe,limit=100) {
     connected(mode);epicGuard(epic);if(!Object.hasOwn(frames,timeframe)||!Number.isInteger(limit)||limit<20||limit>200)throw Error("Ogiltiga IG-ljusparametrar");
+    // Kontots historikspärr kontrolleras före instrumentmetadata, så nya serier inte slösar läsbudget.
+    const blockedUntil=deps.historyBlockedUntil?.(mode)??(deps.call?0:getIgHistoryBlockedUntil(mode));
+    if(blockedUntil>now())throw Error(IG_HISTORY_RATE_ERROR);
     const detail=await market(mode,epic);
     const cacheKey=`prices:${mode}:${epic}:${timeframe}:${limit}`;
     const prior=cache.get(`${cacheKey}:account:${connectionIdentity(mode)}`)?.value;

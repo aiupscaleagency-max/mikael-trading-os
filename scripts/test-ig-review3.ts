@@ -230,9 +230,9 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   assert.equal(igFxPlausibility("USD", "SEK", { bid: 10, offer: 10.01 }, [{ bid: 10.01, offer: 10.02, path: "x" }], null, 0), null);
   // N3: parets egna instrumentregler: kvotvalutan måste vara parets och skalningen positiv.
   const q = { marketStatus: "TRADEABLE", delayTime: 0, bid: 10, offer: 10.01, receivedAt: 1000, observedAt: 1000 };
-  assert.ok(igPairQuote({ type: "CURRENCIES", name: "USD/SEK", epic: "E", quote: q, instrument: { currencies: [{ code: "SEK", isDefault: true }], scalingFactor: 1 } }, "USD", "SEK", 1000));
-  assert.equal(igPairQuote({ type: "CURRENCIES", name: "USD/SEK", epic: "E", quote: q, instrument: { currencies: [{ code: "USD", isDefault: true }], scalingFactor: 1 } }, "USD", "SEK", 1000), null, "fel kvotvaluta");
-  assert.equal(igPairQuote({ type: "CURRENCIES", name: "USD/SEK", epic: "E", quote: q, instrument: { currencies: [{ code: "SEK", isDefault: true }], scalingFactor: 0 } }, "USD", "SEK", 1000), null, "skalning 0");
+  assert.ok(igPairQuote({ priceUnit:{multiplier:1,source:"Isolerad fixture: kursnoterad"}, type: "CURRENCIES", name: "USD/SEK", epic: "E", quote: q, instrument: { currencies: [{ code: "SEK", isDefault: true }], scalingFactor: 1 } }, "USD", "SEK", 1000));
+  assert.equal(igPairQuote({ priceUnit:{multiplier:1,source:"Isolerad fixture: kursnoterad"}, type: "CURRENCIES", name: "USD/SEK", epic: "E", quote: q, instrument: { currencies: [{ code: "USD", isDefault: true }], scalingFactor: 1 } }, "USD", "SEK", 1000), null, "fel kvotvaluta");
+  assert.equal(igPairQuote({ priceUnit:{multiplier:1,source:"Isolerad fixture: kursnoterad"}, type: "CURRENCIES", name: "USD/SEK", epic: "E", quote: q, instrument: { currencies: [{ code: "SEK", isDefault: true }], scalingFactor: 0 } }, "USD", "SEK", 1000), null, "skalning 0");
 
   // Fixture-marknader (samma form som granskning 2)
   let clock = Date.parse("2026-10-09T10:00:00Z"), currency = "SEK";
@@ -259,7 +259,7 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
       snapshot: { marketStatus: "TRADEABLE", delayTime: 0, bid: x.bid, offer: x.offer, updateTimestampUTC: clock - 200, scalingFactor: 1 }, dealingRules: {} };
   };
   const status = () => ({ environments: { demo: { status: "connected", connectionGeneration: "fx-1", account: { accountId: "A", accountType: "CFD", currency } }, live: { status: "disconnected" } } }) as never;
-  const m = createIgMarkets({ call: call as never, status, now: () => clock });
+  const m = createIgMarkets({ call: call as never, status, now: () => clock, priceUnit:()=>({multiplier:1,source:"Isolerad fixture: kursnoterad"}) });
 
   // 1. Giltig kurs sparas som senaste verifierade.
   const usd = await m.accountFx("demo", "USD");
@@ -276,13 +276,13 @@ const EPIC = "CS.D.EURUSD.MINI.IP";
   assert.ok((await m.accountFx("demo", "USD"))?.bid === 10.2); assert.equal(m.accountFxError("demo", "USD"), null);
   // 4. Direkt och omvänt par säger olika (SEK/USD finns också och pekar på 12,5): avvisas.
   clock += 61_000; pairs["SEK/USD"] = { epic: "CS.D.SEKUSD.CFD.IP", bid: 0.08, offer: 0.0801 };
-  const gm = createIgMarkets({ call: call as never, status, now: () => clock });
+  const gm = createIgMarkets({ call: call as never, status, now: () => clock, priceUnit:()=>({multiplier:1,source:"Isolerad fixture: kursnoterad"}) });
   assert.equal(await gm.accountFx("demo", "USD"), null);
   assert.match(String(gm.accountFxError("demo", "USD")), /stämmer inte mellan vägarna USD\/SEK .* 1\/\(SEK\/USD\)/);
   delete pairs["SEK/USD"];
   // 5. Kors via USD stämmer inte med direkt EUR/SEK (USD-benen redan cachade, inga extra läsningar).
   clock += 61_000; pairs["USD/SEK"]!.bid = 12.0; pairs["USD/SEK"]!.offer = 12.01;
-  const cm = createIgMarkets({ call: call as never, status, now: () => clock });
+  const cm = createIgMarkets({ call: call as never, status, now: () => clock, priceUnit:()=>({multiplier:1,source:"Isolerad fixture: kursnoterad"}) });
   currency = "USD"; assert.ok(await cm.accountFx("demo", "EUR"), "EUR/USD-benet cachas");
   currency = "SEK"; assert.ok(await cm.accountFx("demo", "USD"), "USD/SEK-benet cachas");
   assert.equal(await cm.accountFx("demo", "EUR"), null, "EUR/SEK 11 mot kors 1,1 × 12 = 13,2");

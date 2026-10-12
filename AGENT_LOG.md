@@ -23,3 +23,11 @@
 - Resultatrutorna visar okänt/inte verifierat vid d.error, aldrig falskt nollantal positioner eller nollresultat.
 - Backendfixen är inte aktiverad i körande process. Handoff §5 kräver att Mike gör omstart när riktiga pengar är upplåsta.
 - Verklig Demo-quote EURUSD CEEM visar misstänkt orimlig marginal; reviewer belägger motsägelse mellan kurs-/punktnotation i igRules och UI. Exakt rättning väntar på verifierad instrumentmetadata och FX-notation; ingen blind division infördes.
+
+## 2026-10-12 — läskvot och verifiering av ekonomiska prisenheter
+- Historik väntar under analys och respekterar backoff även med befintliga ljus; unavailable-svar väntar. Global historikspärr kontrolleras före instrumentmetadata.
+- Orderpanelens samma beräkningsfel försöks igen först efter 30 sekunder; dold sida pausar pollningen. Gamla nätfelsvar avvisas vid instrument-/miljöbyte.
+- Forexpris och FX kräver separat verifierad representation. scalingFactor ensam räcker inte; äldre sparad overifierad FX används inte. Kurs-/punktrepresentation med verifierat underlag ger identiska ekonomiska resultat i regressionerna. Produktion saknar detta underlag: forex och valutaomräkning, inklusive USD-krypto på SEK-konto, förblir blockerade. Detta är en säkerhetsrättning, INTE en färdig handelsintegration.
+- Oberoende agentgranskning godkände avgränsad patch. Slutlig typkontroll, hela test:ig, prisrepresentations-, historikbackoff- och frontendregressioner gröna. Alla tester använder isolerade data/mocks; ingen order skickad.
+- scripts/restart-reviewed-ig.sh är en granskad manuell omstartshjälp med processkontroll och atomiskt lås. Har INTE körts. Port 3940 har fortfarande PID 21751 från 11 oktober 23:04; Mikes tidigare försök gav ingen verifierad omstart. Handoff §5 kräver Mikes egen omstart.
+- Kvar före handelsklart: verifierat verkligt IG-pris-/FX-underlag, omstart och faktisk skärm-/anslutningskontroll. ProRealTime-inbäddning fortfarande ej verifierad.
