@@ -2025,7 +2025,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         + '<div class="am-btns"><button type="button" class="am-ok" data-am="approve" data-id="' + esc(o.id) + '">✓ GODKÄNN</button>'
         + '<button type="button" class="am-no" data-am="reject" data-id="' + esc(o.id) + '">Avvisa</button></div></div>';
     }
-    var bestCand = null, modalRevision = 0, renderedEnvironment = null;
+    var bestCand = null, modalRevision = 0, renderedEnvironment = null, renderedNotes = [];
     if(window.IG) IG.on("env", function(){ modalRevision++; bestCand = null; closeModal(); });
     // Bästa läge just nu (indikatorerna på stängda IG-ljus). Lång eller kort — IG tillåter båda.
     async function bestBuy() {
@@ -2049,18 +2049,25 @@ body.app-state-onboard .fc-panel{display:none !important}
       var list = [], candidate = null;
       try {
         var r = await fetch("/api/pending-orders"); var d = await r.json();
-        var since = Date.parse(a.startedAt || 0) - 5000;
+        var since = Date.parse(a.startedAt || 0);
         list = (d.orders || []).filter(function (o) { return o.status === "pending" && o.source === "agent" && Date.parse(o.createdAt) >= since; });
       } catch (_) {}
       // Vad analyserades och med vilken tid
       var hzNow = window._hzMin || 1, pairs = "";
-      try { var tr = await fetch("/api/team/last"); var td = await tr.json(); pairs = ((td.team && td.team.symbols) || []).map(function (s) { return nm(s); }).join(", "); } catch (_) {}
-      var head = '<div style="margin-bottom:6px;color:#8b95a7">Tidshorisont <b style="color:#e6e6e6">' + hzNow + " min</b>"
+      // Bind resultatet till samma analysomgång, aldrig den globala senaste teamkörningen.
+      var notes = (a.notes || []).filter(function(n){ return n.env === environment; });
+      var ended = Date.parse(a.endedAt || ""), analyzed = new Set(notes.map(function(n){ return n.epic; }));
+      list = list.filter(function(o){ return analyzed.has(o.symbol) && Number.isFinite(ended) && Date.parse(o.createdAt) <= ended && o.venue === (environment === "live" ? "broker:ig" : "broker:ig-demo"); });
+      pairs = Array.from(new Set(notes.map(function(n){ return n.epic; }))).map(nm).join(", ");
+      var fullResult = '<details class="am-row"><summary>Visa sparad analys för denna omgång</summary><div style="white-space:pre-wrap;margin-top:8px">' + esc(a.summary || a.reason || "Sammanfattning saknas.") + '</div>'
+        + (!notes.length ? '<p>Instrumenturval saknas i denna analys. Ingen annan körnings instrument visas som ersättning.</p>' : "")
+        + notes.map(function(n, index){ return '<details style="margin-top:8px"><summary>' + esc(nm(n.epic)) + ' · ' + esc(n.action || "besked saknas") + '</summary><div style="white-space:pre-wrap">' + esc(n.verdict || "") + (n.technical ? "\n\nTeknisk analys:\n" + esc(n.technical) : "") + (n.trigger ? "\n\nUnderlag:\n" + esc(n.trigger) : "") + (n.tip && n.tip.epic === n.epic && window.AGTIP ? "\n\n" + AGTIP.line(n.tip) + ((n.tip.action === "buy" || n.tip.action === "sell") ? '<button type="button" data-am="open-note" data-note="' + index + '">Öppna i orderpanelen</button>' : "")  : "") + '</div></details>'; }).join("") + '</details>';
+      var head = '<div style="margin-bottom:6px;color:#8b95a7">Aktuell vald standardhorisont <b style="color:#e6e6e6">' + hzNow + " min</b>"
         + (pairs ? " · analyserade <b style=\"color:#e6e6e6\">" + esc(pairs) + "</b>" : "") + " · kl " + new Date().toLocaleTimeString("sv-SE").slice(0, 5) + "</div>";
       var html = "";
       if (!list.length) {
         var line = String(a.summary || "").split("\n").map(function (x) { return x.replace(/[*#>]/g, "").trim(); }).filter(Boolean)[0] || "Ingen tydlig signal just nu.";
-        html = head + '<div class="am-big" style="color:#8b95a7">VÄNTA – agenterna föreslår inget köp</div><div style="margin-top:6px">' + esc(line) + "</div>";
+        html = head + '<div class="am-big" style="color:#8b95a7">Inga nya väntande agentordrar i denna omgång</div><div style="margin-top:6px">' + esc(line) + "</div>";
         candidate = await bestBuy();
         if (candidate) {
           var pct = stakePctNow(), sq = null;
@@ -2077,7 +2084,7 @@ body.app-state-onboard .fc-panel{display:none !important}
             + '<div style="margin-top:2px;color:#8b95a7">Pris ~' + esc(candidate.entry) + (candidate.tp ? " · målpris " + esc(candidate.tp) : "") + (candidate.sl ? " · stop-loss " + esc(candidate.sl) : "") + " · håll " + candidate.hz + " min</div>"
             + outcome(fake)
             + (q && q.ok === false && (q.reason || q.error) ? '<div style="margin-top:4px;color:#fbbf24;font-size:12px">⚠ ' + esc(q.reason || q.error) + "</div>" : "")
-            + '<div style="margin-top:6px;color:#fbbf24;font-size:12px">⚠ Agenterna sa vänta. Detta är ditt eget beslut.</div>'
+            + '<div style="margin-top:6px;color:#fbbf24;font-size:12px">Separat regelbaserat alternativ. Se agenternas beslut i analysen ovan.</div>'
             + '<div class="am-btns"><button type="button" class="am-ok" data-am="open-panel" data-pct="' + pct + '">Öppna i orderpanelen</button>'
             + '<button type="button" class="am-no" data-am="close">Nej, vänta</button></div></div>';
         } else {
@@ -2088,7 +2095,8 @@ body.app-state-onboard .fc-panel{display:none !important}
         html = head + list.map(rowHtml).join("");
       }
       if(revision !== modalRevision || environment !== (window.IG && IG.st.env)) return;
-      bestCand = candidate; renderedEnvironment = environment;
+      html = head + fullResult + html.slice(head.length);
+      bestCand = candidate; renderedEnvironment = environment; renderedNotes = notes;
       body.innerHTML = html;
       modal.classList.add("open");
       try {
@@ -2110,6 +2118,11 @@ body.app-state-onboard .fc-panel{display:none !important}
     body.addEventListener("click", async function (e) {
       var b = e.target.closest("button[data-am]"); if (!b) return;
       if (b.dataset.am === "close") { closeModal(); return; }
+      if (b.dataset.am === "open-note") {
+        var note = renderedNotes[Number(b.dataset.note)];
+        if(renderedEnvironment !== (window.IG && IG.st.env) || !note || !note.tip || (note.tip.action !== "buy" && note.tip.action !== "sell") || note.tip.epic !== note.epic || !window.AGTIP){ closeModal(); return; }
+        AGTIP.prefill(note.tip); closeModal(); return;
+      }
       if (b.dataset.am === "open-panel" && bestCand) {
         if(renderedEnvironment !== (window.IG && IG.st.env)){ closeModal(); return; }
         // Förifyll bara befintlig orderpanel; inga order skickas eller köas här.
