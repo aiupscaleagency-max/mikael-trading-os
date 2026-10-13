@@ -2606,7 +2606,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         var isLive = brokerInfo && brokerInfo.mode === "live";
         var liveLocked = isLive && !(window.IG && IG.st.execution && IG.st.execution.live);
         sm.textContent = (isLive ? (liveLocked ? "LIVE · BARA LÄSNING, ORDER LÅSTA" : "LIVE — IG LIVE, RIKTIGA PENGAR") : "TEST — IG DEMO")
-          + (d.executionMode === "approve" ? " · VARJE ORDER KRÄVER GODKÄNN" : " · AUTO-LÄGE");
+          + (brokerInfo && ["ig", "ig-demo"].includes(brokerInfo.name) || d.executionMode === "approve" ? " · VARJE ORDER KRÄVER GODKÄNN" : " · AUTO-LÄGE");
         sm.style.color = isLive ? "#22c55e" : "#f0b90b";
       }
       pendingMetaEl.textContent = "Mäklare: " + brokerLabel();
@@ -2685,7 +2685,12 @@ body.app-state-onboard .fc-panel{display:none !important}
   // Auto / manuellt: tydligt vilket läge som gäller
   function showExecMode(mode) {
     var sw = document.getElementById("execSwitch"); if (!sw) return;
-    sw.querySelectorAll("button[data-exec]").forEach(function (b) { b.classList.toggle("on", b.dataset.exec === mode); });
+    var igBroker = brokerInfo && ["ig", "ig-demo"].includes(brokerInfo.name);
+    if(igBroker) mode = "approve";
+    sw.querySelectorAll("button[data-exec]").forEach(function (b) {
+      b.classList.toggle("on", b.dataset.exec === mode);
+      if(b.dataset.exec === "auto") { b.disabled = !!igBroker; b.textContent = igBroker ? "IG kräver GODKÄNN" : "⚡ AUTO · agenterna lägger själva"; }
+    });
     sw.classList.toggle("is-auto", mode === "auto");
     var isLive = brokerInfo && brokerInfo.mode === "live";
     var h = document.getElementById("execHint");
@@ -2695,8 +2700,9 @@ body.app-state-onboard .fc-panel{display:none !important}
   }
   var execSw = document.getElementById("execSwitch");
   if (execSw) execSw.addEventListener("click", async function (e) {
-    var b = e.target.closest("button[data-exec]"); if (!b || b.classList.contains("on")) return;
+    var b = e.target.closest("button[data-exec]"); if (!b || b.disabled || b.classList.contains("on")) return;
     var mode = b.dataset.exec;
+    if (mode === "auto" && brokerInfo && ["ig", "ig-demo"].includes(brokerInfo.name)) return;
     if (mode === "auto" && !confirm("Slå på AUTO?\n\nAgenterna lägger då sina ordrar själva, utan att du godkänner, inom gränserna. Bara i TEST (låtsaspengar).")) return;
     try {
       var r = await fetch("/api/execution-mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ executionMode: mode }) });
@@ -5911,46 +5917,60 @@ function escapeHtml(s){
 let chatEnvironmentRevision = 0;
 IG.on("env", ()=>{ chatEnvironmentRevision++; });
 
+// Ett asynkront svar hör till exakt den logg och kontorevision där det startade.
+function beginTeamChatRequest(){
+  const log=teamChatLog, env=IG.st.env, revision=chatEnvironmentRevision, mode=currentUiMode;
+  const key=activeChatKey();
+  return {log,env,revision,mode,
+    current:()=>teamChatLog===log&&IG.st.env===env&&chatEnvironmentRevision===revision&&currentUiMode===mode,
+    removePending(pending){const index=log.indexOf(pending);if(index>=0)log.splice(index,1);},
+    save(){if(log!==chatLogLive&&log!==chatLogTestnet)return;try{localStorage.setItem(key,JSON.stringify(log.slice(-200)));}catch(_){} }
+  };
+}
+
 async function sendTeamChat(){
   const txt = document.getElementById("team-chat-text");
   const send = document.getElementById("team-chat-send");
   const instruction = txt.value.trim();
-  if(!instruction) return;
+  if(!instruction || send.disabled) return;
   if(!requireTradingKeys("Skicka instruktion till teamet")) return;
 
   // Push user msg
-  teamChatLog.push({role:"user", text:instruction, timestamp:Date.now()});
+  const request=beginTeamChatRequest();
+  request.log.push({role:"user", text:instruction, timestamp:Date.now()});
   txt.value = "";
   send.disabled = true;
   send.textContent = "Kör...";
   renderTeamChatLog();
 
   // Push system status
-  teamChatLog.push({role:"system", text:"⏳ IG-teamet analyserar... (JEV → Teknisk → Hanna)", timestamp:Date.now()});
+  const pending={role:"system", text:"⏳ IG-teamet analyserar... (JEV → Teknisk → Hanna)", timestamp:Date.now()};
+  request.log.push(pending);
   renderTeamChatLog();
 
   try{
     // BINANCE-AGENT via Claude API — mänsklig dialog + tool_use för riktiga orders
     const mode = currentUiMode === "live" ? "live" : "testnet";
-    const history = teamChatLog
+    const history = request.log
       .filter(m => m.role === "user" || m.role === "team")
       .slice(-10, -1)  // senaste 9 meddelanden (exklusive nyligen pushade user-msg)
       .map(m => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
-    const chatEnv = IG.st.env, chatRevision = chatEnvironmentRevision;
+    const chatEnv = request.env;
     const context = window.CHATCTX ? await window.CHATCTX.collect() : undefined;
-    if(chatEnv !== IG.st.env || chatRevision !== chatEnvironmentRevision) throw new Error("Kontot ändrades medan chattunderlaget lästes. Skicka instruktionen igen i rätt miljö.");
+    if(!request.current()) return;
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ message: instruction, mode, history, context })
     });
     const data = await r.json();
-    teamChatLog.pop(); // ta bort "⏳ Teamet analyserar..."
+    if(!request.current()) return;
+    request.removePending(pending);
     if(!data.ok){
-      teamChatLog.push({role:"system", text:`❌ ${data.error}`, timestamp:Date.now()});
+      request.log.push({role:"system", text:`❌ ${data.error}`, timestamp:Date.now()});
     } else {
       if(window.CHATCTX) window.CHATCTX.showUsed(data.contextUsed);
-      teamChatLog.push({
+      request.log.push({
         role: "team",
         text: "[IG " + chatEnv + "] " + (data.reply || "(tomt svar)"),
         timestamp: Date.now(),
@@ -5966,9 +5986,11 @@ async function sendTeamChat(){
       }
     }
   } catch(e) {
-    teamChatLog.pop();
-    teamChatLog.push({role:"system", text:"❌ Fel: "+e.message, timestamp:Date.now()});
+    request.removePending(pending);
+    if(request.current()) request.log.push({role:"system", text:"❌ Fel: "+e.message, timestamp:Date.now()});
   } finally {
+    request.removePending(pending);
+    request.save();
     send.disabled = false;
     send.innerHTML = `Skicka <span style="font-size:9px;color:rgba(0,0,0,.6);margin-left:4px">⌘↵</span>`;
     renderTeamChatLog();
@@ -7178,37 +7200,40 @@ async function sendFromFloating(){
   const txt = document.getElementById("fc-text");
   const send = document.getElementById("fc-send");
   const instruction = txt.value.trim();
-  if(!instruction) return;
+  if(!instruction || send.disabled) return;
   if(!requireTradingKeys("Skicka instruktion")) return;
 
-  teamChatLog.push({role:"user", text:instruction, timestamp:Date.now()});
+  const request=beginTeamChatRequest();
+  request.log.push({role:"user", text:instruction, timestamp:Date.now()});
   txt.value = "";
   send.disabled = true; send.textContent = "...";
   renderTeamChatLog();
 
-  teamChatLog.push({role:"system", text:"⏳ Teamet analyserar...", timestamp:Date.now()});
+  const pending={role:"system", text:"⏳ Teamet analyserar...", timestamp:Date.now()};
+  request.log.push(pending);
   renderTeamChatLog();
 
   try{
     const mode = currentUiMode === "live" ? "live" : "testnet";
-    const history = teamChatLog
+    const history = request.log
       .filter(m => m.role === "user" || m.role === "team")
       .slice(-10, -1)
       .map(m => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
-    const chatEnv = IG.st.env, chatRevision = chatEnvironmentRevision;
+    const chatEnv = request.env;
     const context = window.CHATCTX ? await window.CHATCTX.collect() : undefined;
-    if(chatEnv !== IG.st.env || chatRevision !== chatEnvironmentRevision) throw new Error("Kontot ändrades medan chattunderlaget lästes. Skicka instruktionen igen i rätt miljö.");
+    if(!request.current()) return;
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ message: instruction, mode, history, context })
     });
     const data = await r.json();
-    teamChatLog.pop();
+    if(!request.current()) return;
+    request.removePending(pending);
     if(!data.ok){
-      teamChatLog.push({role:"system", text:`❌ ${data.error}`, timestamp:Date.now()});
+      request.log.push({role:"system", text:`❌ ${data.error}`, timestamp:Date.now()});
     } else {
-      teamChatLog.push({role:"team", text: "[IG " + chatEnv + "] " + (data.reply || "(tomt svar)"), timestamp:Date.now(), instruction, toolCall: data.toolCall, executed: data.executed});
+      request.log.push({role:"team", text: "[IG " + chatEnv + "] " + (data.reply || "(tomt svar)"), timestamp:Date.now(), instruction, toolCall: data.toolCall, executed: data.executed});
       if(window.CHATCTX) window.CHATCTX.showUsed(data.contextUsed);
       if(data.toolCall && typeof refreshBinanceSync === "function"){
         _lastPtFetch.testnet = 0; _lastPtFetch.live = 0;
@@ -7217,9 +7242,11 @@ async function sendFromFloating(){
       }
     }
   }catch(e){
-    teamChatLog.pop();
-    teamChatLog.push({role:"system", text:"❌ Fel: "+e.message, timestamp:Date.now()});
+    request.removePending(pending);
+    if(request.current()) request.log.push({role:"system", text:"❌ Fel: "+e.message, timestamp:Date.now()});
   }finally{
+    request.removePending(pending);
+    request.save();
     send.disabled = false; send.textContent = "Skicka";
     renderTeamChatLog();
   }
@@ -7468,6 +7495,7 @@ let binanceLastUpdate = null;
 // Poll riktiga Binance-priser när PROPOSE-mode är aktivt
 // Kvoter för bevakningslistan + valt instrument från IG (servern: ström, REST som reserv).
 async function pollBinancePrices(){
+  if(document.hidden || !document.getElementById("page-trade")?.classList.contains("active")) return;
   try {
     const symbols = [...new Set([STATE.symbol, ...SYMBOLS.watch])].filter(IG.isEpic).slice(0, 30);
     if(!symbols.length) return;
@@ -8355,10 +8383,11 @@ async function refreshBinanceSync(){
 
 // Demo ↔ Live: konton, positioner och resultat för den nya miljön direkt (anropar aldrig IG.refresh, ingen slinga)
 IG.on("env", ()=>{ refreshBinanceSync(); });
+document.addEventListener("page-shown", event=>{ if(["trade","trades"].includes(event.detail)) refreshBinanceSync(); });
 function startBinanceSync(){
   if(binanceSyncInterval) return;
   refreshBinanceSync();
-  binanceSyncInterval = setInterval(refreshBinanceSync, 15000); // IG-konton + positioner (servern respekterar IG:s läskvot)
+  binanceSyncInterval = setInterval(()=>{ if(!document.hidden && ["trade","trades"].some(page=>document.getElementById("page-"+page)?.classList.contains("active"))) refreshBinanceSync(); }, 15000); // IG-konton + positioner (servern respekterar IG:s läskvot)
   // IG: priserna kommer via serverns ström (/api/market/stream).
 }
 

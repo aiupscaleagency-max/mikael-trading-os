@@ -21,7 +21,7 @@ import { handleIgRoutes, liveReadAllowed, liveOrdersAllowed } from "./igRoutes.j
 import { getIgTimes, setIgTimes, ANALYSIS_INTERVALS, SESSION_MINUTES } from "./igTimes.js";
 import { type createIgSessions, DIRECT_ANALYSIS_MAX } from "./igSessions.js";
 import { listIgImportedSignals, reviewIgImportedSignal } from "../integrations/igImportedSignals.js";
-import { igOrderExecutionEnabled, igWritesEnabled } from "../integrations/igConnection.js";
+import { getIgStatus, igOrderExecutionEnabled, igWritesEnabled } from "../integrations/igConnection.js";
 import { currentStake, setStakeEnvProvider } from "../risk/stakeLadder.js";
 // M5 (granskning 2): insats-trappan följer aktiv IG-miljö (egna resultat och eget saldo).
 setStakeEnvProvider(() => igMarketData.getActiveEnv());
@@ -326,8 +326,9 @@ export async function executeApprovedOrder(
 
 // ─── IG: nytt förslag i Väntande ordrar (från dashboarden, popupen eller strategier) ───
 // Insatsen är en andel (%) av IG-saldot i kontovalutan = marginalen ordern får använda.
-export async function createIgPendingOrder(b: Record<string, unknown>, broker: IgBroker): Promise<
+export async function createIgPendingOrder(b: Record<string, unknown>, broker: IgBroker, assertCurrent?: () => void): Promise<
   { ok: true; pendingOrder: PendingOrder; quote: unknown } | { ok: false; error: string; status?: number; quote?: unknown }> {
+  assertCurrent?.();
   const symbol = String(b.symbol ?? "").trim();
   const side = b.side === "SELL" ? "SELL" : b.side === "BUY" ? "BUY" : null;
   if (!/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$/.test(symbol) || !side) return { ok: false, error: "Välj ett IG-instrument (EPIC) och KÖP/SÄLJ" };
@@ -347,11 +348,14 @@ export async function createIgPendingOrder(b: Record<string, unknown>, broker: I
     let opposite: Awaited<ReturnType<IgBroker["getPositions"]>>;
     try { opposite = (await broker.getPositions({ fresh: true })).filter((x) => x.symbol === symbol && x.dealId && x.direction !== side); }
     catch (err) { return { ok: false, status: 409, error: `IG-positionerna kunde inte läsas, så det går inte att avgöra om ordern ska stänga eller öppna: ${err instanceof Error ? err.message : String(err)}` }; }
+    assertCurrent?.();
     if (opposite.length) {
       const gate = await checkOrderGate({ live: broker.mode === "live", side, unitsOrder: true, opening: false, source: String(b.source || "dashboard") });
+      assertCurrent?.();
       if (!gate.ok) return { ok: false, error: gate.error };
       let first: PendingOrder | null = null;
       for (const pos of opposite) {
+        assertCurrent?.();
         const po = await addPendingOrder({
           source: String(b.source || "dashboard").slice(0, 60), venue: `broker:${broker.name}`, live: broker.mode === "live",
           symbol, side, name: pos.name ?? igMarketData.nameOf(symbol) ?? undefined, quantity: pos.quantity, closeDealId: pos.dealId,
@@ -366,6 +370,7 @@ export async function createIgPendingOrder(b: Record<string, unknown>, broker: I
   // Krav E5: grinden (och sessionens försöksräkning) körs FÖRE insats- och budgetkontrollen. Ett försök
   // som sedan stoppas (insats, budget, kurs) är förbrukat och märks "stoppad"; det kringgår aldrig taket.
   const gate = await checkOrderGate({ live: broker.mode === "live", side, unitsOrder: true, opening: true, source: String(b.source || "dashboard"), symbol });
+  assertCurrent?.();
   if (!gate.ok) return { ok: false, error: gate.error };
   const sessionAttempt = gate.sessionAttempt;
   const fail = <T extends { ok: false; error: string }>(r: T): T => { reportSessionAttempt(sessionAttempt, "stoppad", r.error); return r; };
@@ -373,10 +378,12 @@ export async function createIgPendingOrder(b: Record<string, unknown>, broker: I
   // Demo-simulering: insatsen räknas på simuleringens saldo för Live-instrument som saknas på IG Demo
   try { [account, ticker] = await Promise.all([broker.getAccountFor(symbol), broker.getTicker(symbol)]); }
   catch (err) { return fail({ ok: false, status: 409, error: err instanceof Error ? err.message : String(err) }); }
+  assertCurrent?.();
   if (takeProfit === undefined || stopLoss === undefined) {
     const lv = await broker.defaultLevels(symbol, side).catch(() => null);
     if (lv) { takeProfit ??= lv.takeProfit; stopLoss ??= lv.stopLoss; }
   }
+  assertCurrent?.();
   const ref = limitPrice ?? ticker.price;
   const sign = side === "BUY" ? 1 : -1;
   if (takeProfit !== undefined && sign * (takeProfit - ref) <= 0) return fail({ ok: false, error: side === "BUY" ? `Målpris ska vara över priset (${ref})` : `Vid SÄLJ (kort) ska målpriset vara under priset (${ref})` });
@@ -387,9 +394,11 @@ export async function createIgPendingOrder(b: Record<string, unknown>, broker: I
   // Fast antal (quantity) prissätts och måste klara samma budget (≤ 3 % marginal) som en insats
   if (quantity !== undefined && !(Number.isFinite(quantity) && quantity > 0)) return fail({ ok: false, error: "Antalet måste vara över 0" });
   const q = await broker.stakeQuote({ epic: symbol, direction: side, stake: stakeAmount, stopLoss, takeProfit, ...(quantity !== undefined ? { size: quantity } : {}) }).catch((e) => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }) as { ok: boolean; reason?: string });
+  assertCurrent?.();
   if (!q.ok) return fail({ ok: false, error: q.reason ?? "Storleken kunde inte räknas fram", quote: q });
   const hz = Number(b.horizonSec);
   const horizonSec = Number.isFinite(hz) && hz > 0 ? Math.round(Math.min(hz, 30 * 86400)) : undefined;
+  assertCurrent?.();
   const p = await addPendingOrder({
     source: String(b.source || "dashboard").slice(0, 60), venue: `broker:${broker.name}`, live: broker.mode === "live",
     symbol, side, name: igMarketData.nameOf(symbol) ?? undefined, stakePct: pct, stakeAmount, currency: account.currency,
@@ -910,19 +919,21 @@ const sseClients: Set<http.ServerResponse> = new Set();
 
 // Runtime broker selection — vilken broker agenten använder som "primär"
 let activeBrokerName: string | null = null;
+let activeBrokerRevision = 0;
 
 export function getActiveBrokerName(): string | null {
   return activeBrokerName;
 }
 
 export function setActiveBrokerName(name: string | null): void {
+  if (activeBrokerName !== name) activeBrokerRevision++;
   activeBrokerName = name;
   igMarketData.setActiveEnv(name === "ig" ? "live" : "demo");
 }
 /** Visas IG Live just nu (aktiv mäklare = Live)? Då kräver varje agentorder Godkänn, även om AUTO valts. */
 export function activeBrokerIsLive(): boolean { return activeBrokerName === "ig"; }
 /** Läget som faktiskt gäller för agenternas ordrar just nu (visning): Live visas → alltid Godkänn. Sparat val ändras inte. */
-function effectiveExecutionMode(): string { return activeBrokerIsLive() ? "approve" : config.executionMode; }
+export function effectiveExecutionMode(): string { return activeBrokerName === null || activeBrokerName === "ig" || activeBrokerName === "ig-demo" ? "approve" : config.executionMode; }
 /** Aktiv mäklare: IG Live bara när den uttryckligen valts, annars IG Demo. */
 function activeName(brokers: Record<string, BrokerAdapter>): string | undefined {
   return activeBrokerName && brokers[activeBrokerName] ? activeBrokerName : brokers["ig-demo"] ? "ig-demo" : Object.keys(brokers)[0];
@@ -1476,15 +1487,15 @@ export function startServer(
           jsonStatus(res, 400, { ok: false, error: "Välj auto eller approve." });
           return;
         }
-        if (executionMode === "auto" && (!autoAllowed() || activeBrokerIsLive())) {
-          jsonStatus(res, 409, { ok: false, error: "AUTO går bara i TEST. I LIVE kräver varje order alltid Godkänn." });
+        if (executionMode === "auto" && (!autoAllowed() || activeBrokerName === null || activeBrokerName === "ig" || activeBrokerName === "ig-demo")) {
+          jsonStatus(res, 409, { ok: false, error: "IG Demo och IG Live kräver alltid Godkänn. AUTO är endast tillgängligt för andra TEST-mäklare." });
           return;
         }
         setExecutionMode(executionMode);
         await saveExecutionMode(executionMode).catch((e) => log.warn(`Kunde inte spara auto/manuellt: ${(e as Error).message}`));
         log.warn(`Agenternas ordrar: ${executionMode === "auto" ? "AUTO (läggs direkt inom gränserna, TEST)" : "MANUELL (varje order väntar på Godkänn)"} — valt på Trade-sidan`);
         broadcastEvent("mode-changed", { mode: config.mode, executionMode: effectiveExecutionMode() });
-        json(res, { ok: true, executionMode: effectiveExecutionMode(), autoAllowed: autoAllowed() && !activeBrokerIsLive() });
+        json(res, { ok: true, executionMode: effectiveExecutionMode(), autoAllowed: autoAllowed() && activeBrokerName !== null && activeBrokerName !== "ig" && activeBrokerName !== "ig-demo" });
         return;
       }
 
@@ -2314,12 +2325,22 @@ export function startServer(
           const igName = activeName(brokers);
           const igb = igName ? brokers[igName] : undefined;
           if (igb instanceof IgBroker) {
+            const brokerRevision = activeBrokerRevision;
+            const generation = getIgStatus().environments[igb.env].connectionGeneration;
+            const sessionBinding = () => { const s = igSessions?.state(igb.env).session; return JSON.stringify([s?.id, s?.status]); };
+            const sessionId = sessionBinding();
             try {
               const { igChat } = await import("./igChat.js");
-              const { sanitizeChatContext } = await import("./igChatContext.js");
+              const { sanitizeChatContext, igChatEnvironmentMatches, igChatSessionSummary } = await import("./igChatContext.js");
+              if (!igChatEnvironmentMatches(context, igb.env)) { jsonStatus(res, 409, { ok: false, error: "Chattens miljö matchar inte aktivt IG-konto. Skicka om frågan från rätt miljö." }); return; }
+              const assertCurrent = () => {
+                if (activeBrokerRevision !== brokerRevision || activeName(brokers) !== igName || getIgStatus().environments[igb.env].connectionGeneration !== generation || sessionBinding() !== sessionId) throw new Error("IG-chattens miljö, anslutning eller session ändrades. Skicka om frågan.");
+              };
+              assertCurrent();
               const ctx = sanitizeChatContext(context, igb.env === "live" ? "live" : "demo");
               // F1: chattens förslag bär en strategi bara om modellen uttryckligen anger den (strategy_id); kontexten ärvs inte.
-              const out = await igChat(message, history || [], igb, { llm: createLlmClient(), createPending: createIgPendingOrder, contextPrompt: ctx.prompt });
+              const out = await igChat(message, history || [], igb, { llm: createLlmClient(), createPending: (body, broker) => createIgPendingOrder(body, broker, assertCurrent), assertCurrent, contextPrompt: ctx.prompt + igChatSessionSummary(igSessions?.state(igb.env), ctx.used.epic) });
+              assertCurrent();
               if (out.ok && out.toolCall) broadcastEvent("pending-orders", { from: "chat" });
               json(res, { ...out, contextUsed: ctx.used });
             } catch (err) {

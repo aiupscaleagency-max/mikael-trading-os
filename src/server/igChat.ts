@@ -17,6 +17,8 @@ type Llm = { messages: { create: (p: Anthropic.MessageCreateParamsNonStreaming) 
 export interface IgChatDeps {
   /** Kontext från dashboarden (krav F4), redan validerad i igChatContext.ts. */
   contextPrompt?: string;
+  /** Avbryter om aktiv miljö, anslutning eller agentsession har ändrats. */
+  assertCurrent?: () => void;
   llm: Llm;
   createPending: (b: Record<string, unknown>, broker: IgBroker) => Promise<{ ok: boolean; error?: string; pendingOrder?: { id: string; symbol: string; side: string; name?: string; stakeAmount?: number; currency?: string } }>;
   watchlist?: () => { epic: string; name: string | null; category: string | null }[];
@@ -51,9 +53,11 @@ const TOOLS: Anthropic.Tool[] = [
 ];
 
 export async function executeIgChatTool(name: string, input: Record<string, unknown>, broker: IgBroker, deps: IgChatDeps): Promise<unknown> {
+  deps.assertCurrent?.();
   const watch = (deps.watchlist ?? (() => igMarketData.watchlistDetailed(broker.env)))();
   if (name === "get_account_status") {
-    const [acc, pos] = await Promise.all([broker.getAccount(), broker.getPositions().catch(() => [])]);
+    const [acc, pos] = await Promise.all([broker.getAccount(), broker.getPositions()]);
+    deps.assertCurrent?.();
     return {
       environment: broker.env === "live" ? "IG Live" : "IG Demo", currency: acc.currency, balance: acc.balance, available: acc.available,
       profit_loss: acc.profitLoss,
@@ -62,12 +66,17 @@ export async function executeIgChatTool(name: string, input: Record<string, unkn
   }
   if (name === "close_all_positions") {
     const pos = await broker.getPositions();
+    deps.assertCurrent?.();
     const out = [];
     for (const p of pos) {
       if (!p.dealId) continue;
+      deps.assertCurrent?.();
       const gate = await checkOrderGate({ live: broker.mode === "live", side: p.direction === "SELL" ? "BUY" : "SELL", unitsOrder: true, opening: false, source: "chat:close_all" });
+      deps.assertCurrent?.();
       if (!gate.ok) { out.push({ epic: p.symbol, ok: false, error: gate.error }); continue; }
+      deps.assertCurrent?.();
       const q = await addPendingOrder({ source: "chat:close_all", venue: `broker:${broker.name}`, live: broker.mode === "live", symbol: p.symbol, side: p.direction === "SELL" ? "BUY" : "SELL", quantity: p.quantity, closeDealId: p.dealId, name: p.name ?? undefined, reason: "Stäng allt (chatten)" });
+      deps.assertCurrent?.();
       out.push({ epic: p.symbol, name: p.name, queued: q.id });
     }
     return { ok: true, executed: false, waiting_for_approval: out.filter((o) => "queued" in o).length, results: out, message: "Inget är stängt än. Stängningarna väntar på ditt godkännande." };
@@ -82,7 +91,9 @@ export async function executeIgChatTool(name: string, input: Record<string, unkn
       if (!allowed.has(epic)) { results.push({ epic, ok: false, error: "Finns inte i bevakningslistan — inga påhittade EPICs" }); continue; }
       // F1: strategin följer med bara när modellen uttryckligen anger den; servern tar bara med kända id:n.
       const strategyId = typeof input.strategy_id === "string" && input.strategy_id ? input.strategy_id : undefined;
+      deps.assertCurrent?.();
       const r = await deps.createPending({ symbol: epic, side, stakePct: pct, source: "chat", reason: input.reason ? String(input.reason) : "Från chatten", ...(strategyId ? { strategyId } : {}) }, broker);
+      deps.assertCurrent?.();
       results.push(r.ok ? { epic, ok: true, queued: r.pendingOrder?.id, stake: r.pendingOrder?.stakeAmount, currency: r.pendingOrder?.currency } : { epic, ok: false, error: r.error });
     }
     return { ok: true, executed: false, results, message: "Inga ordrar är lagda än. De väntar på Mikes godkännande under Väntande ordrar." };
@@ -93,9 +104,11 @@ export async function executeIgChatTool(name: string, input: Record<string, unkn
 export async function igChat(
   message: string, history: Array<{ role: "user" | "assistant"; text: string }>, broker: IgBroker, deps: IgChatDeps,
 ): Promise<{ ok: true; reply: string; toolCall?: string; executed: Record<string, unknown> | null } | { ok: false; error: string }> {
+  deps.assertCurrent?.();
   const watch = (deps.watchlist ?? (() => igMarketData.watchlistDetailed(broker.env)))();
   let acc: Awaited<ReturnType<IgBroker["getAccount"]>> | null = null;
   try { acc = await broker.getAccount(); } catch { acc = null; }
+  deps.assertCurrent?.();
   const envLabel = broker.env === "live" ? "IG Live — RIKTIGA PENGAR" : "IG Demo — låtsaspengar";
   const system = `Du är Hanna — Mikes AI-trading-agent. Svenska, konkret och mänskligt (ADHD-vänligt).
 
@@ -113,7 +126,9 @@ Regler:
 
   const messages: Anthropic.MessageParam[] = history.slice(-8).map((h) => ({ role: h.role, content: h.text }));
   messages.push({ role: "user", content: message });
+  deps.assertCurrent?.();
   let reply = await deps.llm.messages.create({ model: "claude-haiku-4-5", max_tokens: 1024, system, tools: TOOLS, messages });
+  deps.assertCurrent?.();
   let replyText = "";
   const names: string[] = [];
   const executed: Record<string, unknown> = {};
@@ -125,12 +140,16 @@ Regler:
     for (const tu of uses) {
       names.push(tu.name);
       const r = await executeIgChatTool(tu.name, tu.input as Record<string, unknown>, broker, deps).catch((e) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+      deps.assertCurrent?.();
       executed[tu.id] = r;
       results.push({ type: "tool_result" as const, tool_use_id: tu.id, content: JSON.stringify(r) });
     }
     messages.push({ role: "assistant", content: reply.content });
     messages.push({ role: "user", content: results });
+    deps.assertCurrent?.();
     reply = await deps.llm.messages.create({ model: "claude-haiku-4-5", max_tokens: 1024, system, tools: TOOLS, messages });
+    deps.assertCurrent?.();
   }
+  deps.assertCurrent?.();
   return { ok: true, reply: replyText, toolCall: names.length ? names.join(",") : undefined, executed: names.length ? executed : null };
 }

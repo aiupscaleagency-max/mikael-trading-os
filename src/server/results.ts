@@ -13,7 +13,7 @@ import type { BrokerAdapter } from "../brokers/adapter.js";
 import { dataPath } from "../dataDir.js";
 import { log } from "../logger.js";
 import { getIgHistory } from "../integrations/igMarkets.js";
-import type { IgEnvironment } from "../integrations/igConnection.js";
+import { getIgAccountIdentity, type IgEnvironment } from "../integrations/igConnection.js";
 import { setStakeHistory } from "../risk/stakeLadder.js";
 import { listTimedExits } from "./tradeHorizon.js";
 import { reconcileStrategyDeals, type ClosedTx, type ObservedPosition } from "./igStrategyTrades.js";
@@ -185,17 +185,43 @@ export async function getResults(
   return summarize({ mode, env, label, currency, trades, open, error: errors.length ? errors.join(" · ") : null, partial });
 }
 
-// Panelerna frågar ofta (var 5:e s). Svaret återanvänds i 10 s per läge och samtidiga anrop delar
-// samma läsning, så att resultatpanelen inte äter IG:s läsbudget som order och stängningar behöver.
-const resultsCache = new Map<string, { at: number; value: Results }>();
-const resultsJobs = new Map<string, Promise<Results>>();
+// Samtidiga paneler delar läsning i 30 s inom samma mäklare, konto och IG-session.
+// Ett konto-/sessionsbyte får aldrig återanvända föregående kontos resultat.
 export const RESULTS_CACHE_MS = 30_000;
-export async function getResultsCached(brokers: Record<string, BrokerAdapter>, mode: "TEST" | "LIVE", now = Date.now): Promise<Results> {
-  const c = resultsCache.get(mode);
-  if (c && now() - c.at < RESULTS_CACHE_MS) return c.value;
-  const running = resultsJobs.get(mode);
-  if (running) return running;
-  const job = getResults(brokers, mode).then((v) => { resultsCache.set(mode, { at: now(), value: v }); return v; });
-  resultsJobs.set(mode, job);
-  try { return await job; } finally { resultsJobs.delete(mode); }
+export function createResultsCache(deps: {
+  identity: typeof getIgAccountIdentity;
+  read: typeof getResults;
+}) {
+  const cache = new Map<string, { at: number; value: Results }>();
+  const jobs = new Map<string, Promise<Results>>();
+  const brokerIds = new WeakMap<BrokerAdapter, number>();
+  let nextBrokerId = 0;
+  return async (brokers: Record<string, BrokerAdapter>, mode: "TEST" | "LIVE", now = Date.now): Promise<Results> => {
+    const env = mode === "LIVE" ? "live" : "demo";
+    const broker = brokers[env === "live" ? "ig" : "ig-demo"];
+    if (broker && !brokerIds.has(broker)) brokerIds.set(broker, ++nextBrokerId);
+    const identity = deps.identity(env);
+    const key = JSON.stringify([mode, broker ? brokerIds.get(broker) : null, identity?.accountId ?? null, identity?.generation ?? null]);
+    const cached = cache.get(key);
+    if (cached && now() - cached.at < RESULTS_CACHE_MS) return structuredClone(cached.value);
+    let job = jobs.get(key);
+    if (!job) {
+      job = deps.read(brokers, mode).then((value) => {
+        // Gamla konton lagras aldrig som aktuella efter att läsningen avslutats.
+        const current = deps.identity(env);
+        if (brokers[env === "live" ? "ig" : "ig-demo"] !== broker || current?.accountId !== identity?.accountId || current?.generation !== identity?.generation) {
+          throw new Error("IG-kontot eller sessionen byttes under resultatläsningen. Läs resultaten igen.");
+        }
+        {
+          cache.set(key, { at: now(), value: structuredClone(value) });
+          for (const [oldKey, old] of cache) if (now() - old.at >= RESULTS_CACHE_MS) cache.delete(oldKey);
+        }
+        return value;
+      });
+      jobs.set(key, job);
+      void job.finally(() => { if (jobs.get(key) === job) jobs.delete(key); }).catch(() => {});
+    }
+    return structuredClone(await job);
+  };
 }
+export const getResultsCached = createResultsCache({ identity: getIgAccountIdentity, read: getResults });

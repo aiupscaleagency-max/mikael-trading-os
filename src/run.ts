@@ -138,6 +138,13 @@ async function runOnce(
   symbolsOverride?: string[],
   out?: { jevStopped?: { symbol: string; why: string }[] },
 ): Promise<void> {
+  // Bind till valt konto före JEV och annan I/O; ett byte under förkontrollen
+  // får inte göra samma instruktion till en analys för det nya kontot.
+  const activeName = getActiveBrokerName();
+  const primaryBroker = activeName ? brokers[activeName] : brokers["ig-demo"];
+  if (!primaryBroker) { log.error("Ingen broker tillgänglig."); return; }
+  const igTurn = primaryBroker instanceof IgBroker ? beginIgTurn(primaryBroker.env) : null;
+  try {
   // Försållning: signalmotorn + JEV väljer par innan AI-teamet startas.
   // En schemalagd tur utan någon signal hoppas över helt (inga AI-anrop).
   const screen: PrescreenResult = symbolsOverride?.length
@@ -184,6 +191,12 @@ async function runOnce(
       }
     }
   }
+  const preflightStale = igTurnStale(igTurn);
+  if (preflightStale) {
+    log.warn(`[analys] ${preflightStale}`);
+    broadcastEvent("analysis-stale", { reason: preflightStale, at: Date.now() });
+    return;
+  }
   rememberPrescreen(screen);
   log.info(`[JEV] försållning: ${screen.note}`);
   if (out) out.jevStopped = jevStopped;
@@ -196,19 +209,14 @@ async function runOnce(
     return;
   }
 
-  // Respektera broker-val från dashboard (runtime), fallback till default-prioritet
-  const activeName = getActiveBrokerName();
-  const primaryBroker = activeName
-    ? brokers[activeName]
-    : brokers["ig-demo"];
-  if (!primaryBroker) {
-    log.error("Ingen broker tillgänglig.");
+  // Även tillståndsläsningen kan vänta: kontrollera ursprunglig bindning igen.
+  const stateStale = igTurnStale(igTurn);
+  if (stateStale) {
+    log.warn(`[analys] ${stateStale}`);
+    broadcastEvent("analysis-stale", { reason: stateStale, at: Date.now() });
     return;
   }
   log.info(`Aktiv broker: ${activeName ?? Object.keys(brokers).find((k) => brokers[k] === primaryBroker) ?? "?"} (${primaryBroker.mode})`);
-  // B3: turen binds till miljön + IG-sessionen den startar i
-  const igTurn = primaryBroker instanceof IgBroker ? beginIgTurn(primaryBroker.env) : null;
-  try {
 
   const risk = new RiskManager(config);
 

@@ -184,7 +184,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     const current=status(mode),session=sessions.get(mode);
     if(!session || current.status!=="connected") return {environment:mode,status:current.status,error:current.error??"Anslut IG först",accounts:null,updatedAt:null};
     try {
-      const {data}=await call(mode,"accounts",{apiKey:session.apiKey},session);
+      const data=await deduplicatedAuthenticated(mode,"accounts","GET","1");
       if(!Array.isArray(data.accounts))throw Error("format");
       if(sessions.get(mode)!==session || fingerprint(credentials(mode))!==session.fingerprint) throw Error("session changed");
       const active=data.accounts.find((a:Record<string,unknown>)=>a.accountId===session.accountId);
@@ -197,7 +197,7 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
     const current=status(mode),session=sessions.get(mode);
     if(!session || current.status!=="connected")return {environment:mode,status:current.status,error:current.error??"Anslut IG först",positions:null,updatedAt:null};
     try {
-      const {data}=await call(mode,"positions",{apiKey:session.apiKey},session);if(!Array.isArray(data.positions))throw Error("format");
+      const data=await deduplicatedAuthenticated(mode,"positions","GET","2");if(!Array.isArray(data.positions))throw Error("format");
       if(sessions.get(mode)!==session || fingerprint(credentials(mode))!==session.fingerprint)throw Error("session changed");
       const positions=data.positions.map((row:Record<string,any>)=>({dealId:text(row.position?.dealId),epic:text(row.market?.epic),instrumentName:text(row.market?.instrumentName),direction:text(row.position?.direction),currency:text(row.position?.currency),size:number(row.position?.size),level:number(row.position?.level),stopLevel:number(row.position?.stopLevel),limitLevel:number(row.position?.limitLevel),createdDateUTC:text(row.position?.createdDateUTC),bid:number(row.market?.bid),offer:number(row.market?.offer),marketStatus:text(row.market?.marketStatus)}));
       return {environment:mode,status:"ready",error:null,positions,updatedAt:now()};
@@ -245,9 +245,34 @@ export function createIgConnection(deps:{loadCredentials?:()=>CredentialFile;fet
       return data;
     } catch(error) {throw Error(error instanceof Error && (error.message===IG_HISTORY_RATE_ERROR||error.message===IG_LIVE_WRITE_LOCKED||/^(?:IG svarade HTTP [1-5][0-9]{2}|IG begränsade antal läsanrop; försök igen om en minut)$/.test(error.message))?error.message:"IG-anropet kunde inte verifieras; utfallet kan vara okänt");}
   }
+  // Samtidiga läsare av samma konto delar bara pågående nätanrop, aldrig ett gammalt resultat.
+  // Miljö, sessionsobjekt, API-version, route och query isolerar underlagen. Orderkontroller
+  // går alltid direkt så att en skrivning aldrig avstäms mot en tidigare påbörjad vyläsning.
+  const sharedReads=new Map<Session,Map<string,Promise<Record<string,any>>>>();
+  const authenticatedDirect=authenticated;
+  async function deduplicatedAuthenticated(mode:IgEnvironment,route:string,method:"GET"|"POST"="GET",version="1",body?:Record<string,unknown>,extra?:Record<string,string>):Promise<Record<string,any>> {
+    const session=sessions.get(mode);
+    const share=method==="GET"&&!body&&!igPriorityActive()&&!extra?._method&&session&&
+      (route==="accounts"||route==="positions"||route==="workingorders"||route==="history/activity"||route==="history/transactions");
+    if(!share)return authenticatedDirect(mode,route,method,version,body,extra);
+    // Validera även en återanvändares parametrar; annars kan en ogiltig extra-nyckel döljas.
+    if(extra&&Object.keys(extra).some(k=>k!=="query"))return authenticatedDirect(mode,route,method,version,body,extra);
+    const query=new URLSearchParams(extra?.query??"");query.sort();
+    const key=JSON.stringify([mode,version,route,query.toString()]);
+    const pending=sharedReads.get(session)??new Map<string,Promise<Record<string,any>>>();
+    sharedReads.set(session,pending);
+    let job=pending.get(key);
+    if(!job){
+      job=authenticatedDirect(mode,route,method,version,body,extra);pending.set(key,job);
+      const clear=()=>{if(pending.get(key)===job)pending.delete(key);if(!pending.size)sharedReads.delete(session);};
+      void job.then(clear,clear);
+    }
+    // Varje förbrukare får eget objekt och kan inte ändra en annan förbrukares avstämning.
+    return structuredClone(await job);
+  }
   // Endast serverintern åtkomst. Returneras aldrig av status-/HTTP-rutterna.
   function streamingSession(mode:IgEnvironment){const current=status(mode),s=sessions.get(mode);if(current.status!=="connected"||!s?.streamingEndpoint)return null;let endpoint:URL;try{endpoint=new URL(s.streamingEndpoint);}catch{return null;}if(endpoint.protocol!=="https:"||!/(^|\.)(ig\.com|marketdatasystems\.com)$/.test(endpoint.hostname))return null;return {endpoint:endpoint.href,accountId:s.accountId,password:`CST-${s.cst}|XST-${s.xst}`,generation:current.connectionGeneration!};}
-  return {getAccountIdentity:(mode:IgEnvironment)=>{const current=status(mode),session=sessions.get(mode);return current.status==="connected"&&session&&current.connectionGeneration?{accountId:session.accountId,generation:current.connectionGeneration}:null;},getStreamingSession:streamingSession,getReadBudget:readBudget,getHistoryBlockedUntil:(mode:IgEnvironment)=>{validMode(mode);return historyBlockedUntil.get(mode)??0;},getStatus:()=>({environments:{demo:status("demo"),live:status("live")}}),testConnection,testWithSharedLogin,callAuthenticated:authenticated,getAccounts:readAccounts,getPositions:readPositions};
+  return {getAccountIdentity:(mode:IgEnvironment)=>{const current=status(mode),session=sessions.get(mode);return current.status==="connected"&&session&&current.connectionGeneration?{accountId:session.accountId,generation:current.connectionGeneration}:null;},getStreamingSession:streamingSession,getReadBudget:readBudget,getHistoryBlockedUntil:(mode:IgEnvironment)=>{validMode(mode);return historyBlockedUntil.get(mode)??0;},getStatus:()=>({environments:{demo:status("demo"),live:status("live")}}),testConnection,testWithSharedLogin,callAuthenticated:deduplicatedAuthenticated,getAccounts:readAccounts,getPositions:readPositions};
 }
 const connection=createIgConnection();
 export const getIgStatus=connection.getStatus;

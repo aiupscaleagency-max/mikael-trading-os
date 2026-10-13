@@ -219,9 +219,18 @@ export function createIgSessions(deps: IgSessionDeps) {
     if (!batch.length) { finish(env, "completed", null); return; }
     if (deps.busy?.()) return; // en annan analys pågår: försök nästa varv
     const why = await deps.guard();
+    // Grinden kan vänta på I/O. Ett stopp, kontobyte eller nytt sessions-ID under
+    // väntan får aldrig starta den gamla omgången eller avsluta en ersättningssession.
+    const current = load(env).session;
+    if (!current || current.id !== x.id || current.status !== "running" || current.batchInFlight) return;
+    const checkedAt = now();
+    if (checkedAt >= current.endsAt) { finish(env, "completed", "Tiden tog slut"); return; }
+    if (deps.binding(env) !== current.binding) { finish(env, "interrupted", "IG-inloggningen ändrades — sessionen fortsätter inte på ett annat konto"); return; }
+    if (deps.activeEnv() !== env) { finish(env, "interrupted", "Aktiv miljö byttes — sessionen kör aldrig i fel miljö"); return; }
+    if (checkedAt < current.nextRunAt || deps.busy?.()) return;
     if (why) { finish(env, "stopped", why); return; }
-    x.batchInFlight = true; x.nextRunAt = t + 60_000; x.batches++;
-    for (const it of batch) { it.status = "analyseras"; it.at = t; }
+    x.batchInFlight = true; x.nextRunAt = checkedAt + 60_000; x.batches++;
+    for (const it of batch) { it.status = "analyseras"; it.at = checkedAt; }
     save(env);
     try {
       const r = await deps.runBatch(env, batch.map((i) => i.epic), { scheduled: x.trigger === "schema", strategy: x.strategy, analysisInterval: x.analysisInterval, sessionId: x.id });

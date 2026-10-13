@@ -308,12 +308,12 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
       // Endast ekonomiska fält från redan hämtade svar; inga kontouppgifter eller extra IG-anrop.
       const observePriceUnit=(version:number,response:any)=>{
         const instrument=response.instrument??{},snapshot=response.snapshot??{};
-        const ladder=Array.isArray(snapshot.priceLadder)?snapshot.priceLadder[0]:null;
+        const quote=igSnapshotQuote(snapshot,now());
         return {version,epic:str(instrument.epic),type:str(instrument.type),unit:str(instrument.unit),
           contractSize:metadataNumber(instrument.contractSize),lotSize:metadataNumber(instrument.lotSize),
           onePipMeans:str(instrument.onePipMeans),valueOfOnePip:metadataNumber(instrument.valueOfOnePip),
           currencies:Array.isArray(instrument.currencies)?instrument.currencies.map((c:any)=>({code:str(c.code),isDefault:c.isDefault===true})):[],
-          bid:num(ladder?.bid??snapshot.bid),offer:num(ladder?.ask??snapshot.offer),
+          bid:quote.bid,offer:quote.offer,
           scalingFactor:num(snapshot.scalingFactor),decimalPlacesFactor:num(snapshot.decimalPlacesFactor)};
       };
       const priceUnitObservations=[observePriceUnit(3,data)];
