@@ -238,10 +238,6 @@ export function _resetActivity(): void {
 export interface AnalysisPick { symbol: string; action: string; sizeUsd: number; confidence: string; reasoning: string }
 export interface AnalysisOrder { symbol: string; side: string; usd: number | null; status: string }
 export interface AnalysisResult {
-  broker?: string;
-  requestId?: string;
-  selectedSymbols?: string[];
-  timeframe?: string;
   startedAt: string;
   endedAt: string | null;
   status: "running" | "done" | "stopped" | "failed";
@@ -252,12 +248,14 @@ export interface AnalysisResult {
   summary?: string;
   picks: AnalysisPick[];
   orders: AnalysisOrder[];
+  /** Besked per analyserat instrument, även vid HOLD (se igAgentNotes.ts) */
+  notes?: Array<{ epic: string; env: "demo" | "live"; at: string; action: string; confidence: string | null; verdict: string; technical: string | null; trigger: string | null; tip?: import("../orchestrator/headTips.js").AgentTip | null; runId?: string | null }>;
 }
 
 let lastAnalysis: AnalysisResult | null = null;
 
-export function analysisStart(trigger: AnalysisResult["trigger"], instruction?: string, context: Pick<AnalysisResult, "broker" | "requestId" | "selectedSymbols" | "timeframe"> = {}): void {
-  lastAnalysis = { ...context, startedAt: new Date().toISOString(), endedAt: null, status: "running", trigger, instruction, picks: [], orders: [] };
+export function analysisStart(trigger: AnalysisResult["trigger"], instruction?: string): void {
+  lastAnalysis = { startedAt: new Date().toISOString(), endedAt: null, status: "running", trigger, instruction, picks: [], orders: [] };
 }
 
 export function analysisEnd(patch: Partial<AnalysisResult> & { status: AnalysisResult["status"] }): void {

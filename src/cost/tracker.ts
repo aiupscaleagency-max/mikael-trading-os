@@ -9,6 +9,7 @@
 //  per-user (med user_id i loggen + RLS i db).
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { dataDir, dataPath } from "../dataDir.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { log } from "../logger.js";
@@ -38,7 +39,7 @@ export interface CostEntry {
   sessionId?: string;  // Knyter ihop multipla anrop till en session
 }
 
-const COST_DIR = path.join(process.cwd(), "data", "cost");
+const COST_DIR = dataPath("cost");
 
 async function ensureDir(): Promise<void> {
   await fs.mkdir(COST_DIR, { recursive: true });

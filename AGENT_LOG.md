@@ -1,6 +1,55 @@
 # Agentlogg
 
-| Datum | Uppgift | Resultat | Verifiering |
-|---|---|---|---|
-| 2026-10-05 | Bybit EU: tydligare dashboard, TEST/LIVE och sessionsval | Bara Bybit, verkliga EU-ljus, kontobaserad procent utan automatisk eskalering, beständiga tidsstängningar och nettovinst. TEST-startkapital 1 000 000; LIVE separat. | Reviewer, TypeScript, tre regressionstestsviter, signaltest, REST/WS OHLC-matchning och tio browservyer. JEV svarade 402; ordinarie granskning användes. |
-| 2026-10-05 | Åtkomst på dator2 | Hermes Desktop anslöt efter omstart av låst appprocess; befintlig gateway och token behölls. Trading får loopback-vidarekoppling till samma bot på dator1 via befintlig Tailscale-TLS. | Hermes HTTP200/WS101 och anslutningslogg; dator2 dashboard/sizing200, POST-validering400, externa Origin/Host403, reviewer och syntax/plist. |
+2026-10-12: Kirurgisk rättning ovanpå Claudes merge #79: exakt procent från kontantbelopp, samma procentgrund i preview och kö, validering utan tyst avrundning, omräkning vid konto-/saldobyte och avvisning av gamla instrument-/miljösvar. Typkontroll, IG-svit, 28 inline-skript och isolerad regression gröna. Oberoende reviewer granskade och körde regressionen: godkänd avgränsad patch. Verklig skärmkontroll återstår. Automatisk handel är inte implementerad eller aktiverad. Inga order, nycklar, modeller eller säkerhetsgrindar ändrade.
+
+2026-10-12: Analysmodalens missvisande Köp ändå ersatt med Öppna i orderpanelen: endast befintlig AGTIP-förifyllning, ingen order köas. Indikatoralternativ märkt separat från agentrekommendation. Lokal kandidat och revisions-/miljöskydd hindrar gamla analysresultat från fel förifyllning/återöppning. Oberoende reviewer godkände slutdiff. Typkontroll, 28 inline-skript och beloppsregression passerar. Skärmverifiering och övriga auditfynd återstår.
+
+2026-10-12: Analysmodalens instrument binds till samma analysis.notes, inte globala team/last. Expanderbar sparad sammanfattning och resultat per analyserat instrument, full verdict/technical/trigger. Saknat urval visas explicit. Väntande order filtreras på omgångens tider, instrument och mäklarmiljö. Modalens tipsknappar binds direkt till sparat tips med instrument/miljö/actionkontroll; HOLD visas utan handelsknapp. Aktuell standardhorisont märks korrekt. Reviewer godkände slutdiff; typkontroll, inline-skript och beloppsregression passerar. Inte helplattforms- eller handelsverifierat.
+
+2026-10-12: Befintlig positions-/resultatpanel flyttas till höger om diagrammet efter orderpanelen; knappar/ID och API-pollning återanvänds. Instrumentväljare i orderpanelen följer huvuddiagrammets val. Kontogeneration och requestrevision avvisar gamla svar; kontobyte tömmer tidigare resultat. Positions-/historikfel visas som overifierat, inte tom lista. Confirmed-stängningar binds till fångad miljö. Reviewer granskade med konkreta kontorättningar. Typkontroll, inline-skript och beloppsregression passerar. Visuell kontroll återstår.
+
+## 2026-10-12 — orderförkontroll, diagram och kontobytesraces
+- Köp/sälj verifierar riktningens storlek/marginal innan godkännandekön. Ändrat konto/instrument/belopp och saknad beräkning avbryter.
+- Huvuddiagram prenumererar före historikhämtning, avvisar sena svar även A→B→A, anpassar första datan till vyn och bevarar senare zoom. Dolda flikar gör inga schemalagda huvuddiagramhämtningar.
+- IGS avbryter fördröjd urvalssparning vid kontobyte och avvisar sena svar; gamla sessionskontroller töms. Start/stop kontrollerar miljön över asynkrona steg. Redan skickade urvals-POST är fortsatt bundna av backendens aktiva miljö, ingen atomisk backendändring gjord.
+- Chatten avbryter före POST om konto ändras under bilageläsning och märker svar med miljö.
+- Reviewer granskade och tre isolerade fixtures passerade, inklusive åtta IGS-kontroller. TypeScript, 28 skript och hela test:ig passerade. Gammal popup-testassertion uppdaterad till befintligt prefill-flöde utan direktorder.
+- JEV kunde inte köras vid review (HTTP 402); befintlig modell/routing bevarad.
+- Browser bekräftar rätt iframe till :9443 och uppdaterad frontend. Full visuell verifiering och faktisk IG-orderlivscykel återstår; inga order, kontobyten eller botomstarter utförda i verifieringen. ProRealTime-inbäddning ej verifierad.
+
+## 2026-10-12 — fastnad sessionsanalys och okända resultat
+- Verklig browser visade avbruten session men global analys fortfarande pågår. runBatch saknade analysisEnd vid kastat fel: catch avslutar endast running som failed och kastar originalfelet vidare; finally bevarad.
+- Fyra isolerade fel-/städkontroller passerar, reviewer godkänner. TypeScript, dashboardskript och hela test:ig passerade igen.
+- Resultatrutorna visar okänt/inte verifierat vid d.error, aldrig falskt nollantal positioner eller nollresultat.
+- Backendfixen är inte aktiverad i körande process. Handoff §5 kräver att Mike gör omstart när riktiga pengar är upplåsta.
+- Verklig Demo-quote EURUSD CEEM visar misstänkt orimlig marginal; reviewer belägger motsägelse mellan kurs-/punktnotation i igRules och UI. Exakt rättning väntar på verifierad instrumentmetadata och FX-notation; ingen blind division infördes.
+
+## 2026-10-12 — läskvot och verifiering av ekonomiska prisenheter
+- Historik väntar under analys och respekterar backoff även med befintliga ljus; unavailable-svar väntar. Global historikspärr kontrolleras före instrumentmetadata.
+- Orderpanelens samma beräkningsfel försöks igen först efter 30 sekunder; dold sida pausar pollningen. Gamla nätfelsvar avvisas vid instrument-/miljöbyte.
+- Forexpris och FX kräver separat verifierad representation. scalingFactor ensam räcker inte; äldre sparad overifierad FX används inte. Kurs-/punktrepresentation med verifierat underlag ger identiska ekonomiska resultat i regressionerna. Produktion saknar detta underlag: forex och valutaomräkning, inklusive USD-krypto på SEK-konto, förblir blockerade. Detta är en säkerhetsrättning, INTE en färdig handelsintegration.
+- Oberoende agentgranskning godkände avgränsad patch. Slutlig typkontroll, hela test:ig, prisrepresentations-, historikbackoff- och frontendregressioner gröna. Alla tester använder isolerade data/mocks; ingen order skickad.
+- scripts/restart-reviewed-ig.sh är en granskad manuell omstartshjälp med processkontroll och atomiskt lås. Har INTE körts. Port 3940 har fortfarande PID 21751 från 11 oktober 23:04; Mikes tidigare försök gav ingen verifierad omstart. Handoff §5 kräver Mikes egen omstart.
+- Kvar före handelsklart: verifierat verkligt IG-pris-/FX-underlag, omstart och faktisk skärm-/anslutningskontroll. ProRealTime-inbäddning fortfarande ej verifierad.
+
+## 2026-10-12 — ekonomiskt V3/V4-underlag
+- Samlar endast whitelisted ekonomiska fält från redan hämtade IG V3/V4-svar och exponerar dem i befintlig klines-meta utan extra anrop. Produktionsresolvern är inte färdig eller verifierad; underlaget behöver läsas efter omstart.
+- Typkontroll grön. JEV-preflight misslyckades med HTTP 402; routing/modeller oförändrade. Senaste usagekontroll: 84 % förbrukat, 16 % kvar; vidare agentarbete begränsas för att skydda Mikes uttryckliga 15–20 %-reserv.
+
+2026-10-12: Omstartshjälpen skriver nu fyra tydliga steg och felrad/felkod vid avbrott. Använder installerad lokal tsc/tsx utan npx-hämtning. Syntaxkontroll grön; skriptet har inte exekverats. Port 3940 kör fortsatt gamla PID 21751; ingen pågående omstart eller restart.lock observerades. Orsaken till Mikes uteblivna terminalutdata är ännu inte fastställd.
+
+## 2026-10-12 — filter, diagram och verifierade prisrepresentationer
+- Sök/Enter/Nollställ tillämpar separata filter på Valutapar och Alla par; markerat analys-/sessionsurval bevaras. Demo-referenser följer samma filter. Browser: Bitcoin åtta träffar, nollställ 235.
+- Diagramaggregation använder endast kompletta sammanhängande IG-ljus, native intervall har företräde även vid förskjutna starttider. Tiingo-OHLC omräknas endast för visning med verifierad representation. Diagramhöjd begränsad; browser efter omladdning 440 px.
+- IG V3-underlag observerat: GBPUSD MINI contract10000/pipvalue1/scaling10000 ger multiplier1; EURUSD CEEM samma kontrakt/pipvalue, scaling1 ger multiplier10000. Kontraktsidentitet krävs. Saknad V4-kvot och FX fortsätter blockera. Marginalbudget märks med kontovalutan SEK.
+- Oberoende reviewer godkände patchen. TypeScript/build, hela test:ig, 28 skript, filter/aggregering/belopp/huvuddiagram/urval/analysfel/historik/prisrepresentation och diff-check passerade. Inga order utförda. Modeller och säkerhetsspärrar orörda.
+- Kontrollerad omstart via befintligt skript: första boten försvann efter verktygsavslut; frikopplad körning gav verifierad PID 81735 på 3940 i rätt cwd. Körande browser: Tiingo-bakgrund visas i native IG-enheter, SEK-budget korrekt, instrumentbyte följer orderpanel. Positioner/historik begränsas av IG-läskvot; färsk FX saknas. Demo-orderlivscykel, ny agentanalys och chatt ej fullständigt verifierade.
+- JEV HTTP 402. Slutlig usage 86 % förbrukat; ytterligare analys stoppad för att skydda reserv. ProRealTime stöds som separat plattform via My IG; officiellt stöd för inbäddning av workspace har inte verifierats. IG CFD stöder positionsstorlek, köp/sälj, TP/SL och villkorat trailing stop; binär fast utbetalning/Double Up/Roll-over införs inte. Källor: https://labs.ig.com/reference/markets-epic.html , https://labs.ig.com/reference/positions-otc.html , https://www.ig.com/en/help-and-support/charts/prorealtime-charts/how-do-i-launch-prorealtime .
+
+### 2026-10-13 – sista verifiering av IG-kontobindning och läsbudget
+- Samtidiga identiska IG-kontoläsningar delas inom samma session; orderkontroller med förtur går direkt. Resultatcache isoleras per konto, miljö, anslutningsgeneration och mäklarobjekt.
+- Analys, agentsession och chatt avbryter gammalt arbete när konto/anslutning/session ändras under väntan. IG Demo och Live kräver Godkänn även om ett tidigare AUTO-val finns sparat. Chattresultat binds till ursprunglig vy.
+- Verifierat: TypeScript, build, hela test:ig, dashboardens 28 inline-skript, filter/orderpanel/diagram/miljö/sessionfel samt nya tester för FX, läsdelning, resultatcache, chatt och sessions-/JEV-race. Inga riktiga order i testerna.
+- Omstart via befintligt granskat skript: port 3940 PID 6593. Browser visar båda IG-kontona anslutna och korrekt SEK-beloppsberäkning. Live-resultat anger uttryckligen overifierade positioner/historik vid IG-läsbegränsning; inget tomt innehav hittas på. Tidigare Demo-kontroll verifierade USD/SEK-live och marginalbudget/kontrakt/exponering.
+- Återstående driftsverifiering: en färsk hel agentanalys och användargodkänd Demo-order följd till avslut. Ingen Demo- eller Live-order har utförts. JEV-tjänsten gav tidigare HTTP 402; befintliga modeller/routing behölls. Slutlig kompletterande subagentgranskning avbröts av kontots användningsgräns; huvudagenten läste ändringarna och körde alla kontroller.
+- Faktisk ny agentanalys efter omstart misslyckades: samtliga konfigurerade Vercel/OpenRouter-vägar svarade HTTP 402 enligt sanitiserad loggkontroll. Detta är ett krediterings-/betalningshinder hos befintliga LLM-leverantörer, inte godkänd agentdrift. Modeller, nycklar och providers ändrades inte. UI visar analysfelet. Skärmbild lokalt /tmp/trading-os-final.png.

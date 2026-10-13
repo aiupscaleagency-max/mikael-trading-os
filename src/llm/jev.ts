@@ -5,9 +5,20 @@ import { treeEvent } from "../server/treeLog.js";
 // ═══════════════════════════════════════════════════════════════════════════
 //  JEV (TypeSafe System One) — beslutslagret framför de stora modellerna.
 //
-// JEV bedömer analysdjup före Teknisk och Hanna. Rådet lägger aldrig till fler agentroller.
-// Bara avidentifierade kategorier och riskband skickas; inga priser, symboler eller nycklar.
-// Om JEV inte svarar behålls de två godkända rollerna och deterministiska riskspärrar.
+//  Enkla förgreningar ska inte kosta en stor modell. Före varje trading-turn
+//  frågar vi JEV (under en sekund) om turen är rutin eller om den behöver
+//  en oberoende granskning av Advisorn. Rutin → Advisorn hoppas över och
+//  sparar ett helt modellanrop. Allt annat → Advisorn körs som vanligt.
+//
+//  Anropet går via src/server/jevClient.ts: samma rutter (Vercel AI Gateway
+//  eller TypeSafe direkt), samma nycklar och samma circuit breaker.
+//
+//  Säkerhet:
+//    - Bara anonymiserade band skickas: antal positioner, P&L-riktning,
+//      läge. Inga symboler, priser, strategier eller källdata lämnar maskinen.
+//    - Fail-open: svarar inte JEV körs Advisorn precis som förut.
+//    - LIVE-läge kör alltid Advisorn, oavsett vad JEV säger.
+// ═══════════════════════════════════════════════════════════════════════════
 
 const JEV_TIMEOUT_MS = 2_500;
 
@@ -41,14 +52,14 @@ function band(value: number, limit: number): string {
 export function buildTurnRequest(s: TurnSignals) {
   return {
     state: {
-      task: "Sanitized category: scheduled crypto trading turn. Recommend analysis depth for the fixed technical-agent and head-trader workflow. Do not add agents.",
+      task: "Sanitized category: scheduled crypto trading turn. Decide whether an independent strategic review is worth one extra large-model call.",
       mode: s.mode,
       execution_mode: s.executionMode,
       position_load: band(s.openPositions, s.maxOpenPositions),
       daily_pnl_direction: s.dailyPnlUsd >= 0 ? "flat_or_positive" : "negative",
       daily_loss_budget_used: s.dailyPnlUsd < 0 ? band(s.dailyPnlUsd, s.maxDailyLossUsd) : "none",
       manual_instruction: s.hasUserInstruction,
-      constraints: ["advisory only", "risk manager keeps veto", "no market data included", "exactly two existing agent roles; no extra model calls"],
+      constraints: ["advisory only", "risk manager keeps veto", "no market data included"],
     },
     questions: {
       execution_depth: {
@@ -77,35 +88,36 @@ export function decideFromAnswers(answers: Record<string, JevAnswer>, mode: "pap
   const depth = answers.execution_depth?.choice;
   const review = answers.needs_independent_review?.noul;
   if (!depth && typeof review !== "number") {
-    return { status: "unavailable", runAdvisor: false, detail: "JEV gav inga användbara svar" };
+    return { status: "unavailable", runAdvisor: true, detail: "JEV gav inga användbara svar" };
   }
-  const runAdvisor = false;
+  const routine = depth === "fast" && typeof review === "number" && review < 0.5;
+  const runAdvisor = mode === "live" || !routine;
   const reviewText = typeof review === "number" ? review.toFixed(2) : "?";
   return {
     status: "ready",
     runAdvisor,
     depth,
     reviewProbability: review,
-    detail: `depth=${depth ?? "?"} review=${reviewText} · två agentroller`,
+    detail: `depth=${depth ?? "?"} review=${reviewText}${mode === "live" ? " (live: advisor alltid på)" : ""}`,
   };
 }
 
 export async function jevTurnPreflight(signals: TurnSignals): Promise<JevTurnDecision> {
   if (process.env.JEV_ENABLED === "false") {
-    return { status: "skipped", runAdvisor: false, detail: "JEV avstängd (JEV_ENABLED=false)" };
+    return { status: "skipped", runAdvisor: true, detail: "JEV avstängd (JEV_ENABLED=false)" };
   }
   const { state, questions } = buildTurnRequest(signals);
   const verdict = await askJev(state, JEV_TIMEOUT_MS, questions);
   if (!verdict.available) {
-    log.warn(`[JEV] Otillgänglig (${verdict.note}) — behåller Teknisk och Hanna samt riskspärrarna.`);
-    treeEvent({ branch: "tur", jev: { available: false, route: verdict.mode }, outcome: "två agentroller behålls", why: `JEV otillgänglig: ${verdict.note}` });
-    return { status: "unavailable", runAdvisor: false, detail: `JEV otillgänglig: ${verdict.note}` };
+    log.warn(`[JEV] Otillgänglig (${verdict.note}) — kör Advisorn som vanligt.`);
+    treeEvent({ branch: "tur", jev: { available: false, route: verdict.mode }, outcome: "advisor körs", why: `JEV otillgänglig: ${verdict.note}` });
+    return { status: "unavailable", runAdvisor: true, detail: `JEV otillgänglig: ${verdict.note}` };
   }
   const decision = decideFromAnswers(verdict.answers, signals.mode);
-  log.info(`[JEV] ${decision.detail} via ${verdict.mode} → Teknisk och Hanna, inga extra roller`);
+  log.info(`[JEV] ${decision.detail} via ${verdict.mode} → advisor ${decision.runAdvisor ? "körs" : "hoppas över"}`);
   treeEvent({
     branch: "tur", jev: { available: true, route: verdict.mode, latencyMs: verdict.latencyMs, depth: decision.depth, review: decision.reviewProbability },
-    outcome: "JEV → Teknisk → Hanna", why: decision.detail,
+    outcome: decision.runAdvisor ? "advisor körs" : "advisor hoppas över", why: decision.detail,
   });
   return decision;
 }

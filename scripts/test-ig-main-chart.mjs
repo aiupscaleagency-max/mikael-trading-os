@@ -1,0 +1,25 @@
+// Verklig diagramkod med isolerad marknadsdata: inga IG-anrop eller order.
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const html = fs.readFileSync(new URL('../dashboard.html', import.meta.url), 'utf8');
+const start = html.indexOf('async function loadRealCandles(sym, tf)');
+const end = html.indexOf('IG.on("quote", q=>', start);
+const requests = [], rendered = [];
+let fits = 0, subscriptions = 0;
+const STATE = { symbol: 'A', tf: '1m', candleData: {}, livePrices: {} };
+const IG = { st: { env: 'demo' }, isEpic: () => true, want: () => subscriptions++, klines: () => new Promise(resolve => requests.push(resolve)) };
+const ctx = vm.createContext({ STATE, IG, IG_TF: { '1m': 1 }, candleSeries: { setData: d => rendered.push(d) }, chart: { timeScale: () => ({ fitContent: () => fits++ }) }, applyIndicators() {}, updatePriceHeader() {}, clearPriceHeader() {}, showIgSource() {}, setSourceIndicator() {}, document: { getElementById: () => ({}) } });
+vm.runInContext('const igMain = { request:0, fittedKey:null };\n' + html.slice(start,end), ctx);
+const run = () => vm.runInContext('loadRealCandles(STATE.symbol, STATE.tf)',ctx);
+const bar = value => ({ klines: [{ time:1, open:value, high:value, low:value, close:value }], env:'demo' });
+const first = run(); assert.equal(subscriptions,1);
+STATE.symbol = 'B'; const second = run();
+STATE.symbol = 'A'; const third = run();
+requests[0](bar(10)); await first; assert.equal(rendered.length,0);
+requests[1](bar(20)); await second; assert.equal(rendered.length,0);
+requests[2](bar(30)); await third; assert.equal(rendered.at(-1)[0].close,30); assert.equal(fits,1);
+const repeat = run(); requests[3](bar(31)); await repeat; assert.equal(fits,1);
+const oldEnv = run(); IG.st.env = 'live'; requests[4](bar(32)); await oldEnv;
+assert.equal(rendered.at(-1)[0].close,31);
+console.log('PASS: prenumeration före historik, A→B→A-race, miljöbyte och bevarad zoom vid uppdatering');

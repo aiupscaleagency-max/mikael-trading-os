@@ -12,6 +12,9 @@ import type {
   PortfolioReport,
 } from "./types.js";
 import { log } from "../logger.js";
+import { igAgentData, igEnvOf } from "../server/igAgentData.js";
+import { IgBroker } from "../brokers/ig.js";
+import type { Account, Position } from "../types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Advanced Specialist Agents — utökade analyser för risk, kvant,
@@ -61,10 +64,23 @@ export async function runRiskAnalyst(
 ): Promise<RiskReport> {
   log.agent("[Team] Risk-analytiker startar…");
 
-  const [account, positions] = await Promise.all([
-    broker.getAccount(),
-    broker.getPositions(),
-  ]);
+  // IG (Mike 2026-10-11): en läsgräns får aldrig krascha Risk. Saldo från kontot eller IG-strömmens ACCOUNT-fält,
+  // positioner färska eller senast kända, och källan ("cachad") skickas med till analytikern.
+  let account: Account, positions: Position[], dataSource: string | null = null;
+  const igEnv = igEnvOf(broker);
+  if (igEnv && broker instanceof IgBroker) {
+    const a = await igAgentData.account(igEnv, () => broker.getAccount());
+    const p = await igAgentData.positions(() => broker.getPositions(), () => broker.lastKnownPositions(), igEnv);
+    account = a.account ?? { balances: [], totalValueUsdt: 0, updatedAt: Date.now(), balance: null, available: null };
+    positions = p.positions ?? [];
+    dataSource = `saldo: ${a.source}; positioner: ${p.source}${p.positions ? "" : " (okänt antal öppna positioner, räkna försiktigt)"}`;
+    if (!a.account && !p.positions) log.warn(`[Risk] ${dataSource}`);
+  } else {
+    [account, positions] = await Promise.all([
+      broker.getAccount(),
+      broker.getPositions(),
+    ]);
+  }
 
   const totalExposure = positions.reduce(
     (sum, p) => sum + p.quantity * p.currentPrice,
@@ -90,6 +106,7 @@ export async function runRiskAnalyst(
     totalUnrealizedPnl,
     riskLimits: config,
     positionCount: positions.length,
+    ...(dataSource ? { källa: dataSource, kontovaluta: account.currency ?? null, tillgängligt: account.available ?? null } : {}),
   });
 
   const client = createLlmClient(apiKey);
@@ -178,7 +195,6 @@ export async function runQuantAnalyst(
   apiKey: string,
   broker: BrokerAdapter,
   symbols: string[],
-  timeframe = "1m",
 ): Promise<QuantReport> {
   log.agent("[Team] Kvant-analytiker startar…");
 
@@ -189,10 +205,10 @@ export async function runQuantAnalyst(
     ticker: { price: number; changePct24h: number; volume24h: number };
   }> = [];
 
-  for (const symbol of symbols) {
+  for (const symbol of symbols.slice(0, 6)) {
     try {
       const [klines, ticker] = await Promise.all([
-        broker.getKlines(symbol, timeframe, 200),
+        broker.getKlines(symbol, "4h", 100),
         broker.getTicker(symbol),
       ]);
       const indicators = computeIndicators(klines);
@@ -278,7 +294,6 @@ Svara BARA med JSON.`,
 
   try {
     const parsed = JSON.parse(extractJson(text)) as Omit<QuantReport, "role" | "rawText">;
-    parsed.symbolScores = parsed.symbolScores.filter((a) => symbols.includes(a.symbol));
     log.agent(`[Kvant] Regim: ${parsed.volatilityRegime}, Sharpe: ${parsed.sharpeEstimate}`);
     return { role: "quant_analyst", ...parsed, rawText: text };
   } catch {
@@ -314,7 +329,7 @@ export async function runOptionsStrategist(
     volume24h: number;
   }> = [];
 
-  for (const symbol of symbols) {
+  for (const symbol of symbols.slice(0, 6)) {
     try {
       const [klines, ticker] = await Promise.all([
         broker.getKlines(symbol, "1d", 30),

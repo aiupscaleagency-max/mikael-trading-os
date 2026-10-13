@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import {createIgConnection,withIgPriority} from '../src/integrations/igConnection.js';
+let reads=0,failNext=false;
+const credentials={apiKey:'fixture',identifier:'fixture',password:'fixture'};
+const connection=createIgConnection({loadCredentials:()=>({demo:credentials,live:credentials}),fetch:(async(input)=>{
+  const url=String(input),env=url.includes('demo-api')?'demo':'live';
+  if(url.endsWith('/session'))return new Response(JSON.stringify({currentAccountId:env}),{headers:{CST:'fixture','X-SECURITY-TOKEN':'fixture'}});
+  reads++;
+  await new Promise(resolve=>setTimeout(resolve,5));
+  if(failNext){failNext=false;return new Response('{}',{status:500});}
+  return new Response(JSON.stringify(url.endsWith('/accounts')?{accounts:[{accountId:env,accountType:'CFD',currency:'SEK',balance:{balance:1}}]}:url.endsWith('/positions')?{positions:[]}:{transactions:[],marker:env}));
+}) as typeof fetch});
+await connection.testConnection('demo');await connection.testConnection('live');
+let before=reads;
+await Promise.all([connection.getAccounts('demo'),connection.callAuthenticated('demo','accounts')]);
+assert.equal(reads-before,1,'Konto-API och intern läsning delar nätanrop');
+before=reads;
+await Promise.all([connection.getPositions('demo'),connection.callAuthenticated('demo','positions','GET','2')]);
+assert.equal(reads-before,1,'Positioner delar samma verifierade underlag');
+before=reads;
+const [a,b]=await Promise.all([connection.callAuthenticated('demo','history/transactions'),connection.callAuthenticated('demo','history/transactions')]);
+assert.equal(reads-before,1);a.transactions.push('ändrad');assert.deepEqual(b.transactions,[]);
+await connection.callAuthenticated('demo','history/transactions');assert.equal(reads-before,2,'Ingen gammal cache efter avslutad läsning');
+before=reads;
+await Promise.all([connection.callAuthenticated('demo','positions','GET','2'),withIgPriority(()=>connection.callAuthenticated('demo','positions','GET','2'))]);
+assert.equal(reads-before,2,'Orderprioritet får en egen färsk läsning');
+before=reads;
+await Promise.all([connection.callAuthenticated('demo','history/transactions','GET','1',undefined,{query:'from=2026-01-01'}),connection.callAuthenticated('demo','history/transactions','GET','1',undefined,{query:'from=2026-02-01'}),connection.callAuthenticated('live','history/transactions')]);
+assert.equal(reads-before,3,'Query och miljö isoleras');
+failNext=true;
+const failures=await Promise.allSettled([connection.callAuthenticated('live','positions','GET','2'),connection.callAuthenticated('live','positions','GET','2')]);
+assert.ok(failures.every(r=>r.status==='rejected'),'Fel blir aldrig tomma positioner');
+await connection.callAuthenticated('live','positions','GET','2');
+await assert.rejects(connection.callAuthenticated('live','positions','GET','2',undefined,{query:'',unexpected:'1'}),/Otillåtna/);
+console.log('PASS: isolerad singleflight för konto/position/historik, färsk orderprioritet, egna objekt, query/miljö-isolering och retry efter fel; inga IG-anrop/order');

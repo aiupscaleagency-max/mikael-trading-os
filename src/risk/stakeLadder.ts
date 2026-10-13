@@ -1,15 +1,21 @@
-import fs from "node:fs";
-import path from "node:path";
-import { cachedTradeEquity, getTradePercent } from "./tradeSizing.js";
-import { getCachedPrice } from "../server/marketStream.js";
-
-// Kontobaserad insats. Användaren väljer procent; inga automatiska höjningar.
-
-const FILE = path.resolve("data/bybit-paper.json");
+// ═══════════════════════════════════════════════════════════════════════════
+// INSATS-TRAPPA (Mike 2026-10-03), nu på IG: insatsen är en andel av IG-saldot
+// i kontovalutan (= marginalen en order får använda). Start 1 %, upp mot 3 %
+// när IG Demo-resultaten visar att det fungerar. Trappan räknas på avslutade
+// affärer i IG Demo (rapporteras av results.ts från IG:s transaktionshistorik).
+//   start                                         → 1 %
+//   ≥10 avslutade, total vinst > 0                → 2 %
+//   ≥20 avslutade, vinst > 0, träffsäkerhet ≥50 % → 3 % (tak, STAKE_PCT_MAX)
+// Går de senaste 10 med förlust → tillbaka till 1 %.
+// ═══════════════════════════════════════════════════════════════════════════
 
 export interface StakeLevel {
+  env: StakeEnv;
   pct: number;
+  /** Insats i kontovalutan (fältnamnet behålls av bakåtkompatibilitet; IG: SEK) */
   usd: number;
+  amount: number;
+  currency: string | null;
   equityUsd: number;
   closed: number;
   winRate: number;
@@ -17,32 +23,37 @@ export interface StakeLevel {
   reason: string;
 }
 
-interface Fill { side: string; qty: number; price: number; pnl?: number }
-interface PaperFile { usdc: number; holdings: Record<string, { qty: number; avg: number }>; fills: Fill[] }
+// M5 (granskning 2): en trappa PER MILJÖ. Live använder bara Live-resultat och Live-saldo, Demo bara Demo.
+export type StakeEnv = "demo" | "live";
+const ladders = new Map<StakeEnv, { pnls: number[]; balance: number | null; currency: string | null; at: number }>();
+let envProvider: () => StakeEnv = () => "demo";
+/** Kopplas vid start till aktiv IG-miljö (igMarketData.getActiveEnv). */
+export function setStakeEnvProvider(fn: () => StakeEnv): void { envProvider = fn; }
 
-let cache: { at: number; level: StakeLevel | null } = { at: 0, level: null };
-
-/** Nuvarande insats för TEST-kontot, eller null om låtsaskontot inte finns. */
-export function currentStake(): StakeLevel | null {
-  if (Date.now() - cache.at < 10_000 && cache.level?.pct === getTradePercent()) return cache.level;
-  cache = { at: Date.now(), level: compute() };
-  return cache.level;
+/** Anropas med miljöns avslutade affärer (äldst först) och saldot. */
+export function setStakeHistory(pnls: number[], balance: number | null, currency: string | null, env: StakeEnv = "demo"): void {
+  ladders.set(env, { pnls: pnls.filter((x) => Number.isFinite(x)), balance, currency, at: Date.now() });
 }
 
-function compute(): StakeLevel | null {
-  let s: PaperFile;
-  try { s = JSON.parse(fs.readFileSync(FILE, "utf8")) as PaperFile; } catch {
-    // Inget sparat ännu: låtsaskontot startar på PAPER_START_USDC
-    if (process.env.BYBIT_PAPER === "false") return null;
-    s = { usdc: Number(process.env.PAPER_START_USDC ?? 1_000_000) || 1_000_000, holdings: {}, fills: [] };
-  }
-  const equity = cachedTradeEquity("bybit-paper") ?? (s.usdc + Object.entries(s.holdings ?? {}).reduce((t, [coin, h]) => t + h.qty * (getCachedPrice(`${coin}USDC`) ?? h.avg), 0));
-  const closed = (s.fills ?? []).filter((f) => f.side === "SELL" && typeof f.pnl === "number");
-  const pnls = closed.map((f) => f.pnl as number);
+/** Lägsta insats-steget (startnivån, STAKE_PCT_START, standard 1 %). */
+export function stakeStartPct(): number { return Number(process.env.STAKE_PCT_START ?? 1) || 1; }
+
+export function currentStake(env: StakeEnv = envProvider()): StakeLevel | null {
+  const demo = ladders.get(env) ?? { pnls: [], balance: null, currency: null, at: 0 };
+  const label = env === "live" ? "IG Live" : "IG Demo";
+  const pnls = demo.pnls;
   const total = pnls.reduce((t, p) => t + p, 0);
   const winRate = pnls.length ? pnls.filter((p) => p > 0).length / pnls.length : 0;
-  const pct = getTradePercent();
-  const reason = `${pct} % av aktuellt kontovärde; ändras bara när du väljer en annan procent`;
+  const last10 = pnls.slice(-10).reduce((t, p) => t + p, 0);
+  const start = Number(process.env.STAKE_PCT_START ?? 1) || 1;
+  const max = Number(process.env.STAKE_PCT_MAX ?? 3) || 3;
+  let pct = start, reason = `start: 1 % av saldot tills agenterna visat resultat i ${label}`;
   const n = pnls.length;
-  return { pct, usd: Math.floor(equity * pct) / 100, equityUsd: equity, closed: n, winRate, totalPnl: total, reason };
+  if (n >= 10 && last10 < 0) reason = "senaste 10 affärerna gick med förlust: tillbaka till 1 %";
+  else if (n >= 20 && total > 0 && winRate >= 0.5) { pct = 3; reason = `${n} affärer, vinst, ${Math.round(winRate * 100)} % träff`; }
+  else if (n >= 10 && total > 0) { pct = 2; reason = `${n} affärer med vinst`; }
+  else if (n > 0) reason = `${n} av 10 affärer klara innan nästa steg`;
+  pct = Math.min(Math.max(pct, start), max);
+  const amount = demo.balance !== null ? Math.floor(demo.balance * pct) / 100 : 0;
+  return { env, pct, usd: amount, amount, currency: demo.currency, equityUsd: demo.balance ?? 0, closed: n, winRate, totalPnl: total, reason };
 }

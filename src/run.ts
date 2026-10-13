@@ -1,26 +1,41 @@
-import { getAnalysisSelection } from "./server/analysisSelection.js";
-import { resolveAnalysisBroker, scopeBroker, validateAnalysisRequest, intersectAnalysisSymbols, type AnalysisRequest } from "./orchestrator/analysisRequest.js";
 import { config } from "./config.js";
 import type { BrokerAdapter } from "./brokers/adapter.js";
-import { BybitPaperBroker } from "./brokers/bybitPaper.js";
-import { BybitBroker } from "./brokers/bybit.js";
+import { IgBroker } from "./brokers/ig.js";
+import { igDemoSim, igDemoSimRouter } from "./server/igDemoSimLive.js";
+import { igMarketData } from "./server/igMarketData.js";
+import { beginIgTurn, configureIgTurnGuard, endIgTurn, igTurnStale } from "./server/igTurnGuard.js";
+import { getIgStatus } from "./integrations/igConnection.js";
+configureIgTurnGuard({ activeEnv: () => igMarketData.getActiveEnv(), generation: (env) => getIgStatus().environments[env].connectionGeneration ?? null });
 import { RiskManager } from "./risk/riskManager.js";
 import { runAgentTurn } from "./agent/claudeAgent.js";
+import {
+  buildMorningBriefingPrompt,
+  buildDailyPnlPrompt,
+} from "./agent/prompt.js";
 import { loadState, saveState, appendDecision } from "./memory/store.js";
 import { Scheduler, createDefaultSchedule } from "./scheduler.js";
 import { runOrchestratedTurn } from "./orchestrator/orchestrator.js";
-import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback } from "./server/api.js";
+import { setNotesRunId } from "./server/igAgentNotes.js";
+import { igAgentData } from "./server/igAgentData.js";
+import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback, setIgSessions } from "./server/api.js";
+import { createIgSessions } from "./server/igSessions.js";
+import { analysisStart, analysisEnd, getAnalysis } from "./server/agentActivity.js";
+import { setSessionAnalysisInterval } from "./server/tradeHorizon.js";
+import { canSpend } from "./cost/tracker.js";
 import { startKlineStream } from "./server/klineStream.js";
 import { getSignals, jevReviewSymbols, startSignalEngine, subscribeSignals } from "./server/signalEngine.js";
 import { recordAnalysis } from "./memory/tradeMemory.js";
-import { listPendingOrders } from "./server/orderGate.js";
-import { type PrescreenResult, prescreenPairs, prescreenEnabled, rememberPrescreen, reviewPrescreenScope } from "./orchestrator/prescreen.js";
+import { listPendingOrders, setOrderGateSessionHook } from "./server/orderGate.js";
+import { type PrescreenResult, prescreenPairs, prescreenEnabled, rememberPrescreen } from "./orchestrator/prescreen.js";
 import { analysisModeInfo, autoLoopEnabled, scheduleTimes, signalTriggerEnabled, startFixedTimes } from "./server/analysisMode.js";
 import { setTeamLast } from "./server/teamLast.js";
 import { restoreExecutionMode } from "./server/executionModeStore.js";
 import { log } from "./logger.js";
 import type { DecisionRecord } from "./types.js";
 import type { StrategyEngine } from "./strategies/types.js";
+import { PoliticianCopyEngine } from "./strategies/politicianCopy.js";
+import { WheelEngine } from "./strategies/wheel.js";
+import { CryptoMomentumEngine } from "./strategies/cryptoMomentum.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  MIKAEL TRADING OS — Entrypoint
@@ -33,40 +48,74 @@ import type { StrategyEngine } from "./strategies/types.js";
 //    npm run kill -- on|off  → kill-switch
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Schema, CLI och tidiga signalstarter använder samma sparade urval som dashboarden. */
-function currentAnalysisRequest(): AnalysisRequest {
-  const broker = resolveAnalysisBroker({}, getActiveBrokerName());
-  return { ...getAnalysisSelection(broker === "bybit" ? "LIVE" : "TEST"), broker };
+// ── Setup: brokers ──
+// Plattformen är IG (Mike 2026-10-09): TEST = IG Demo (virtuella pengar på IG:s
+// demokonto), LIVE = IG Live. Bybit, Binance, Alpaca, Kraken, Oanda och Blofin
+// skapas inte längre (filerna finns kvar i git men används inte).
+function createBrokers(): Record<string, BrokerAdapter> {
+  // Demo-simulering (Mike 2026-10-10): Live-instrument som saknas på IG Demo övas med Live-pris och låtsaspengar.
+  // Bara Demo-mäklaren får simuleringen; Live är oförändrad.
+  return { "ig-demo": new IgBroker("demo", { sim: igDemoSim, simRouter: igDemoSimRouter }), ig: new IgBroker("live") };
 }
 
-// ── Setup: brokers ──
-
-function createBrokers(): Record<string, BrokerAdapter> {
-  const brokers: Record<string, BrokerAdapter> = {};
-
-  // Endast Bybit EU registreras; gamla mäklarnycklar kan inte aktivera andra börser.
-  // TEST läggs först så att en kopplad LIVE-nyckel aldrig byter standardkonto.
-  if (process.env.BYBIT_PAPER !== "false") {
-    brokers["bybit-paper"] = new BybitPaperBroker({ quote: config.bybit.quote, baseUrl: config.bybit.baseUrl });
-  }
-
-  if (config.bybit.enabled) {
-    brokers.bybit = new BybitBroker({
-      apiKey: config.bybit.apiKey,
-      apiSecret: config.bybit.apiSecret,
-      quote: config.bybit.quote,
-      baseUrl: config.bybit.baseUrl,
-    });
-  }
-
-  return brokers;
+/** Agenternas och signalmotorns par = IG-bevakningslistan (EPICs) för aktiv miljö. */
+function syncWatchlistToConfig(): void {
+  const list = igMarketData.watchlist();
+  config.crypto.symbols.splice(0, config.crypto.symbols.length, ...list);
 }
 
 // ── Setup: strategi-motorer ──
 
-function createEngines(): StrategyEngine[] {
-  // Bybit-strategier körs av strategyRunner; äldre derivat-/aktiemotorer är bortkopplade.
-  return [];
+function createEngines(brokers: Record<string, BrokerAdapter>): StrategyEngine[] {
+  const engines: StrategyEngine[] = [];
+
+  for (const name of config.engines) {
+    switch (name) {
+      case "politician_copy":
+        engines.push(
+          new PoliticianCopyEngine({
+            allowedSymbols: config.stocks.symbols,
+          }),
+        );
+        break;
+
+      case "wheel_strategy":
+        if (false) {
+          engines.push(
+            new WheelEngine(brokers.alpaca as never, {
+              underlyings: config.wheel.underlyings,
+              putDelta: config.wheel.putDelta,
+              profitTargetPct: config.wheel.profitTargetPct,
+            }),
+          );
+        } else {
+          log.warn("Motor B (Wheel) kräver Alpaca, som inte används med IG. Skippar.");
+        }
+        break;
+
+      case "crypto_momentum": {
+        const cryptoBroker: BrokerAdapter | undefined = undefined; // Blofin/Binance används inte med IG
+        if (cryptoBroker) {
+          engines.push(
+            new CryptoMomentumEngine(cryptoBroker, {
+              symbols: config.crypto.symbols,
+              leverage: config.crypto.leverage,
+              trailingStopPct: config.crypto.trailingStopPct,
+              takeProfitSteps: config.crypto.takeProfitSteps,
+            }),
+          );
+        } else {
+          log.warn("Motor C (Crypto Momentum) kräver Blofin eller Binance. Skippar.");
+        }
+        break;
+      }
+
+      default:
+        log.warn(`Okänd motor: ${name}. Skippar.`);
+    }
+  }
+
+  return engines;
 }
 
 // ── Huvudfunktion: en turn (stödjer single-agent OCH orchestrator) ──
@@ -82,36 +131,76 @@ async function runTurnOnce(fn: () => Promise<void>): Promise<void> {
 async function runOnce(
   brokers: Record<string, BrokerAdapter>,
   engines: StrategyEngine[],
-  request: AnalysisRequest,
+  instruction?: string,
   useTeam = true,
   scheduled = false,
+  /** Exakta IG-EPICs (direktanalys ≤10 eller en sessionsomgång ≤5). JEV förkontrollerar dem först. */
+  symbolsOverride?: string[],
+  out?: { jevStopped?: { symbol: string; why: string }[] },
 ): Promise<void> {
-  // Konto och adapter låses innan JEV eller någon annan asynkron kontroll.
-  const activeName = resolveAnalysisBroker(request, getActiveBrokerName());
-  const primaryBroker = brokers[activeName];
-  if (!primaryBroker) throw new Error(`Analyskontot ${activeName} är inte tillgängligt`);
-  const saved = getAnalysisSelection(activeName === "bybit" ? "LIVE" : "TEST");
-  const allowedSymbols = [...new Set([...config.crypto.symbols, ...saved.selectedSymbols])];
-  request = validateAnalysisRequest({ ...request, broker: activeName }, allowedSymbols);
-  const instruction = request.instruction;
+  // Bind till valt konto före JEV och annan I/O; ett byte under förkontrollen
+  // får inte göra samma instruktion till en analys för det nya kontot.
+  const activeName = getActiveBrokerName();
+  const primaryBroker = activeName ? brokers[activeName] : brokers["ig-demo"];
+  if (!primaryBroker) { log.error("Ingen broker tillgänglig."); return; }
+  const igTurn = primaryBroker instanceof IgBroker ? beginIgTurn(primaryBroker.env) : null;
+  try {
   // Försållning: signalmotorn + JEV väljer par innan AI-teamet startas.
   // En schemalagd tur utan någon signal hoppas över helt (inga AI-anrop).
-  let screen: PrescreenResult = prescreenPairs({
-    cryptoSymbols: allowedSymbols,
-    otherSymbols: [],
-    instruction,
-    request,
-    scheduled,
-  });
+  const screen: PrescreenResult = symbolsOverride?.length
+    ? { enabled: true, symbols: [...symbolsOverride], flagged: [], skip: false, note: `valda instrument: ${symbolsOverride.join(", ")}` }
+    : prescreenPairs({
+      cryptoSymbols: config.crypto.symbols,
+      otherSymbols: config.stocks.symbols,
+      instruction,
+      scheduled,
+    });
   const turnStartedAt = Date.now();
-  const reviewed = await reviewPrescreenScope(screen, request, scheduled, jevReviewSymbols);
-  screen = reviewed.screen;
-  const jevStopped = reviewed.stopped;
-  if (reviewed.error) log.warn(`[JEV] urvalsgranskning otillgänglig: ${reviewed.error}`);
+  let jevStopped: { symbol: string; why: string }[] = [];
+  // Valda instrument: JEV-förkontroll först (stoppade hoppas över, resten går till teknisk analytiker → Hanna)
+  if (symbolsOverride?.length) {
+    try {
+      const { kept, stopped } = await jevReviewSymbols(symbolsOverride, symbolsOverride.length);
+      jevStopped = stopped;
+      screen.symbols = kept;
+      if (!kept.length) { screen.skip = true; screen.note = `JEV stoppade alla valda (${stopped.map((x) => x.symbol).join(", ")})`; }
+      else if (stopped.length) screen.note = `JEV stoppade ${stopped.map((x) => x.symbol).join(", ")}; AI-teamet tar ${kept.join(", ")}`;
+    } catch (err) { screen.note += ` (JEV-förkontrollen kördes inte: ${err instanceof Error ? err.message : String(err)})`; }
+  }
+  // JEV granskar bara paren den här analysen valt (signalerna i sig är gratis matte).
+  if (!symbolsOverride?.length && screen.enabled && screen.flagged.length && !screen.skip) {
+    const maxPairs = Math.max(1, Number(process.env.PRESCREEN_MAX_PAIRS ?? 3) || 3);
+    const candidates = screen.flagged.slice(0, maxPairs * 2).map((f) => f.symbol);
+    const picked = new Set(screen.symbols);
+    if (candidates.some((c) => picked.has(c))) {
+      const { kept, stopped } = await jevReviewSymbols(candidates, maxPairs);
+      jevStopped = stopped;
+      if (stopped.length) {
+        const top = kept.slice(0, maxPairs);
+        const stopNote = `JEV stoppade ${stopped.map((x) => x.symbol).join(", ")}`;
+        if (top.length) {
+          screen.symbols = top;
+          screen.note = `${stopNote}; AI-teamet tar ${top.join(", ")}`;
+        } else if (scheduled && !instruction) {
+          screen.symbols = []; screen.skip = true;
+          screen.note = `${stopNote}; inget par kvar, AI-teamet vilar`;
+        } else {
+          screen.symbols = [...config.crypto.symbols, ...config.stocks.symbols];
+          screen.note = `${stopNote}; du bad om analys: alla par`;
+        }
+      }
+    }
+  }
+  const preflightStale = igTurnStale(igTurn);
+  if (preflightStale) {
+    log.warn(`[analys] ${preflightStale}`);
+    broadcastEvent("analysis-stale", { reason: preflightStale, at: Date.now() });
+    return;
+  }
   rememberPrescreen(screen);
   log.info(`[JEV] försållning: ${screen.note}`);
-  screen.symbols = intersectAnalysisSymbols(request.selectedSymbols, screen.symbols);
-  if (screen.skip || !screen.symbols.length) return;
+  if (out) out.jevStopped = jevStopped;
+  if (useTeam && screen.skip) return;
 
   const state = await loadState();
 
@@ -120,9 +209,16 @@ async function runOnce(
     return;
   }
 
+  // Även tillståndsläsningen kan vänta: kontrollera ursprunglig bindning igen.
+  const stateStale = igTurnStale(igTurn);
+  if (stateStale) {
+    log.warn(`[analys] ${stateStale}`);
+    broadcastEvent("analysis-stale", { reason: stateStale, at: Date.now() });
+    return;
+  }
   log.info(`Aktiv broker: ${activeName ?? Object.keys(brokers).find((k) => brokers[k] === primaryBroker) ?? "?"} (${primaryBroker.mode})`);
 
-  const risk = new RiskManager({ ...config, crypto: { ...config.crypto, symbols: request.selectedSymbols } });
+  const risk = new RiskManager(config);
 
   log.info(
     `Agent-turn startar — mode=${useTeam ? "TEAM" : "SINGLE"} ` +
@@ -137,14 +233,14 @@ async function runOnce(
   if (useTeam) {
     // ── Orchestrator-mode: specialist-team ──
     const result = await runOrchestratedTurn({
-      config: { ...config, crypto: { ...config.crypto, symbols: request.selectedSymbols } },
+      config,
       state,
       broker: primaryBroker,
       brokers,
       risk,
       engines,
       userInstruction: instruction,
-      request: { ...request, selectedSymbols: screen.symbols },
+      symbols: screen.symbols,
     });
     finalText = result.headTrader.decision.briefingSummary;
     toolCalls = result.headTrader.toolCalls;
@@ -158,6 +254,13 @@ async function runOnce(
       summary: result.headTrader.decision.briefingSummary,
     };
     const teamPayload = { ...result.reports, head: headReport };
+    const staleWhy = igTurnStale(igTurn);
+    if (staleWhy) {
+      // Sen analys efter kontobyte: släng resultatet (inget kvitto, inget minne, ingen popup)
+      log.warn(`[analys] ${staleWhy}`);
+      broadcastEvent("analysis-stale", { reason: staleWhy, at: Date.now() });
+      return;
+    }
     setTeamLast(teamPayload, screen.symbols);
 
     // Tradingminnet: spara vad teamet såg och beslöt (resultatet kopplas
@@ -194,9 +297,9 @@ async function runOnce(
   } else {
     // ── Single-agent fallback ──
     const turn = await runAgentTurn({
-      config: { ...config, crypto: { ...config.crypto, symbols: screen.symbols } },
-      broker: scopeBroker(primaryBroker, screen.symbols),
-      brokers: Object.fromEntries(Object.entries(brokers).map(([name, broker]) => [name, scopeBroker(broker, screen.symbols)])),
+      config,
+      broker: primaryBroker,
+      brokers,
       risk,
       state,
       engines,
@@ -278,6 +381,7 @@ async function runOnce(
   log.info(
     `Turn klart. beslut=${action} tools=${toolCalls.length} orders=${placedOrders.length} id=${record.id}`,
   );
+  } finally { if (igTurn) endIgTurn(igTurn); }
 }
 
 // ── CLI ──
@@ -300,7 +404,7 @@ async function main(): Promise<void> {
 
   log.info("╔══════════════════════════════════════════════════════════╗");
   log.info("║            MIKAEL TRADING OS                            ║");
-  log.info("║  Bybit EU — TEST och förberett LIVE                      ║");
+  log.info("║  Multi-Asset Trading Agent powered by Claude            ║");
   log.info("╚══════════════════════════════════════════════════════════╝");
   await restoreExecutionMode();
   log.info(`  Mode: ${config.mode}  |  Execution: ${config.executionMode}`);
@@ -308,9 +412,9 @@ async function main(): Promise<void> {
   log.info("──────────────────────────────────────────────────────────");
 
   const brokers = createBrokers();
-  // Visa separata Bybit TEST- och LIVE-konton.
+  // Visa de mäklare som faktiskt är registrerade (Bybit överallt döljer t.ex. Binance)
   log.info(`  Brokers: ${Object.keys(brokers).join(", ") || "inga"}`);
-  const engines = createEngines();
+  const engines = createEngines(brokers);
 
   if (engines.length === 0) {
     log.warn("Inga strategi-motorer aktiva. Agenten kör i friform-läge.");
@@ -328,6 +432,11 @@ async function main(): Promise<void> {
   // /api/signals även innan strömmen hunnit fylla på, och panelen visar då
   // att den väntar istället för att endpointen saknas.
   // Alla par agenterna följer (Bybit klarar alla på en anslutning)
+  // IG: bevakningslistan (EPICs) är både agenternas och signalmotorns par.
+  config.stocks.symbols.splice(0, config.stocks.symbols.length); // inga Alpaca-aktier
+  syncWatchlistToConfig();
+  igMarketData.events.on("watchlist", () => syncWatchlistToConfig());
+  igMarketData.events.on("env", () => syncWatchlistToConfig());
   const streamSymbols = config.crypto.symbols;
   const streamInterval = process.env.SIGNAL_INTERVAL ?? "1m";
   startSignalEngine();
@@ -342,7 +451,46 @@ async function main(): Promise<void> {
 
   // Registrera API-nyckel + run-callback för manuella agent-frågor och dashboard-triggar
   setApiKey(config.anthropicApiKey);
-  setRunAgentCallback((request: AnalysisRequest) => runTurnOnce(() => runOnce(brokers, engines, request)));
+  setRunAgentCallback((instruction?: string, opts?: { symbols?: string[] }) => runOnce(brokers, engines, instruction, true, false, opts?.symbols));
+
+  // Agentsessioner + schema (krav E): omgångar om ≤5 EPICs per minut genom samma orkestrering.
+  const sessions = createIgSessions({
+    binding: (env) => getIgStatus().environments[env].status === "connected" ? getIgStatus().environments[env].connectionGeneration ?? null : null,
+    activeEnv: () => igMarketData.getActiveEnv(),
+    busy: () => getAnalysis()?.status === "running",
+    guard: async () => {
+      if ((await loadState()).killSwitchActive) return "Kill switch är på";
+      const c = await canSpend({ dailyCapUsd: config.costCap.dailyUsd, weeklyCapUsd: config.costCap.weeklyUsd });
+      return c.allowed ? null : `Kostnadstaket: ${c.reason ?? "nått"}`;
+    },
+    runBatch: async (env, epics, ctx) => {
+      const names = epics.map((e) => `${igMarketData.nameOf(e, env) ?? e} (${e})`).join(", ");
+      const instruction = `Agentsession (${ctx.scheduled ? "schemalagd" : "manuell"}${ctx.strategy ? `, strategi ${ctx.strategy}` : ""}, analysintervall ${ctx.analysisInterval}): analysera bara ${names}. `
+        + "Ge köp (lång), sälj (kort) eller avstå per instrument. Avstå hellre än att gissa. Ge ändå tips (TIPS_JSON) för varje instrument.";
+      analysisStart(ctx.scheduled ? "schema" : "manuell", instruction);
+      setSessionAnalysisInterval(ctx.analysisInterval);
+      // Alla omgångar i sessionen räknas som EN analys i agenternas topplista; nästa omgångars instrument
+      // följer med i samma Tiingo-anrop (färre anrop när IG inte kan leverera ljus).
+      setNotesRunId(`session-${ctx.sessionId}`);
+      try { igAgentData.hint(env, (sessions.state(env).session?.items ?? []).filter((i) => i.status === "väntar").map((i) => i.epic).slice(0, 20)); } catch { /* bara en optimering */ }
+      const out: { jevStopped?: { symbol: string; why: string }[] } = {};
+      try { await runOnce(brokers, engines, instruction, true, ctx.scheduled, epics, out); }
+      catch (err) {
+        // Sessionskön fångar felet, men den globala analysstatusen måste också avslutas.
+        if (getAnalysis()?.status === "running") analysisEnd({ status: "failed", reason: "Agentsessionens analysomgång misslyckades. Se resultatet i sessionskön." });
+        throw err;
+      }
+      finally { setSessionAnalysisInterval(null); setNotesRunId(null); }
+      const a = getAnalysis();
+      if (a?.status === "running") analysisEnd({ status: "stopped", reason: out.jevStopped?.length === epics.length ? "JEV stoppade alla instrument i omgången" : "Omgången kördes inte (kill switch eller ingen mäklare)" });
+      const done = getAnalysis();
+      return { picks: done?.picks ?? [], stopped: out.jevStopped, status: out.jevStopped?.length === epics.length ? "done" : done?.status, reason: done?.reason, notes: done?.notes };
+    },
+    onChange: (env) => broadcastEvent("ig-session", { env }),
+  });
+  setIgSessions(sessions);
+  setOrderGateSessionHook((i) => sessions.orderGateHook(i), () => sessions.forcesApproval(), (tag, outcome, note) => sessions.recordAttemptOutcome(tag, outcome, note ?? null));
+  setInterval(() => { void sessions.tick(); }, 15_000).unref?.();
 
   // Serve-läge: bara dashboard och strömmar. Ingen agent-körning, inga
   // LLM-anrop vid start.
@@ -358,7 +506,7 @@ async function main(): Promise<void> {
     if (args.propose) {
       (config as { executionMode: "auto" | "approve" }).executionMode = "approve";
     }
-    await runOnce(brokers, engines, { ...currentAnalysisRequest(), instruction: args.instruction });
+    await runOnce(brokers, engines, args.instruction);
     log.info(`Dashboard fortfarande aktiv på http://localhost:${DASHBOARD_PORT} — Ctrl+C för att stänga.`);
     // Håll processen igång så dashboarden inte dör
     await new Promise(() => {});
@@ -374,13 +522,13 @@ async function main(): Promise<void> {
   if (autoLoopEnabled()) {
     scheduler.addTask({
       ...schedule.agentLoop,
-      execute: () => runTurnOnce(() => runOnce(brokers, engines, currentAnalysisRequest(), true, true)),
+      execute: () => runTurnOnce(() => runOnce(brokers, engines, undefined, true, true)),
     });
   }
   if (scheduleTimes().length) {
     startFixedTimes((time) => {
       log.info(`[analys] fast tid ${time}: AI-teamet startar`);
-      void runTurnOnce(() => runOnce(brokers, engines, currentAnalysisRequest(), true, true)).catch((err) =>
+      void runTurnOnce(() => runOnce(brokers, engines, undefined, true, true)).catch((err) =>
         log.warn(`[analys] tur kl ${time} misslyckades: ${err instanceof Error ? err.message : String(err)}`));
     });
   }
@@ -396,7 +544,6 @@ async function main(): Promise<void> {
     const lastWake = new Map<string, number>();
     let lastTrigger = 0;
     subscribeSignals((sig) => {
-      if (!currentAnalysisRequest().selectedSymbols.includes(sig.symbol)) return;
       const prev = lastDir.get(sig.symbol);
       lastDir.set(sig.symbol, sig.direction);
       if (sig.direction === "NEUTRAL" || prev === sig.direction) return;
@@ -406,7 +553,7 @@ async function main(): Promise<void> {
       lastTrigger = now;
       lastWake.set(sig.symbol, now);
       log.info(`[JEV] ny signal ${sig.symbol} ${sig.direction} (${sig.score}): AI-teamet startar tidigt`);
-      void runTurnOnce(() => runOnce(brokers, engines, currentAnalysisRequest(), true, true)).catch((err) =>
+      void runTurnOnce(() => runOnce(brokers, engines, undefined, true, true)).catch((err) =>
         log.warn(`[JEV] tidig tur misslyckades: ${err instanceof Error ? err.message : String(err)}`));
     });
   }

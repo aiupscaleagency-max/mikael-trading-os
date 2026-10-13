@@ -6,11 +6,12 @@
 // Vid container-restart läses tidigare sells + entries in från disk.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { dataDir, dataPath } from "../dataDir.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { log } from "../logger.js";
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
+const DATA_DIR = dataDir();
 const LESSONS_FILE = path.join(DATA_DIR, "lessons.json");
 const ENTRIES_FILE = path.join(DATA_DIR, "position-entries.json");
 

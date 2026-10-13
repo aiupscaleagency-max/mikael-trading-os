@@ -8,13 +8,16 @@
 // sammanfattning (några hundra tecken, så det kostar nästan inga tokens).
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { igMarketData } from "../server/igMarketData.js";
+import { dataDir, dataPath } from "../dataDir.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { log } from "../logger.js";
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
+const DATA_DIR = dataDir();
 const MEMORY_FILE = path.join(DATA_DIR, "trade-memory.jsonl");
-const PAPER_FILE = path.join(DATA_DIR, "bybit-paper.json");
+// IG Demo:s avslutade affärer (skrivs av src/server/results.ts från IG:s transaktionshistorik)
+const PAPER_FILE = path.join(DATA_DIR, "ig-closed-demo.json");
 
 export interface MemorySignal { symbol: string; direction: string; score: number; reasons: string[] }
 export interface MemoryProposal { symbol: string; side: "BUY" | "SELL"; usd?: number; takeProfit?: number; stopLoss?: number; refPrice?: number }
@@ -45,7 +48,8 @@ export interface ClosedTrade {
   analysisAt?: number;
 }
 
-const baseOf = (s: string) => s.toUpperCase().replace(/(USDT|USDC|USD|BUSD|FDUSD)$/, "");
+// IG: EPIC → instrumentnamn (transaktionerna har bara namnet), annars som förut
+const baseOf = (s: string) => (igMarketData.nameOf(s) ?? s).toUpperCase().replace(/(USDT|USDC|USD|BUSD|FDUSD)$/, "");
 
 export async function recordAnalysis(entry: AnalysisMemory): Promise<void> {
   try {
@@ -79,8 +83,8 @@ export async function loadAnalyses(limit = 300): Promise<AnalysisMemory[]> {
 
 async function loadPaperFills(): Promise<PaperFill[]> {
   try {
-    const parsed = JSON.parse(await fs.readFile(PAPER_FILE, "utf8")) as { fills?: PaperFill[] };
-    return Array.isArray(parsed.fills) ? parsed.fills : [];
+    const parsed = JSON.parse(await fs.readFile(PAPER_FILE, "utf8")) as PaperFill[] | { fills?: PaperFill[] };
+    return Array.isArray(parsed) ? parsed : Array.isArray(parsed.fills) ? parsed.fills : [];
   } catch { return []; }
 }
 

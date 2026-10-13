@@ -2,6 +2,7 @@
 // Sparas i data/execution-mode.json så att valet finns kvar efter omstart.
 // AUTO går bara i TEST. I LIVE kräver varje order alltid Godkänn.
 
+import { dataDir, dataPath } from "../dataDir.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.js";
@@ -9,7 +10,7 @@ import { log } from "../logger.js";
 
 export type ExecMode = "auto" | "approve";
 
-const FILE = path.resolve(process.cwd(), "data", "execution-mode.json");
+const FILE = dataPath("execution-mode.json");
 
 /** Kan AUTO väljas just nu? Bara i TEST (låtsaspengar). */
 export function autoAllowed(): boolean {
