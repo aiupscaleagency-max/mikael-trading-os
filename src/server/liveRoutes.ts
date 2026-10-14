@@ -64,7 +64,8 @@ export function initLiveLayer(
   // IG-kontohändelser (Lightstreamer ACCOUNT/TRADE) vidare till sidan.
   igMarketData.events.on("account", (env: string, a: unknown) => broadcast("ig-account", { env, account: a }));
   igMarketData.events.on("trade", (env: string, t: unknown) => broadcast("ig-trade", { env, trade: t }));
-  void startStrategyRunner(brokers, broadcast).catch((err) =>
+  // Kurskopian startar inga strategiloopar.
+  if (process.env.PTQA_COPY_LOCAL_ONLY !== "1") void startStrategyRunner(brokers, broadcast).catch((err) =>
     log.warn(`[strategi] start misslyckades: ${err instanceof Error ? err.message : String(err)}`));
 }
 

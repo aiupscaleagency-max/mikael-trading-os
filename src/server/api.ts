@@ -1064,9 +1064,12 @@ export function startServer(
   // IG sätter TP/SL (limit/stop) direkt på positionen hos IG, så botens egen
   // TP/SL-bevakning (src/server/liveTpSl.ts, för Bybit-marknadsköp) startas inte.
   void startLiveTpSl;
+  // Kurskopian kör backtest utan automatiska positionsstängningar.
+  if (process.env.PTQA_COPY_LOCAL_ONLY !== "1") {
   startTradeHorizon(brokers, broadcastEvent);
   // Demo-simulering: TP/SL för simulerade positioner; en stängd position behöver ingen tidsstängning.
   startIgDemoSim((t) => { cancelTimedExitForDeal(t.dealId); broadcastEvent("timed-exit", { symbol: t.epic, dealId: t.dealId, state: "closed", sim: true, reason: t.reason }); });
+  }
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -2652,7 +2655,8 @@ Regler:
     log.error(`Dashboard-servern: ${err.message}`);
   });
 
-  server.listen(port, () => {
+  // Kurskopian exponeras endast lokalt; originalets bindning bevaras.
+  server.listen(port, process.env.PTQA_COPY_LOCAL_ONLY === "1" ? "127.0.0.1" : "0.0.0.0", () => {
     log.ok(`Dashboard: http://localhost:${port}`);
     if (process.env.DASHBOARD_NO_LOGIN === "true") {
       log.warn("DASHBOARD_NO_LOGIN=true — dashboarden öppen utan inloggning, bara från den här datorn.");

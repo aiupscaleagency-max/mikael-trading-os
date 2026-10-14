@@ -1,0 +1,76 @@
+name: ci
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [18, 20, 22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Offline tests
+        run: npm test
+      - name: Doctor (which free data sources this runner can reach)
+        run: npm run doctor
+      - name: Smoke test (real server, real data)
+        run: npm run smoke
+
+  # Runs the install prompt's own commands on each OS, without an AI agent, from a downloaded
+  # archive (no git), the way someone without git would get it.
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_NO_OPEN: "1"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download and unpack (Windows PowerShell 5, as in the prompt)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Set-Location $env:USERPROFILE
+          Invoke-WebRequest -Uri "https://api.github.com/repos/${{ github.repository }}/zipball/${{ github.sha }}" -Headers @{ Authorization = "Bearer $env:GH_TOKEN" } -OutFile "$env:TEMP\quant-terminal.zip"
+          Expand-Archive "$env:TEMP\quant-terminal.zip" -DestinationPath . -Force
+          Get-ChildItem -Directory | Where-Object { $_.Name -like "*quant-terminal-*" } | Select-Object -First 1 | Rename-Item -NewName quant-terminal
+          Test-Path "$env:USERPROFILE\quant-terminal\server.js"
+      - name: Download and unpack (curl and tar, as in the prompt)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd ~
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/${{ github.repository }}/tarball/${{ github.sha }}" | tar -xz
+          mv *quant-terminal-* quant-terminal
+          test -f ~/quant-terminal/server.js
+      - name: Check, set up, launch, stop (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Set-Location "$env:USERPROFILE\quant-terminal"
+          node scripts/check.js; if ($LASTEXITCODE -ne 0) { exit 1 }
+          node scripts/setup.js --watchlist "BTC,ETH,SOL,SPY,QQQ,NVDA,AAPL,EURUSD" --symbol BTC --tf 1D
+          node scripts/launch.js; if ($LASTEXITCODE -ne 0) { exit 1 }
+          Start-Sleep -Seconds 2
+          (Invoke-WebRequest -Uri http://127.0.0.1:3777/api/health -UseBasicParsing).Content
+          node scripts/stop.js
+      - name: Check, set up, launch, stop (macOS, Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd ~/quant-terminal
+          node scripts/check.js
+          node scripts/setup.js --watchlist "BTC,ETH,SOL,SPY,QQQ,NVDA,AAPL,EURUSD" --symbol BTC --tf 1D
+          node scripts/launch.js
+          sleep 2
+          curl -fsS http://127.0.0.1:3777/api/health
+          node scripts/stop.js

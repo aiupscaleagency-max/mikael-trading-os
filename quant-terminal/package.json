@@ -1,0 +1,24 @@
+{
+  "name": "quant-terminal",
+  "version": "1.0.0",
+  "description": "A free, local trading terminal: charts, 50+ indicators, drawings, alerts, screener, heatmap, strategy tester, bar replay and paper trading. Your data, your machine.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js --open",
+    "serve": "node server.js",
+    "test": "node --test test/indicators.test.js test/reference.test.js test/providers.test.js test/series.test.js test/backtest.test.js test/server.test.js test/ptq.test.js test/quant.test.js",
+    "test:live": "node --test test/live.test.js",
+    "doctor": "node scripts/doctor.js",
+    "compare": "node scripts/compare.js",
+    "smoke": "node scripts/smoke.js",
+    "check": "node scripts/check.js",
+    "launch": "node scripts/launch.js",
+    "stop": "node scripts/stop.js",
+    "setup": "node scripts/setup.js"
+  },
+  "license": "MIT"
+}

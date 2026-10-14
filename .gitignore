@@ -24,3 +24,10 @@ credentials*
 
 # Säkerhetskopior av .env (innehåller nycklar)
 .env.bak-*
+
+# Privat kurskopia och terminalens lokala data
+/private-course/
+/quant-terminal/data/
+/quant-terminal/logs/
+/.ptqa-runs/
+/.ptqa-quant-data/

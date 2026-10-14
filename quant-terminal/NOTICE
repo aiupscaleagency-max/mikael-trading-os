@@ -1,0 +1,15 @@
+Quant Terminal
+Copyright (c) 2026 Lewis Jackson. MIT licence (see LICENSE).
+
+This product includes TradingView Lightweight Charts(TM)
+(public/vendor/lightweight-charts.standalone.production.js),
+Copyright (c) 2026 TradingView, Inc., licensed under the Apache License 2.0
+(public/vendor/lightweight-charts.LICENSE). https://www.tradingview.com/
+The chart keeps TradingView's attribution logo, as that licence asks.
+
+Quant Terminal is an independent project. It is not affiliated with, endorsed by,
+or connected to TradingView, Inc. "TradingView" is a trademark of TradingView, Inc.
+
+Market data comes from public endpoints of Binance, Coinbase, Kraken, Nasdaq,
+Yahoo Finance and Forex Factory, each under its own terms. Use it for your own
+personal analysis. Nothing in this software is financial advice.

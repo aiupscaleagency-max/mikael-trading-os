@@ -1150,6 +1150,10 @@ body.app-state-onboard .fc-panel{display:none !important}
 @keyframes tickUp{0%{background:rgba(34,197,94,.35)}100%{background:transparent}}
 @keyframes tickDown{0%{background:rgba(239,68,68,.35)}100%{background:transparent}}
 </style>
+<style>
+/* Kurskopian visar Quant Terminal; IG-kontroller behålls för befintliga beroenden. */
+#mainChartCard > :not(.quant-course-chart):not(.chart-toolbar), #mainChartCard .tf-group, #mainChartCard .ind-toggles, #liveChart, #multiChart { display:none !important; }
+</style>
 </head>
 <body class="app-state-landing">
 
@@ -1660,7 +1664,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   })();
   </script>
   <div class="ti-box"><div class="ti-h">Agenterna (sektion 3)</div><div id="ti-agents">Laddar…</div></div>
-  <div class="ti-box"><div class="ti-h">Diagram och orderbok (sektion 1–2)</div><div id="ti-chart">Det IG-instrument du väljer i diagrammet. Priser och ljus kommer från IG (Lightstreamer via servern). Kvoten visar IG:s köp- och säljkurs.</div></div>
+  <div class="ti-box"><div class="ti-h">Diagram och orderbok (sektion 1–2)</div><div id="ti-chart">Quant Terminal visar kursens publika data för diagram och backtest. Välj IG-instrument separat i orderpanelen; IG-agenter och order använder IG-data.</div></div>
   <div class="ti-box"><div class="ti-h">Läge</div><div id="ti-mode">Laddar…</div></div>
 </section>
 <!-- ══════════════════════════════════════════════════════════════════════
@@ -2726,9 +2730,17 @@ body.app-state-onboard .fc-panel{display:none !important}
 
   <!-- LEFT: CHART + AGENTS -->
   <div class="left">
-    <div class="card" id="mainChartCard" data-sec="1 · Marknaden live · valt IG-instrument, IG Lightstreamer via servern">
+    <div class="card" id="mainChartCard" data-sec="1 · Quant Terminal · kursens diagram och backtest">
+      <!-- Terminalen är isolerad från IG:s order- och analysflöde. -->
+      <div class="quant-course-chart">
+        <h3>Quant Terminal · Day 4 backtest</h3>
+        <p style="font-size:12px;color:var(--label)">Publika kursdata i Quant Terminal. IG-orderpanelen och agenterna använder fortfarande separata IG-data. Instrumentval synkas inte.</p>
+        <a href="http://127.0.0.1:3778" target="_blank" rel="noopener">Öppna Quant Terminal i egen flik</a>
+        <iframe title="Quant Terminal – kursdiagram och strategitest" src="http://127.0.0.1:3778" sandbox="allow-scripts allow-same-origin allow-downloads" style="width:100%;height:720px;border:1px solid var(--border);margin-top:10px;border-radius:6px"></iframe>
+      </div>
       <div class="chart-toolbar">
         <div class="symbol-picker">
+          <span style="font-size:12px;color:var(--label)">IG-order/analys · separat instrumentval:</span>
           <select id="cat-select" title="Instrument från IG för aktiv miljö (Demo eller Live)">
             <option value="watch">Bevakade (IG)</option>
             <option value="forex">Forex (IG)</option>
@@ -2792,7 +2804,7 @@ body.app-state-onboard .fc-panel{display:none !important}
   </div>
 
   <!-- RIGHT: BET PANEL -->
-  <div class="right" data-sec="2 · Handla · IG-kvot och köp/sälj för samma instrument som diagrammet">
+  <div class="right" data-sec="2 · Handla · separat IG-instrumentval och IG-kvot">
     <!-- IG: köp- och säljkurs (offer/bid) live via servern. IG har ingen publik orderbok eller affärslista för CFD:er. -->
     <div class="card" id="bybitTradeCard">
       <h3>IG-kvot <span class="tag" id="bk-pair">–</span><span style="float:right;font-size:10px;color:var(--dim)" id="bk-status">väntar…</span></h3>
@@ -2851,7 +2863,7 @@ body.app-state-onboard .fc-panel{display:none !important}
         <select id="ot-tf-unit"><option value="60">min</option><option value="3600">tim</option><option value="86400">dagar</option></select>
       </div>
       <div id="ot-times" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:4px 0 8px;font-size:10px;color:var(--dim)">
-        <label title="Vilket intervall huvuddiagrammet visar. Påverkar inte ordern eller analysen.">2 · Diagramintervall<select id="ot-chart-iv" style="width:100%"><option>1m</option><option>5m</option><option>15m</option><option>30m</option><option>1h</option><option>4h</option><option>1d</option></select></label>
+        <label style="display:none" title="Intervall för äldre IG-referens; Quant-intervall väljs i terminalen.">2 · IG-referensintervall<select id="ot-chart-iv" style="width:100%"><option>1m</option><option>5m</option><option>15m</option><option>30m</option><option>1h</option><option>4h</option><option>1d</option></select></label>
         <label title="Vilka stängda ljus agenterna analyserar.">3 · Analysintervall<select id="ot-ana-iv" style="width:100%"><option>1m</option><option>5m</option><option>15m</option><option>1h</option></select></label>
         <label title="Hur länge en agentsession pågår.">4 · Sessionslängd<select id="ot-sess-min" style="width:100%"><option value="15">15 min</option><option value="30">30 min</option><option value="60">60 min</option><option value="120">120 min</option></select></label>
       </div>
@@ -7742,14 +7754,14 @@ function updateTiming(p){
 }
 
 async function loadFromBackend(){
-  if(CFG.mode !== "live") return false;
+  // Kurskopian läser säkerhetsstatus även i paper-läge.
   try{
     const [status, decisions] = await Promise.all([
       apiGet("/api/state").catch(()=>null),
       apiGet("/api/decisions?limit=10").catch(()=>null)
     ]);
-    if(status?.killSwitch !== undefined){
-      STATE.killActive = !!status.killSwitch;
+    if(status?.killSwitchActive !== undefined){
+      STATE.killActive = !!status.killSwitchActive;
       document.getElementById("kill-btn").classList.toggle("active", STATE.killActive);
     }
     return true;
@@ -8540,8 +8552,10 @@ function initApp(){
     setInterval(refreshCost, 30000); // Refresh kostnadsräknare var 30s
     window._tickStarted = true;
   }
+  // Säkerhetsstatus måste läsas även i kurskopians paper-läge.
+  loadFromBackend();
   if(CFG.mode === "live"){
-    loadFromBackend(); startSSE(); loadTeamLast(); loadCurrentMode(); syncBrokers();
+    startSSE(); loadTeamLast(); loadCurrentMode(); syncBrokers();
     startBinancePolling();
     // Intervall utan IG-ström (15m/30m/4h/1d) eller tappad ström: hämta om stängda ljus från servern.
     setInterval(()=>{ if(STATE.symbol && (!bybitChartLive() || !["1m","5m","1h"].includes(STATE.tf))) loadRealCandles(STATE.symbol, STATE.tf); }, 30000);

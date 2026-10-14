@@ -477,7 +477,8 @@ async function main(): Promise<void> {
   });
   setIgSessions(sessions);
   setOrderGateSessionHook((i) => sessions.orderGateHook(i), () => sessions.forcesApproval(), (tag, outcome, note) => sessions.recordAttemptOutcome(tag, outcome, note ?? null));
-  setInterval(() => { void sessions.tick(); }, 15_000).unref?.();
+  // Kurskopian får inte köra schemalagda analyser vid start.
+  if (process.env.PTQA_COPY_LOCAL_ONLY !== "1") setInterval(() => { void sessions.tick(); }, 15_000).unref?.();
 
   // Serve-läge: bara dashboard och strömmar. Ingen agent-körning, inga
   // LLM-anrop vid start.
