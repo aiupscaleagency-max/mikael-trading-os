@@ -153,3 +153,7 @@ Den första praktiska kandidaten blir **High/Low Breakout + Retest på XAUUSD, 5
 Om spread eller minsta IG-position gör XAUUSD olämpligt börjar vi med EURUSD. Vi väljer inte marknad efter vilket diagram som ser bäst ut i efterhand.
 
 Ingen av dessa PDF:er bevisar 90 % träffsäkerhet. Exempel på 4,5R, 8,8R eller 3,24R är exempel, inte ett oberoende track record.
+
+## Gemensam tillämpning
+
+Denna plan tillämpas tillsammans med den andra planen enligt [gemensamt testprotokoll](TESTPROTOKOLL-PDF-STRATEGIER.md). Där finns första variantens föreslagna parametrar och journalmallar.

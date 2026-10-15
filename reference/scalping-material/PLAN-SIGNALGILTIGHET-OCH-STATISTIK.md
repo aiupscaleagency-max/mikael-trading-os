@@ -63,3 +63,7 @@ När en signal bedöms får vi endast använda data som fanns på den angivna ti
 ## Beslutsgräns
 
 Ingen strategi går till en verklig pilot enbart på hög vinstfrekvens. Den måste visa positiv expectancy efter kostnad, acceptabel drawdown, rimlig fyllnadsgrad och stabilitet i separat data.
+
+## Gemensam tillämpning
+
+Denna plan tillämpas tillsammans med den andra planen enligt [gemensamt testprotokoll](TESTPROTOKOLL-PDF-STRATEGIER.md). Där finns första variantens föreslagna parametrar och journalmallar.
