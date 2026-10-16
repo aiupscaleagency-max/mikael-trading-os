@@ -1,6 +1,6 @@
 # Plan: två Hermes-agenter med Claude- och ChatGPT-kroppar och JEV som hjärna (2026-10-16)
 
-> **Status: PLAN v2. Ingen kod är ändrad.** Skriven av Claude på dator 1 och granskad av en oberoende kritiker; v2 innehåller kritikerns rättelser. Codex ska granska och förbättra den innan bygget börjar.
+> **Status: PLAN v3. Ingen kod är ändrad.** v2 innehöll kritikerns rättelser. v3 lägger till Codex granskning av PR #82 (2026-10-16), se §8. Där §8 säger något annat än §1–7 gäller §8.
 > Följ reglerna i `docs/OVERLAMNING-IG-2026-10-11.md` §2. Det betyder: lägg aldrig order åt Mike, skriv aldrig nycklar i klartext, lägg till i stället för att bygga om, och ändra inte LLM- eller JEV-ordningen utan Mikes OK.
 
 ## 1. Mikes mål (hans ord, sammanfattat)
@@ -53,7 +53,7 @@ En ny, **valbar** AI-väg `LLM_ROUTE=hermes` som bara gäller fyra textanrop i t
 
 ## 4. Designval (enkelt, inte överarbetat)
 
-1. **Valbart med en rad i `.env`:** `LLM_ROUTE=hermes`. Saknas raden fungerar allt exakt som i dag. Ingen befintlig väg tas bort. Vercel och OpenRouter blir reserv när de har krediter igen.
+1. **Valbart med en rad i `.env`:** `LLM_ROUTE=hermes`. Saknas raden fungerar allt exakt som i dag, och ingen befintlig väg tas bort. Betalda reserver (Vercel/OpenRouter) används i Hermes-läget **bara** om de uttryckligen slås på med `LLM_HERMES_PAID_FALLBACK=true`. Se §8.5.
 
 2. **Anropet** sker i en ny fil `src/llm/hermesRoute.ts`, med `execFile` och utan skal:
    ```
@@ -138,4 +138,78 @@ En ny, **valbar** AI-väg `LLM_ROUTE=hermes` som bara gäller fyra textanrop i t
 3. Köra `bash ~/mto-ig/scripts/restart-reviewed-ig.sh`.
 4. Trycka "Kör analys" och se tipsen.
 
-Vercel och OpenRouter kan fyllas på senare och blir då automatiskt reserv.
+Vercel och OpenRouter kan fyllas på senare. I Hermes-läget används de bara om `LLM_HERMES_PAID_FALLBACK=true` (§8.5).
+
+## 8. Rättelser från Codex granskning (v3, gäller före §1–7)
+
+### 8.1 Hanna: en egen kodväg utan verktyg
+- I `headTrader.ts` (runt rad 157–173) läggs en **separat Hermes-gren före verktygsloopen**. Där skickas aldrig `tools: toolDefinitions()`, och `runTool` anropas aldrig.
+- Grenen får en **egen systemprompt som bara handlar om analys**: "Du lägger inga order. Svara med analys och TIPS_JSON." Den befintliga meningen "Du har verktyg för att lägga order" följer inte med.
+- Tipsparsningen (`headTips.ts`) återanvänds.
+- Testet ska visa att grenen aldrig anropar `runTool` och att den aldrig skapar orderutkast eller väntande order.
+
+### 8.2 Kostnadsregistreringen
+- `trackClaudeCall` (`src/cost/tracker.ts:59-79`) utökas med valfria fält: `route` (`vercel|openrouter|anthropic|hermes`), faktisk `model` och en uttrycklig `costUsd`. När `costUsd` är satt (0 för prenumeration) används den i stället för beräkningen från tokenantalet. Tokenstatistiken behålls som förut.
+- Hermes-anrop kostar 0 USD och räknas **inte** mot API-kostnadstaket.
+- Har tidigare API-utgifter redan nått taket gäller detta: betalda vägar spärras som i dag, men Hermes-läget får fortsätta. Spärren för taket undantar uttryckligen rader med `route=hermes`, och kostnadssidan visar det.
+
+### 8.3 En lyckad process räcker inte, innehållet valideras
+Tre lager kontroller:
+1. **Transport:** exitkod 0 och `api_calls == 1`.
+2. **Innehåll:** svaret är inte tomt och har ingen verktygsbegäran i texten.
+3. **Schema per roll:**
+   - Teknisk, Risk och Advisor: `extractJson` ger ett giltigt objekt med de obligatoriska fälten.
+   - Hanna: `TIPS_JSON` finns, kan parsas och har en rad per valt instrument.
+
+Varje roll får en **status**: `lyckad`, `misslyckad` (med orsak) eller `överhoppad`. Statusen följer med i analysresultatet och sparas i minnet.
+
+Orkestreraren (`orchestrator.ts:174-197`) fångar i dag specialistfel och fortsätter med reservrapporter. I Hermes-läget gäller i stället:
+- Saknas en **nödvändig** rapport (Teknisk eller Hannas TIPS_JSON) visas **inte** en normal analys. Rutan visar "analys ofullständig: <roll> misslyckades (<orsak>)".
+- Saknas bara Risk eller Advisor visas analysen, märkt "delvis (Risk saknas)" eller "delvis (Advisor saknas)".
+
+Tester: tomt svar, trasig JSON, saknad TIPS_JSON, fel hos båda providers, avbruten körning (SIGTERM) och timeout.
+
+### 8.4 Verktygsisolering: R1 är ett STOPPVILLKOR
+- Ingen kodning (K1–K5) börjar förrän R1 har verifierat exakt vad Hermes laddar i den valda versionen: verktyg, regler, minne, SOUL/systemprompt, hooks och fallback.
+- Finns ett **verifierat verktygsfritt läge** används det. Annars skrivs begränsningen ut ärligt, till exempel att "endast `todo_list` laddas", och vad det innebär.
+- Kontrollen `api_calls == 1` är en kontroll i efterhand, inte en spärr. Spärren är det verifierade läget plus tom cwd och minimal env.
+- Hermes-versionen **låses**. Botten loggar `hermes --version` vid start och vägrar Hermes-läget med en tydlig text om versionen har ändrats, tills R1 körts igen.
+
+### 8.5 Reservordning per roll (entydig)
+| Roll | 1:a | 2:a | 3:e (bara med `LLM_HERMES_PAID_FALLBACK=true`) | Annars |
+|---|---|---|---|---|
+| Teknisk, Risk, Hanna | `trading-claude` | `trading-chatgpt` | befintlig betald kedja (Anthropic → Vercel → OpenRouter) | status `misslyckad` |
+| Advisor | `trading-chatgpt` | `trading-claude` | befintlig betald kedja | status `misslyckad` (live: analysen märks "Advisor saknas") |
+
+- **Byte sker vid:** transportfel (exit ≠ 0, timeout, SIGTERM), tomt svar eller schemafel efter ett omförsök med samma kropp, eller takgräns i prenumerationen (känns igen i Hermes felsammanfattning).
+- **Inget byte vid:** giltigt svar som säger HOLD/AVVAKTA.
+- Faktisk **kropp, provider och modell per roll** visas efter varje analys. Exempel: "Teknisk: Claude Sonnet (trading-claude) · Advisor: ChatGPT GPT-6 (trading-chatgpt → reserv Claude)".
+
+### 8.6 JEV-status följer med analysen
+- Två separata resultat följer med i underlaget och resultatet, vart och ett med **status och tidsstämpel**:
+  1. `jevTurnPreflight` (djup och granskning).
+  2. Signalmotorns `applyJevVerdict` (regim, riktning, veto) per instrument.
+- Etiketten skiljer på tre lägen: **"JEV fullständig"** (båda), **"JEV delvis (preflight saknas / signal-JEV saknas)"** och **"utan JEV"**.
+- Hannas Hermes-prompt får **uttryckligen** preflight-resultatet. I dag skickas det inte med (`orchestrator.ts:297-302`).
+- **Veto bevaras:** har JEV satt veto för ett instrument blir tipset AVVAKTA med orsaken "JEV-veto", oavsett vad kroppen svarar. Det gäller även efter parsning och reservbyte. Detta testas.
+- Den låsta JEV-ordningen behålls oförändrad.
+
+### 8.7 Tidsbudget, samtidighet och datans ålder
+- **Total tidsgräns per analys: 240 s**, inklusive kö och reservförsök.
+- Per anrop gäller en timeout på 60 s (justeras efter R1/R2-mätningen) med högst 1 omförsök.
+- Teknisk och Risk körs **parallellt** på olika kroppar när det går. Annars avbryts kedjan när den totala gränsen nås, och de roller som inte hann markeras som `överhoppad (tidsgräns)`.
+- **Avbruten körning:** Mike eller ett kontobyte avbryter det pågående arbetet. Hermes-processen får SIGTERM, så inga hängande processer blir kvar. Detta testas.
+- **Samtidiga analyser:** högst en analys per miljö åt gången, och en ny begäran under pågående analys får svaret "analys pågår". Det testas.
+- **Datans ålder:** innan tips visas kontrolleras att IG-livepriset per instrument är högst 60 s gammalt. Äldre pris ger tipset varningen "⚠ gammalt pris, kontrollera mot IG", och nivåerna räknas som overifierade. Det testas.
+
+### 8.8 Nya acceptanstester (utöver K2–K5)
+| Test | Förväntat |
+|---|---|
+| Hermes-grenen för Hanna | 0 anrop av `runTool`, 0 orderutkast |
+| Kostnad | Hermes-rader `costUsd 0, route hermes`; taket påverkas inte |
+| Validering | Tomt, trasig JSON eller saknad TIPS_JSON ger rätt status och ingen "normal" analys |
+| Reserv | Claude nere → ChatGPT och omvänt, båda nere → `misslyckad`, betald reserv bara med flagga |
+| JEV | fullständig, delvis och utan, plus veto bevarat genom reserv |
+| Tid | Totalt ≤ 240 s, timeout och SIGTERM städar processer |
+| Samtidighet | Andra analysen under pågående får svaret "analys pågår" |
+| Dataålder | Pris > 60 s ger varning och overifierade nivåer |
