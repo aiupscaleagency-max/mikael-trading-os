@@ -213,3 +213,57 @@ Tester: tomt svar, trasig JSON, saknad TIPS_JSON, fel hos båda providers, avbru
 | Tid | Totalt ≤ 240 s, timeout och SIGTERM städar processer |
 | Samtidighet | Andra analysen under pågående får svaret "analys pågår" |
 | Dataålder | Pris > 60 s ger varning och overifierade nivåer |
+
+## 9. Verifierat av researchern (R1–R3, 2026-10-16, Hermes v0.21.7+500.g8f81791). Gäller före §4 och §8.
+
+### 9.1 Rättelser till kommandot (R1 är nu godkänt med dessa villkor)
+| Planen antog | Verifierat | Ny regel |
+|---|---|---|
+| `--ignore-rules` stänger av AGENTS.md och minne | Gör **ingenting** i `-z`. AGENTS.md i cwd lästes in (test: "OK BANAN-7731"). SOUL.md från profilen laddas alltid. | cwd = ny `mkdtemp` i `os.tmpdir()`, **utanför alla git-repon** (kontextfiler letas upp till git-roten) |
+| `-t todo` = bara `todo_list` | Ger även `hermes_tool_search`/`tool_call` (bryggan) | **`-t context_engine`** = verifierat verktygsfritt (`resolve_toolset → []`, input 2433→761 tokens, MCP startas inte) |
+| — | `-t ""` faller tillbaka på HELA cli-uppsättningen (terminal, write_file, execute_code …) | Shimmen hårdkodar `context_engine` och vägrar alla andra värden |
+| rc 0 = ok, 1 = tomt | Providerfel ger rc 2 med text på stdout och `api_calls` 1 men `failed` true. Credentialfel ger rc 1. SIGTERM ger rc 143 utan usage-fil. | **Godkänn bara om:** rc==0, usage-filen kan läsas, `api_calls==1`, `failed==false`, `completed==true` och **`cost_status=="included"`** (fångar en tyst betald väg) |
+| — | Titelgenereringen gjorde ett extra aux-anrop | Avstängt i båda profilerna (`auxiliary.title_generation.model_upgrade_enabled=false`) |
+| env | `ANTHROPIC_API_KEY` (betald) exporteras i `~/.zshrc` och går före OAuth | env är strikt `{HOME, PATH}`. Lägg aldrig nyckeln i en profils `.env`. |
+
+Verifierat kommando (execFile, inget skal):
+```
+hermes -p trading-chatgpt -z "<prompt>" -t context_engine -m gpt-5.6-sol    --provider openai-codex --usage-file <tmp>.json
+hermes -p trading-claude  -z "<prompt>" -t context_engine -m claude-sonnet-4-6 --provider anthropic  --usage-file <tmp>.json
+```
+
+### 9.2 Profiler (skapade av researchern, utan nycklar)
+| Profil | Läge | Modeller som fungerar (svarstid för "OK") |
+|---|---|---|
+| `trading-chatgpt` (openai-codex OAuth via rot-poolen) | ✅ fungerar | gpt-5.6-sol 3,8–6,9 s · gpt-6-sol 3,5 s · gpt-6.1-sol 4,4 s · gpt-6-luna 5,7 s · gpt-5.6-terra 3,9 s. Avvisade (400): gpt-6, gpt-5.5, gpt-5.3-codex. |
+| `trading-claude` (anthropic) | ⛔ **STOPP: Mike måste logga in** | "No Anthropic credentials found". Claude Codes egna OAuth gick ut för ca 15 dagar sedan. |
+
+Fallback-kedjor: inga i de nya profilerna (`fallback list` är tom). Låt den vara tom.
+
+**Modellval för ChatGPT-kroppen:** förslaget är `gpt-6-sol`, eftersom Mike vill ha "ChatGPT-6". Kontrollera med Mike innan det låses (LLM-regeln).
+
+### 9.3 Tidsbudget (mätt)
+| Storlek | Tid |
+|---|---|
+| Uppstart (även vid fel) | ca 2,5 s |
+| ca 4k tokens in | 9–10 s |
+| ca 20k tokens in, 1,5–2,7k ut | 47–49 s |
+
+Timeout per anrop: Hanna och Risk 90 s, Teknisk 120 s. Taket för hela analysen höjs från 240 s till **300 s**.
+
+### 9.4 JEV (R3)
+| Väg (låst ordning) | Resultat |
+|---|---|
+| 1. TypeSafe direkt (nyckel i nyckelringen) | **401**: nyckeln avvisas, och 401 loggas aldrig (`jevClient.ts:305-311`) |
+| 2. Vercel gateway | **402**: inga krediter |
+| 3. OpenRouter `typesafe/jev-1.13` | **200 ✅**, 0,3–0,8 s. Det är den vägen JEV går i dag. |
+
+Slutsats: JEV fungerar redan via OpenRouter, och ordningen ändras inte. Att lägga till en loggrad för 401 är ett tillägg som får göras.
+
+### 9.5 Det Mike gör innan bygget (2 saker)
+1. **Logga in Claude i Hermes**, en gång och interaktivt i Terminal, i roten och utan `-p`:
+   ```
+   hermes auth add anthropic --type oauth
+   ```
+   Kontrollera efteråt med `hermes -p trading-claude auth list`. Det ska stå en oauth-rad under anthropic.
+2. (Valfritt) Ny TypeSafe-nyckel via `tools/jev/set-typesafe-key.sh`, om JEV ska gå direkt i stället för via OpenRouter.
