@@ -5,7 +5,7 @@ import type { RiskManager } from "../risk/riskManager.js";
 import type { StrategyEngine } from "../strategies/types.js";
 import type { JevTurnDecision } from "../llm/jev.js";
 import type { Signal } from "../server/signalEngine.js";
-import { hermesRoute, HERMES_BODIES, type HermesRoute } from "../llm/hermesRoute.js";
+import { hermesRoute, HERMES_BODIES, HermesError, waitStop, type HermesRoute } from "../llm/hermesRoute.js";
 import { track, agentSkip, turnPhase, turnEnd, analysisEnd, getAnalysis } from "../server/agentActivity.js";
 import { runHeadTrader } from "./headTrader.js";
 import {
@@ -13,7 +13,7 @@ import {
   applyAdvisorTightening, runRole, skippedStatus, roleLine, roleName, messageText, HERMES_TIMEOUTS,
   type ChainCtx, type MarketBlockDeps, type PaidDeps, type RoleStatus, type TrRow, type AdvReview, type JevStatus, type MarketBlock,
 } from "./hermesTeam.js";
-import { setBrainLabel } from "./hermesLabel.js";
+import { setBrainLabel, setFailedAttempt } from "./hermesLabel.js";
 import type { OrchestratorResult, AllReports } from "./orchestrator.js";
 import type { TechnicalReport, RiskReport, AdvisorReport, MacroReport } from "./types.js";
 import { log } from "../logger.js";
@@ -122,9 +122,13 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
   controllers.add(ac);
   const hermes = deps.hermes ?? hermesRoute();
   const t0 = Date.now();
-  const deadlineAt = t0 + (deps.totalMs ?? HERMES_TIMEOUTS.total);
+  // EN tidsgräns för hela analysen, räknad från analysens start (orkestreraren), gäller alla steg
+  const deadlineAt = Math.min(t0, p.totalStart) + (deps.totalMs ?? HERMES_TIMEOUTS.total);
   const startedAt = getAnalysis()?.startedAt ?? null;
   const costRunId = `hermes-${p.env}-${t0.toString(36)}`;
+  // Anteckningarnas runId (agentsession eller analysens start): tips och etikett knyts till samma id
+  const { notesRunId } = await import("../server/igAgentNotes.js");
+  const notesRun = notesRunId() ?? `analys-${startedAt ?? t0}`;
   const isStale = deps.isStale ?? (await import("../server/igTurnGuard.js")).igTurnStale.bind(null, undefined);
   // Kontobyte/ny session eller en annan analys som tagit över: avbryt direkt (sena svar publiceras aldrig)
   const staleWhy = (): string | null => isStale() ?? (startedAt !== null && getAnalysis()?.startedAt !== startedAt ? "en ny analys startades" : null);
@@ -135,7 +139,9 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
   const finish = (outcome: HermesAnalysisMeta["outcome"], outcomeText: string): HermesAnalysisMeta => {
     const brain = `Hjärna: ${jev?.label ?? "utan JEV"} · Kropp: ${HERMES_BODIES.claude.label} + ${HERMES_BODIES.chatgpt.label}`;
     const meta: HermesAnalysisMeta = { outcome, outcomeText, jev: jev!, roles, brain, totalMs: Date.now() - t0, runId: costRunId };
-    setBrainLabel(p.env, { text: brain, roles: roles.map(roleLine), jev: jev?.level ?? "utan", outcome: outcomeText, at: new Date().toISOString(), runId: costRunId });
+    const label = { text: brain, roles: roles.map(roleLine), jev: jev?.level ?? "utan", outcome: outcomeText, at: new Date().toISOString(), runId: notesRun };
+    // Bara en lyckad körning får etikett ihop med sina tips; misslyckade/avbrutna visas separat
+    if (outcome === "full" || outcome === "delvis") setBrainLabel(p.env, label); else setFailedAttempt(p.env, label);
     log.info(`[Hermes] ${outcomeText} på ${((Date.now() - t0) / 1000).toFixed(1)} s · ${brain} · ${roles.map(roleLine).join(" · ")}`);
     return meta;
   };
@@ -150,14 +156,30 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
     analysisEnd({ status: "failed", reason, hermes: meta });
     throw new Error(reason);
   };
+  // Förberedande steg (version, inloggning, underlag) är bundna till samma avbrott och tidsgräns
+  const stopOpts = { signal: ac.signal, deadlineAt };
+  const guard = async <T,>(what: string, work: Promise<T>): Promise<T> => {
+    try { return await waitStop(work, stopOpts); }
+    catch (e) {
+      if (e instanceof HermesError && e.kind === "aborted") return stop(String(ac.signal.reason ?? "avbruten"), finish("avbruten", `avbruten under ${what}`));
+      if (e instanceof HermesError && e.kind === "deadline") {
+        const reason = `analys ofullständig: ${what} hann inte (tidsgräns)`;
+        roles.push(skippedStatus("technical", "tidsgräns"), skippedStatus("advisor", "tidsgräns"), skippedStatus("head", "tidsgräns"));
+        analysisEnd({ status: "failed", reason, hermes: finish("ofullständig", reason) });
+        throw new Error(reason);
+      }
+      throw e;
+    }
+  };
   try {
-    // Låst Hermes-version (§8.4). Annan version → vägra med tydlig text.
-    // Inloggningskontrollen (oauth-only per profil) körs om för VARJE analys.
-    hermes.beginAnalysis();
-    const ready = await hermes.ready();
     const signals = deps.signals ?? (await import("../server/signalEngine.js")).getSignals;
     const jevNow: JevStatus = jevStatusFor(p.jev, p.jevAt, p.symbols, signals());
     jev = jevNow;
+    // Låst Hermes-version (§8.4). Annan version → vägra med tydlig text.
+    // Inloggningskontrollen (oauth-only per profil) körs om för VARJE analys.
+    hermes.beginAnalysis();
+    const ready = await guard("versionskontrollen", hermes.ready(stopOpts));
+    await guard("inloggningskontrollen", hermes.credentials(stopOpts));
     if (!ready.ok) {
       const meta = finish("ofullständig", `Hermes-läget vägrar: ${ready.reason}`);
       analysisEnd({ status: "failed", reason: `Hermes-läget vägrar: ${ready.reason}`, hermes: meta });
@@ -178,7 +200,7 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
       nameOf: (e) => igMarketData.nameOf(e, p.env),
       intervals: shortIntervals(),
     };
-    const block: MarketBlock = await buildMarketBlock(costRunId, p.env, p.symbols, market);
+    const block: MarketBlock = await guard("underlaget", buildMarketBlock(costRunId, p.env, p.symbols, market));
     const s = currentStake();
     const stake = deps.stake ?? { pct: s?.pct ?? 1, amount: s?.amount ?? null, currency: s?.currency ?? null, minPct: stakeStartPct(), horizonMin: getHorizonMin() };
     // Live = IG Live-kontot ELLER MODE=live (aldrig bara config.mode: Demo får inte märkas live, och IG Live får aldrig behandlas som papper)
@@ -205,7 +227,10 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
         const model = modelFor(q.modelRole, q.directDefault);
         const t = Date.now();
         // Egen tidsgräns per anrop (rollens gräns, högst kvarvarande del av 300 s) och avbrott via kedjans signal
-        const r = await client.messages.create({ model, max_tokens: q.maxTokens, system: q.system, messages: [{ role: "user", content: q.user }] }, { signal: ac.signal, timeout: q.timeoutMs, maxRetries: 0 });
+        // Gatewayens interna försök (vägar + reservmodeller) delar EN signal: kedjans avbrott eller
+        // återstående tid (q.timeoutMs ≤ kvar av 300 s). Ett avbrutet anrop har ingen status → kedjan stannar direkt.
+        const signal = AbortSignal.any([ac.signal, AbortSignal.timeout(Math.max(1, q.timeoutMs))]);
+        const r = await client.messages.create({ model, max_tokens: q.maxTokens, system: q.system, messages: [{ role: "user", content: q.user }] }, { signal, timeout: q.timeoutMs, maxRetries: 0 });
         return { text: messageText(r), model: r.model || model, usage: r.usage, ms: Date.now() - t };
       }),
     };
@@ -294,11 +319,11 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
     const summary = `${missing.length ? `⚠ ${outcomeText}. ` : ""}${meta.brain}\n${head.decision.briefingSummary}`;
     let notes;
     try {
-      const { buildAgentNotes, agentNotes, notesRunId } = await import("../server/igAgentNotes.js");
+      const { buildAgentNotes, agentNotes } = await import("../server/igAgentNotes.js");
       notes = buildAgentNotes({
         env: p.env, symbols: epics, picks: [], technical: reports.technical.analyses, summary,
         trigger: getAnalysis()?.trigger ?? null, nameOf: (e) => igMarketData.nameOf(e, p.env),
-        tips: head.tips, runId: notesRunId() ?? `analys-${getAnalysis()?.startedAt ?? Date.now()}`,
+        tips: head.tips, runId: notesRun,
       });
       agentNotes.record(notes);
     } catch { /* anteckningarna är bara en spegel */ }

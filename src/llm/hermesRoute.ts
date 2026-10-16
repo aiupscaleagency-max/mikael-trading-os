@@ -64,7 +64,8 @@ export type HermesFailKind =
   | "timeout"    // tidsgräns per anrop (får ge reserv)
   | "deadline"   // analysens totala tidsgräns (inga nya försök)
   | "aborted"    // användaravbrott/kontobyte (inga nya försök)
-  | "not_ready"; // fel Hermes-version eller profilkontroll misslyckades
+  | "not_ready"   // fel Hermes-version eller profilkontroll misslyckades
+  | "credentials"; // profilen är inte bara oauth (betald nyckel) eller kontrollen misslyckades – startas aldrig
 
 export class HermesError extends Error {
   constructor(public kind: HermesFailKind, message: string, public rc: number | null = null, public usage: HermesUsage | null = null) {
@@ -181,6 +182,24 @@ const QUOTA_RE = /usage limit|rate.?limit|quota|too many requests|\b429\b|limit 
 
 function num(v: unknown): number { return typeof v === "number" && Number.isFinite(v) ? v : 0; }
 
+/** Stopp för förberedande steg: analysens AbortSignal och gemensamma tidsgräns (300 s-taket). */
+export interface StopOpts { signal?: AbortSignal; deadlineAt?: number }
+
+/** Väntar på p men avbryter vid analysens avbrott eller tidsgräns (kastar HermesError aborted/deadline). */
+export function waitStop<T>(p: Promise<T>, stop: StopOpts = {}): Promise<T> {
+  if (stop.signal?.aborted) return Promise.reject(new HermesError("aborted", "avbruten"));
+  if (stop.deadlineAt !== undefined && Date.now() >= stop.deadlineAt) return Promise.reject(new HermesError("deadline", "analysens tidsgräns nådd"));
+  if (!stop.signal && stop.deadlineAt === undefined) return p;
+  return new Promise<T>((resolve, reject) => {
+    let timer: NodeJS.Timeout | null = null;
+    const done = () => { if (timer) clearTimeout(timer); stop.signal?.removeEventListener("abort", onAbort); };
+    const onAbort = () => { done(); reject(new HermesError("aborted", "avbruten")); };
+    stop.signal?.addEventListener("abort", onAbort, { once: true });
+    if (stop.deadlineAt !== undefined) timer = setTimeout(() => { done(); reject(new HermesError("deadline", "analysens tidsgräns nådd")); }, Math.max(0, stop.deadlineAt - Date.now()));
+    p.then((v) => { done(); resolve(v); }, (e) => { done(); reject(e); });
+  });
+}
+
 interface Waiter { resolve: (release: () => void) => void; reject: (e: Error) => void; cleanup: () => void }
 
 /** Lås per profil: ett anrop åt gången. Köade väntare töms vid avbrott (§10.4). */
@@ -286,11 +305,15 @@ export function createHermesRoute(deps: HermesDeps = {}) {
   }
 
   /** Versions- och profilkontroll. Körs lat vid första Hermes-anropet (aldrig vid import), resultatet cachas. */
-  function ready(): Promise<HermesReady> {
+  function ready(stop: StopOpts = {}): Promise<HermesReady> {
+    return waitStop(readyInner(stop), stop);
+  }
+  function readyInner(stop: StopOpts): Promise<HermesReady> {
     readyP ??= (async (): Promise<HermesReady> => {
       const cwd = freshCwd();
       try {
-        const v = await run(["--version"], { cwd, timeoutMs: probeTimeout });
+        const v = await run(["--version"], { cwd, timeoutMs: probeTimeout, signal: stop.signal, deadlineAt: stop.deadlineAt });
+        if (v.killedFor) return { ok: false, version: null, reason: `versionskontrollen stoppades (${v.killedFor})`, transient: true };
         const version = parseHermesVersion(`${v.stdout}\n${v.stderr}`);
         log.info(`[Hermes] version ${version ?? "okänd"} (låst: ${pinned()})`);
         if (!version) return { ok: false, version: null, reason: `hermes --version gav ingen version (rc ${v.rc})`, transient: true };
@@ -309,13 +332,16 @@ export function createHermesRoute(deps: HermesDeps = {}) {
   }
 
   /** Inloggningskontrollen för båda profilerna. Återanvänds inom en analys; beginAnalysis() tvingar en ny. */
-  function credentials(): Promise<HermesCreds> {
+  function credentials(stop: StopOpts = {}): Promise<HermesCreds> {
+    return waitStop(credentialsInner(stop), stop);
+  }
+  function credentialsInner(stop: StopOpts): Promise<HermesCreds> {
     credsP ??= (async (): Promise<HermesCreds> => {
       const cwd = freshCwd();
       try {
         const [a, c] = await Promise.all([
-          run(["-p", HERMES_BODIES.claude.profile, "auth", "list"], { cwd, timeoutMs: probeTimeout }),
-          run(["-p", HERMES_BODIES.chatgpt.profile, "auth", "list"], { cwd, timeoutMs: probeTimeout }),
+          run(["-p", HERMES_BODIES.claude.profile, "auth", "list"], { cwd, timeoutMs: probeTimeout, signal: stop.signal, deadlineAt: stop.deadlineAt }),
+          run(["-p", HERMES_BODIES.chatgpt.profile, "auth", "list"], { cwd, timeoutMs: probeTimeout, signal: stop.signal, deadlineAt: stop.deadlineAt }),
         ]);
         const anthropicOauthOnly = a.rc === 0 && !a.killedFor && providerOauthOnlyFrom(a.stdout, "anthropic");
         const codexOauthOnly = c.rc === 0 && !c.killedFor && providerOauthOnlyFrom(c.stdout, "openai-codex");
@@ -359,9 +385,14 @@ export function createHermesRoute(deps: HermesDeps = {}) {
   async function call(opts: { body: HermesBody; prompt: string; timeoutMs: number; signal?: AbortSignal; deadlineAt?: number; toolset?: string }): Promise<HermesCallResult> {
     const toolset = opts.toolset ?? HERMES_TOOLSET;
     if (toolset !== HERMES_TOOLSET) throw new HermesError("not_ready", `Verktygsläget "${toolset}" är inte tillåtet; bara ${HERMES_TOOLSET}`);
-    const r = await ready();
+    const stop = { signal: opts.signal, deadlineAt: opts.deadlineAt };
+    const r = await ready(stop);
     if (!r.ok) throw new HermesError("not_ready", r.reason ?? "Hermes är inte redo");
-    const cr = await credentials();
+    const cr = await credentials(stop);
+    // Kroppens inloggning kontrolleras FÖRE start: inte bara oauth, okänt eller misslyckad kontroll → ingen process startas
+    const oauthOk = opts.body.provider === "anthropic" ? cr.anthropicOauthOnly : cr.codexOauthOnly;
+    if (cr.transient) throw new HermesError("credentials", `${opts.body.profile}: inloggningskontrollen misslyckades – startas inte`);
+    if (!oauthOk) throw new HermesError("credentials", `${opts.body.profile}: betald nyckel i profilen – startas inte`);
     const release = await lockFor(opts.body.profile).acquire(opts.signal, opts.deadlineAt);
     const t0 = Date.now();
     let cwd: string | null = null;
@@ -441,7 +472,7 @@ export function createHermesRoute(deps: HermesDeps = {}) {
     };
   }
 
-  return { call, create, ready, credentials, beginAnalysis, lockBusy: (profile: string) => lockFor(profile).isBusy, lockWaiting: (profile: string) => lockFor(profile).waiting, bin };
+  return { call, create, ready, credentials, beginAnalysis, waitStop, lockBusy: (profile: string) => lockFor(profile).isBusy, lockWaiting: (profile: string) => lockFor(profile).waiting, bin };
 }
 
 export type HermesRoute = ReturnType<typeof createHermesRoute>;
