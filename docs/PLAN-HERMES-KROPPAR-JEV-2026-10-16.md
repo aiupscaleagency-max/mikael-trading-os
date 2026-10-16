@@ -338,3 +338,18 @@ Slutsats: JEV fungerar redan via OpenRouter, och ordningen ändras inte. Att lä
   - `trading-chatgpt` och `team-trading`: `gpt-6-sol`, rc 0, `cost_status: included`, 5 s.
   - `team-trading` har ingen Claude-OAuth (den anthropic-körningen gav `failed: true`).
   - **Beslut: kropparna körs i profilerna `trading-claude` och `trading-chatgpt`.** Mikes `team-trading` lämnas orörd.
+
+## 12. Mikes beslut 2026-10-16 15:41: modell, tokenfokus och samarbete (gäller före allt ovan)
+- **Claude-kroppen är `claude-sonnet-5-5`** (verifierad: rc 0, 4–6 s). Sonnet 4.6 används **inte**. **ChatGPT-kroppen är `gpt-6-sol`** (verifierad, 3,5–5 s). Båda är satta som `model.default` i profilerna.
+- **Tokenfokus: tipset ska komma i tid så att Mike hinner lägga ordern.**
+  - **Tidsmål:** första rangordnade tips inom **≤ 60 s** från "Kör analys" för 5 instrument. Det hårda taket är 300 s.
+  - **Kompakt underlag:** per instrument en rad med siffror (IG-pris och ålder, RSI/EMA/ATR per tidsram, trend och signal), plus JEV-raden. Ingen rå ljushistorik. Mål: ≤ 2 500 tokens in per anrop (mätt: ~4k in ≈ 10 s, ~20k in ≈ 48 s).
+  - **Kort svar:** bara JSON, inget resonemang i fritext. Mål: ≤ 600 tokens ut per anrop. `why` är högst 1 mening.
+  - **Gemensam prefix** (system, JEV och underlag först, rollinstruktion sist), så att promptcachen kan återanvändas mellan rollerna.
+  - **Tokens och tid** per roll loggas från `--usage-file` och visas på kostnadssidan som "tokens/tid per analys", inte som kronor.
+- **Kropparna samarbetar** i en kedja där var och en ser den andras resultat:
+  1. **Claude (Teknisk + Risk i ETT anrop)** läser JEV och underlaget och svarar med en JSON-rad per instrument: riktning, nivåer, risk och insats.
+  2. **ChatGPT (Advisor)** får Claudes JSON plus JEV. Den bekräftar eller invänder per instrument (`agree/object` + 1 mening) och kan bara skärpa: AVVAKTA, mindre insats eller ett snävare SL. Den kan aldrig öka risken.
+  3. **Claude (Hanna, beslut)** får båda och JEV och svarar med slutlig TIPS_JSON, rangordnad. Har ChatGPT invänt måste Hanna antingen följa invändningen eller ange skälet i en mening. Ett JEV-veto gäller alltid.
+
+  Det blir 3 anrop och ~3 × 10–15 s, alltså ≤ 60 s. Det ersätter "Teknisk och Risk separat" i §8.7/§10.6. Reserv och lås enligt §8.5/§10.6 gäller per steg.
