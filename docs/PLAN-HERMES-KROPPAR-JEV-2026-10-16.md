@@ -1,6 +1,6 @@
 # Plan: två Hermes-agenter med Claude- och ChatGPT-kroppar och JEV som hjärna (2026-10-16)
 
-> **Status: PLAN v3. Ingen kod är ändrad.** v2 innehöll kritikerns rättelser. v3 lägger till Codex granskning av PR #82 (2026-10-16), se §8. Där §8 säger något annat än §1–7 gäller §8.
+> **Status: PLAN v4. Ingen kod är ändrad.** v4 = §10, Codex granskning 2. v2 innehöll kritikerns rättelser. v3 lägger till Codex granskning av PR #82 (2026-10-16), se §8. Där §8 säger något annat än §1–7 gäller §8.
 > Följ reglerna i `docs/OVERLAMNING-IG-2026-10-11.md` §2. Det betyder: lägg aldrig order åt Mike, skriv aldrig nycklar i klartext, lägg till i stället för att bygga om, och ändra inte LLM- eller JEV-ordningen utan Mikes OK.
 
 ## 1. Mikes mål (hans ord, sammanfattat)
@@ -267,3 +267,61 @@ Slutsats: JEV fungerar redan via OpenRouter, och ordningen ändras inte. Att lä
    ```
    Kontrollera efteråt med `hermes -p trading-claude auth list`. Det ska stå en oauth-rad under anthropic.
 2. (Valfritt) Ny TypeSafe-nyckel via `tools/jev/set-typesafe-key.sh`, om JEV ska gå direkt i stället för via OpenRouter.
+
+## 10. Codex granskning 2 av v3 (11389e4), inarbetad i v4. Gäller före §4–§9.
+
+> R1/R2/R3 var redan körda och resultaten står i §9 (commit ab19989). Där finns testresultat för Hermes-kompatibilitet och prenumerationsåtkomst: ChatGPT-kroppen fungerar, Claude-kroppen väntar på Mikes inloggning. Profilerna skapades i researchsteget före R1, vilket täcker punkt 6b.
+
+### 10.1 Saknad Risk (eller Advisor i live) får aldrig se ut som en godkänd riskbedömning
+- **Risk misslyckas:** analystexten visas, men **alla tips blir AVVAKTA**, föreslagen insats tas bort och orsaken anges som "Risk saknas – inga köp/sälj-tips". Knappen "Öppna i orderpanelen" döljs för de tipsen.
+- **Advisorn misslyckas i live-läge:** samma regel gäller. Live kräver alltid Advisorn (`jev.ts:94`). I Demo märks analysen bara "Advisor saknas" och tipsen behålls.
+- Test: Risk (eller Advisorn i live) med status `misslyckad` eller `överhoppad` ger 0 tips med KÖP/SÄLJ och 0 insatser.
+
+### 10.2 Validera rå TIPS_JSON före normaliseringen
+- En ny `validateRawTips(raw, selectedEpics)` körs **före** `parseHeadTips`. Den kräver:
+  - **exakt ett** objekt per valt instrument,
+  - inga dubbletter och inga okända EPIC,
+  - rätt fälttyper (`action` ∈ KÖP/SÄLJ/AVVAKTA, siffror är siffror, `horizonMin` ∈ {1, 5, 15, 30}),
+  - nivåer som går ihop med riktningen.
+- Om valideringen fallerar får Hanna status `misslyckad (ogiltig TIPS_JSON: <orsak>)`. Ett omförsök görs med samma kropp, sedan byts kropp enligt §8.5. `parseHeadTips` används som förut, men bara för presentation och säker normalisering.
+- Tester: svar med bara 1 av 3 instrument, dubblett, okänt EPIC, sträng i stället för siffra, KÖP med SL över ingången.
+
+### 10.3 Kostnadsspärren gäller före varje betalt försök
+- `canSpend` (`orchestrator.ts:123-133`) står kvar före analysen men **släpper igenom** Hermes-läget när API-taket är nått.
+- **Precis före varje betalt försök**, även omförsök, kontrolleras två saker:
+  1. att `LLM_HERMES_PAID_FALLBACK=true`,
+  2. att `canSpend` har budget kvar.
+- Nej på något av dem ger rollen status `misslyckad (betald reserv spärrad: tak/flagga)`.
+- Reservens faktiska rutt och kostnad registreras med `trackClaudeCall` (`route`, `model`, `costUsd`).
+- Test: API-taket är nått, Hermes är nere och betald reserv är på. Resultatet ska bli spärrad med noll betalda anrop. Samma fall med budget kvar ska ge exakt ett betalt anrop som registreras.
+
+### 10.4 Avbrott, tidsgräns och providerfel är tre olika saker
+| Händelse | Effekt |
+|---|---|
+| **Användaravbrott eller konto/miljöbyte** | Hela kedjan stoppas. Köade jobb töms. **Inga nya försök och ingen reserv.** Sena svar publiceras aldrig (de jämförs mot körnings-ID och konto). Status `avbruten`. |
+| **Total tidsgräns (300 s)** | Pågående anrop stoppas. Inga nya försök. De roller som inte hann får status `överhoppad (tidsgräns)`. Regel 10.1 gäller. |
+| **Providerfel, tomt svar eller schemafel** | Det enda som utlöser omförsök eller reserv enligt §8.5 |
+
+**Processstädning:**
+- Hermes startas i en egen processgrupp (`detached: true`).
+- Vid stopp skickas först `SIGTERM` till gruppen. Lever den efter 5 s skickas `SIGKILL` till gruppen.
+- Ett slutligt rc 143 eller 137 räknas aldrig som providerfel.
+- Test: efter avbrott startar 0 nya försök, inga Hermes-processer lever kvar och sena svar ignoreras.
+
+### 10.5 Underlagets färskhet (inte bara slutpriset)
+- Underlaget får en **tidsstämpel per del**: kvot, ljus/indikatorer, positioner och konto. Det knyts till **körnings-ID, konto och miljö**.
+- Före visning gäller:
+  - **Konto, miljö eller körnings-ID ändrat:** analysen kastas och ingenting visas.
+  - **Ljus eller indikatorer äldre än 2 × intervallet, eller positioner/konto äldre än 120 s:** nivåerna blir overifierade och tipset får varningen "⚠ gammalt underlag".
+  - **Livepriset har rört sig mer än 0,5 × ATR (eller mer än 1 %) från priset nivåerna byggdes på:** tipset blir AVVAKTA med orsaken "priset har rört sig – kör ny analys".
+- Test: ett färskt slutpris tillsammans med gamla ljus ger varning, och ett stort prisrörelse ger AVVAKTA.
+
+### 10.6 En gemensam schemaläggning (ersätter §8.7 punkt 3 och §4.8)
+- **Profillås:** högst ett anrop åt gången per profil. Det gäller **även** omförsök och reservförsök.
+- **Ordning:**
+  1. **Teknisk** på `trading-claude` och **Advisor** på `trading-chatgpt` startar parallellt.
+  2. **Risk** körs på `trading-claude` efter Teknisk, eller på `trading-chatgpt` efter Advisorn om Claude-låset är upptaget i över 30 s.
+  3. **Hanna** körs på `trading-claude` när Teknisk och Risk är klara.
+- Reserv tar bara en ledig profil, eller väntar på låset inom den totala tidsgränsen.
+- §4.8 och tabellen i §8.5 följer denna ordning: förstavalet gäller när profilen är ledig.
+- §6 är uppdaterat: R0 = profiler skapade (gjort), R1–R3 = gjorda (§9), och K1 = endast kontroll av profilerna, inte skapande.
