@@ -65,14 +65,19 @@ export interface JevStatus {
 export function jevStatusFor(pre: JevTurnDecision, preAt: number, epics: string[], signals: Signal[]): JevStatus {
   const perEpic: Record<string, JevSignalInfo> = {};
   for (const epic of epics) {
-    const s = signals.filter((x) => x.symbol.toUpperCase() === epic.toUpperCase() && x.direction !== "NEUTRAL")
-      .sort((a, b) => b.candleCloseTime - a.candleCloseTime)[0];
+    // Riktade signaler OCH JEV-stoppade (applyJevVerdict sätter dem till NEUTRAL + jevDowngraded).
+    // getSignals ger den senaste signalen per tidsram = det aktuella läget per tidsram.
+    const mine = signals.filter((x) => x.symbol.toUpperCase() === epic.toUpperCase() && (x.direction !== "NEUTRAL" || x.jevDowngraded))
+      .sort((a, b) => b.candleCloseTime - a.candleCloseTime);
+    // Veto på NÅGON tidsram för instrumentet = veto för instrumentet
+    const vetoed = mine.filter((x) => x.jevDowngraded);
+    const s = vetoed[0] ?? mine[0];
     const j = s?.jev;
     perEpic[epic] = {
       available: Boolean(j?.available),
       at: s ? new Date(s.generatedAt).toISOString() : null,
-      veto: Boolean(s?.jevDowngraded),
-      why: s?.jevDowngraded ? (s.reasons[s.reasons.length - 1] ?? "JEV-veto") : null,
+      veto: vetoed.length > 0,
+      why: vetoed.length ? vetoed.map((v) => `${v.reasons[v.reasons.length - 1] ?? "JEV-veto"} (${v.interval})`).join("; ") : null,
       regime: j?.answers?.regime?.choice ?? null,
       direction: j?.answers?.direction?.choice ?? null,
       confidence: typeof j?.answers?.direction?.confidence === "number" ? j.answers.direction.confidence : null,
@@ -470,7 +475,7 @@ function clampSize(t: AgentTip, cap: number, why: string): void {
 
 /**
  * Ordningen spelar roll; de sista stegen kan inte ångras av tidigare:
- *   1. Advisorns skärpning när Hanna avvek utan skäl (advisorOverride)
+ *   1. Granskad rekommendation (Claude + Advisorns skärpning) bindande: riktning, insats och SL
  *   2. Insatsen kläms till Risks nivå (kritisk risk → AVVAKTA)
  *   3. Färskhet: gammalt underlag/pris → overifierade nivåer; stor prisrörelse → AVVAKTA
  *   4. Risk saknas (eller Advisor saknas i live) → ALLA tips AVVAKTA utan insats
@@ -479,20 +484,29 @@ function clampSize(t: AgentTip, cap: number, why: string): void {
 export function finalizeHermesTips(tips: AgentTip[], c: FinalizeCtx): AgentTip[] {
   const now = (c.now ?? Date.now)();
   for (const t of tips) {
-    const raw = c.rawRows.find((r) => r.epic === t.epic);
-    const override = typeof raw?.advisorOverride === "string" && raw.advisorOverride.trim().length > 0;
     const rev = c.advisorReviews?.find((r) => r.epic === t.epic);
     const tr = c.tightened?.find((r) => r.epic === t.epic);
     const rr = c.riskRows?.find((r) => r.epic === t.epic);
-    // 1. Advisorn invände: i LIVE är invändningen bindande (Hanna får inte gå förbi den);
-    //    i Demo gäller den när Hanna inte angav ett skäl (advisorOverride).
-    if (rev?.verdict === "object" && (c.mode === "live" || !override) && tr) {
-      if (tr.action === "AVVAKTA" && t.action !== "hold") forceHold(t, `Advisorn invände: ${rev.why || "avvakta"}`);
-      else if (t.action !== "hold") {
-        if (tr.sizePct !== null) clampSize(t, tr.sizePct, "insatsen sänkt enligt Advisorn");
-        if ((t.action as string) !== "hold" && tr.sl !== null && t.entry !== null && t.stopLoss !== null) {
-          const tighter = t.action === "buy" ? tr.sl > t.stopLoss && tr.sl < t.entry : tr.sl < t.stopLoss && tr.sl > t.entry;
-          if (tighter) { t.stopLoss = tr.sl; addNote(t, "SL snävare enligt Advisorn"); }
+    // 1. Den granskade rekommendationen (Claude efter Advisorns skärpning) är bindande i Live OCH Demo.
+    //    Hanna får bara vara lika försiktig eller försiktigare: aldrig byta riktning, aldrig större insats,
+    //    aldrig vidare SL. advisorOverride kan aldrig vända eller lätta på en granskning.
+    if (t.action !== "hold") {
+      const objected = rev?.verdict === "object";
+      const reviewedDir = tr ? (tr.action === "KÖP" ? "buy" : tr.action === "SÄLJ" ? "sell" : "hold") : null;
+      if (!tr) forceHold(t, "ingen granskad rekommendation");
+      else if (reviewedDir === "hold") forceHold(t, objected ? `Advisorn invände: ${rev?.why || "avvakta"}` : "riktningsbyte utan granskning");
+      else if (reviewedDir !== t.action) forceHold(t, "riktningsbyte utan granskning");
+      else if (tr.sizePct === null || tr.sizePct <= 0) forceHold(t, "ingen granskad insats");
+      else {
+        clampSize(t, tr.sizePct, objected ? "insatsen sänkt enligt Advisorn" : "insatsen begränsad till granskad nivå");
+        if ((t.action as string) !== "hold" && tr.sl !== null) {
+          const buy = t.action === "buy";
+          // Vidare (eller saknad) SL än den granskade → den granskade gäller
+          if (t.stopLoss === null || (buy ? t.stopLoss < tr.sl : t.stopLoss > tr.sl)) { t.stopLoss = tr.sl; addNote(t, objected ? "SL snävare enligt Advisorn" : "SL enligt granskningen"); }
+          // Flyttad entry kan göra den granskade SL:en ogiltig → AVVAKTA
+          const e = t.entry, sl = t.stopLoss, tp = t.takeProfit;
+          const valid = e !== null && sl !== null && (buy ? sl < e && (tp === null || e < tp) : sl > e && (tp === null || e > tp));
+          if (!valid) forceHold(t, "granskad SL kan inte tillämpas (entry flyttad)");
         }
       }
     }
