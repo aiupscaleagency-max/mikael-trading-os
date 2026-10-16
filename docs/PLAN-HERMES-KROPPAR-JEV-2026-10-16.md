@@ -333,3 +333,8 @@ Slutsats: JEV fungerar redan via OpenRouter, och ordningen ändras inte. Att lä
   - `openai-codex`: kräv `"included"`.
   - `anthropic`: godta `"estimated"` bara när `ANTHROPIC_API_KEY` saknas i barnprocessens env och profilens enda anthropic-uppgift är av typen oauth (kontrolleras vid start med `hermes -p trading-claude auth list`).
   - Kostnaden registreras alltid som 0 USD, med `route=hermes`.
+- **2026-10-16 12:45, efter Mikes inloggning i `trading-claude`:** båda kropparna fungerar via prenumeration.
+  - `trading-claude`: `claude-sonnet-4-6`, rc 0, svarar "OK" på 4 s. Uppgiften är `anthropic-oauth-2` (hermes_pkce).
+  - `trading-chatgpt` och `team-trading`: `gpt-6-sol`, rc 0, `cost_status: included`, 5 s.
+  - `team-trading` har ingen Claude-OAuth (den anthropic-körningen gav `failed: true`).
+  - **Beslut: kropparna körs i profilerna `trading-claude` och `trading-chatgpt`.** Mikes `team-trading` lämnas orörd.
