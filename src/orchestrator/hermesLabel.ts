@@ -18,6 +18,20 @@ export interface BrainLabel {
   runId: string;
 }
 
-const last = new Map<"demo" | "live", BrainLabel>();
-export function setBrainLabel(env: "demo" | "live", label: BrainLabel): void { last.set(env, label); }
-export function getBrainLabel(env: "demo" | "live"): BrainLabel | null { return last.get(env) ?? null; }
+// Etiketten sparas TILLSAMMANS med tipsens körning (anteckningarnas runId), så att topplistan aldrig
+// visar tips från en körning med etiketten från en annan. Misslyckade/avbrutna försök sparas separat.
+const byRun = new Map<string, BrainLabel>();
+const failed = new Map<"demo" | "live", BrainLabel>();
+const key = (env: string, runId: string) => `${env}|${runId}`;
+/** Lyckad (full/delvis) körning: etiketten hör till körningens tips (runId = anteckningarnas runId). */
+export function setBrainLabel(env: "demo" | "live", label: BrainLabel): void {
+  byRun.set(key(env, label.runId), label);
+  while (byRun.size > 50) byRun.delete(byRun.keys().next().value!);
+}
+/** Etiketten för just den körning vars tips visas (null = ingen etikett för den körningen). */
+export function getBrainLabel(env: "demo" | "live", runId: string | null): BrainLabel | null {
+  return runId ? byRun.get(key(env, runId)) ?? null : null;
+}
+/** Senaste misslyckade eller avbrutna försöket (visas separat, påverkar aldrig tipsens etikett). */
+export function setFailedAttempt(env: "demo" | "live", label: BrainLabel): void { failed.set(env, label); }
+export function getFailedAttempt(env: "demo" | "live"): BrainLabel | null { return failed.get(env) ?? null; }

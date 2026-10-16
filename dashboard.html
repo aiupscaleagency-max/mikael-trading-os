@@ -10048,11 +10048,13 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
       const d = await (await fetch("/api/ig/agent-top")).json();
       if(d.env && d.env !== IG.st.env) return;
       const items = d.items || [];
-      if(!items.length){ box.style.display = "none"; box.innerHTML = ""; return; }
+      // Hermes-läget: senaste misslyckade/avbrutna försöket visas separat (tipsen nedan behåller sin egen etikett)
+      const failLine = d.failedAttempt ? `<div style="font-size:11px;color:#f0b90b;margin:-4px 0 6px">⚠ Senaste försök misslyckades: ${esc(d.failedAttempt.outcome || "")} (${esc(new Date(d.failedAttempt.at).toLocaleTimeString("sv-SE").slice(0,5))})</div>` : "";
+      if(!items.length){ if(failLine){ box.style.display = ""; box.innerHTML = `<h3>🏆 Agenternas topplista</h3>` + failLine; return; } box.style.display = "none"; box.innerHTML = ""; return; }
       const t = d.at ? new Date(d.at).toLocaleString("sv-SE", { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" }) : "";
       box.style.display = "";
       box.innerHTML = `<h3>🏆 Agenternas topplista <span style="font-size:11px;font-weight:600;color:var(--dim)">Bästa först · senaste analysen ${esc(t)} · ${esc(d.label || IG.envLabel())} · knappen fyller bara orderpanelen, inget skickas utan Godkänn</span></h3>`
-        + (d.brain ? `<div class="pp-brain" style="font-size:11px;color:var(--dim);margin:-4px 0 6px"><b style="color:#c9d1d9">${esc(d.brain.text)}</b>${d.brain.outcome && d.brain.outcome !== "full" ? ` · <b style="color:#f0b90b">${esc(d.brain.outcome)}</b>` : ""}${(d.brain.roles || []).length ? `<br>${esc(d.brain.roles.join(" · "))}` : ""}</div>` : "")
+        + failLine + (d.brain ? `<div class="pp-brain" style="font-size:11px;color:var(--dim);margin:-4px 0 6px"><b style="color:#c9d1d9">${esc(d.brain.text)}</b>${d.brain.outcome && d.brain.outcome !== "full" ? ` · <b style="color:#f0b90b">${esc(d.brain.outcome)}</b>` : ""}${(d.brain.roles || []).length ? `<br>${esc(d.brain.roles.join(" · "))}` : ""}</div>` : "")
         + AGTIP.table(items.map(n=>({ ...n.tip, name: n.name || IG.label(n.epic) })));
     }catch(_){}
   }
