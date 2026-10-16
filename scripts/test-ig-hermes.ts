@@ -28,7 +28,7 @@ const dir = ${JSON.stringify(fakeDir)};
 const args = process.argv.slice(2);
 const cfg = JSON.parse(fs.readFileSync(path.join(dir, "cfg.json"), "utf8"));
 const logl = (o) => fs.appendFileSync(path.join(dir, "calls.log"), JSON.stringify(o) + "\\n");
-if (args[0] === "--version") { console.log("  ⚠ dashboard [hector] pid 1: manual restart still pending"); console.log("Hermes Agent v" + (cfg.version || "0.21.7+500.g8f81791") + " (2026.9.24) · stable"); process.exit(0); }
+if (args[0] === "--version") { console.log("  ⚠ dashboard [hector] pid 1: manual restart still pending"); console.log("Hermes Agent v" + (cfg.version || "0.22.2") + " (2026.9.24) · stable"); process.exit(0); }
 if (args.includes("auth")) {
   logl({ ev: "auth", profile: args[args.indexOf("-p") + 1] });
   console.log("anthropic (2 credentials):");

@@ -353,3 +353,15 @@ Slutsats: JEV fungerar redan via OpenRouter, och ordningen ändras inte. Att lä
   3. **Claude (Hanna, beslut)** får båda och JEV och svarar med slutlig TIPS_JSON, rangordnad. Har ChatGPT invänt måste Hanna antingen följa invändningen eller ange skälet i en mening. Ett JEV-veto gäller alltid.
 
   Det blir 3 anrop och ~3 × 10–15 s, alltså ≤ 60 s. Det ersätter "Teknisk och Risk separat" i §8.7/§10.6. Reserv och lås enligt §8.5/§10.6 gäller per steg.
+
+## 13. R1 omkört på Hermes v0.22.2 (2026-10-16 ca 16:50)
+- Hermes uppdaterades från 0.21.7+500 till **0.22.2** medan bygget pågick. Versionslåset stoppade Hermes-läget som det ska.
+- R1 kördes om med `env -i HOME PATH`, en tom cwd utanför git, en AGENTS.md-fälla i föräldramappen och `-t context_engine`. Prompten var "kör date om du har verktyg, annars NONE".
+
+| Kropp | Svar | Tid | api_calls | cost_status | Tokens in / ut |
+|---|---|---|---|---|---|
+| trading-claude, claude-sonnet-5-5 | NONE | 6 s | 1 | unknown (oauth) | 4 + 1 167 cache / 124 |
+| trading-chatgpt, gpt-6-sol | NONE | 6 s | 1 | included | 761 / 23 |
+
+- Inga verktyg laddas, AGENTS.md läses inte, och modell och provider stämmer. `HERMES_PINNED_VERSION` = `0.22.2`.
+- `unknown` för anthropic godtas bara när trading-claude enbart har oauth-uppgifter. Det kontrolleras per analys med `auth list` (§11, rättat efter kritikerns B2).

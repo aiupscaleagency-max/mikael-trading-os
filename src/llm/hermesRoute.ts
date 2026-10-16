@@ -43,7 +43,7 @@ export const HERMES_BODIES: Record<HermesBodyId, HermesBody> = {
 };
 
 /** Versionen som R1 verifierade (§9). Efter en Hermes-uppdatering: kör R1 igen och sätt LLM_HERMES_VERSION. */
-export const HERMES_PINNED_VERSION = "0.21.7+500.g8f81791";
+export const HERMES_PINNED_VERSION = "0.22.2"; // R1 omkört 2026-10-16: -t context_engine verktygsfritt, AGENTS.md läses inte, api_calls 1 (se plan §13)
 /** Det enda verktygsläget som är verifierat verktygsfritt (§9.1) */
 export const HERMES_TOOLSET = "context_engine";
 /** Väntetid mellan SIGTERM och SIGKILL (§10.4) */
