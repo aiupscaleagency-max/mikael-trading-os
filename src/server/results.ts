@@ -75,7 +75,8 @@ export async function getResults(
   brokers: Record<string, BrokerAdapter>,
   mode: "TEST" | "LIVE",
   _liveTpSl: Array<{ symbol: string; takeProfit?: number; stopLoss?: number }> = [],
-  deps: { history?: typeof getIgHistory; sim?: Pick<IgDemoSim, "snapshot" | "positionsView"> | null } = {},
+  // now: bara tester (fast klocka för strategiavstämningens 7-dagarsgräns); saknas = Date.now() som förut
+  deps: { history?: typeof getIgHistory; sim?: Pick<IgDemoSim, "snapshot" | "positionsView"> | null; now?: number } = {},
 ): Promise<Results> {
   const env: IgEnvironment = mode === "LIVE" ? "live" : "demo";
   const broker = brokers[env === "live" ? "ig" : "ig-demo"];
@@ -173,7 +174,7 @@ export async function getResults(
   // F1: strategins stängda affärer registreras bara när positioner OCH hela historiken lästes utan fel (samma miljö).
   // Ofullständig historik (fler sidor än lästes) → vänta, så att en delstängning aldrig räknas som hela affären.
   if (!errors.length && livePositions && !partial) {
-    try { reconcileStrategyDeals(env, livePositions, rawTx, parseIgMoney, currency); }
+    try { reconcileStrategyDeals(env, livePositions, rawTx, parseIgMoney, currency, deps.now ?? Date.now()); }
     catch (e) { log.warn(`[strategi-resultat] avstämningen misslyckades: ${e instanceof Error ? e.message : String(e)}`); }
   }
   if (env === "demo" && !errors.length) {
