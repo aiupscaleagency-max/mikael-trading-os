@@ -1,0 +1,141 @@
+# Plan: två Hermes-agenter med Claude- och ChatGPT-kroppar och JEV som hjärna (2026-10-16)
+
+> **Status: PLAN v2. Ingen kod är ändrad.** Skriven av Claude på dator 1 och granskad av en oberoende kritiker; v2 innehåller kritikerns rättelser. Codex ska granska och förbättra den innan bygget börjar.
+> Följ reglerna i `docs/OVERLAMNING-IG-2026-10-11.md` §2. Det betyder: lägg aldrig order åt Mike, skriv aldrig nycklar i klartext, lägg till i stället för att bygga om, och ändra inte LLM- eller JEV-ordningen utan Mikes OK.
+
+## 1. Mikes mål (hans ord, sammanfattat)
+
+- Två Hermes-agenter med olika **kroppar**. Den ena kör **Claude**, den andra **ChatGPT-6**. Båda använder Mikes **månadsprenumerationer**, inte API-krediter.
+- Den gemensamma **hjärnan** är **JEV**, som förutspår och styr.
+- **Om JEV inte fungerar** fortsätter arbetet genom en **analytiker**.
+- Det ska vara **enkelt att ställa in**, inte överarbetat, och inte förstöra något annat.
+- Resurser: 2 ChatGPT-konton, 1 Claude-konto och 1 OmniRoute med många LLM:er.
+
+## 2. Läget i dag (verifierat 2026-10-16 kl. 09:30–09:45)
+
+| Sak | Läge | Bevis |
+|---|---|---|
+| Trading-OS på :3940 | ✅ `main` 3013c7d körs (Mike startade om med `scripts/restart-reviewed-ig.sh`) | `/api/mode` och `/api/ig/balance` svarar; Live 500 SEK |
+| Vercel AI Gateway | ❌ Saldo −0,21 USD. Alla anrop får 402, även BYOK. | `GET /v1/credits` |
+| OpenRouter | ❌ 13 USD köpt, 13,17 USD förbrukat | `GET /api/v1/credits` |
+| OmniRoute :20128 | ❌ Alla vägar nere i dag: `aug/*` ger tomma svar, `tllm/*` 403, `ddgw/*` 429/503, `auto/*` 503 | Testanrop |
+| Hermes → NVIDIA NIM | ✅ Gratis, fungerar | `hermes -z` |
+| Hermes-inloggningar | ✅ `anthropic` OAuth (Claude-prenumeration: `anthropic-oauth-2`, `claude_code`) och ✅ `openai-codex` OAuth (ChatGPT-prenumeration) | `hermes auth list` |
+| JEV | TypeSafe-nyckeln finns i nyckelringen (`aiupscale.typesafe.api-key`), men `bot.log` visar bara `gateway: JEV: HTTP 402` och ingen rad med `direct:`. JEV har lyckats via OpenRouter (2026-10-13). **Orsaken är okänd**: antingen saknas direkt-rutten i nohup-processen, eller så får den 401 som loggas tyst (`jevClient.ts:290-295`). | `bot.log`, kod |
+| Botens AI-ordning | `src/llm/gateway.ts:156-185`: Anthropic direkt → Vercel → OpenRouter. Saknas gateway-nyckeln returneras rå Anthropic redan på rad 207-210. | Kod |
+
+Konsekvens: agentanalysen står helt still, eftersom alla betalda API-vägar är tomma. Prenumerationerna via Hermes är den enda väg som fungerar i dag.
+
+## 3. Lösningen i en mening
+
+En ny, **valbar** AI-väg `LLM_ROUTE=hermes` som bara gäller fyra textanrop i trading-analysen:
+
+| Anrop | Körs av |
+|---|---|
+| Teknisk analytiker och Risk | Hermes-profilen **`trading-claude`** (Claude-prenumeration) |
+| Advisorn | **`trading-chatgpt`** (ChatGPT-prenumeration) |
+| Hannas slutsvar | **`trading-claude`** |
+
+**JEV** används som i dag (fail-open, låst ordning). Dess befintliga svar, alltså djup/granskning från `jevTurnPreflight` och regim/riktning/veto från signalmotorns `applyJevVerdict`, läggs överst i underlaget. Utan JEV körs allt ändå och märks "utan JEV".
+
+```
+ JEV (som i dag, låst ordning, fail-open)
+   ├─ jevTurnPreflight → djup / granska
+   └─ applyJevVerdict (signalmotorn) → regim / riktning / veto
+                 │ (läggs överst i underlaget)
+ IG-data ──► Teknisk + Risk ──► [trading-claude]  (Claude-prenumeration)
+             Advisor        ──► [trading-chatgpt] (ChatGPT-prenumeration)
+             Hanna slutsvar ──► [trading-claude]  → TIPS_JSON
+                                             ▼
+                              Tips per instrument → Mike väljer → Godkänn
+ JEV nere → samma kedja, märkt "utan JEV". Kropp nere → andra kroppen. Båda nere → ärligt "analys misslyckades".
+```
+
+## 4. Designval (enkelt, inte överarbetat)
+
+1. **Valbart med en rad i `.env`:** `LLM_ROUTE=hermes`. Saknas raden fungerar allt exakt som i dag. Ingen befintlig väg tas bort. Vercel och OpenRouter blir reserv när de har krediter igen.
+
+2. **Anropet** sker i en ny fil `src/llm/hermesRoute.ts`, med `execFile` och utan skal:
+   ```
+   execFile(<absolut sökväg till hermes>,
+     ["-p", profil, "-z", prompt, "--ignore-rules", "-t", "todo", "-m", modell, "--provider", provider,
+      "--usage-file", tmpfil],
+     { cwd: <tom scratch-mapp>, env: { HOME, PATH }, timeout: 90000 })
+   ```
+   - Svaret godtas bara om **exitkoden är 0** och **`usage.api_calls == 1`** (att `-t todo` faktiskt ger 1 verifieras i R1). Allt annat räknas som fel, även om stdout innehåller text. Hermes exitkoder: 1 = tomt, 2 = misslyckat, 130 = avbrutet.
+   - Svaret formas som Anthropics: `content:[{type:"text"}]`, `stop_reason:"end_turn"`, `usage`, `model`. Då fungerar `trackClaudeCall`, `extractJson` och TIPS_JSON-parsningen utan ändring.
+   - Shimmen **kastar fel om anropet har `tools`**. Den används aldrig för verktygsloopar.
+
+3. **Säkerhetsspärr för kropparna.** `-z` sätter `HERMES_YOLO_MODE=1` och hoppar över godkännanden, och utan begränsning laddas terminalverktyget. Därför gäller **alltid** `-t todo` (enda verktyget är `todo_list`), `--ignore-rules` (ingen AGENTS.md, inget minne och inga skills från cwd), en tom `cwd` och en minimal `env`. `--safe-mode` används inte, eftersom det tappar profilens modell. Stäng av profilens `hermes fallback`-kedja, eller låt den bara innehålla prenumerations- och gratisvägar, så att den aldrig byter till en betald nyckel i tysthet.
+
+4. **Omfång: bara dessa anrop ändras.**
+   - Teknisk analytiker: `src/orchestrator/specialists.ts`.
+   - Risk: `src/orchestrator/advancedSpecialists.ts`.
+   - Advisorn: `advisor.ts:68-104`.
+   - Hannas slutanrop: `headTrader.ts:163-171`. Här skickas inga `tools`, och prompten får raden "Inga verktyg i denna körning; svara med text och TIPS_JSON. Positioner och konto finns i underlaget." `igAgentData.positions/account` läggs i underlaget.
+
+   Dessa rörs **inte**: `igChat.ts` (har `createPending`), `claudeAgent.ts`, `positionMonitor`, `strategyRunner` och `liveRoutes`. Hermes görs alltså **inte** till en global väg i `createLlmClient`, utan aktiveras bara för de markerade rollerna. Inga nya prompter; datan finns redan i `igRows`/`motorSignals`/`indicatorPack`.
+
+5. **Profiler** skapas med Hermes egna kommandon. Inga nycklar läggs i repot:
+   - `hermes profile create trading-claude --no-skills --no-alias` med provider `anthropic` (OAuth `claude_code`) och modell Sonnet. Exakt id tas fram i R2.
+   - `hermes profile create trading-chatgpt --no-skills --no-alias` med provider `openai-codex` och modell GPT-6 eller den som prenumerationen ger (R2). Det andra ChatGPT-kontot kan läggas som fallback-uppgift.
+   - **Kopiera aldrig `auth.json`.** OAuth-uppgifter är engångs och återkallar varandra, och profilen läser rotens uppgift via credential-pool-fallback. Kontrollera med `hermes -p <profil> auth list` och `hermes -p <profil> fallback list`.
+
+6. **JEV, hjärnan, med låst ordning.** JEV-ordningen är "LÅST ORDNING (Mike 2026-10-04)" (`jevClient.ts:184-191`) och **ändras inte**. Det görs heller inget nytt JEV-anrop med marknadsdata (JEV-regeln: bara anonymiserade band). R3 tar reda på varför direkt-rutten inte syns. En loggrad för 401 läggs till; det är ett rent tillägg. Om direkt-rutten ska flyttas först krävs Mikes uttryckliga OK. Märkning:
+   - JEV svarade: "Hjärna: JEV".
+   - JEV `unavailable`/`skipped`: "utan JEV". Allt körs ändå (fail-open). Den befintliga timeouten på 2,5 s räcker.
+   - Live-läge: Advisorn körs alltid (`jev.ts:94`), oavsett JEV.
+
+7. **Kroppsreserv** i första versionen: Claude-kroppen → ChatGPT-kroppen → ärligt "analys misslyckades". OmniRoute och NIM byggs **inte** in i boten. Vill man ha dem läggs de som `hermes fallback` i profilen.
+
+8. **Samtidighet:** högst en körning per profil åt gången, så att OAuth-förnyelser inte krockar. Teknisk och Risk körs efter varandra på Claude, medan Advisorn körs parallellt på ChatGPT.
+
+9. **Kostnad:** tokens och modell läses från `--usage-file` till `trackClaudeCall` med `usd=0` och `route=hermes`. Kostnadstaket (`orchestrator.ts:122`) lämnas orört.
+
+10. **Säkerhet för pengar:**
+    - Hanna lägger **inga `place_order`-utkast** i hermes-vägen. Hon ger **bara tips**, och Mike skapar ordern själv via "Öppna i orderpanelen" och Godkänn.
+    - `igOrders`, `orderGate`, `igConnection` och `.env`-flaggorna rörs inte.
+
+## 5. Risker att granska (Codex: titta särskilt här)
+
+| Risk | Hantering |
+|---|---|
+| Användarvillkor och takgränser för prenumerationerna (inte gjorda för automatisk API-användning) | Bara på begäran ("Kör analys" eller session), aldrig tät schemaläggning. Tydlig text vid takgräns. Mike godkänner villkoren själv. |
+| Engångskörning tar 10–60 s | Timeout 90 s, högst en per profil, Advisorn parallellt |
+| Hermes-uppdatering ändrar CLI-beteendet | `hermes --version` kontrolleras vid start och loggas. R1-testet körs igen efter uppdatering. |
+| Kroppen försöker använda verktyg eller shell | `-t todo`, `--ignore-rules`, tom cwd och minimal env, och `api_calls == 1` krävs |
+| Profilens fallback byter tyst till betald nyckel | `fallback list` kontrolleras i K1, utan betalda vägar |
+
+## 6. Arbetsträd: vem gör vad
+
+| Roll | Agent | Uppgift |
+|---|---|---|
+| Planerare och huvudansvarig | Claude (huvudsession) | Plan, beslut, driftsättning och webbläsartest enligt överlämningen §8 |
+| **Researcher** | `researcher` | R1–R3. Bara läsning och testanrop, ingen kodändring. |
+| **Kodare** | `worker` | K1–K5 på grenen `claude/hermes-kroppar`, med tester |
+| **Kritiker/granskare** | `explorer` (oberoende) | Granskar varje steg mot §4–§5 och reglerna. APPROVE krävs före push och driftsättning. |
+| Extern granskare | Codex (Mike) | Läser planen och PR:n och föreslår förbättringar |
+
+### Steg
+
+| # | Vem | Vad | Klart när |
+|---|---|---|---|
+| R1 | researcher | Kör exakt kommandot i §4.2 mot båda profilerna. Kontrollera stdout, exitkod och att `api_calls == 1` med `-t todo`. | Två rena textsvar med usage-JSON |
+| R2 | researcher | Vilka modell-id prenumerationerna ger via `anthropic`/`claude_code` och `openai-codex`, och svarstid | Tabell: profil → modell → tid |
+| R3 | researcher | JEV: finns direkt-rutten i nohup-processen (nyckelringen läsbar?) eller får den en tyst 401? Inga nycklar skrivs ut. | Orsaken känd |
+| K1 | kodare | Skapa profilerna enligt §4.5 och kontrollera auth och fallback | `hermes -p trading-claude -z "OK?" -t todo --ignore-rules` svarar |
+| K2 | kodare | `src/llm/hermesRoute.ts` enligt §4.2, inklusive kö per profil | Enhetstest med låtsad `hermes`-binär: exit 0/1/2, api_calls≠1, tools → fel, timeout |
+| K3 | kodare | Hakar i `gateway.ts` (`hasLlmCredentials`/roll-val), `specialists.ts`, `advancedSpecialists.ts`, `advisor.ts` och `headTrader.ts` enligt §4.4, plus kroppsreserv §4.7 | Test: hermes på → de fyra rollerna via shimmen; igChat/claudeAgent oförändrade; utan `LLM_ROUTE` exakt som förut |
+| K4 | kodare | JEV-etikett och 401-loggrad. JEV-ordningen ändras **inte**. | Test: JEV ok → "Hjärna: JEV", JEV nere → "utan JEV" |
+| K5 | kodare | Dashboard: etikett vid topplistan "Hjärna: JEV · Kropp: Claude-prenumeration" (eller "utan JEV"). Inget annat ändras. | Webbläsartest |
+| G | granskare | Granska K1–K5 mot §4 och §5 | APPROVE |
+| D | Claude + Mike | Push och PR mot `main`, Codex granskar. Mike lägger in `LLM_ROUTE=hermes` och kör omstartsskriptet. Claude kör webbläsartestet och en riktig analys av 5–7 krypton. | Tips syns med etiketten |
+
+## 7. Det Mike gör (när bygget är klart)
+
+1. Godkänna planen, gärna efter Codex granskning.
+2. Lägga in en rad i `.env` (kommandot ges, inga nycklar): `LLM_ROUTE=hermes`.
+3. Köra `bash ~/mto-ig/scripts/restart-reviewed-ig.sh`.
+4. Trycka "Kör analys" och se tipsen.
+
+Vercel och OpenRouter kan fyllas på senare och blir då automatiskt reserv.
