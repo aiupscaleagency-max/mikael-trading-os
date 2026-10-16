@@ -351,6 +351,22 @@ const actionable = (ts: Array<{ action: string; sizePct: number | null }>) => ts
     const fromHold = fin([tip(EA)], { mode, rawRows: [{ epic: EA, advisorOverride: "skäl" }], tightened: [trRow(EA, { action: "AVVAKTA", sizePct: null, tp: null, sl: null })] });
     assert.equal(fromHold[0]!.action, "hold");
   }
+  {
+    const sell = trRow(EA, { action: "SÄLJ", entry: 100, tp: 98, sl: 101 });
+    const fs2 = (o: Partial<ReturnType<typeof tip>>, rows = [trRow(EA)]) => fin([tip(EA, o)], { tightened: rows, riskRows: rows })[0]!;
+    // KÖP: granskad entry 100, SL 99 (avstånd 1)
+    assert.equal(fs2({ entry: 100.2, takeProfit: 102, stopLoss: 99 }).action, "hold", "KÖP: större stoppavstånd");
+    assert.match(fs2({ entry: 100.2, takeProfit: 102, stopLoss: 99 }).note!, /entry flyttad – större risk än granskat/);
+    assert.equal(fs2({ entry: 100.005, takeProfit: 102, stopLoss: 99 }).action, "buy", "KÖP: inom 1 % tolerans");
+    assert.equal(fs2({ entry: 100.011, takeProfit: 102, stopLoss: 99 }).action, "hold", "KÖP: strax över 1 %");
+    assert.equal(fs2({ entry: 99.7, takeProfit: 102, stopLoss: 99 }).action, "hold", "KÖP: entry flyttad > 0,25 × avståndet");
+    // SÄLJ: granskad entry 100, SL 101 (avstånd 1)
+    assert.equal(fs2({ action: "sell", entry: 99.8, takeProfit: 98, stopLoss: 101 }, [sell]).action, "hold", "SÄLJ: större stoppavstånd");
+    assert.equal(fs2({ action: "sell", entry: 99.995, takeProfit: 98, stopLoss: 101 }, [sell]).action, "sell", "SÄLJ: inom tolerans");
+    assert.equal(fs2({ action: "sell", entry: 99.989, takeProfit: 98, stopLoss: 101 }, [sell]).action, "hold", "SÄLJ: strax över 1 %");
+    assert.equal(fs2({ action: "sell", entry: 100.3, takeProfit: 98, stopLoss: 101 }, [sell]).action, "hold", "SÄLJ: entry flyttad > 0,25 × avståndet");
+  }
+  ok("flyttad entry med granskad SL: större stoppavstånd (> 1 %) eller flytt > max(0,25 × avstånd, 0,1 %) → AVVAKTA (KÖP och SÄLJ, toleranskanter)");
   ok("Live och Demo: riktningsbyte → AVVAKTA; flyttad entry som gör granskad SL ogiltig → AVVAKTA; insats aldrig över granskad; vidare SL ersätts; override vänder aldrig");
   const z = T.applyAdvisorTightening([trRow(EA)], [{ epic: EA, verdict: "object", action: null, sizePct: 0, sl: null, why: "noll" }]).rows[0]!;
   assert.equal(z.action, "AVVAKTA"); assert.equal(z.sizePct, null);
@@ -606,6 +622,11 @@ const start = () => AA.analysisStart("manuell");
   await assert.rejects(runHermesTurn(params(), baseDeps({ totalMs: 600, market: { ...baseDeps().market, klines: () => new Promise(() => {}) } })), /underlaget hann inte \(tidsgräns\)/);
   assert.ok(Date.now() - t1 < 2_000); assert.equal(starts().length, 0);
   ok("datahämtning som hänger → stoppas vid analysens tidsgräns, ingen kropp startas");
+  setFake({ version: "0.1.0", defaults: { "trading-claude": { text: trJson() } } });
+  start();
+  await assert.rejects(runHermesTurn(params(), baseDeps({ hermes: mk() })), /Hermes-läget vägrar/);
+  assert.equal(calls().filter((c) => c.ev === "auth").length, 0); assert.equal(starts().length, 0);
+  ok("fel version → ingen inloggningskontroll och ingen kropp startas");
   setFake({ authSleepMs: 5_000, defaults: { "trading-claude": { text: trJson() } } });
   start();
   const t2 = Date.now();

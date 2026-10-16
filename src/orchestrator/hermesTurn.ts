@@ -179,7 +179,8 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
     // Inloggningskontrollen (oauth-only per profil) körs om för VARJE analys.
     hermes.beginAnalysis();
     const ready = await guard("versionskontrollen", hermes.ready(stopOpts));
-    await guard("inloggningskontrollen", hermes.credentials(stopOpts));
+    // Inloggningskontrollen körs bara när versionen är godkänd (annars vägras läget ändå nedan)
+    if (ready.ok) await guard("inloggningskontrollen", hermes.credentials(stopOpts));
     if (!ready.ok) {
       const meta = finish("ofullständig", `Hermes-läget vägrar: ${ready.reason}`);
       analysisEnd({ status: "failed", reason: `Hermes-läget vägrar: ${ready.reason}`, hermes: meta });

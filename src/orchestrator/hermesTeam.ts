@@ -507,6 +507,13 @@ export function finalizeHermesTips(tips: AgentTip[], c: FinalizeCtx): AgentTip[]
           const e = t.entry, sl = t.stopLoss, tp = t.takeProfit;
           const valid = e !== null && sl !== null && (buy ? sl < e && (tp === null || e < tp) : sl > e && (tp === null || e > tp));
           if (!valid) forceHold(t, "granskad SL kan inte tillämpas (entry flyttad)");
+          // Flyttad entry med kvar granskad SL kan ge större stoppavstånd = större risk än granskat
+          else if (tr.entry !== null && e !== null && sl !== null) {
+            const reviewedDist = Math.abs(tr.entry - tr.sl);
+            const tooWide = Math.abs(e - sl) > reviewedDist * 1.01;
+            const moved = Math.abs(e - tr.entry) > Math.max(0.25 * reviewedDist, 0.001 * tr.entry);
+            if (tooWide || moved) forceHold(t, "entry flyttad – större risk än granskat");
+          }
         }
       }
     }
