@@ -34,6 +34,7 @@ import type {
   AdvisorReport,
 } from "./types.js";
 import { log } from "../logger.js";
+import { hermesRouteEnabled } from "../llm/hermesRoute.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Orchestrator — dirigenten som koordinerar det ultimata trading-teamet.
@@ -124,7 +125,11 @@ async function runOrchestratedTurnInner(params: {
     dailyCapUsd: config.costCap.dailyUsd,
     weeklyCapUsd: config.costCap.weeklyUsd,
   });
-  if (!spendCheck.allowed) {
+  // Hermes-läget (LLM_ROUTE=hermes, bara IG): prenumerationskropparna räknas inte mot API-taket (§8.2/§10.3).
+  // Taket spärrar då bara den betalda reserven, inte analysen. Utan LLM_ROUTE=hermes: exakt som förut.
+  const hermesMode = hermesRouteEnabled() && notesEnv !== null;
+  if (!spendCheck.allowed && hermesMode) log.warn(`[Cost] ${spendCheck.reason} — Hermes-läget fortsätter, betald reserv spärrad`);
+  if (!spendCheck.allowed && !hermesMode) {
     log.warn(`╔══ SESSION SKIPPAD: ${spendCheck.reason} ══╗`);
     log.warn(`Dagens spend: $${spendCheck.spent?.today.toFixed(2)} / cap $${config.costCap.dailyUsd}`);
     log.warn(`Veckans spend: $${spendCheck.spent?.week.toFixed(2)} / cap $${config.costCap.weeklyUsd}`);
@@ -142,7 +147,7 @@ async function runOrchestratedTurnInner(params: {
   // Smalt team (Mike 2026-10-03): JEV väljer paren, sedan bara Teknisk + Risk + Hanna.
   // Lars, Makro, Sentiment, Kvant, Portfölj och Exekvering hoppas över (sparar ungefär hälften).
   // TEAM_LEAN=false i .env tar tillbaka hela teamet.
-  const lean = process.env.TEAM_LEAN !== "false";
+  const lean = process.env.TEAM_LEAN !== "false" || hermesMode;
   const leanNote = "smalt team: JEV → Teknisk + Risk → Hanna";
   const research = lean
     ? (agentSkip("research", leanNote), { role: "researcher", available: false, marketSummary: "Research avstängd (smalt team).", cryptoNews: [], macroEvents: [], geopolitical: [], riskAlerts: [], sources: [], rawText: "" } as ResearchReport)
@@ -169,6 +174,15 @@ async function runOrchestratedTurnInner(params: {
     hasUserInstruction: Boolean(userInstruction),
   }), { from: "research", done: (v) => v.runAdvisor ? `advisorn körs (${v.detail})` : `rutin, advisorn hoppas över (${v.detail})` });
   if (!jev.runAdvisor) agentSkip("advisor", `JEV: rutinturn (${jev.detail})`);
+
+  // ── Hermes-läget: kedjan Claude (Teknisk+Risk) → ChatGPT (Advisor) → Claude (Hanna, utan verktyg) ──
+  if (hermesMode && notesEnv) {
+    const { runHermesTurn } = await import("./hermesTurn.js");
+    return runHermesTurn({
+      config, state, broker, brokers, risk, engines, userInstruction, symbols: allSymbols,
+      env: notesEnv, jev, jevAt: Date.now(), spendAllowed: spendCheck.allowed, totalStart,
+    });
+  }
 
   const [macro, technical, sentiment, riskReport, quant, options, portfolio, advisor] =
     await Promise.all([

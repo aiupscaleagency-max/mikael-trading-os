@@ -442,7 +442,9 @@ export async function handleIgRoutes(
     // Agenternas topplista: senaste analysomgången, bästa först (bara läsning, aldrig en order)
     if (p === "/api/ig/agent-top" && method === "GET") {
       const t = agentNotes.top(env);
-      send(res, 200, { env, label: envLabel(env), runId: t.runId, at: t.at, items: t.items.map((n) => ({ ...n, name: igMarketData.nameOf(n.epic, env) })) });
+      // Hermes-läget: "Hjärna: JEV … · Kropp: …" + faktisk kropp per roll (bara när LLM_ROUTE=hermes)
+      const brain = process.env.LLM_ROUTE?.trim() === "hermes" ? (await import("../orchestrator/hermesLabel.js")).getBrainLabel(env) : null;
+      send(res, 200, { env, label: envLabel(env), runId: t.runId, at: t.at, items: t.items.map((n) => ({ ...n, name: igMarketData.nameOf(n.epic, env) })), ...(brain ? { brain } : {}) });
       return true;
     }
     if (p === "/api/ig/agent-notes" && method === "GET") {

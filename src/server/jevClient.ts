@@ -306,6 +306,8 @@ export async function askJev(
       // Bara 401 betyder "fel rutt, prova nästa". Allt annat är ett riktigt
       // fel och ska inte maskeras av ett försök mot en annan tjänst.
       if (err instanceof AuthRejected) {
+        // Tillägg (plan §9.4): 401 loggas, utan nyckelns slut. Ordningen är oförändrad.
+        log.warn(`[jev] ${route.mode}: HTTP 401 — nyckeln avvisades av den här rutten, provar nästa`);
         rejected.push(route.mode);
         lastMsg = err.message;
         routePausedUntil.set(rid, Date.now() + ROUTE_PAUSE_MS);

@@ -1869,6 +1869,11 @@ export function startServer(
           jsonStatus(res, 500, { error: "Agent-callback ej konfigurerad" });
           return;
         }
+        // Hermes-läget: en ny analys under pågående får svaret "analys pågår" (§8.7). Utan LLM_ROUTE=hermes: som förut.
+        if (process.env.LLM_ROUTE?.trim() === "hermes" && getAnalysis()?.status === "running") {
+          jsonStatus(res, 409, { ok: false, error: "analys pågår" });
+          return;
+        }
         userAction("startade en analys (Kör analys)", { to: "orchestrator" });
 
         // Body kan vara tom eller ha {instruction: "Köp BTC för $50", symbols: [EPIC, …] (≤10)}
