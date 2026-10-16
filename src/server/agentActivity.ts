@@ -250,6 +250,8 @@ export interface AnalysisResult {
   orders: AnalysisOrder[];
   /** Besked per analyserat instrument, även vid HOLD (se igAgentNotes.ts) */
   notes?: Array<{ epic: string; env: "demo" | "live"; at: string; action: string; confidence: string | null; verdict: string; technical: string | null; trigger: string | null; tip?: import("../orchestrator/headTips.js").AgentTip | null; runId?: string | null }>;
+  /** Hermes-läget (LLM_ROUTE=hermes): rollstatus, JEV-status och kropp per roll. Saknas annars. */
+  hermes?: import("../orchestrator/hermesTurn.js").HermesAnalysisMeta;
 }
 
 let lastAnalysis: AnalysisResult | null = null;
