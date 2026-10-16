@@ -29,7 +29,8 @@ const args = process.argv.slice(2);
 const cfg = JSON.parse(fs.readFileSync(path.join(dir, "cfg.json"), "utf8"));
 const logl = (o) => fs.appendFileSync(path.join(dir, "calls.log"), JSON.stringify(o) + "\\n");
 if (args[0] === "--version") { console.log("  ⚠ dashboard [hector] pid 1: manual restart still pending"); console.log("Hermes Agent v" + (cfg.version || "0.22.2") + " (2026.9.24) · stable"); process.exit(0); }
-if (args.includes("auth")) {
+if (args.includes("auth") && cfg.authSleepMs) { logl({ ev: "auth", profile: args[args.indexOf("-p") + 1] }); setTimeout(() => process.exit(0), cfg.authSleepMs); }
+else if (args.includes("auth")) {
   logl({ ev: "auth", profile: args[args.indexOf("-p") + 1] });
   console.log("anthropic (2 credentials):");
   console.log("  #1  anthropic-oauth-2    oauth   id=f6a9c5 priority=0 hermes_pkce ←");
@@ -37,6 +38,7 @@ if (args.includes("auth")) {
   console.log(""); console.log("openai-codex (1 credentials):"); console.log(cfg.codexApiKey ? "  #1  OPENAI_API_KEY       api_key id=1 priority=0 env:OPENAI_API_KEY" : "  #1  device_code          oauth   id=2569b9 priority=0 device_code");
   process.exit(0);
 }
+if (args.includes("auth")) return;
 const get = (f) => args[args.indexOf(f) + 1];
 const profile = get("-p"), usageFile = get("--usage-file"), model = get("-m"), provider = get("--provider"), prompt = get("-z");
 const stateF = path.join(dir, "state.json");
@@ -53,7 +55,7 @@ if (sc.sleepMs) setTimeout(done, sc.sleepMs); else done();
 `);
 fs.chmodSync(fakeBin, 0o755);
 type Sc = { text?: string; rc?: number; usage?: Record<string, unknown>; sleepMs?: number; grandchild?: boolean; noUsage?: boolean };
-function setFake(c: { scenarios?: Record<string, Sc[]>; defaults?: Record<string, Sc>; version?: string; authApiKey?: boolean; codexApiKey?: boolean }) {
+function setFake(c: { scenarios?: Record<string, Sc[]>; defaults?: Record<string, Sc>; version?: string; authApiKey?: boolean; codexApiKey?: boolean; authSleepMs?: number }) {
   fs.writeFileSync(path.join(fakeDir, "cfg.json"), JSON.stringify(c));
   fs.rmSync(path.join(fakeDir, "state.json"), { force: true });
   fs.rmSync(path.join(fakeDir, "calls.log"), { force: true });
@@ -131,7 +133,7 @@ console.log("K2: hermesRoute (låtsad binär)");
   assert.equal((await mk().call({ body: B.claude, prompt: "p", timeoutMs: 10_000 })).text, "OK");
   setFake({ authApiKey: true, defaults: { "trading-claude": { text: "OK" } } });
   const e = await mk().call({ body: B.claude, prompt: "p", timeoutMs: 10_000 }).catch((x) => x);
-  assert.equal(e.kind, "provider");
+  assert.equal(e.kind, "credentials"); assert.equal(starts().length, 0);
   ok("anthropic: 'unknown'/'estimated' godtas bara när profilens anthropic-uppgifter är oauth");
   // Riktiga usage-rapporter från smoke-testet 2026-10-16 (session_id borttaget) spelas upp
   const realClaude = { estimated_cost_usd: 0, cost_status: "unknown", cost_source: "none", input_tokens: 4, output_tokens: 9, cache_read_tokens: 0, cache_write_tokens: 1174, reasoning_tokens: 0, total_tokens: 1187, api_calls: 1, model: "claude-sonnet-5-5", provider: "anthropic", completed: true, partial: false, interrupted: false, turn_exit_reason: "text_response(finish_reason=stop)", failed: false, service_tier: null, auxiliary: { api_calls: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0, estimated_cost_usd: 0, total_tokens: 0, by_task: {} }, total_including_auxiliary: { estimated_cost_usd: 0, total_tokens: 1187, api_calls: 1 } };
@@ -143,7 +145,7 @@ console.log("K2: hermesRoute (låtsad binär)");
   assert.equal(rc.usage.costStatus, "unknown"); assert.equal(rc.usage.inputTokens + rc.usage.cacheWriteTokens, 1178);
   setFake({ authApiKey: true, scenarios: { "trading-claude": [{ text: "{\"ok\":true}", usage: realClaude }] } });
   const rej = await mk().call({ body: B.claude, prompt: "p", timeoutMs: 10_000 }).catch((x) => x);
-  assert.equal(rej.kind, "provider"); assert.match(rej.message, /cost_status "unknown"/);
+  assert.equal(rej.kind, "credentials"); assert.match(rej.message, /betald nyckel i profilen/); assert.equal(starts().length, 0);
   ok("riktiga smoke-rapporter: ChatGPT 'included' godtas; Claude 'unknown' + bara oauth godtas; samma rapport med api_key-rad avvisas");
   setFake({ version: "0.22.0", defaults: { "trading-claude": { text: "OK" } } });
   const v = await mk().call({ body: B.claude, prompt: "p", timeoutMs: 10_000 }).catch((x) => x);
@@ -161,13 +163,21 @@ console.log("K2: hermesRoute (låtsad binär)");
   setFake({ authApiKey: true, defaults: { "trading-claude": { text: "OK" } } });
   ra.beginAnalysis();
   const after = await ra.call({ body: B.claude, prompt: "p", timeoutMs: 10_000 }).catch((x) => x);
-  assert.equal(after.kind, "provider", "en API-nyckel som dykt upp syns i nästa analys");
+  assert.equal(after.kind, "credentials", "en API-nyckel som dykt upp syns i nästa analys");
   assert.equal(auths(), 2);
   setFake({ codexApiKey: true, defaults: { "trading-chatgpt": { text: "OK" } } });
   ra.beginAnalysis();
   const cx = await ra.call({ body: B.chatgpt, prompt: "p", timeoutMs: 10_000 }).catch((x) => x);
-  assert.equal(cx.kind, "provider"); assert.match(cx.message, /cost_status/);
+  assert.equal(cx.kind, "credentials"); assert.match(cx.message, /betald nyckel/);
   ok("auth list körs om för varje analys (cachas bara inom analysen); openai-codex måste också vara bara oauth");
+  for (const [cfgx, body] of [[{ authApiKey: true }, B.claude], [{ codexApiKey: true }, B.chatgpt]] as const) {
+    setFake({ ...cfgx, defaults: { "trading-claude": { text: "OK" }, "trading-chatgpt": { text: "OK" } } });
+    const rz = mk(); rz.beginAnalysis();
+    const ez = await rz.call({ body, prompt: "p", timeoutMs: 10_000 }).catch((x) => x);
+    assert.equal(ez.kind, "credentials"); assert.match(ez.message, /betald nyckel i profilen/);
+    assert.equal(starts().length, 0, "NOLL modellprocesser startas");
+  }
+  ok("inte bara oauth → kontrolleras FÖRE start: 'betald nyckel i profilen', 0 modellprocesser");
 }
 {
   setFake({ scenarios: { "trading-claude": [{ text: "sen", sleepMs: 5_000, grandchild: true }] } });
@@ -316,7 +326,7 @@ const actionable = (ts: Array<{ action: string; sizePct: number | null }>) => ts
   const adv = fin([tip(EA)], { tightened: [trRow(EA, { action: "AVVAKTA", sizePct: null, tp: null, sl: null })], advisorReviews: [{ epic: EA, verdict: "object", action: "AVVAKTA", sizePct: null, sl: null, why: "för tidigt" }] });
   assert.equal(adv[0]!.action, "hold");
   const advOv = fin([tip(EA)], { rawRows: [{ epic: EA, advisorOverride: "Trenden bekräftad på 5m" }], tightened: [trRow(EA, { action: "AVVAKTA" })], advisorReviews: [{ epic: EA, verdict: "object", action: "AVVAKTA", sizePct: null, sl: null, why: "x" }] });
-  assert.equal(advOv[0]!.action, "buy");
+  assert.equal(advOv[0]!.action, "hold", "Demo: advisorOverride kan aldrig vända en granskad AVVAKTA");
   const clamp = fin([tip(EA, { sizePct: 3 })], { riskRows: [trRow(EA, { sizePct: 1 })] });
   assert.equal(clamp[0]!.sizePct, 1);
   const crit = fin([tip(EA)], { riskRows: [trRow(EA, { risk: "kritisk" })] });
@@ -327,11 +337,26 @@ const actionable = (ts: Array<{ action: string; sizePct: number | null }>) => ts
   const advLiveSize = fin([tip(EA, { sizePct: 1 })], { mode: "live", rawRows: [{ epic: EA, advisorOverride: "skäl" }], tightened: [trRow(EA, { sizePct: 0.5 })], advisorReviews: [{ epic: EA, verdict: "object", action: null, sizePct: 0.5, sl: null, why: "x" }] });
   assert.equal(advLiveSize[0]!.sizePct, 0.5);
   ok("LIVE: Advisorns invändning är bindande även när Hanna anger skäl");
+  for (const mode of ["paper", "live"] as const) {
+    const flip = fin([tip(EA, { action: "sell", entry: 100, takeProfit: 98, stopLoss: 101 })], { mode, rawRows: [{ epic: EA, advisorOverride: "skäl" }] });
+    assert.equal(flip[0]!.action, "hold"); assert.match(flip[0]!.note!, /riktningsbyte utan granskning/);
+    const moved = fin([tip(EA, { entry: 98.5, takeProfit: 100, stopLoss: 98 })], { mode });
+    assert.equal(moved[0]!.action, "hold"); assert.match(moved[0]!.note!, /granskad SL kan inte tillämpas/);
+    const raise = fin([tip(EA, { sizePct: 1 })], { mode, tightened: [trRow(EA, { sizePct: 0.5 })], riskRows: [trRow(EA, { sizePct: 1 })] });
+    assert.equal(raise[0]!.sizePct, 0.5);
+    const wider = fin([tip(EA, { stopLoss: 98 })], { mode });
+    assert.equal(wider[0]!.stopLoss, 99, "vidare SL ersätts med den granskade");
+    const tighter = fin([tip(EA, { stopLoss: 99.5 })], { mode });
+    assert.equal(tighter[0]!.stopLoss, 99.5, "snävare SL får Hanna behålla");
+    const fromHold = fin([tip(EA)], { mode, rawRows: [{ epic: EA, advisorOverride: "skäl" }], tightened: [trRow(EA, { action: "AVVAKTA", sizePct: null, tp: null, sl: null })] });
+    assert.equal(fromHold[0]!.action, "hold");
+  }
+  ok("Live och Demo: riktningsbyte → AVVAKTA; flyttad entry som gör granskad SL ogiltig → AVVAKTA; insats aldrig över granskad; vidare SL ersätts; override vänder aldrig");
   const z = T.applyAdvisorTightening([trRow(EA)], [{ epic: EA, verdict: "object", action: null, sizePct: 0, sl: null, why: "noll" }]).rows[0]!;
   assert.equal(z.action, "AVVAKTA"); assert.equal(z.sizePct, null);
   const fl = fin([tip(EA, { sizePct: 1 })], { riskRows: [trRow(EA, { sizePct: 0.95 })] });
   assert.equal(fl[0]!.sizePct, 0.9, "avrundas nedåt, aldrig över taket");
-  const cap = fin([tip(EA, { sizePct: 1.3 })], { riskRows: [trRow(EA, { sizePct: 3 })], maxStakePct: 1.25 });
+  const cap = fin([tip(EA, { sizePct: 1.3 })], { riskRows: [trRow(EA, { sizePct: 3 })], tightened: [trRow(EA, { sizePct: 3 })], maxStakePct: 1.25 });
   assert.equal(cap[0]!.sizePct, 1.2);
   const tiny = fin([tip(EA, { sizePct: 1 })], { riskRows: [trRow(EA, { sizePct: 0.05 })] });
   assert.equal(tiny[0]!.action, "hold"); assert.equal(tiny[0]!.sizePct, null);
@@ -362,7 +387,8 @@ const cost = await import("../src/cost/tracker.js");
 console.log("§12: hela kedjan (runHermesTurn) med låtsad hermes");
 const { runHermesTurn, abortHermesAnalysis } = await import("../src/orchestrator/hermesTurn.js");
 const AA = await import("../src/server/agentActivity.js");
-const { getBrainLabel } = await import("../src/orchestrator/hermesLabel.js");
+const { getBrainLabel, getFailedAttempt } = await import("../src/orchestrator/hermesLabel.js");
+const lblNow = () => getBrainLabel("demo", `analys-${AA.getAnalysis()!.startedAt}`);
 const EPICS = [EA, EB];
 const trJson = (o: Record<string, unknown> = {}) => JSON.stringify({ instruments: [
   { epic: EA, action: "KÖP", entry: 100, tp: 102, sl: 99, score: 3, risk: "medel", sizePct: 1, why: "trend upp", ...o },
@@ -410,7 +436,7 @@ const start = () => AA.analysisStart("manuell");
   assert.equal(a.orders.length, 0);
   assert.equal(r.headTrader.tips!.find((t) => t.epic === EA)!.action, "buy");
   assert.ok(tracked.length === 3 && tracked.every((t) => t.route === "hermes" && t.costUsd === 0));
-  const lbl = getBrainLabel("demo")!;
+  const lbl = lblNow()!;
   assert.equal(lbl.text, "Hjärna: JEV fullständig · Kropp: Claude Sonnet 5.5 + ChatGPT gpt-6-sol");
   assert.ok(lbl.roles.some((x) => x.startsWith("Advisor: ChatGPT gpt-6-sol (trading-chatgpt)")));
   for (const c of starts()) assert.ok(String(c.args[c.args.indexOf("-z") + 1]).length < 10_000, "kompakt underlag");
@@ -432,7 +458,7 @@ const start = () => AA.analysisStart("manuell");
   assert.equal(a.status, "done");
   const tech = a.hermes!.roles.find((x) => x.role === "technical")!;
   assert.equal(tech.profile, "trading-chatgpt"); assert.equal(tech.fallbackFrom, "trading-claude");
-  assert.ok(getBrainLabel("demo")!.roles.some((x) => /trading-claude → reserv ChatGPT/.test(x)));
+  assert.ok(lblNow()!.roles.some((x) => /trading-claude → reserv ChatGPT/.test(x)));
   ok("reserv: Claude nere → ChatGPT tar Teknisk+Risk och Hanna, märkt '→ reserv'");
   setFake({ scenarios: { "trading-claude": [{ text: trJson() }, { text: "{}" }, { text: "{}" }, { text: hanna() }], "trading-chatgpt": [{ rc: 2, text: "x" }] } });
   start();
@@ -514,10 +540,27 @@ const start = () => AA.analysisStart("manuell");
   const ta = v.headTrader.tips!.find((t) => t.epic === EA)!;
   assert.equal(ta.action, "hold"); assert.match(ta.note!, /JEV-veto/);
   ok("JEV-veto bevaras genom reservbyte (Claude → ChatGPT)");
+  // Verklig form från applyJevVerdict: NEUTRAL + jevDowngraded (signalEngine.ts) – på en annan tidsram än den riktade signalen
+  const vetoSig = sig(EA, { interval: "5m", direction: "NEUTRAL", jevDowngraded: true, reasons: ["RSI", "JEV: krisregim — ingen ny position"] });
+  const js = T.jevStatusFor(preOk, Date.now(), [EA], [sig(EA), vetoSig]);
+  assert.equal(js.signal.perEpic[EA]!.veto, true); assert.match(js.signal.perEpic[EA]!.why!, /krisregim.*\(5m\)/);
+  assert.equal(T.jevStatusFor(preOk, Date.now(), [EA], [vetoSig]).signal.perEpic[EA]!.veto, true);
+  setFake({ scenarios: { "trading-claude": [{ text: trJson() }, { text: hanna() }], "trading-chatgpt": [{ text: advJson }] } });
+  start();
+  const vn = await runHermesTurn(params(), baseDeps({ signals: () => [vetoSig, sig(EB)] }));
+  const tn = vn.headTrader.tips!.find((t) => t.epic === EA)!;
+  assert.equal(tn.action, "hold"); assert.equal(tn.sizePct, null); assert.match(tn.note!, /JEV-veto/);
+  ok("JEV-veto i verklig form (NEUTRAL + jevDowngraded, valfri tidsram) → tipset ALLTID AVVAKTA");
+  setFake({ authApiKey: true, scenarios: { "trading-chatgpt": [{ text: trJson() }, { text: advJson }, { text: hanna() }] } });
+  start();
+  await runHermesTurn(params(), baseDeps());
+  assert.ok(starts().length === 3 && starts().every((c) => c.profile === "trading-chatgpt"), "Claude-profilen med betald nyckel startas aldrig");
+  assert.match(AA.getAnalysis()!.hermes!.roles.find((x) => x.role === "technical")!.fallbackFrom ?? "", /trading-claude/);
+  ok("Claude-profilen har betald nyckel → 0 Claude-processer, ChatGPT tar alla roller");
   setFake({ scenarios: { "trading-claude": [{ text: trJson() }, { text: hanna() }], "trading-chatgpt": [{ text: advJson }] } });
   start();
   await runHermesTurn(params({ jev: preNo }), baseDeps({ signals: () => [] }));
-  assert.equal(getBrainLabel("demo")!.text, "Hjärna: utan JEV · Kropp: Claude Sonnet 5.5 + ChatGPT gpt-6-sol");
+  assert.equal(lblNow()!.text, "Hjärna: utan JEV · Kropp: Claude Sonnet 5.5 + ChatGPT gpt-6-sol");
   ok("utan JEV → allt körs ändå, märkt 'Hjärna: utan JEV'");
 }
 {
@@ -556,6 +599,61 @@ const start = () => AA.analysisStart("manuell");
   await assert.rejects(runHermesTurn(params(), baseDeps({ isStale: () => stale })), /avbröts/);
   assert.equal(AA.getAnalysis()!.status, "stopped"); assert.equal(AA.getAnalysis()!.notes, undefined);
   ok("kontobyte under analysen → kastas, sent svar publiceras aldrig");
+  // Hela 300 s-taket: förberedelsen (data, inloggning) och betalda gatewayförsök
+  setFake({ defaults: { "trading-claude": { text: trJson() } } });
+  start();
+  const t1 = Date.now();
+  await assert.rejects(runHermesTurn(params(), baseDeps({ totalMs: 600, market: { ...baseDeps().market, klines: () => new Promise(() => {}) } })), /underlaget hann inte \(tidsgräns\)/);
+  assert.ok(Date.now() - t1 < 2_000); assert.equal(starts().length, 0);
+  ok("datahämtning som hänger → stoppas vid analysens tidsgräns, ingen kropp startas");
+  setFake({ authSleepMs: 5_000, defaults: { "trading-claude": { text: trJson() } } });
+  start();
+  const t2 = Date.now();
+  const pa = runHermesTurn(params(), baseDeps({ hermes: mk() }));
+  await sleep(300);
+  abortHermesAnalysis("Mike stoppade");
+  await assert.rejects(pa, /avbröts/);
+  assert.ok(Date.now() - t2 < 2_000); assert.equal(AA.getAnalysis()!.status, "stopped"); assert.equal(starts().length, 0);
+  ok("avbrott under inloggningskontrollen → stoppas direkt, 0 modellprocesser");
+  {
+    setFake({ defaults: { "trading-claude": { rc: 2, text: "x" }, "trading-chatgpt": { rc: 2, text: "x" } } });
+    process.env.AI_GATEWAY_API_KEY = "gw-test"; process.env.OPENROUTER_API_KEY = "or-test"; process.env.ANTHROPIC_API_KEY = "sk-test";
+    let gwCalls = 0;
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = ((_u: unknown, init?: { signal?: AbortSignal }) => new Promise((resolve, reject) => {
+      gwCalls++;
+      const sig2 = init?.signal;
+      const t = setTimeout(() => resolve(new Response(JSON.stringify({ error: { message: "rate" } }), { status: 429, headers: { "content-type": "application/json" } })), 400);
+      sig2?.addEventListener("abort", () => { clearTimeout(t); reject(Object.assign(new Error("aborted"), { name: "AbortError" })); }, { once: true });
+    })) as typeof fetch;
+    start();
+    const t3 = Date.now();
+    await assert.rejects(runHermesTurn(params(), baseDeps({ totalMs: 1_500, paid: { flag: () => true, budgetLeft: async () => true } })), /hann inte|tidsgräns/);
+    const took = Date.now() - t3;
+    globalThis.fetch = prevFetch;
+    delete process.env.AI_GATEWAY_API_KEY; delete process.env.OPENROUTER_API_KEY; delete process.env.ANTHROPIC_API_KEY;
+    assert.ok(gwCalls >= 2, `flera gatewayförsök (${gwCalls})`);
+    assert.ok(took <= 1_500 + 400, `hela analysen ≤ tidsgränsen (${took} ms)`);
+    ok(`flera långsamma gatewayförsök (${gwCalls} st) → hela analysen inom tidsgränsen (${took} ms)`);
+  }
+  // Etiketten hör till sina tips: lyckad A, sedan avbruten B
+  setFake({ scenarios: { "trading-claude": [{ text: trJson() }, { text: hanna() }], "trading-chatgpt": [{ text: advJson }] } });
+  start();
+  await runHermesTurn(params(), baseDeps({ signals: () => [] }));
+  const { agentNotes } = await import("../src/server/igAgentNotes.js");
+  const runA = agentNotes.top("demo").runId;
+  const lblA = getBrainLabel("demo", runA)!;
+  assert.match(lblA.text, /JEV delvis/);
+  await sleep(5);
+  setFake({ scenarios: { "trading-claude": [{ text: trJson(), sleepMs: 3_000 }] } });
+  start();
+  const pb = runHermesTurn(params({ jev: preNo }), baseDeps({ signals: () => [] }));
+  await sleep(300); abortHermesAnalysis("Mike stoppade");
+  await assert.rejects(pb, /avbröts/);
+  assert.equal(agentNotes.top("demo").runId, runA, "B sparar inga tips");
+  assert.equal(getBrainLabel("demo", runA)!.text, lblA.text, "A:s tips behåller A:s etikett");
+  assert.equal(getFailedAttempt("demo")!.outcome.startsWith("avbruten"), true);
+  ok("lyckad A + avbruten B: A:s tips behåller A:s etikett, B visas som senaste misslyckade försök");
 }
 
 console.log("LLM_ROUTE ej satt: oförändrat");
