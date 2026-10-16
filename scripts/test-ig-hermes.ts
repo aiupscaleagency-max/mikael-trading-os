@@ -30,10 +30,11 @@ const cfg = JSON.parse(fs.readFileSync(path.join(dir, "cfg.json"), "utf8"));
 const logl = (o) => fs.appendFileSync(path.join(dir, "calls.log"), JSON.stringify(o) + "\\n");
 if (args[0] === "--version") { console.log("  ⚠ dashboard [hector] pid 1: manual restart still pending"); console.log("Hermes Agent v" + (cfg.version || "0.21.7+500.g8f81791") + " (2026.9.24) · stable"); process.exit(0); }
 if (args.includes("auth")) {
+  logl({ ev: "auth", profile: args[args.indexOf("-p") + 1] });
   console.log("anthropic (2 credentials):");
   console.log("  #1  anthropic-oauth-2    oauth   id=f6a9c5 priority=0 hermes_pkce ←");
   console.log(cfg.authApiKey ? "  #2  ANTHROPIC_API_KEY    api_key id=37ff94 priority=1 env:ANTHROPIC_API_KEY" : "  #2  claude_code          oauth   id=b30f0f priority=1 claude_code");
-  console.log(""); console.log("openai-codex (1 credentials):"); console.log("  #1  device_code          oauth   id=2569b9 priority=0 device_code");
+  console.log(""); console.log("openai-codex (1 credentials):"); console.log(cfg.codexApiKey ? "  #1  OPENAI_API_KEY       api_key id=1 priority=0 env:OPENAI_API_KEY" : "  #1  device_code          oauth   id=2569b9 priority=0 device_code");
   process.exit(0);
 }
 const get = (f) => args[args.indexOf(f) + 1];
@@ -52,7 +53,7 @@ if (sc.sleepMs) setTimeout(done, sc.sleepMs); else done();
 `);
 fs.chmodSync(fakeBin, 0o755);
 type Sc = { text?: string; rc?: number; usage?: Record<string, unknown>; sleepMs?: number; grandchild?: boolean; noUsage?: boolean };
-function setFake(c: { scenarios?: Record<string, Sc[]>; defaults?: Record<string, Sc>; version?: string; authApiKey?: boolean }) {
+function setFake(c: { scenarios?: Record<string, Sc[]>; defaults?: Record<string, Sc>; version?: string; authApiKey?: boolean; codexApiKey?: boolean }) {
   fs.writeFileSync(path.join(fakeDir, "cfg.json"), JSON.stringify(c));
   fs.rmSync(path.join(fakeDir, "state.json"), { force: true });
   fs.rmSync(path.join(fakeDir, "calls.log"), { force: true });
@@ -108,6 +109,9 @@ console.log("K2: hermesRoute (låtsad binär)");
     [{ text: "x", usage: { completed: false } }, "provider", /completed/],
     [{ text: "x", usage: { cost_status: "estimated" } }, "provider", /cost_status/],
     [{ text: "x", usage: { model: "gpt-5.5" } }, "provider", /modell/],
+    [{ text: "x", usage: { model: null } }, "provider", /modell saknas/],
+    [{ text: "x", usage: { provider: null } }, "provider", /provider saknas/],
+    [{ text: "x", usage: { provider: "openrouter" } }, "provider", /provider openrouter/],
     [{ text: "x", usage: { auxiliary: { api_calls: 1 } } }, "provider", /hjälpanrop/],
     [{ text: "x", noUsage: true }, "transport", /usage-filen/],
     [{ text: "<tool_call>{}</tool_call>" }, "content"],
@@ -146,6 +150,24 @@ console.log("K2: hermesRoute (låtsad binär)");
   assert.equal(v.kind, "not_ready"); assert.match(v.message, /versionen har ändrats/);
   assert.equal(starts().length, 0);
   ok("annan Hermes-version → Hermes-läget vägrar med tydlig text, inget anrop");
+  // Inloggningskontrollen körs om vid varje analys (ingen ögonblicksbild över flera analyser)
+  setFake({ defaults: { "trading-claude": { text: "OK" }, "trading-chatgpt": { text: "OK" } } });
+  const ra = mk();
+  const auths = () => calls().filter((c) => c.ev === "auth").length;
+  ra.beginAnalysis();
+  await ra.call({ body: B.claude, prompt: "p", timeoutMs: 10_000 });
+  await ra.call({ body: B.chatgpt, prompt: "p", timeoutMs: 10_000 });
+  assert.equal(auths(), 2, "en kontroll per profil inom en analys");
+  setFake({ authApiKey: true, defaults: { "trading-claude": { text: "OK" } } });
+  ra.beginAnalysis();
+  const after = await ra.call({ body: B.claude, prompt: "p", timeoutMs: 10_000 }).catch((x) => x);
+  assert.equal(after.kind, "provider", "en API-nyckel som dykt upp syns i nästa analys");
+  assert.equal(auths(), 2);
+  setFake({ codexApiKey: true, defaults: { "trading-chatgpt": { text: "OK" } } });
+  ra.beginAnalysis();
+  const cx = await ra.call({ body: B.chatgpt, prompt: "p", timeoutMs: 10_000 }).catch((x) => x);
+  assert.equal(cx.kind, "provider"); assert.match(cx.message, /cost_status/);
+  ok("auth list körs om för varje analys (cachas bara inom analysen); openai-codex måste också vara bara oauth");
 }
 {
   setFake({ scenarios: { "trading-claude": [{ text: "sen", sleepMs: 5_000, grandchild: true }] } });
@@ -300,6 +322,22 @@ const actionable = (ts: Array<{ action: string; sizePct: number | null }>) => ts
   const crit = fin([tip(EA)], { riskRows: [trRow(EA, { risk: "kritisk" })] });
   assert.equal(crit[0]!.action, "hold");
   ok("§12: Advisorns invändning gäller om Hanna inte anger skäl; insatsen kläms till Risk; kritisk risk → AVVAKTA");
+  const advLive = fin([tip(EA)], { mode: "live", rawRows: [{ epic: EA, advisorOverride: "Trenden bekräftad" }], tightened: [trRow(EA, { action: "AVVAKTA" })], advisorReviews: [{ epic: EA, verdict: "object", action: "AVVAKTA", sizePct: null, sl: null, why: "x" }] });
+  assert.equal(advLive[0]!.action, "hold");
+  const advLiveSize = fin([tip(EA, { sizePct: 1 })], { mode: "live", rawRows: [{ epic: EA, advisorOverride: "skäl" }], tightened: [trRow(EA, { sizePct: 0.5 })], advisorReviews: [{ epic: EA, verdict: "object", action: null, sizePct: 0.5, sl: null, why: "x" }] });
+  assert.equal(advLiveSize[0]!.sizePct, 0.5);
+  ok("LIVE: Advisorns invändning är bindande även när Hanna anger skäl");
+  const z = T.applyAdvisorTightening([trRow(EA)], [{ epic: EA, verdict: "object", action: null, sizePct: 0, sl: null, why: "noll" }]).rows[0]!;
+  assert.equal(z.action, "AVVAKTA"); assert.equal(z.sizePct, null);
+  const fl = fin([tip(EA, { sizePct: 1 })], { riskRows: [trRow(EA, { sizePct: 0.95 })] });
+  assert.equal(fl[0]!.sizePct, 0.9, "avrundas nedåt, aldrig över taket");
+  const cap = fin([tip(EA, { sizePct: 1.3 })], { riskRows: [trRow(EA, { sizePct: 3 })], maxStakePct: 1.25 });
+  assert.equal(cap[0]!.sizePct, 1.2);
+  const tiny = fin([tip(EA, { sizePct: 1 })], { riskRows: [trRow(EA, { sizePct: 0.05 })] });
+  assert.equal(tiny[0]!.action, "hold"); assert.equal(tiny[0]!.sizePct, null);
+  const advZero = fin([tip(EA)], { tightened: [trRow(EA, { sizePct: 0.04 })], advisorReviews: [{ epic: EA, verdict: "object", action: null, sizePct: 0.04, sl: null, why: "x" }] });
+  assert.equal(advZero[0]!.action, "hold");
+  ok("insats: Advisor 0 % → AVVAKTA; kläms nedåt till en decimal (0,95 → 0,9; 1,25-tak → 1,2); under golvet → AVVAKTA utan insats");
 }
 
 console.log("§8.2/§10.3: kostnad");
@@ -425,6 +463,24 @@ const start = () => AA.analysisStart("manuell");
   assert.equal(tracked.filter((t) => t.agent === "technical" && t.route === "gateway").length, 1);
   assert.equal(AA.getAnalysis()!.hermes!.roles.find((x) => x.role === "technical")!.body, "paid");
   ok("§10.3: budget kvar + flagga → exakt ett betalt anrop per roll, registrerat med väg");
+  setFake({ defaults: { "trading-claude": { rc: 2, text: "x" }, "trading-chatgpt": { rc: 2, text: "x" } } });
+  start();
+  const seq: string[] = []; const tos: number[] = [];
+  await runHermesTurn(params(), baseDeps({
+    track: async (agent: string, _m: string, _u: unknown, x: { route: string }) => { if (x.route === "gateway") { await sleep(50); seq.push(`rad:${agent}`); } },
+    paid: { flag: () => true, budgetLeft: async () => { seq.push("canSpend"); return true; }, call: async (q: { modelRole: string; timeoutMs: number }) => {
+      tos.push(q.timeoutMs);
+      const text = q.modelRole === "specialist" ? trJson() : q.modelRole === "advisor" ? advJson : hanna();
+      return { text, model: "m", usage: { input_tokens: 5, output_tokens: 5 }, ms: 1 };
+    } },
+  }));
+  assert.deepEqual(seq, ["canSpend", "rad:technical", "canSpend", "rad:advisor", "canSpend", "rad:head"]);
+  assert.ok(tos.length === 3 && tos[0]! <= 120_000 && tos[1]! <= 90_000 && tos.every((t) => t > 0));
+  start();
+  const tos2: number[] = [];
+  await assert.rejects(runHermesTurn(params(), baseDeps({ totalMs: 2_500, paid: { flag: () => true, budgetLeft: async () => true, call: async (q: { timeoutMs: number }) => { tos2.push(q.timeoutMs); await sleep(3_000); throw new Error("timeout"); } } })), /hann inte|tidsgräns/);
+  assert.ok(tos2.length === 1 && tos2[0]! <= 2_500);
+  ok("betald reserv: tidsgräns per anrop inom 300 s-taket; kostnadsraden skrivs klart före nästa canSpend");
 }
 {
   const noRisk = JSON.stringify({ instruments: [{ epic: EA, action: "KÖP", entry: 100, tp: 102, sl: 99, score: 3, why: "x" }, { epic: EB, action: "AVVAKTA", entry: 100, score: 0, why: "x" }] });
@@ -451,7 +507,7 @@ const start = () => AA.analysisStart("manuell");
   setFake({ scenarios: { "trading-claude": [{ text: trJson() }, { text: hanna() }], "trading-chatgpt": [{ text: advJson }] } });
   start();
   await runHermesTurn(params({ config: { mode: "live", anthropicApiKey: "", costCap: { dailyUsd: 1, weeklyUsd: 5 } } }), baseDeps());
-  assert.ok(starts().every((c) => !/TEST \(IG Demo\)/.test(String(c.args[c.args.indexOf("-z") + 1]))));
+  assert.ok(starts().every((c) => /Läge: LIVE \(riktiga pengar\)/.test(String(c.args[c.args.indexOf("-z") + 1]))));
   setFake({ scenarios: { "trading-claude": [{ rc: 2, text: "x" }, { rc: 2, text: "x" }], "trading-chatgpt": [{ text: trJson() }, { text: advJson }, { text: hanna() }] } });
   start();
   const v = await runHermesTurn(params(), baseDeps({ signals: () => [sig(EA, { jevDowngraded: true, reasons: ["JEV: krisregim"] }), sig(EB)] }));
@@ -529,6 +585,12 @@ console.log("LLM_ROUTE ej satt: oförändrat");
   assert.equal(starts().length, 0, "hermes anropas aldrig");
   delete process.env.ANTHROPIC_API_KEY;
   ok("utan LLM_ROUTE: Hannas vanliga verktygsloop (tools + samma modell), hermes startas aldrig");
+  const api = fs.readFileSync("src/server/api.ts", "utf8");
+  assert.match(api, /kill-switch[\s\S]{0,900}abortHermesAnalysis\("kill switch"\)/);
+  assert.match(api, /\/api\/hermes\/abort[\s\S]{0,400}abortHermesAnalysis/);
+  assert.match(api, /LLM_ROUTE\?\.trim\(\) === "hermes" && \(activeBrokerName === "ig" \|\| activeBrokerName === "ig-demo"\) && getAnalysis\(\)\?\.status === "running"/);
+  assert.match(fs.readFileSync("dashboard.html", "utf8"), /id="hermes-abort-btn" style="display:none/);
+  ok("kill switch och 'Avbryt analys' avbryter Hermes-analysen; 409 bara i Hermes-läge med IG; knappen dold utan Hermes-läget");
 }
 
 console.log("§9.4: JEV 401 loggas (ordningen oförändrad)");

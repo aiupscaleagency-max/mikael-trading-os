@@ -96,7 +96,7 @@ export interface HermesHannaInput {
 export const HANNA_HERMES_SYSTEM = `──── DIN ROLL: HANNA (HEAD TRADER, SLUTBESLUT) ────
 Du lägger inga order. Svara med analys och TIPS_JSON.
 Inga verktyg i denna körning; svara med text och TIPS_JSON. Positioner och konto finns i underlaget.
-Väg ihop Claudes analys, Advisorns granskning och JEV. Har Advisorn invänt (object) följer du invändningen, eller skriver skälet i fältet "advisorOverride" (en mening). JEV-veto ⇒ AVVAKTA, alltid.
+Väg ihop Claudes analys, Advisorns granskning och JEV. Har Advisorn invänt (object) följer du invändningen. I TEST (IG Demo) får du gå förbi den bara med skälet i fältet "advisorOverride" (en mening); i LIVE är invändningen bindande. JEV-veto ⇒ AVVAKTA, alltid.
 Format (undantag från "bara JSON"): högst tre korta rader "[1] Regim: … [2] Action: … [3] Bevaka: …", sedan raden ${"TIPS_JSON"}: följd av en JSON-array med EXAKT ett objekt per EPIC i underlaget, rangordnade bäst först:
 [{"epic":"…","rank":1,"action":"KÖP|SÄLJ|AVVAKTA","why":"en mening","entry":0,"tp":0,"sl":0,"sizePct":1,"horizonMin":5,"confidence":"låg|medel|hög","advisorOverride":null}]
 KÖP: sl < entry < tp. SÄLJ: tp < entry < sl. AVVAKTA: tp, sl och sizePct null. horizonMin 1, 5, 15 eller 30. Ett tips är aldrig en order.`;
@@ -120,7 +120,8 @@ ${HANNA_HERMES_SYSTEM}`;
   const run = await runRole<Array<Record<string, unknown>>>({
     role: "head", agent: "head", order: ["claude", "chatgpt"], prompt, timeoutMs: HERMES_TIMEOUTS.head,
     validate: (text) => { const v = validateRawTips(text, h.epics); return v.ok ? { ok: true, reason: null, value: v.rows } : { ok: false, reason: `ogiltig TIPS_JSON: ${v.reason}`, value: null }; },
-    paid: { modelRole: "head", directDefault: "claude-sonnet-4-6", system: HANNA_HERMES_SYSTEM, user: prompt, maxTokens: 1500 },
+    // Rollinstruktionen finns redan sist i prompten; systemfältet upprepar den inte
+    paid: { modelRole: "head", directDefault: "claude-sonnet-4-6", system: "Följ rollinstruktionen sist i meddelandet.", user: prompt, maxTokens: 1500 },
   }, h.ctx);
   const empty: HeadTraderResult = {
     decision: { role: "head_trader", regime: reports.macro.regime, actions: [], briefingSummary: "", rawText: run.text ?? "" },

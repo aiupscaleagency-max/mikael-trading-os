@@ -151,7 +151,9 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
     throw new Error(reason);
   };
   try {
-    // Låst Hermes-version + profilkontroll (§8.4). Annan version → vägra med tydlig text.
+    // Låst Hermes-version (§8.4). Annan version → vägra med tydlig text.
+    // Inloggningskontrollen (oauth-only per profil) körs om för VARJE analys.
+    hermes.beginAnalysis();
     const ready = await hermes.ready();
     const signals = deps.signals ?? (await import("../server/signalEngine.js")).getSignals;
     const jevNow: JevStatus = jevStatusFor(p.jev, p.jevAt, p.symbols, signals());
@@ -188,8 +190,8 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
     // Kostnad: Hermes 0 USD (räknas inte mot taket); betald reserv registreras med sin väg
     const { trackClaudeCall } = await import("../cost/tracker.js");
     const { usingGateway } = await import("../llm/gateway.js");
-    const trackFn: ChainCtx["track"] = deps.track ?? ((agent, model, usage, o) => {
-      trackClaudeCall(agent, model, usage, costRunId, { route: o.route === "gateway" && !usingGateway() ? "anthropic" : o.route, ...(o.costUsd !== undefined ? { costUsd: o.costUsd } : {}), durationMs: o.durationMs }).catch(() => {});
+    const trackFn: ChainCtx["track"] = deps.track ?? (async (agent, model, usage, o) => {
+      await trackClaudeCall(agent, model, usage, costRunId, { route: o.route === "gateway" && !usingGateway() ? "anthropic" : o.route, ...(o.costUsd !== undefined ? { costUsd: o.costUsd } : {}), durationMs: o.durationMs }).then(() => {}, () => {});
     });
     const paid: PaidDeps = {
       flag: deps.paid?.flag ?? (() => process.env.LLM_HERMES_PAID_FALLBACK === "true"),
@@ -202,7 +204,8 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
         const client = createLlmClient(p.config.anthropicApiKey);
         const model = modelFor(q.modelRole, q.directDefault);
         const t = Date.now();
-        const r = await client.messages.create({ model, max_tokens: q.maxTokens, system: q.system, messages: [{ role: "user", content: q.user }] }, { signal: ac.signal });
+        // Egen tidsgräns per anrop (rollens gräns, högst kvarvarande del av 300 s) och avbrott via kedjans signal
+        const r = await client.messages.create({ model, max_tokens: q.maxTokens, system: q.system, messages: [{ role: "user", content: q.user }] }, { signal: ac.signal, timeout: q.timeoutMs, maxRetries: 0 });
         return { text: messageText(r), model: r.model || model, usage: r.usage, ms: Date.now() - t };
       }),
     };
@@ -271,6 +274,7 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
         finalize: {
           riskRows: rows, tightened, advisorReviews: reviews, riskOk: riskStatus.status === "lyckad", advisorStatus: advStatus.status, mode, jev: jevNow, block,
           // Bara ett färskt IG-pris (≤ 60 s) räknas som "nu"; annars null → nivåerna märks overifierade
+          maxStakePct: stake.pct,
           livePrice: deps.livePrice ?? ((e) => liveData.igLive(p.env, e, IG_QUOTE_FRESH_MS)?.price ?? null),
         },
       },

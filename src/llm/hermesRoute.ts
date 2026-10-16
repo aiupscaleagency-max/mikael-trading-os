@@ -96,11 +96,25 @@ export interface HermesCallResult {
 export interface HermesReady {
   ok: boolean;
   version: string | null;
-  /** true = profilen trading-claude har bara oauth-uppgifter för anthropic (ingen API-nyckel) */
-  anthropicOauthOnly: boolean;
   reason: string | null;
   /** true = tillfälligt fel i kontrollen; resultatet cachas inte */
   transient?: boolean;
+}
+
+/**
+ * Inloggningskontroll per analys (`auth list` för båda profilerna). Körs om vid början av VARJE analys
+ * (beginAnalysis) och återanvänds bara inom samma analys.
+ */
+export interface HermesCreds {
+  /** trading-claude: anthropic-avsnittet har BARA oauth-rader (ingen API-nyckel) */
+  anthropicOauthOnly: boolean;
+  /** trading-chatgpt: openai-codex-avsnittet har BARA oauth-rader. (Profilen har även en anthropic api_key
+   *  från Hermes egen .env; den används aldrig eftersom kroppens provider är låst till openai-codex och
+   *  usage.provider kontrolleras.) */
+  codexOauthOnly: boolean;
+  /** true = kontrollen kunde inte köras (rc ≠ 0/timeout); cachas inte */
+  transient: boolean;
+  at: number;
 }
 
 export interface HermesDeps {
@@ -121,7 +135,10 @@ function defaultBin(): string {
 
 /** Barnprocessens miljö: bara HOME och PATH (§9.1). Ingen nyckel kan följa med. */
 export function hermesChildEnv(): { HOME: string; PATH: string } {
-  return { HOME: os.homedir(), PATH: process.env.PATH ?? "/usr/bin:/bin" };
+  const env = { HOME: os.homedir(), PATH: process.env.PATH ?? "/usr/bin:/bin" };
+  // Spärr mot framtida ändringar: bara HOME och PATH får följa med
+  if (Object.keys(env).some((k) => k !== "HOME" && k !== "PATH")) throw new HermesError("not_ready", "barnprocessens env får bara innehålla HOME och PATH");
+  return env;
 }
 
 /** Läser versionsraden "Hermes Agent v0.21.7+500.g8f81791 (…)" (andra rader, t.ex. varningar, ignoreras). */
@@ -130,10 +147,11 @@ export function parseHermesVersion(out: string): string | null {
   return m?.[1] ?? null;
 }
 
-/** true om anthropic-avsnittet i "auth list" finns och BARA har oauth-rader. */
-export function anthropicOauthOnlyFrom(out: string): boolean {
+/** true om providerns avsnitt i "auth list" finns och BARA har oauth-rader. */
+export function providerOauthOnlyFrom(out: string, provider: string): boolean {
   const lines = String(out).split("\n");
-  const start = lines.findIndex((l) => /^anthropic \(\d+ credentials?\):/.test(l.trim()));
+  const esc = provider.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+  const start = lines.findIndex((l) => new RegExp(`^${esc} \\(\\d+ credentials?\\):`).test(l.trim()));
   if (start < 0) return false;
   const rows: string[] = [];
   for (let i = start + 1; i < lines.length; i++) {
@@ -144,6 +162,8 @@ export function anthropicOauthOnlyFrom(out: string): boolean {
   if (!rows.length) return false;
   return rows.every((r) => /\s(oauth)\s+id=/.test(r) && !/\sapi_key\s/.test(r));
 }
+/** Bakåtkompatibelt namn: anthropic-avsnittet. */
+export const anthropicOauthOnlyFrom = (out: string) => providerOauthOnlyFrom(out, "anthropic");
 
 /** Letar uppåt efter .git (kontextfiler letas upp till git-roten, §9.1). */
 function insideGitRepo(dir: string): boolean {
@@ -203,6 +223,7 @@ export function createHermesRoute(deps: HermesDeps = {}) {
   const locks = new Map<string, ProfileLock>();
   const lockFor = (profile: string) => { let l = locks.get(profile); if (!l) { l = new ProfileLock(); locks.set(profile, l); } return l; };
   let readyP: Promise<HermesReady> | null = null;
+  let credsP: Promise<HermesCreds> | null = null;
 
   function freshCwd(): string {
     const dir = fs.mkdtempSync(path.join(tmpRoot, "hermes-kropp-"));
@@ -272,25 +293,47 @@ export function createHermesRoute(deps: HermesDeps = {}) {
         const v = await run(["--version"], { cwd, timeoutMs: probeTimeout });
         const version = parseHermesVersion(`${v.stdout}\n${v.stderr}`);
         log.info(`[Hermes] version ${version ?? "okänd"} (låst: ${pinned()})`);
-        if (!version) return { ok: false, version: null, anthropicOauthOnly: false, reason: `hermes --version gav ingen version (rc ${v.rc})`, transient: true };
+        if (!version) return { ok: false, version: null, reason: `hermes --version gav ingen version (rc ${v.rc})`, transient: true };
         if (version !== pinned()) {
-          return { ok: false, version, anthropicOauthOnly: false, reason: `Hermes-versionen har ändrats (${version}, låst ${pinned()}). Hermes-läget är avstängt tills R1 körts igen och LLM_HERMES_VERSION satts.` };
+          return { ok: false, version, reason: `Hermes-versionen har ändrats (${version}, låst ${pinned()}). Hermes-läget är avstängt tills R1 körts igen och LLM_HERMES_VERSION satts.` };
         }
-        const a = await run(["-p", HERMES_BODIES.claude.profile, "auth", "list"], { cwd, timeoutMs: probeTimeout });
-        const anthropicOauthOnly = a.rc === 0 && anthropicOauthOnlyFrom(a.stdout);
-        // auth list misslyckades (inte samma sak som "har API-nyckel"): försök igen vid nästa anrop
-        const transient = a.rc !== 0 || a.killedFor !== null;
-        if (!anthropicOauthOnly) log.warn(`[Hermes] ${HERMES_BODIES.claude.profile}: anthropic har inte bara oauth-uppgifter — Claude-kroppens svar ("estimated") godtas inte`);
-        return { ok: true, version, anthropicOauthOnly, reason: null, ...(transient ? { transient } : {}) };
+        return { ok: true, version, reason: null };
       } finally {
         fs.rmSync(cwd, { recursive: true, force: true });
       }
-    })().catch((e): HermesReady => ({ ok: false, version: null, anthropicOauthOnly: false, reason: e instanceof Error ? e.message : String(e), transient: true }));
+    })().catch((e): HermesReady => ({ ok: false, version: null, reason: e instanceof Error ? e.message : String(e), transient: true }));
     const p = readyP;
     // Bara ett lyckat resultat eller en versionskrock sparas; tillfälliga fel (timeout, auth list rc ≠ 0) provas igen nästa gång
     void p.then((r) => { if (r.transient && readyP === p) readyP = null; });
     return p;
   }
+
+  /** Inloggningskontrollen för båda profilerna. Återanvänds inom en analys; beginAnalysis() tvingar en ny. */
+  function credentials(): Promise<HermesCreds> {
+    credsP ??= (async (): Promise<HermesCreds> => {
+      const cwd = freshCwd();
+      try {
+        const [a, c] = await Promise.all([
+          run(["-p", HERMES_BODIES.claude.profile, "auth", "list"], { cwd, timeoutMs: probeTimeout }),
+          run(["-p", HERMES_BODIES.chatgpt.profile, "auth", "list"], { cwd, timeoutMs: probeTimeout }),
+        ]);
+        const anthropicOauthOnly = a.rc === 0 && !a.killedFor && providerOauthOnlyFrom(a.stdout, "anthropic");
+        const codexOauthOnly = c.rc === 0 && !c.killedFor && providerOauthOnlyFrom(c.stdout, "openai-codex");
+        const transient = a.rc !== 0 || c.rc !== 0 || a.killedFor !== null || c.killedFor !== null;
+        if (!anthropicOauthOnly) log.warn(`[Hermes] ${HERMES_BODIES.claude.profile}: anthropic har inte bara oauth-uppgifter — Claude-kroppens svar godtas inte`);
+        if (!codexOauthOnly) log.warn(`[Hermes] ${HERMES_BODIES.chatgpt.profile}: openai-codex har inte bara oauth-uppgifter — ChatGPT-kroppens svar godtas inte`);
+        return { anthropicOauthOnly, codexOauthOnly, transient, at: Date.now() };
+      } finally {
+        fs.rmSync(cwd, { recursive: true, force: true });
+      }
+    })().catch((): HermesCreds => ({ anthropicOauthOnly: false, codexOauthOnly: false, transient: true, at: Date.now() }));
+    const p = credsP;
+    void p.then((r) => { if (r.transient && credsP === p) credsP = null; });
+    return p;
+  }
+
+  /** Ny analys: inloggningskontrollen körs om (aldrig en ögonblicksbild över flera analyser). */
+  function beginAnalysis(): void { credsP = null; }
 
   function readUsage(file: string): Record<string, unknown> | null {
     try { return JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>; } catch { return null; }
@@ -318,6 +361,7 @@ export function createHermesRoute(deps: HermesDeps = {}) {
     if (toolset !== HERMES_TOOLSET) throw new HermesError("not_ready", `Verktygsläget "${toolset}" är inte tillåtet; bara ${HERMES_TOOLSET}`);
     const r = await ready();
     if (!r.ok) throw new HermesError("not_ready", r.reason ?? "Hermes är inte redo");
+    const cr = await credentials();
     const release = await lockFor(opts.body.profile).acquire(opts.signal, opts.deadlineAt);
     const t0 = Date.now();
     let cwd: string | null = null;
@@ -348,16 +392,18 @@ export function createHermesRoute(deps: HermesDeps = {}) {
       if (raw.failed !== false) throw new HermesError("provider", `${opts.body.profile}: failed=${String(raw.failed)}`, 0, usage);
       if (raw.completed !== true) throw new HermesError("provider", `${opts.body.profile}: completed=${String(raw.completed)}`, 0, usage);
       if (usage.auxApiCalls > 0) throw new HermesError("provider", `${opts.body.profile}: ${usage.auxApiCalls} extra hjälpanrop (krävs 0)`, 0, usage);
-      if (usage.model && usage.model !== opts.body.model) throw new HermesError("provider", `${opts.body.profile}: modell ${usage.model} (begärd ${opts.body.model})`, 0, usage);
-      if (usage.provider && usage.provider !== opts.body.provider) throw new HermesError("provider", `${opts.body.profile}: provider ${usage.provider} (begärd ${opts.body.provider})`, 0, usage);
+      // Modell och provider MÅSTE finnas i rapporten och vara de begärda (ingen tyst modell-/providerbyte)
+      if (usage.model !== opts.body.model) throw new HermesError("provider", `${opts.body.profile}: modell ${usage.model ?? "saknas"} (begärd ${opts.body.model})`, 0, usage);
+      if (usage.provider !== opts.body.provider) throw new HermesError("provider", `${opts.body.profile}: provider ${usage.provider ?? "saknas"} (begärd ${opts.body.provider})`, 0, usage);
       const cs = usage.costStatus;
-      const env = hermesChildEnv() as Record<string, string>;
+      // openai-codex: "included" och profilens openai-codex-uppgifter är bara oauth.
       // anthropic: "estimated" (§11) – och "unknown", som Hermes rapporterar för claude-sonnet-5-5 eftersom
       // modellen saknar pris i Hermes (smoke 2026-10-16: cost_source "none", 0 USD) – godtas BARA när
-      // profilens enda anthropic-uppgifter är oauth och barnprocessen saknar ANTHROPIC_API_KEY.
+      // profilens anthropic-uppgifter är bara oauth enligt kontrollen i DENNA analys. Barnprocessens env är
+      // alltid bara {HOME, PATH} (se hermesChildEnv), så ingen nyckel kan komma den vägen.
       const costOk = opts.body.provider === "openai-codex"
-        ? cs === "included"
-        : cs === "included" || ((cs === "estimated" || cs === "unknown") && r.anthropicOauthOnly && !("ANTHROPIC_API_KEY" in env));
+        ? cs === "included" && cr.codexOauthOnly
+        : cr.anthropicOauthOnly && (cs === "included" || cs === "estimated" || cs === "unknown");
       if (!costOk) throw new HermesError("provider", `${opts.body.profile}: cost_status "${cs ?? "saknas"}" godtas inte (möjlig betald väg)`, 0, usage);
       if (!text) throw new HermesError("empty", `${opts.body.profile}: tom text`, 0, usage);
       if (TOOL_REQUEST_RE.test(text)) throw new HermesError("content", `${opts.body.profile}: svaret innehöll en verktygsbegäran`, 0, usage);
@@ -395,7 +441,7 @@ export function createHermesRoute(deps: HermesDeps = {}) {
     };
   }
 
-  return { call, create, ready, lockBusy: (profile: string) => lockFor(profile).isBusy, lockWaiting: (profile: string) => lockFor(profile).waiting, bin };
+  return { call, create, ready, credentials, beginAnalysis, lockBusy: (profile: string) => lockFor(profile).isBusy, lockWaiting: (profile: string) => lockFor(profile).waiting, bin };
 }
 
 export type HermesRoute = ReturnType<typeof createHermesRoute>;

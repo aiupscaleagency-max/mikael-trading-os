@@ -277,8 +277,10 @@ export function applyAdvisorTightening(rows: TrRow[], reviews: AdvReview[]): { r
     if (v.action === "AVVAKTA") { r.action = "AVVAKTA"; r.sizePct = null; r.tp = null; r.sl = null; return r; }
     if (v.action && v.action !== r.action) ignored.push(`${r.epic}: Advisorn försökte byta till ${v.action} (ignorerat)`);
     if (r.action === "AVVAKTA") return r;
+    // Insats 0 (eller mindre) från Advisorn = ingen position: AVVAKTA
+    if (v.sizePct !== null && v.sizePct <= 0) { r.action = "AVVAKTA"; r.sizePct = null; r.tp = null; r.sl = null; return r; }
     if (v.sizePct !== null) {
-      if (r.sizePct === null || v.sizePct < r.sizePct) r.sizePct = Math.max(0, v.sizePct);
+      if (r.sizePct === null || v.sizePct < r.sizePct) r.sizePct = v.sizePct;
       else if (v.sizePct > r.sizePct) ignored.push(`${r.epic}: Advisorn försökte höja insatsen (ignorerat)`);
     }
     if (v.sl !== null && r.entry !== null && r.sl !== null) {
@@ -299,7 +301,8 @@ export interface PaidDeps {
   /** canSpend mot API-taket; kontrolleras före VARJE betalt försök */
   budgetLeft: () => Promise<boolean>;
   /** Befintliga betalda kedjan (Anthropic → Vercel → OpenRouter) med rollens befintliga modell */
-  call: (p: { modelRole: LlmRole; directDefault: string; system: string; user: string; maxTokens: number }) => Promise<{ text: string; model: string; usage: { input_tokens: number; output_tokens: number }; ms: number }>;
+  /** timeoutMs = rollens tidsgräns, begränsad av analysens 300 s-tak */
+  call: (p: { modelRole: LlmRole; directDefault: string; system: string; user: string; maxTokens: number; timeoutMs: number }) => Promise<{ text: string; model: string; usage: { input_tokens: number; output_tokens: number }; ms: number }>;
 }
 
 export interface ChainCtx {
@@ -309,7 +312,7 @@ export interface ChainCtx {
   deadlineAt: number;
   paid: PaidDeps;
   /** Registrerar ett anrop (trackClaudeCall). Hermes: costUsd 0, route hermes. */
-  track: (agent: string, model: string, usage: { input_tokens: number; output_tokens: number }, opts: { route: "hermes" | "gateway"; costUsd?: number; durationMs: number }) => void;
+  track: (agent: string, model: string, usage: { input_tokens: number; output_tokens: number }, opts: { route: "hermes" | "gateway"; costUsd?: number; durationMs: number }) => Promise<void> | void;
 }
 
 export interface RoleRun<T> { status: RoleStatus; value: T | null; text: string | null }
@@ -384,15 +387,20 @@ export async function runRole<T>(spec: {
     if (!(await ctx.paid.budgetLeft())) { st.reason = `${lastReason}; betald reserv spärrad: tak`; return { status: st, value: null, text: null }; }
     st.attempts++;
     try {
-      const r = await ctx.paid.call(spec.paid);
+      const timeoutMs = Math.min(spec.timeoutMs, ctx.deadlineAt - Date.now());
+      if (timeoutMs <= 0) return stopped("deadline");
+      const r = await ctx.paid.call({ ...spec.paid, timeoutMs });
       st.body = "paid"; st.profile = null; st.model = r.model; st.fallbackFrom = first.profile;
       st.ms += r.ms; st.inputTokens += r.usage.input_tokens; st.outputTokens += r.usage.output_tokens;
-      ctx.track(spec.agent, r.model, r.usage, { route: "gateway", durationMs: r.ms });
+      // Kostnadsraden skrivs klart INNAN nästa canSpend-kontroll
+      await ctx.track(spec.agent, r.model, r.usage, { route: "gateway", durationMs: r.ms });
       const v = spec.validate(r.text);
       if (v.ok && v.value !== null) { st.status = "lyckad"; st.reason = null; return { status: st, value: v.value, text: r.text }; }
       if (v.partial && v.value !== null) { st.status = "lyckad"; st.reason = v.reason; return { status: st, value: v.value, text: r.text }; }
       lastReason = `betald reserv: schemafel: ${v.reason ?? "ogiltigt svar"}`;
     } catch (e) {
+      if (ctx.signal.aborted) return stopped("aborted");
+      if (Date.now() >= ctx.deadlineAt) return stopped("deadline");
       lastReason = `betald reserv: ${e instanceof Error ? e.message : String(e)}`;
       break;
     }
@@ -432,8 +440,13 @@ export interface FinalizeCtx {
   block: MarketBlock;
   /** IG-livepriset NU (null = saknas) */
   livePrice: (epic: string) => number | null;
+  /** Nuvarande insats-steg (% av saldot): ingen tips-insats får överstiga det */
+  maxStakePct?: number;
   now?: () => number;
 }
+
+/** Minsta insats som visas (samma golv som parseHeadTips). Under det blir tipset AVVAKTA. */
+export const MIN_TIP_SIZE_PCT = 0.1;
 
 const RISK_MISSING = "Risk saknas – inga köp/sälj-tips";
 const ADVISOR_MISSING = "Advisor saknas (live) – inga köp/sälj-tips";
@@ -444,6 +457,14 @@ const STALE_PRICE = "⚠ gammalt pris, kontrollera mot IG";
 function addNote(t: AgentTip, n: string): void { if (!t.note?.includes(n)) t.note = t.note ? `${t.note}; ${n}` : n; }
 function forceHold(t: AgentTip, why: string): void {
   t.action = "hold"; t.sizePct = null; t.sizeText = null; t.takeProfit = null; t.stopLoss = null;
+  addNote(t, why);
+}
+/** Kläm insatsen till taket: avrundas NEDÅT till en decimal (aldrig över taket). ≤ 0 eller under golvet → AVVAKTA. */
+function clampSize(t: AgentTip, cap: number, why: string): void {
+  if (t.action === "hold" || t.sizePct === null || t.sizePct <= cap) return;
+  const v = Math.floor(cap * 10 + 1e-9) / 10;
+  if (!(v >= MIN_TIP_SIZE_PCT)) { forceHold(t, `${why}: ingen insats kvar`); return; }
+  t.sizePct = v; t.sizeText = `${v} % av saldot`;
   addNote(t, why);
 }
 
@@ -463,12 +484,13 @@ export function finalizeHermesTips(tips: AgentTip[], c: FinalizeCtx): AgentTip[]
     const rev = c.advisorReviews?.find((r) => r.epic === t.epic);
     const tr = c.tightened?.find((r) => r.epic === t.epic);
     const rr = c.riskRows?.find((r) => r.epic === t.epic);
-    // 1. Advisorn invände och Hanna gav inget skäl: skärpningen gäller
-    if (rev?.verdict === "object" && !override && tr) {
+    // 1. Advisorn invände: i LIVE är invändningen bindande (Hanna får inte gå förbi den);
+    //    i Demo gäller den när Hanna inte angav ett skäl (advisorOverride).
+    if (rev?.verdict === "object" && (c.mode === "live" || !override) && tr) {
       if (tr.action === "AVVAKTA" && t.action !== "hold") forceHold(t, `Advisorn invände: ${rev.why || "avvakta"}`);
       else if (t.action !== "hold") {
-        if (tr.sizePct !== null && t.sizePct !== null && t.sizePct > tr.sizePct) { t.sizePct = +tr.sizePct.toFixed(1); t.sizeText = `${t.sizePct} % av saldot`; addNote(t, "insatsen sänkt enligt Advisorn"); }
-        if (tr.sl !== null && t.entry !== null && t.stopLoss !== null) {
+        if (tr.sizePct !== null) clampSize(t, tr.sizePct, "insatsen sänkt enligt Advisorn");
+        if ((t.action as string) !== "hold" && tr.sl !== null && t.entry !== null && t.stopLoss !== null) {
           const tighter = t.action === "buy" ? tr.sl > t.stopLoss && tr.sl < t.entry : tr.sl < t.stopLoss && tr.sl > t.entry;
           if (tighter) { t.stopLoss = tr.sl; addNote(t, "SL snävare enligt Advisorn"); }
         }
@@ -477,9 +499,12 @@ export function finalizeHermesTips(tips: AgentTip[], c: FinalizeCtx): AgentTip[]
     // 2. Risks insats är taket; kritisk risk = ingen ny position
     if (rr && t.action !== "hold") {
       if (rr.risk === "kritisk") forceHold(t, "Risk: kritisk");
-      else if (rr.action === "AVVAKTA" || rr.sizePct === null || rr.sizePct === 0) forceHold(t, "Risk: ingen insats för instrumentet");
-      else if (t.sizePct !== null && t.sizePct > rr.sizePct) { t.sizePct = +rr.sizePct.toFixed(1); t.sizeText = `${t.sizePct} % av saldot`; }
+      else if (rr.action === "AVVAKTA" || rr.sizePct === null || rr.sizePct <= 0) forceHold(t, "Risk: ingen insats för instrumentet");
+      else clampSize(t, rr.sizePct, "insatsen sänkt till Risks nivå");
     }
+    // Insats-steget är alltid taket, och KÖP/SÄLJ utan giltig insats blir AVVAKTA
+    if (c.maxStakePct !== undefined) clampSize(t, c.maxStakePct, "insatsen sänkt till insats-steget");
+    if (t.action !== "hold" && !(t.sizePct !== null && t.sizePct >= MIN_TIP_SIZE_PCT)) forceHold(t, "ingen giltig insats");
     // 3. Färskhet (§10.5, §8.7)
     const inst = c.block.instruments.find((i) => i.epic === t.epic);
     if (inst) {
