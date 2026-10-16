@@ -483,10 +483,14 @@ export function finalizeHermesTips(tips: AgentTip[], c: FinalizeCtx): AgentTip[]
     // 3. Färskhet (§10.5, §8.7)
     const inst = c.block.instruments.find((i) => i.epic === t.epic);
     if (inst) {
+      // Åldrar räknas vid VISNING: underlagets ålder läggs till delarnas ålder när det byggdes
+      const since = Math.max(0, (now - c.block.builtAt) / 1000);
+      const age = (a: number | null) => (a === null ? null : a + since);
       const staleCandles = inst.ivs.some((v) => v.lastCloseAt === null || now - v.lastCloseAt > 2 * v.ivMs);
-      const staleState = (c.block.positions.ageSec === null || c.block.positions.ageSec > 120) || (c.block.account.ageSec === null || c.block.account.ageSec > 120);
+      const pa = age(c.block.positions.ageSec), aa = age(c.block.account.ageSec), qa = age(inst.priceAgeSec);
+      const staleState = pa === null || pa > 120 || aa === null || aa > 120;
       if (staleCandles || staleState) { markUnverified(t); addNote(t, STALE_INPUT); }
-      if (inst.price === null || inst.priceAgeSec === null || inst.priceAgeSec > 60) { markUnverified(t); addNote(t, STALE_PRICE); }
+      if (inst.price === null || qa === null || qa > 60) { markUnverified(t); addNote(t, STALE_PRICE); }
       const cur = c.livePrice(t.epic);
       if (inst.price !== null && cur !== null && t.action !== "hold") {
         const move = Math.abs(cur - inst.price);

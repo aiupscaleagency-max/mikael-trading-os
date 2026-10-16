@@ -99,6 +99,8 @@ export interface HermesReady {
   /** true = profilen trading-claude har bara oauth-uppgifter för anthropic (ingen API-nyckel) */
   anthropicOauthOnly: boolean;
   reason: string | null;
+  /** true = tillfälligt fel i kontrollen; resultatet cachas inte */
+  transient?: boolean;
 }
 
 export interface HermesDeps {
@@ -270,19 +272,24 @@ export function createHermesRoute(deps: HermesDeps = {}) {
         const v = await run(["--version"], { cwd, timeoutMs: probeTimeout });
         const version = parseHermesVersion(`${v.stdout}\n${v.stderr}`);
         log.info(`[Hermes] version ${version ?? "okänd"} (låst: ${pinned()})`);
-        if (!version) return { ok: false, version: null, anthropicOauthOnly: false, reason: `hermes --version gav ingen version (rc ${v.rc})` };
+        if (!version) return { ok: false, version: null, anthropicOauthOnly: false, reason: `hermes --version gav ingen version (rc ${v.rc})`, transient: true };
         if (version !== pinned()) {
           return { ok: false, version, anthropicOauthOnly: false, reason: `Hermes-versionen har ändrats (${version}, låst ${pinned()}). Hermes-läget är avstängt tills R1 körts igen och LLM_HERMES_VERSION satts.` };
         }
         const a = await run(["-p", HERMES_BODIES.claude.profile, "auth", "list"], { cwd, timeoutMs: probeTimeout });
         const anthropicOauthOnly = a.rc === 0 && anthropicOauthOnlyFrom(a.stdout);
+        // auth list misslyckades (inte samma sak som "har API-nyckel"): försök igen vid nästa anrop
+        const transient = a.rc !== 0 || a.killedFor !== null;
         if (!anthropicOauthOnly) log.warn(`[Hermes] ${HERMES_BODIES.claude.profile}: anthropic har inte bara oauth-uppgifter — Claude-kroppens svar ("estimated") godtas inte`);
-        return { ok: true, version, anthropicOauthOnly, reason: null };
+        return { ok: true, version, anthropicOauthOnly, reason: null, ...(transient ? { transient } : {}) };
       } finally {
         fs.rmSync(cwd, { recursive: true, force: true });
       }
-    })().catch((e): HermesReady => ({ ok: false, version: null, anthropicOauthOnly: false, reason: e instanceof Error ? e.message : String(e) }));
-    return readyP;
+    })().catch((e): HermesReady => ({ ok: false, version: null, anthropicOauthOnly: false, reason: e instanceof Error ? e.message : String(e), transient: true }));
+    const p = readyP;
+    // Bara ett lyckat resultat eller en versionskrock sparas; tillfälliga fel (timeout, auth list rc ≠ 0) provas igen nästa gång
+    void p.then((r) => { if (r.transient && readyP === p) readyP = null; });
+    return p;
   }
 
   function readUsage(file: string): Record<string, unknown> | null {

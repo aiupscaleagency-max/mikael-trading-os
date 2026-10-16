@@ -179,7 +179,10 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
     const block: MarketBlock = await buildMarketBlock(costRunId, p.env, p.symbols, market);
     const s = currentStake();
     const stake = deps.stake ?? { pct: s?.pct ?? 1, amount: s?.amount ?? null, currency: s?.currency ?? null, minPct: stakeStartPct(), horizonMin: getHorizonMin() };
-    const pctx = { block, jev: jevNow, maxStakePct: stake.pct, currency: stake.currency, horizonMin: stake.horizonMin, mode: p.config.mode, userInstruction: p.userInstruction };
+    // Live = IG Live-kontot ELLER MODE=live (aldrig bara config.mode: Demo får inte märkas live, och IG Live får aldrig behandlas som papper)
+    const live = p.env === "live" || p.config.mode === "live";
+    const mode: "paper" | "live" = live ? "live" : "paper";
+    const pctx = { block, jev: jevNow, maxStakePct: stake.pct, currency: stake.currency, horizonMin: stake.horizonMin, mode, userInstruction: p.userInstruction };
     const prefix = sharedPrefix(pctx);
 
     // Kostnad: Hermes 0 USD (räknas inte mot taket); betald reserv registreras med sin väg
@@ -236,7 +239,7 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
     // ── Steg 2: ChatGPT, Advisor (bara skärpa). Live kör alltid Advisorn (jev.ts). ──
     let reviews: AdvReview[] | null = null;
     let advStatus: RoleStatus;
-    if (!p.jev.runAdvisor) {
+    if (!p.jev.runAdvisor && !live) {
       advStatus = skippedStatus("advisor", `JEV: rutinturn (${p.jev.detail})`);
       agentSkip("advisor", advStatus.reason!);
     } else {
@@ -255,7 +258,7 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
 
     // ── Steg 3: Claude, Hanna (verktygsfri gren i headTrader.ts) ──
     turnPhase("Hermes 3/3 · Hanna: slutbeslut");
-    const { igAgentData: live } = await import("../server/igAgentData.js");
+    const { igAgentData: liveData, IG_QUOTE_FRESH_MS } = await import("../server/igAgentData.js");
     const head = await track("head", "Hanna väger ihop Claude + ChatGPT + JEV", () => runHeadTrader({
       apiKey: p.config.anthropicApiKey, config: p.config, state: p.state, broker: p.broker, brokers: p.brokers, risk: p.risk, engines: p.engines,
       reports: reportsFrom(rows, tr.text ?? "", riskStatus, reviews, advStatus), userInstruction: p.userInstruction, symbols: epics,
@@ -266,8 +269,9 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
         preflightLine: jevNow.preflight.status === "ok" ? `djup ${jevNow.preflight.depth ?? "?"}, granskning ${jevNow.preflight.review ?? "?"} (${jevNow.preflight.detail}) [${jevNow.preflight.at}]` : `saknas: ${jevNow.preflight.detail} [${jevNow.preflight.at}]`,
         stake: { maxStakePct: stake.pct, minStakePct: stake.minPct, amount: stake.amount, currency: stake.currency, horizonMin: stake.horizonMin },
         finalize: {
-          riskRows: rows, tightened, advisorReviews: reviews, riskOk: riskStatus.status === "lyckad", advisorStatus: advStatus.status, mode: p.config.mode, jev: jevNow, block,
-          livePrice: deps.livePrice ?? ((e) => live.igLive(p.env, e)?.price ?? null),
+          riskRows: rows, tightened, advisorReviews: reviews, riskOk: riskStatus.status === "lyckad", advisorStatus: advStatus.status, mode, jev: jevNow, block,
+          // Bara ett färskt IG-pris (≤ 60 s) räknas som "nu"; annars null → nivåerna märks overifierade
+          livePrice: deps.livePrice ?? ((e) => liveData.igLive(p.env, e, IG_QUOTE_FRESH_MS)?.price ?? null),
         },
       },
     }), { from: "advisor", done: (r) => r.hermesHead?.status ?? "?" });
