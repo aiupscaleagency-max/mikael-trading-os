@@ -325,3 +325,11 @@ Slutsats: JEV fungerar redan via OpenRouter, och ordningen ändras inte. Att lä
 - Reserv tar bara en ledig profil, eller väntar på låset inom den totala tidsgränsen.
 - §4.8 och tabellen i §8.5 följer denna ordning: förstavalet gäller när profilen är ledig.
 - §6 är uppdaterat: R0 = profiler skapade (gjort), R1–R3 = gjorda (§9), och K1 = endast kontroll av profilerna, inte skapande.
+
+## 11. Test av Claude-kroppen efter Mikes inloggning (2026-10-16 12:37)
+- Mikes `hermes auth add anthropic --type oauth` hamnade i **rotens** pool (`anthropic-oauth-3`, hermes_pkce). Rotprofilen (aktiv profil "hector") svarar: `claude-sonnet-4-6`, rc 0, api_calls 1, failed false.
+- **Profilen `trading-claude` ser inte pkce-uppgiften.** Via poolens fallback syns bara `claude_code`, som har gått ut, och anropet ger "No Anthropic credentials found". Kopiera **inte** auth.json. Mike loggar in en gång till direkt i profilen: `hermes -p trading-claude auth add anthropic --type oauth`.
+- **Acceptregeln behöver justeras.** Anthropic-OAuth rapporterar `cost_status: "estimated"`, inte `"included"`. Regeln blir:
+  - `openai-codex`: kräv `"included"`.
+  - `anthropic`: godta `"estimated"` bara när `ANTHROPIC_API_KEY` saknas i barnprocessens env och profilens enda anthropic-uppgift är av typen oauth (kontrolleras vid start med `hermes -p trading-claude auth list`).
+  - Kostnaden registreras alltid som 0 USD, med `route=hermes`.
