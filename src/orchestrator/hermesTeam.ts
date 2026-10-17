@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { extractJson, type LlmRole } from "../llm/gateway.js";
 import { HermesError, HERMES_BODIES, type HermesBody, type HermesBodyId, type HermesRoute, type HermesUsage } from "../llm/hermesRoute.js";
@@ -98,7 +100,9 @@ export function jevStatusFor(pre: JevTurnDecision, preAt: number, epics: string[
 
 // ── Kompakt underlag (§12) med tidsstämpel per del (§10.5) ─────────────────
 
-export interface IvRow { iv: string; ivMs: number; rsi: number | null; ema20: number | null; atr: number | null; trend: string; lastCloseAt: number | null; source: string }
+export interface IvRow { iv: string; ivMs: number; rsi: number | null; ema20: number | null; atr: number | null; trend: string; lastCloseAt: number | null; source: string;
+  /** För Omvänd tanke: senaste stängning och högsta/lägsta de senaste 20 ljusen (ogiltig-nivåer) */
+  close?: number | null; hi20?: number | null; lo20?: number | null }
 export interface InstrumentBlock {
   epic: string;
   name: string | null;
@@ -143,7 +147,9 @@ export async function buildMarketBlock(runId: string, env: "demo" | "live", epic
       const ind = computeIndicators(r.klines);
       const up = ind.ema20 !== null && ind.lastClose > ind.ema20 && (ind.sma20 ?? 0) >= (ind.sma50 ?? 0);
       const down = ind.ema20 !== null && ind.lastClose < ind.ema20 && (ind.sma20 ?? 0) <= (ind.sma50 ?? Infinity);
-      return { iv, ivMs: IV_MS[iv] ?? 60_000, rsi: r4(ind.rsi14), ema20: r4(ind.ema20), atr: r4(ind.atr14), trend: up ? "upp" : down ? "ned" : "sido", lastCloseAt: r.klines[r.klines.length - 1]!.closeTime, source: r.source };
+      const last20 = r.klines.slice(-20);
+      return { iv, ivMs: IV_MS[iv] ?? 60_000, rsi: r4(ind.rsi14), ema20: r4(ind.ema20), atr: r4(ind.atr14), trend: up ? "upp" : down ? "ned" : "sido", lastCloseAt: r.klines[r.klines.length - 1]!.closeTime, source: r.source,
+        close: r4(ind.lastClose), hi20: r4(Math.max(...last20.map((k) => k.high))), lo20: r4(Math.min(...last20.map((k) => k.low))) };
     }));
     const l = live as { price: number; ageSec: number | null; source: string } | null;
     return { epic, name: deps.nameOf(epic), price: l ? r4(l.price) : null, priceAgeSec: l?.ageSec ?? null, priceSource: l?.source ?? "ingen IG-livekurs", atr: ivs[0]?.atr ?? null, ivs };
@@ -175,9 +181,24 @@ export const BEVISREGELN = `Bevisregeln (gäller ALLTID, med eller utan JEV):
 4. "why" nämner det som bär beslutet (till exempel "1h och 4h ned, RSI 28") eller det som saknas.
 5. KÖP eller SÄLJ bara när regel 1–4 är följda och chansen att vinna är hög: bevisen pekar åt samma håll och inget talar emot. Minsta tvekan: AVVAKTA. Hellre få affärer med hög träffsäkerhet än många.`;
 
+// Skillen Omvänd tanke (skills/omvand-tanke/SKILL.md) läses in i den gemensamma prefixen,
+// så alla tre roller använder den i varje analys. Samma fil kan aktiveras manuellt i Claude.
+// Saknas filen blir allt AVVAKTA: ingen affär utan skillen.
+export const OMVAND_TANKE_PATH = path.resolve(import.meta.dirname, "../../skills/omvand-tanke/SKILL.md");
+export function loadOmvandTanke(file = OMVAND_TANKE_PATH): string {
+  try {
+    const body = fs.readFileSync(file, "utf8").replace(/^---[\s\S]*?\n---\s*\n/, "").trim();
+    if (body) return `Skill: ${body}`;
+  } catch { /* faller till reserven nedan */ }
+  log.warn(`[Hermes] skillen Omvänd tanke saknas (${file}): alla instrument blir AVVAKTA`);
+  return "Skill Omvänd tanke saknas i denna körning. Svara AVVAKTA för alla instrument.";
+}
+export const OMVAND_TANKE = loadOmvandTanke();
+
 const HERMES_COMMON_SYSTEM = `Du ingår i Mikes AI-tradingteam på IG (CFD; KÖP = lång, SÄLJ = kort). Ingen i kedjan lägger order: ni ger bara analys och tips som Mike själv granskar och godkänner. Inga verktyg finns i denna körning.
 Svara ENDAST med JSON enligt rollinstruktionen sist, utan resonemang i fritext. Siffror som JSON-siffror. "why" är högst en mening.
-${BEVISREGELN}`;
+${BEVISREGELN}
+${OMVAND_TANKE}`;
 
 export function sharedPrefix(c: PromptContext): string {
   const b = c.block;
@@ -188,7 +209,7 @@ export function sharedPrefix(c: PromptContext): string {
     ...Object.entries(c.jev.signal.perEpic).map(([e, j]) => `${e}: ${j.signal ? `signal ${j.signal}` : "ingen riktad signal"}${j.available ? ` · JEV regim ${j.regime ?? "?"}, riktning ${j.direction ?? "?"}${j.confidence !== null ? ` ${j.confidence.toFixed(2)}` : ""}` : j.signal ? " · JEV saknas" : ""}${j.veto ? ` · VETO (${j.why})` : ""}`),
   ];
   const inst = b.instruments.map((i) => {
-    const ivs = i.ivs.map((v) => v.rsi === null ? `${v.iv}: data saknas` : `${v.iv}: RSI ${v.rsi.toFixed(0)} EMA20 ${v.ema20} ATR ${v.atr} ${v.trend}`).join(" | ");
+    const ivs = i.ivs.map((v) => v.rsi === null ? `${v.iv}: data saknas` : `${v.iv}: RSI ${v.rsi.toFixed(0)} EMA20 ${v.ema20} ATR ${v.atr} ${v.trend}${v.hi20 != null && v.lo20 != null ? ` stäng ${v.close ?? "?"} H20 ${v.hi20} L20 ${v.lo20}` : ""}`).join(" | ");
     return `${i.epic}${i.name ? ` (${i.name})` : ""} | IG-pris ${i.price ?? "saknas"}${i.priceAgeSec !== null ? ` (${i.priceAgeSec} s)` : ""} | ${ivs}`;
   });
   return `${HERMES_COMMON_SYSTEM}

@@ -300,7 +300,14 @@ const fin = (tips: ReturnType<typeof tip>[], o: Partial<import("../src/orchestra
   assert.ok(pre.includes(T.BEVISREGELN), "bevisregeln saknas i prefixen");
   assert.ok(pre.indexOf(T.BEVISREGELN) < pre.indexOf("──── JEV"), "bevisregeln ska ligga före underlaget");
   assert.ok(pre.includes("JEV-läge: utan JEV"), "JEV-läget ska synas så regel 3 kan gälla");
-  ok("bevisregeln finns i den gemensamma prefixen (alla tre roller)");
+  assert.ok(pre.includes("# Omvänd tanke") && pre.includes("Läs diagrammet baklänges"), "skillen Omvänd tanke saknas i prefixen");
+  assert.ok(!pre.includes("name: omvand-tanke"), "skillens frontmatter ska inte med i prompten");
+  assert.match(T.loadOmvandTanke(path.join(tmp, "finns-inte.md")), /AVVAKTA för alla instrument/);
+  const kl = Array.from({ length: 30 }, (_, i) => ({ openTime: i * 60_000, closeTime: i * 60_000 + 59_999, open: 100 + i, high: 101 + i, low: 99 + i, close: 100 + i, volume: 1 }));
+  const mb = await T.buildMarketBlock("r", "demo", [EA], { klines: async () => ({ klines: kl as never, source: "IG", igLive: null }), positions: async () => ({ positions: [], source: "IG" }), account: async () => ({ account: null, source: "IG" }), nameOf: () => null, intervals: ["1m"] });
+  assert.deepEqual([mb.instruments[0]!.ivs[0]!.hi20, mb.instruments[0]!.ivs[0]!.lo20, mb.instruments[0]!.ivs[0]!.close], [130, 109, 129]);
+  assert.match(T.sharedPrefix({ block: mb, jev: T.jevStatusFor(preNo, now, [EA], []), maxStakePct: 2, currency: "SEK", horizonMin: 15, mode: "paper" }), /stäng 129 H20 130 L20 109/);
+  ok("bevisregeln och skillen Omvänd tanke finns i den gemensamma prefixen (alla tre roller); saknas skillen blir allt AVVAKTA");
 }
 const actionable = (ts: Array<{ action: string; sizePct: number | null }>) => ts.filter((t) => t.action !== "hold" || t.sizePct !== null).length;
 {

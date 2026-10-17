@@ -30,6 +30,12 @@ Regeln ligger i den gemensamma prefixen i `src/orchestrator/hermesTeam.ts`
 ChatGPT Advisor och Claude Hanna. Prefixen visar också raden
 `JEV-läge: …` så att agenterna ser när JEV saknas.
 
+Bredvid regeln ligger skillen **Omvänd tanke** (`skills/omvand-tanke/SKILL.md`):
+läs diagrammet baklänges, börja från förlusten och utgången, och argumentera för
+motsatsen. Filen läses in i samma prefix, så alla tre roller använder den. Varje
+tidsram i underlaget visar nu också stängning, H20 och L20 (högsta och lägsta
+de senaste 20 ljusen). Saknas skillfilen blir alla instrument AVVAKTA.
+
 Regeln ändrar inget om order: ett tips är fortfarande aldrig en order, och
 Mike godkänner allt själv.
 
