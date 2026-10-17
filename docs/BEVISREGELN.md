@@ -1,7 +1,7 @@
 # Bevisregeln
 
 Ett arbetssätt för alla agenter som gör en plan, analyserar eller tar fram tips.
-Det gäller extra hårt när JEV inte är igång.
+I trading gäller det **alltid**, med eller utan JEV. Utan JEV är det extra hårt.
 
 Idén kommer från REA ("Reverse Engineer Anything", github.com/morluto/rea,
 MIT-licens, © 2026 morluto). REA är ett verktyg för att undersöka färdiga
@@ -19,6 +19,9 @@ omskrivet med egna ord för trading och bygge.
    välj hellre en mindre insats.
 5. **Säg vad som bär beslutet.** Varje tips nämner de siffror som avgjorde, eller
    det som saknades.
+6. **Bara de säkraste lägena.** KÖP eller SÄLJ bara när regel 1–5 är följda och
+   chansen att vinna är hög. Minsta tvekan: AVVAKTA. Hellre få affärer med hög
+   träffsäkerhet än många.
 
 ## För tradingagenterna (Hermes-kedjan)
 

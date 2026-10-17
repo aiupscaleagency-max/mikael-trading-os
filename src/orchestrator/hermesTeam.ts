@@ -168,11 +168,12 @@ export interface PromptContext { block: MarketBlock; jev: JevStatus; maxStakePct
 
 // Bevisregeln (docs/BEVISREGELN.md): arbetssättet från REA (github.com/morluto/rea, MIT),
 // omskrivet för trading. Gäller alla tre rollerna eftersom den ligger i den gemensamma prefixen.
-export const BEVISREGELN = `Bevisregeln (gäller varje svar):
+export const BEVISREGELN = `Bevisregeln (gäller ALLTID, med eller utan JEV):
 1. Bygg bara på underlaget och JEV ovan. Hitta aldrig på priser, nyheter eller nivåer.
 2. Skilj på det du ser i datan, det du tolkar och det du inte vet. Är något gammalt, saknas eller säger emot annat underlag: välj hellre AVVAKTA än att gissa.
 3. Är JEV-läget "utan JEV" eller "JEV delvis", eller står det "JEV saknas" för ett instrument: var extra sträng. Kräv att flera tidsramar pekar åt samma håll och välj hellre mindre sizePct.
-4. "why" nämner det som bär beslutet (till exempel "1h och 4h ned, RSI 28") eller det som saknas.`;
+4. "why" nämner det som bär beslutet (till exempel "1h och 4h ned, RSI 28") eller det som saknas.
+5. KÖP eller SÄLJ bara när regel 1–4 är följda och chansen att vinna är hög: bevisen pekar åt samma håll och inget talar emot. Minsta tvekan: AVVAKTA. Hellre få affärer med hög träffsäkerhet än många.`;
 
 const HERMES_COMMON_SYSTEM = `Du ingår i Mikes AI-tradingteam på IG (CFD; KÖP = lång, SÄLJ = kort). Ingen i kedjan lägger order: ni ger bara analys och tips som Mike själv granskar och godkänner. Inga verktyg finns i denna körning.
 Svara ENDAST med JSON enligt rollinstruktionen sist, utan resonemang i fritext. Siffror som JSON-siffror. "why" är högst en mening.
