@@ -125,6 +125,24 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
       return {environment:mode,status:"ready",error:null,markets:data.markets.filter((m:any)=>typeof m.epic==="string").map((m:any)=>({...marketRow(m)})),updatedAt:now()};
     });
   }
+  // IG:s egna listor (Populära marknader, Större valutapar, Cryptocurrencies …), samma som i IG-plattformen. Bara läsning:
+  // listorna cachas 10 min, en listas instrument (med IG:s kurs, förändring och status) 60 s.
+  async function watchlists(mode:IgEnvironment){
+    connected(mode);
+    return cached(`watchlists:${mode}`,600000,async()=>{
+      const data=await read(mode,"watchlists","GET","1");
+      if(!Array.isArray(data.watchlists))throw Error("IG-listorna kunde inte verifieras");
+      return {environment:mode,lists:data.watchlists.filter((w:any)=>typeof w?.id==="string"&&w.id.trim()&&w.id.length<=100).map((w:any)=>({id:w.id as string,name:str(w.name)??w.id,editable:w.editable===true,system:w.defaultSystemWatchlist===true})),updatedAt:now()};
+    });
+  }
+  async function watchlist(mode:IgEnvironment,id:string){
+    connected(mode);if(typeof id!=="string"||!/^[\p{L}\p{N} ._-]{1,100}$/u.test(id)||!id.trim()||/^[ .]+$/.test(id))throw Error("Ogiltig IG-lista"); // inga ".", ".." eller snedstreck: adressen får aldrig lämna watchlists/
+    return cached(`watchlist:${mode}:${id}`,60000,async()=>{
+      const data=await read(mode,`watchlists/${encodeURIComponent(id)}`,"GET","1");
+      if(!Array.isArray(data.markets))throw Error("IG-listan kunde inte verifieras");
+      return {environment:mode,id,markets:data.markets.filter((m:any)=>typeof m?.epic==="string"&&/^[A-Za-z0-9._-]{1,100}$/.test(m.epic)).map((m:any)=>marketRow(m)),updatedAt:now()};
+    });
+  }
   // IG:s tidigare navigation finns inte längre. Katalogen byggs från verkliga kontosökningar och märks som sökbaserad.
   const fiatCodes=['USD','EUR','GBP','AUD','CAD','CHF','CNH','CNY','NZD','JPY','NOK','SEK','DKK','SGD','HKD','ZAR','TRY','PLN','HUF','MXN','INR','ILS','CZK','BRL','RUB','KRW','TWD','IDR','THB','MYR','PHP','RON','CLP','COP'];
   const cryptoTerms=['Crypto','Bitcoin','Ether','Litecoin','Ripple','Cardano','Solana','Dogecoin','Polkadot','Chainlink','Stellar','Avalanche','Uniswap','NEO','EOS','TRON','Toncoin','Polygon','BNB','Cosmos','Aave','Sui','Near','Tezos','Filecoin','Shiba','Arbitrum','Optimism','Algorand'];
@@ -445,7 +463,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
       return {status:hasMore?"partial":"ready",error:null,complete:!hasMore,periodDays:30,transactions:t.transactions.map((r:any)=>({date:str(r.dateUtc)??str(r.date),openDate:str(r.openDateUtc)??null,type:str(r.transactionType),instrumentName:str(r.instrumentName),reference:str(r.reference),profitAndLoss:str(r.profitAndLoss),currency:str(r.currency),openLevel:str(r.openLevel),closeLevel:str(r.closeLevel),size:str(r.size),cashTransaction:typeof r.cashTransaction==="boolean"?r.cashTransaction:["DEPOSIT","WITHDRAWAL","TRANSFER","INTEREST","FEE"].includes(r.transactionType)?true:null})),activities:a.activities.map((r:any)=>({date:str(r.date),type:str(r.type),status:str(r.status),description:str(r.description),epic:str(r.epic),dealId:str(r.dealId)})),pagination:{transactions:{pageNumber:num(t.metadata?.pageData?.pageNumber),pageSize:num(t.metadata?.pageData?.pageSize),totalPages:txPages},activities:{nextPageAvailable:!!a.metadata?.paging?.next,size:num(a.metadata?.size)}},note:"Kontohändelser och kassatransaktioner är inte automatiskt avslutade trades eller strategins PnL",updatedAt:now()};
     });
   }
-  return {searchMarkets,catalogue,marketOverview,market,rawMarket,accountFx,accountFxError,candles,history};
+  return {searchMarkets,watchlists,watchlist,catalogue,marketOverview,market,rawMarket,accountFx,accountFxError,candles,history};
 }
 const markets=createIgMarkets();
-export const searchIgMarkets=markets.searchMarkets,getIgMarket=markets.market,getIgCandles=markets.candles,getIgHistory=markets.history,getIgAccountFx=markets.accountFx,getIgCatalogue=markets.catalogue,getIgMarketOverview=markets.marketOverview;
+export const searchIgMarkets=markets.searchMarkets,getIgMarket=markets.market,getIgCandles=markets.candles,getIgHistory=markets.history,getIgAccountFx=markets.accountFx,getIgCatalogue=markets.catalogue,getIgMarketOverview=markets.marketOverview,getIgWatchlists=markets.watchlists,getIgWatchlist=markets.watchlist;
