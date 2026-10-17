@@ -3190,8 +3190,8 @@ body.app-state-onboard .fc-panel{display:none !important}
       <h3>PTQA-kursen, Day 1–4 <span class="xp-note">historiskt kursresultat</span></h3>
       <div class="xp-note">Kursens strategi Luengos-12/21/50 (BTCUSD, dagsljus, long-only). Kursmotorn finns bevarad i <code>reference/academy/ptqa-runtime-14758cc73bc9.zip</code>.</div>
       <table class="lib-table" id="course-day4">
-        <tr><th>Day 4-resultat (kurs)</th><th>Instrument</th><th>Affärer</th><th>Vinstandel</th><th>Profit factor</th><th>Max nedgång</th></tr>
-        <tr><td>Historiskt kursresultat – inte IG, inte en prognos</td><td>BTCUSD 1d</td><td>65</td><td>43,1 %</td><td>3,98</td><td>12,8 %</td></tr>
+        <tr><th>Day 4-resultat (kurs)</th><th>Instrument</th><th>Affärer</th><th>Avkastning efter kostnader</th><th>Max nedgång</th><th>Köp och behåll</th></tr>
+        <tr><td colspan="6">Laddar…</td></tr>
       </table>
       <div class="xp-note" style="margin-top:6px">Resultatet kommer från kursens Tiingo-data med kursens kostnadsmodell. Det är inte reproducerat mot IG:s priser, spread eller kontraktsstorlek.</div>
     </div>
@@ -11144,13 +11144,23 @@ window.IGS = (function(){
   });
 
   // ── Backtest & kurs ──
-  const REPORT = [["Spread","IG-spread ingår inte i kursresultatet"],["Slippage","Ej modellerad mot IG"],["Avgifter","Kursens kostnadsmodell (6 bps per sida); inte IG:s"],["Finansiering","Overnight-finansiering ingår inte"],["Sizing","Kursens 1 % risk per affär; inte IG-kontraktsstorlek"],["Max nedgång (DD)","12,8 % i kursresultatet"],["Expectancy","Ej redovisad i kursresultatet"],["Out-of-sample (OOS)","Ej gjord – Day 5-granskningen återstår"]];
+  const REPORT = [["Spread","IG-spread ingår inte i kursresultatet"],["Slippage","Ej modellerad mot IG"],["Avgifter","Kursens kostnadsmodell (6 bps per sida); inte IG:s"],["Finansiering","Overnight-finansiering ingår inte"],["Sizing","Kursens 1 % risk per affär; inte IG-kontraktsstorlek"],["Max nedgång (DD)","Största fallet från en tidigare topp, se Day 4-resultatet ovan"],["Expectancy","Ej redovisad i kursresultatet"],["Out-of-sample (OOS)","Ej gjord – Day 5-granskningen återstår"]];
   async function loadCourse(){
     $("course-report").innerHTML = '<tr><th>Mått</th><th>Status</th></tr>' + REPORT.map(r=>'<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>').join("");
     try{
       const v = await getJson("/api/course");
       $("course-state").textContent = ({ blocked:"spärrad", running:"körs", completed:"klar", failed:"misslyckades" })[v.status] || v.status || "";
-      $("course-view").innerHTML = esc(v.note || "") + (v.metrics ? '<br>Verifierade mått på denna dator: ' + esc(JSON.stringify(v.metrics)) : "");
+      const pct = (x) => typeof x === "number" ? x.toFixed(1).replace(".", ",") + " %" : "–";
+      const m = v.metrics, d = v.data || {};
+      // Siffrorna läses bara från kursmotorns verifierade backtest-result.json. Finns inget resultat visas inga siffror.
+      $("course-day4").innerHTML = '<tr><th>Day 4-resultat (kurs)</th><th>Instrument</th><th>Affärer</th><th>Avkastning efter kostnader</th><th>Max nedgång</th><th>Köp och behåll</th></tr>' + (m
+        ? '<tr><td>Historiskt kursresultat – inte IG, inte en prognos</td><td>' + esc((v.symbol || "") + " " + (v.interval || "")) + '</td><td>' + esc(String(m.trades)) + '</td><td>' + pct(m.netReturnPct) + '</td><td>' + pct(m.maxDrawdownPct) + '</td><td>' + pct(v.buyAndHoldPct) + '</td></tr>'
+          + '<tr><td colspan="6" class="xp-note">Källa: ' + esc(d.source || "–") + ' · ' + esc(d.start || "?") + ' till ' + esc(d.end || "?") + ' · ' + esc(String(d.bars ?? "?")) + ' ljus · prisjustering: ' + esc(d.adjustment || "okänd") + ' · kostnad ' + esc(String(d.costBps ?? "?")) + ' bp per sida</td></tr>'
+          + (v.warnings || []).map(w => '<tr><td colspan="6" class="xp-note">⚠ ' + esc(String(w)) + '</td></tr>').join("")
+        : '<tr><td colspan="6">Inget verifierat Day 4-resultat för den sparade strategin än.</td></tr>');
+      $("course-view").innerHTML = esc(v.note || "")
+        + (v.reason ? '<pre style="white-space:pre-wrap;margin:6px 0 0">' + esc(v.reason) + '</pre>' : "")
+        + (v.card ? '<br>Kortet ligger i Hämtade filer: <code>' + esc(v.card) + '</code>' : "");
       $("course-run").disabled = !v.canRun;
     }catch(e){ $("course-view").textContent = "Kursstatus kunde inte läsas: " + e.message; $("course-run").disabled = true; }
     try{
