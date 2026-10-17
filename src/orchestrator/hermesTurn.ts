@@ -60,6 +60,8 @@ export interface HermesTurnDeps {
   /** IG-livepriset nu (färskhetskontrollen) */
   livePrice?: (epic: string) => number | null;
   totalMs?: number;
+  /** Endast tester: fel i ett förberedande steg före huvudsteget (körningen ska ändå stängas) */
+  prepHook?: () => Promise<void>;
   stake?: { pct: number; amount: number | null; currency: string | null; minPct: number; horizonMin: number };
 }
 
@@ -91,6 +93,17 @@ export function openHermesRun(env: "demo" | "live", totalMs: number = HERMES_TIM
   controllers.add(ac);
   let closed = false;
   return { env, ac, startedAt, deadlineAt: startedAt + totalMs, close: () => { if (closed) return; closed = true; controllers.delete(ac); active.delete(env); } };
+}
+
+/**
+ * Schemat/agentsessioner (Codex b): pågår en Hermes-analys i miljön (eller någon analys alls) startas
+ * ingen ny – och analysStart() anropas aldrig, så den pågående får inte "en ny analys startades".
+ * true = hoppa över utlösaren (loggas).
+ */
+export function skipIfHermesBusy(env: "demo" | "live" | null, what: string): boolean {
+  const busy = env ? active.has(env) : active.size > 0;
+  if (busy) log.info(`[Hermes] ${HERMES_BUSY_TEXT} – ${what} hoppas över (försöker nästa gång)`);
+  return busy;
 }
 
 /** Avbrotts-/tidsfel → klartext för analysrutan. Kastar alltid. */
@@ -175,8 +188,18 @@ function reportsFrom(rows: TrRow[] | null, techText: string, riskStatus: RoleSta
 }
 
 export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = {}): Promise<OrchestratorResult> {
-  // Körningen är registrerad redan vid analysens början (orkestreraren) eller skapas här
+  // Körningen är registrerad redan vid analysens början (orkestreraren) eller skapas här.
+  // ALLT efter registreringen ligger i try/finally: körningen stängs alltid, annars fastnar miljön i "analys pågår".
   const run = p.run ?? openHermesRun(p.env, deps.totalMs ?? HERMES_TIMEOUTS.total, Math.min(Date.now(), p.totalStart));
+  try {
+    await deps.prepHook?.();
+    return await runHermesTurnInner(p, deps, run);
+  } finally {
+    run.close();
+  }
+}
+
+async function runHermesTurnInner(p: HermesTurnParams, deps: HermesTurnDeps, run: HermesRun): Promise<OrchestratorResult> {
   const ac = run.ac;
   const hermes = deps.hermes ?? hermesRoute();
   const t0 = Date.now();

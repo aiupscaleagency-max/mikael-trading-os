@@ -1892,7 +1892,7 @@ export function startServer(
           return;
         }
         // Hermes-läget: en ny analys under pågående får svaret "analys pågår" (§8.7). Utan LLM_ROUTE=hermes: som förut.
-        if (process.env.LLM_ROUTE?.trim() === "hermes" && (activeBrokerName === "ig" || activeBrokerName === "ig-demo") && getAnalysis()?.status === "running") {
+        if (process.env.LLM_ROUTE?.trim() === "hermes" && (activeBrokerName === "ig" || activeBrokerName === "ig-demo") && (getAnalysis()?.status === "running" || (await import("../orchestrator/hermesTurn.js")).hermesAnalysisBusy())) {
           jsonStatus(res, 409, { ok: false, error: "analys pågår" });
           return;
         }

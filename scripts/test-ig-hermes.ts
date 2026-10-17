@@ -703,6 +703,32 @@ const start = () => AA.analysisStart("manuell");
     const orch2 = fs.readFileSync("src/orchestrator/orchestrator.ts", "utf8");
     assert.ok(orch2.indexOf("openHermesRun(") > 0 && orch2.indexOf("openHermesRun(") < orch2.indexOf("canSpend({"), "körningen registreras före canSpend");
     ok("avbrott/tidsgräns under budgetkontrollen → stoppad; körningen registreras före canSpend");
+    // (a) fel i ett förberedande steg före huvudsteget → körningen stängs, nästa analys tillåts
+    const { hermesAnalysisBusy, skipIfHermesBusy } = await import("../src/orchestrator/hermesTurn.js");
+    start();
+    await assert.rejects(runHermesTurn(params(), baseDeps({ prepHook: async () => { throw new Error("import misslyckades"); } })), /import misslyckades/);
+    assert.equal(hermesAnalysisBusy("demo"), false, "miljön fastnar inte i 'analys pågår'");
+    setFake({ scenarios: { "trading-claude": [{ text: trJson() }, { text: hanna() }], "trading-chatgpt": [{ text: advJson }] } });
+    start();
+    await runHermesTurn(params(), baseDeps());
+    assert.equal(AA.getAnalysis()!.status, "done");
+    assert.match(orch2, /try \{\s*const \{ runHermesTurn, hermesPreflight \} = await import[\s\S]*?\} finally \{ hermesRun\.close\(\); \}/);
+    ok("fel i förberedelsen före huvudsteget → körningen stängs, nästa analys tillåts");
+    // (b) schema/agentsession under pågående Hermes-analys → hoppas över, den pågående rörs inte
+    setFake({ scenarios: { "trading-claude": [{ text: trJson(), sleepMs: 600 }, { text: hanna() }], "trading-chatgpt": [{ text: advJson }] } });
+    start();
+    const startedA = AA.getAnalysis()!.startedAt;
+    const ra = runHermesTurn(params(), baseDeps());
+    await sleep(150);
+    assert.equal(skipIfHermesBusy("demo", "schemalagd tur"), true);
+    assert.equal(AA.getAnalysis()!.startedAt, startedA, "analysposten rörs inte");
+    await ra;
+    assert.equal(AA.getAnalysis()!.status, "done"); assert.equal(AA.getAnalysis()!.startedAt, startedA);
+    assert.equal(skipIfHermesBusy("demo", "schemalagd tur"), false);
+    const runTs = fs.readFileSync("src/run.ts", "utf8");
+    assert.match(runTs, /busy: \(\) => getAnalysis\(\)\?\.status === "running" \|\| \(process\.env\.LLM_ROUTE\?\.trim\(\) === "hermes" && hermesBusyNow\(\)\)/);
+    assert.ok(orch2.indexOf("skipIfHermesBusy(notesEnv") < orch2.indexOf('analysisStart("schema"'), "kollen före analysisStart");
+    ok("schemalagd tur/agentsession under pågående Hermes-analys → hoppas över före analysisStart; den pågående blir klar");
   }
   setFake({ version: "0.1.0", defaults: { "trading-claude": { text: trJson() } } });
   start();
@@ -833,7 +859,7 @@ console.log("LLM_ROUTE ej satt: oförändrat");
   const api = fs.readFileSync("src/server/api.ts", "utf8");
   assert.match(api, /kill-switch[\s\S]{0,900}abortHermesAnalysis\("kill switch"\)/);
   assert.match(api, /\/api\/hermes\/abort[\s\S]{0,400}abortHermesAnalysis/);
-  assert.match(api, /LLM_ROUTE\?\.trim\(\) === "hermes" && \(activeBrokerName === "ig" \|\| activeBrokerName === "ig-demo"\) && getAnalysis\(\)\?\.status === "running"/);
+  assert.match(api, /LLM_ROUTE\?\.trim\(\) === "hermes" && \(activeBrokerName === "ig" \|\| activeBrokerName === "ig-demo"\) && \(getAnalysis\(\)\?\.status === "running" \|\| \(await import\("\.\.\/orchestrator\/hermesTurn\.js"\)\)\.hermesAnalysisBusy\(\)\)/);
   assert.match(fs.readFileSync("dashboard.html", "utf8"), /id="hermes-abort-btn" style="display:none/);
   ok("kill switch och 'Avbryt analys' avbryter Hermes-analysen; 409 bara i Hermes-läge med IG; knappen dold utan Hermes-läget");
 }

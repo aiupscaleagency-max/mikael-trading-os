@@ -115,6 +115,8 @@ async function runOrchestratedTurnInner(params: {
   const notesEnv: "demo" | "live" | null = broker.name === "ig" ? "live" : broker.name === "ig-demo" ? "demo" : null;
 
   const totalStart = Date.now();
+  // Hermes-läget: pågår redan en Hermes-analys i miljön startas ingen ny och analysposten rörs inte
+  if (hermesRouteEnabled() && notesEnv && (await import("./hermesTurn.js")).skipIfHermesBusy(notesEnv, "ny analystur")) throw new Error("analys pågår");
   // "Kör analys" har redan startat posten; annars är det schemat.
   if (getAnalysis()?.status !== "running") analysisStart("schema", userInstruction);
 
@@ -147,6 +149,8 @@ async function runOrchestratedTurnInner(params: {
   // Grenar av FÖRE första asynkrona förberedelsen, så att analysens avbrott och tidsgräns (300 s)
   // gäller även positionsläsningen och JEV-preflighten (de körs inne i Hermes-turen).
   if (hermesMode && notesEnv && hermesRun) {
+   // Allt efter openHermesRun ligger i try/finally: körningen stängs alltid (close är idempotent)
+   try {
     const { runHermesTurn, hermesPreflight } = await import("./hermesTurn.js");
     const { agentStart, agentDone } = await import("../server/agentActivity.js");
     const symbols = params.symbols?.length ? params.symbols : [...config.crypto.symbols, ...config.stocks.symbols];
@@ -164,6 +168,7 @@ async function runOrchestratedTurnInner(params: {
         activity: { start: (n) => agentStart("jev", n, { from: "orchestrator" }), done: (n) => agentDone("jev", n), skip: (n) => agentSkip("advisor", n) },
       }),
     });
+   } finally { hermesRun.close(); }
   }
 
   // ── Fas 1: Alla specialister + Advisor parallellt ──
