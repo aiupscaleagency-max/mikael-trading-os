@@ -139,6 +139,27 @@ async function runOrchestratedTurnInner(params: {
   }
   log.info(`[Cost] Dagens spend: $${spendCheck.spent?.today.toFixed(2)} / cap $${config.costCap.dailyUsd} | Vecka: $${spendCheck.spent?.week.toFixed(2)} / $${config.costCap.weeklyUsd}`);
 
+  // ── Hermes-läget: kedjan Claude (Teknisk+Risk) → ChatGPT (Advisor) → Claude (Hanna, utan verktyg) ──
+  // Grenar av FÖRE första asynkrona förberedelsen, så att analysens avbrott och tidsgräns (300 s)
+  // gäller även positionsläsningen och JEV-preflighten (de körs inne i Hermes-turen).
+  if (hermesMode && notesEnv) {
+    const { runHermesTurn } = await import("./hermesTurn.js");
+    const symbols = params.symbols?.length ? params.symbols : [...config.crypto.symbols, ...config.stocks.symbols];
+    return runHermesTurn({
+      config, state, broker, brokers, risk, engines, userInstruction, symbols,
+      env: notesEnv, spendAllowed: spendCheck.allowed, totalStart,
+      preflight: async () => {
+        const positions = await broker.getPositions().catch(() => []);
+        const jev = await track("jev", "avgör om advisorn behövs", () => jevTurnPreflight({
+          mode: config.mode, executionMode: config.executionMode, openPositions: positions.length,
+          maxOpenPositions: config.risk.maxOpenPositions, dailyPnlUsd: state.dailyRealizedPnlUsdt,
+          maxDailyLossUsd: config.risk.maxDailyLossUsd, hasUserInstruction: Boolean(userInstruction),
+        }), { from: "orchestrator", done: (v) => v.runAdvisor ? `advisorn körs (${v.detail})` : `rutin, advisorn hoppas över (${v.detail})` });
+        return { jev, jevAt: Date.now() };
+      },
+    });
+  }
+
   // ── Fas 1: Alla specialister + Advisor parallellt ──
   // ── Fas 0: Lars (Perplexity Research) ──
   // Hämtar färska nyheter/makro/geopolitik som specialisterna kan använda.
@@ -175,14 +196,6 @@ async function runOrchestratedTurnInner(params: {
   }), { from: "research", done: (v) => v.runAdvisor ? `advisorn körs (${v.detail})` : `rutin, advisorn hoppas över (${v.detail})` });
   if (!jev.runAdvisor) agentSkip("advisor", `JEV: rutinturn (${jev.detail})`);
 
-  // ── Hermes-läget: kedjan Claude (Teknisk+Risk) → ChatGPT (Advisor) → Claude (Hanna, utan verktyg) ──
-  if (hermesMode && notesEnv) {
-    const { runHermesTurn } = await import("./hermesTurn.js");
-    return runHermesTurn({
-      config, state, broker, brokers, risk, engines, userInstruction, symbols: allSymbols,
-      env: notesEnv, jev, jevAt: Date.now(), spendAllowed: spendCheck.allowed, totalStart,
-    });
-  }
 
   const [macro, technical, sentiment, riskReport, quant, options, portfolio, advisor] =
     await Promise.all([

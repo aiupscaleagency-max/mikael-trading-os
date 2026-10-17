@@ -36,8 +36,12 @@ export interface HermesTurnParams {
   userInstruction?: string;
   symbols: string[];
   env: "demo" | "live";
-  jev: JevTurnDecision;
-  jevAt: number;
+  /** JEV-preflight redan körd (tester). I drift används preflight nedan i stället. */
+  jev?: JevTurnDecision;
+  jevAt?: number;
+  /** Förberedelsen (positioner + JEV-preflight) körs INNE i Hermes-turen, så att avbrott och
+   *  tidsgräns gäller redan från första asynkrona steget (Codex 1). */
+  preflight?: () => Promise<{ jev: JevTurnDecision; jevAt: number }>;
   /** canSpend före analysen: false = API-taket nått (Hermes får fortsätta, betald reserv spärrad) */
   spendAllowed: boolean;
   totalStart: number;
@@ -60,7 +64,8 @@ export interface HermesTurnDeps {
 export interface HermesAnalysisMeta {
   outcome: "full" | "delvis" | "ofullständig" | "avbruten";
   outcomeText: string;
-  jev: JevStatus;
+  /** null = analysen stoppades innan JEV-statusen fanns */
+  jev: JevStatus | null;
   roles: RoleStatus[];
   brain: string;
   totalMs: number;
@@ -138,7 +143,7 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
   let jev: JevStatus | null = null;
   const finish = (outcome: HermesAnalysisMeta["outcome"], outcomeText: string): HermesAnalysisMeta => {
     const brain = `Hjärna: ${jev?.label ?? "utan JEV"} · Kropp: ${HERMES_BODIES.claude.label} + ${HERMES_BODIES.chatgpt.label}`;
-    const meta: HermesAnalysisMeta = { outcome, outcomeText, jev: jev!, roles, brain, totalMs: Date.now() - t0, runId: costRunId };
+    const meta: HermesAnalysisMeta = { outcome, outcomeText, jev, roles, brain, totalMs: Date.now() - t0, runId: costRunId };
     const label = { text: brain, roles: roles.map(roleLine), jev: jev?.level ?? "utan", outcome: outcomeText, at: new Date().toISOString(), runId: notesRun };
     // Bara en lyckad körning får etikett ihop med sina tips; misslyckade/avbrutna visas separat
     if (outcome === "full" || outcome === "delvis") setBrainLabel(p.env, label); else setFailedAttempt(p.env, label);
@@ -173,7 +178,9 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
   };
   try {
     const signals = deps.signals ?? (await import("../server/signalEngine.js")).getSignals;
-    const jevNow: JevStatus = jevStatusFor(p.jev, p.jevAt, p.symbols, signals());
+    // Positioner + JEV-preflight under samma avbrott/tidsgräns som resten av analysen
+    const pre = p.preflight ? await guard("JEV-förkontrollen", p.preflight()) : { jev: p.jev!, jevAt: p.jevAt ?? Date.now() };
+    const jevNow: JevStatus = jevStatusFor(pre.jev, pre.jevAt, p.symbols, signals());
     jev = jevNow;
     // Låst Hermes-version (§8.4). Annan version → vägra med tydlig text.
     // Inloggningskontrollen (oauth-only per profil) körs om för VARJE analys.
@@ -268,8 +275,8 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
     // ── Steg 2: ChatGPT, Advisor (bara skärpa). Live kör alltid Advisorn (jev.ts). ──
     let reviews: AdvReview[] | null = null;
     let advStatus: RoleStatus;
-    if (!p.jev.runAdvisor && !live) {
-      advStatus = skippedStatus("advisor", `JEV: rutinturn (${p.jev.detail})`);
+    if (!pre.jev.runAdvisor && !live) {
+      advStatus = skippedStatus("advisor", `JEV: rutinturn (${pre.jev.detail})`);
       agentSkip("advisor", advStatus.reason!);
     } else {
       turnPhase("Hermes 2/3 · ChatGPT: advisor");

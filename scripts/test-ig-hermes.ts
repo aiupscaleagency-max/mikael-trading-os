@@ -622,6 +622,27 @@ const start = () => AA.analysisStart("manuell");
   await assert.rejects(runHermesTurn(params(), baseDeps({ totalMs: 600, market: { ...baseDeps().market, klines: () => new Promise(() => {}) } })), /underlaget hann inte \(tidsgräns\)/);
   assert.ok(Date.now() - t1 < 2_000); assert.equal(starts().length, 0);
   ok("datahämtning som hänger → stoppas vid analysens tidsgräns, ingen kropp startas");
+  {
+    // Första förberedelsen (positioner/konto före JEV-preflight) hänger: tidsgräns respektive avbrott
+    setFake({ defaults: { "trading-claude": { text: trJson() }, "trading-chatgpt": { text: advJson } } });
+    let positionsAsked = 0;
+    const hangingPreflight = async () => { positionsAsked++; await new Promise(() => {}); return { jev: preOk, jevAt: Date.now() }; };
+    start();
+    const t4 = Date.now();
+    await assert.rejects(runHermesTurn(params({ jev: undefined, preflight: hangingPreflight }), baseDeps({ totalMs: 500 })), /JEV-förkontrollen hann inte \(tidsgräns\)/);
+    assert.ok(Date.now() - t4 < 2_000); assert.equal(positionsAsked, 1);
+    start();
+    const pp = runHermesTurn(params({ jev: undefined, preflight: hangingPreflight }), baseDeps());
+    await sleep(200); abortHermesAnalysis("Mike stoppade");
+    await assert.rejects(pp, /avbröts/);
+    assert.equal(AA.getAnalysis()!.status, "stopped");
+    await sleep(300);
+    assert.equal(starts().length, 0, "0 modellprocesser efteråt");
+    const orch = fs.readFileSync("src/orchestrator/orchestrator.ts", "utf8");
+    const branch = orch.indexOf("if (hermesMode && notesEnv)");
+    assert.ok(branch > 0 && branch < orch.indexOf("await loadRecentDecisions(20)") && branch < orch.indexOf("const account = await broker.getAccount()"), "Hermes-grenen före första förberedelsen");
+    ok("avbrott och tidsgräns medan första positions-/kontoläsningen väntar → stoppas, 0 modellprocesser");
+  }
   setFake({ version: "0.1.0", defaults: { "trading-claude": { text: trJson() } } });
   start();
   await assert.rejects(runHermesTurn(params(), baseDeps({ hermes: mk() })), /Hermes-läget vägrar/);
