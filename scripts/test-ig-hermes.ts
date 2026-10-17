@@ -654,9 +654,55 @@ const start = () => AA.analysisStart("manuell");
     await sleep(300);
     assert.equal(starts().length, 0, "0 modellprocesser efteråt");
     const orch = fs.readFileSync("src/orchestrator/orchestrator.ts", "utf8");
-    const branch = orch.indexOf("if (hermesMode && notesEnv)");
+    const branch = orch.indexOf("if (hermesMode && notesEnv && hermesRun)");
     assert.ok(branch > 0 && branch < orch.indexOf("await loadRecentDecisions(20)") && branch < orch.indexOf("const account = await broker.getAccount()"), "Hermes-grenen före första förberedelsen");
     ok("avbrott och tidsgräns medan första positions-/kontoläsningen väntar → stoppas, 0 modellprocesser");
+    // Codex 1a: positionerna kommer EFTER avbrottet → inget JEV-anrop, ingen aktivitet, ingen kropp
+    const { hermesPreflight, openHermesRun, hermesBudgetCheck } = await import("../src/orchestrator/hermesTurn.js");
+    let jevCalls = 0, acts = 0;
+    setFake({ defaults: { "trading-claude": { text: trJson() }, "trading-chatgpt": { text: advJson } } });
+    start();
+    const pl = runHermesTurn(params({ jev: undefined, preflight: (st: { signal: AbortSignal; deadlineAt: number }) => hermesPreflight(st, {
+      positions: () => new Promise((r) => setTimeout(() => r([]), 400)),
+      jev: async () => { jevCalls++; return preOk; },
+      activity: { start: () => { acts++; }, done: () => { acts++; }, skip: () => { acts++; } },
+    }) }), baseDeps());
+    await sleep(100); abortHermesAnalysis("Mike stoppade");
+    await assert.rejects(pl, /avbröts/);
+    await sleep(600);
+    assert.equal(jevCalls, 0, "inget JEV-anrop efter avbrott"); assert.equal(acts, 0, "inga sena aktivitetsuppdateringar"); assert.equal(starts().length, 0);
+    ok("positioner som kommer efter avbrottet → 0 JEV-anrop, 0 sena aktivitetsuppdateringar, 0 modellprocesser");
+    // JEV-anropet får signalen och avbryts (fetch avbryts, ingen väntan på JEV:s 2,5 s)
+    {
+      const prevFetch = globalThis.fetch;
+      process.env.TYPESAFE_API_KEY = "ts-test";
+      let fetchAborted = 0;
+      globalThis.fetch = ((_u: unknown, init?: { signal?: AbortSignal }) => new Promise((_r, rej) => {
+        init?.signal?.addEventListener("abort", () => { fetchAborted++; rej(Object.assign(new Error("aborted"), { name: "AbortError" })); }, { once: true });
+      })) as typeof fetch;
+      const { jevTurnPreflight } = await import("../src/llm/jev.js");
+      const ac2 = new AbortController();
+      setTimeout(() => ac2.abort(), 100);
+      const t5 = Date.now();
+      const jr = await jevTurnPreflight({ mode: "paper", executionMode: "approve", openPositions: 0, maxOpenPositions: 3, dailyPnlUsd: 0, maxDailyLossUsd: 10, hasUserInstruction: false }, { signal: ac2.signal });
+      globalThis.fetch = prevFetch; delete process.env.TYPESAFE_API_KEY;
+      assert.equal(jr.detail, "avbruten"); assert.ok(Date.now() - t5 < 1_000); assert.ok(fetchAborted >= 1);
+      ok("JEV-preflighten tar emot signalen: nätverksanropet avbryts direkt");
+    }
+    // Codex 1b: avbrott medan budgetkontrollen (canSpend) väntar → stoppad
+    start();
+    const run = openHermesRun("demo");
+    const bc = hermesBudgetCheck(run, () => new Promise(() => {}));
+    await sleep(50); abortHermesAnalysis("Mike stoppade");
+    await assert.rejects(bc, /avbröts/);
+    run.close();
+    assert.equal(AA.getAnalysis()!.status, "stopped");
+    const run2 = openHermesRun("demo", 300);
+    await assert.rejects(hermesBudgetCheck(run2, () => new Promise(() => {})), /budgetkontrollen hann inte/);
+    run2.close();
+    const orch2 = fs.readFileSync("src/orchestrator/orchestrator.ts", "utf8");
+    assert.ok(orch2.indexOf("openHermesRun(") > 0 && orch2.indexOf("openHermesRun(") < orch2.indexOf("canSpend({"), "körningen registreras före canSpend");
+    ok("avbrott/tidsgräns under budgetkontrollen → stoppad; körningen registreras före canSpend");
   }
   setFake({ version: "0.1.0", defaults: { "trading-claude": { text: trJson() } } });
   start();

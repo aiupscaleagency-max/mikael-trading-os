@@ -41,7 +41,9 @@ export interface HermesTurnParams {
   jevAt?: number;
   /** Förberedelsen (positioner + JEV-preflight) körs INNE i Hermes-turen, så att avbrott och
    *  tidsgräns gäller redan från första asynkrona steget (Codex 1). */
-  preflight?: () => Promise<{ jev: JevTurnDecision; jevAt: number }>;
+  preflight?: (stop: { signal: AbortSignal; deadlineAt: number }) => Promise<{ jev: JevTurnDecision; jevAt: number }>;
+  /** Analysens körning, registrerad redan vid analysens början (före budgetkontrollen). Saknas = skapas här. */
+  run?: HermesRun;
   /** canSpend före analysen: false = API-taket nått (Hermes får fortsätta, betald reserv spärrad) */
   spendAllowed: boolean;
   totalStart: number;
@@ -79,6 +81,58 @@ export const HERMES_BUSY_TEXT = "analys pågår";
 export function hermesAnalysisBusy(env?: "demo" | "live"): boolean { return env ? active.has(env) : active.size > 0; }
 /** Avbryter pågående Hermes-analyser (användaravbrott/kontobyte): inga nya försök, ingen reserv. */
 export function abortHermesAnalysis(reason = "avbruten av användaren"): void { for (const c of controllers) c.abort(reason); }
+
+/** En Hermes-analys: avbrottssignal + EN tidsgräns, registrerad från analysens första steg (Codex 1b). */
+export interface HermesRun { env: "demo" | "live"; ac: AbortController; startedAt: number; deadlineAt: number; close: () => void }
+export function openHermesRun(env: "demo" | "live", totalMs: number = HERMES_TIMEOUTS.total, startedAt = Date.now()): HermesRun {
+  if (active.has(env)) throw new Error(HERMES_BUSY_TEXT);
+  active.add(env);
+  const ac = new AbortController();
+  controllers.add(ac);
+  let closed = false;
+  return { env, ac, startedAt, deadlineAt: startedAt + totalMs, close: () => { if (closed) return; closed = true; controllers.delete(ac); active.delete(env); } };
+}
+
+/** Avbrotts-/tidsfel → klartext för analysrutan. Kastar alltid. */
+function stopPrep(run: HermesRun, what: string, e: unknown): never {
+  if (e instanceof HermesError && (e.kind === "aborted" || e.kind === "deadline")) {
+    const aborted = e.kind === "aborted";
+    const reason = aborted ? `Analysen avbröts: ${String(run.ac.signal.reason ?? "avbruten")}` : `analys ofullständig: ${what} hann inte (tidsgräns)`;
+    analysisEnd({ status: aborted ? "stopped" : "failed", reason });
+    throw new Error(aborted ? `Hermes-analysen avbröts: ${String(run.ac.signal.reason ?? "avbruten")}` : reason);
+  }
+  throw e;
+}
+
+/** Budgetkontrollen (canSpend) under analysens avbrott och tidsgräns. */
+export async function hermesBudgetCheck<T>(run: HermesRun, check: () => Promise<T>): Promise<T> {
+  try { return await waitStop(check(), { signal: run.ac.signal, deadlineAt: run.deadlineAt }); }
+  catch (e) { return stopPrep(run, "budgetkontrollen", e); }
+}
+
+/**
+ * Förberedelsen i Hermes-läget (positioner + JEV-preflight). Signalen följer MED in: efter positionsläsningen,
+ * före JEV-anropet och före varje aktivitetsuppdatering kontrolleras avbrott, och JEV-anropet får signalen.
+ */
+export async function hermesPreflight(stop: { signal: AbortSignal; deadlineAt: number }, deps: {
+  positions: () => Promise<unknown[]>;
+  jev: (openPositions: number, signal: AbortSignal) => Promise<JevTurnDecision>;
+  activity: { start: (note: string) => void; done: (note: string) => void; skip: (note: string) => void };
+}): Promise<{ jev: JevTurnDecision; jevAt: number }> {
+  const check = () => {
+    if (stop.signal.aborted) throw new HermesError("aborted", "avbruten");
+    if (Date.now() >= stop.deadlineAt) throw new HermesError("deadline", "analysens tidsgräns nådd");
+  };
+  check();
+  const positions = await deps.positions().catch(() => []);
+  check(); // positioner som kom EFTER avbrottet: inget JEV-anrop, ingen aktivitet
+  deps.activity.start("avgör om advisorn behövs");
+  const jev = await deps.jev(positions.length, stop.signal);
+  check();
+  deps.activity.done(jev.runAdvisor ? `advisorn körs (${jev.detail})` : `rutin, advisorn hoppas över (${jev.detail})`);
+  if (!jev.runAdvisor) deps.activity.skip(`JEV: rutinturn (${jev.detail})`);
+  return { jev, jevAt: Date.now() };
+}
 
 const STUB_MACRO: MacroReport = { role: "macro_analyst", regime: "uncertain", keyFactors: ["Hoppas över (Hermes-läget)"], oilSummary: "–", vixLevel: "–", dollarTrend: "–", cryptoFearGreed: "–", recommendation: "–", confidence: "low", rawText: "" };
 
@@ -121,14 +175,13 @@ function reportsFrom(rows: TrRow[] | null, techText: string, riskStatus: RoleSta
 }
 
 export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = {}): Promise<OrchestratorResult> {
-  if (active.has(p.env)) throw new Error(HERMES_BUSY_TEXT);
-  active.add(p.env);
-  const ac = new AbortController();
-  controllers.add(ac);
+  // Körningen är registrerad redan vid analysens början (orkestreraren) eller skapas här
+  const run = p.run ?? openHermesRun(p.env, deps.totalMs ?? HERMES_TIMEOUTS.total, Math.min(Date.now(), p.totalStart));
+  const ac = run.ac;
   const hermes = deps.hermes ?? hermesRoute();
   const t0 = Date.now();
-  // EN tidsgräns för hela analysen, räknad från analysens start (orkestreraren), gäller alla steg
-  const deadlineAt = Math.min(t0, p.totalStart) + (deps.totalMs ?? HERMES_TIMEOUTS.total);
+  // EN tidsgräns för hela analysen, räknad från analysens start, gäller alla steg
+  const deadlineAt = run.deadlineAt;
   const startedAt = getAnalysis()?.startedAt ?? null;
   const costRunId = `hermes-${p.env}-${t0.toString(36)}`;
   // Anteckningarnas runId (agentsession eller analysens start): tips och etikett knyts till samma id
@@ -182,7 +235,7 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
   try {
     const signals = deps.signals ?? (await import("../server/signalEngine.js")).getSignals;
     // Positioner + JEV-preflight under samma avbrott/tidsgräns som resten av analysen
-    const pre = p.preflight ? await guard("JEV-förkontrollen", p.preflight()) : { jev: p.jev!, jevAt: p.jevAt ?? Date.now() };
+    const pre = p.preflight ? await guard("JEV-förkontrollen", p.preflight(stopOpts)) : { jev: p.jev!, jevAt: p.jevAt ?? Date.now() };
     const jevNow: JevStatus = jevStatusFor(pre.jev, pre.jevAt, p.symbols, signals());
     jev = jevNow;
     // Låst Hermes-version (§8.4). Annan version → vägra med tydlig text.
@@ -356,7 +409,6 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
     };
   } finally {
     clearInterval(poll);
-    controllers.delete(ac);
-    active.delete(p.env);
+    run.close();
   }
 }

@@ -121,13 +121,17 @@ async function runOrchestratedTurnInner(params: {
   // ── CIRCUIT BREAKER: Spend-cap-koll innan vi ens börjar ──
   // Stoppar session om dagen/veckan redan överskridit cap. Skyddar mot
   // oväntade kostnader. Mike kan höja cap i .env om hon vill.
-  const spendCheck = await canSpend({
-    dailyCapUsd: config.costCap.dailyUsd,
-    weeklyCapUsd: config.costCap.weeklyUsd,
-  });
-  // Hermes-läget (LLM_ROUTE=hermes, bara IG): prenumerationskropparna räknas inte mot API-taket (§8.2/§10.3).
-  // Taket spärrar då bara den betalda reserven, inte analysen. Utan LLM_ROUTE=hermes: exakt som förut.
+  // Hermes-läget (LLM_ROUTE=hermes, bara IG): analysens avbrott och tidsgräns registreras FÖRST,
+  // så att även budgetkontrollen omfattas (Codex 1b). Utan LLM_ROUTE=hermes: exakt som förut.
   const hermesMode = hermesRouteEnabled() && notesEnv !== null;
+  const hermesRun = hermesMode && notesEnv ? (await import("./hermesTurn.js")).openHermesRun(notesEnv, undefined, totalStart) : null;
+  const spendCheck = await (async () => {
+    const check = () => canSpend({ dailyCapUsd: config.costCap.dailyUsd, weeklyCapUsd: config.costCap.weeklyUsd });
+    if (!hermesRun) return check();
+    try { return await (await import("./hermesTurn.js")).hermesBudgetCheck(hermesRun, check); }
+    catch (e) { hermesRun.close(); throw e; }
+  })();
+  // Prenumerationskropparna räknas inte mot API-taket (§8.2/§10.3): taket spärrar då bara den betalda reserven.
   if (!spendCheck.allowed && hermesMode) log.warn(`[Cost] ${spendCheck.reason} — Hermes-läget fortsätter, betald reserv spärrad`);
   if (!spendCheck.allowed && !hermesMode) {
     log.warn(`╔══ SESSION SKIPPAD: ${spendCheck.reason} ══╗`);
@@ -142,21 +146,23 @@ async function runOrchestratedTurnInner(params: {
   // ── Hermes-läget: kedjan Claude (Teknisk+Risk) → ChatGPT (Advisor) → Claude (Hanna, utan verktyg) ──
   // Grenar av FÖRE första asynkrona förberedelsen, så att analysens avbrott och tidsgräns (300 s)
   // gäller även positionsläsningen och JEV-preflighten (de körs inne i Hermes-turen).
-  if (hermesMode && notesEnv) {
-    const { runHermesTurn } = await import("./hermesTurn.js");
+  if (hermesMode && notesEnv && hermesRun) {
+    const { runHermesTurn, hermesPreflight } = await import("./hermesTurn.js");
+    const { agentStart, agentDone } = await import("../server/agentActivity.js");
     const symbols = params.symbols?.length ? params.symbols : [...config.crypto.symbols, ...config.stocks.symbols];
     return runHermesTurn({
       config, state, broker, brokers, risk, engines, userInstruction, symbols,
-      env: notesEnv, spendAllowed: spendCheck.allowed, totalStart,
-      preflight: async () => {
-        const positions = await broker.getPositions().catch(() => []);
-        const jev = await track("jev", "avgör om advisorn behövs", () => jevTurnPreflight({
-          mode: config.mode, executionMode: config.executionMode, openPositions: positions.length,
+      env: notesEnv, spendAllowed: spendCheck.allowed, totalStart, run: hermesRun,
+      // Signalen följer med in i förberedelsen (positioner → JEV), och JEV-anropet avbryts med den
+      preflight: (stop) => hermesPreflight(stop, {
+        positions: () => broker.getPositions(),
+        jev: (openPositions, signal) => jevTurnPreflight({
+          mode: config.mode, executionMode: config.executionMode, openPositions,
           maxOpenPositions: config.risk.maxOpenPositions, dailyPnlUsd: state.dailyRealizedPnlUsdt,
           maxDailyLossUsd: config.risk.maxDailyLossUsd, hasUserInstruction: Boolean(userInstruction),
-        }), { from: "orchestrator", done: (v) => v.runAdvisor ? `advisorn körs (${v.detail})` : `rutin, advisorn hoppas över (${v.detail})` });
-        return { jev, jevAt: Date.now() };
-      },
+        }, { signal }),
+        activity: { start: (n) => agentStart("jev", n, { from: "orchestrator" }), done: (n) => agentDone("jev", n), skip: (n) => agentSkip("advisor", n) },
+      }),
     });
   }
 
