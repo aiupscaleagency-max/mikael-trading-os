@@ -29,7 +29,10 @@ export interface AgentTip {
   note: string | null;
   /** true = inget IG-livepris fanns vid analysen: nivåerna är overifierade och måste kontrolleras mot IG innan order */
   unverifiedLevels?: boolean;
+  /** Hermes-läget: hjärna/kropp för just den analysomgång som gav tipset (inte sessionens senaste) */
+  brain?: TipBrain;
 }
+export interface TipBrain { text: string; roles: string[]; jev: string; outcome: string; roundId: string; sessionId: string; at: string }
 
 export const TIP_HORIZONS = [1, 5, 15, 30];
 export const TIPS_MARKER = "TIPS_JSON";
@@ -161,4 +164,53 @@ export function markUnverified(t: AgentTip): AgentTip {
   t.unverifiedLevels = true;
   t.note = t.note ? `${t.note}; ${TIP_UNVERIFIED_TEXT}` : TIP_UNVERIFIED_TEXT;
   return t;
+}
+
+// ── Hermes-läget (plan §10.2): rå TIPS_JSON valideras FÖRE normaliseringen ──
+const RAW_ACTIONS = new Set(["KÖP", "SÄLJ", "AVVAKTA"]);
+const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const numOrNull = (v: unknown) => v === null || v === undefined || isNum(v);
+
+/** Rå TIPS_JSON-rader (null = inget block eller trasig JSON). */
+export function rawTipsRows(text: string): unknown[] | null {
+  const block = findTipsBlock(String(text ?? ""));
+  if (!block) return null;
+  try {
+    const parsed = JSON.parse(block.json);
+    return Array.isArray(parsed) ? parsed : Array.isArray((parsed as { tips?: unknown })?.tips) ? (parsed as { tips: unknown[] }).tips : null;
+  } catch { return null; }
+}
+
+/**
+ * Strikt kontroll av Hannas råa TIPS_JSON: exakt ett objekt per valt instrument, inga dubbletter
+ * eller okända EPIC, rätt fälttyper (action KÖP/SÄLJ/AVVAKTA, siffror som siffror, horizonMin 1/5/15/30)
+ * och nivåer som går ihop med riktningen. parseHeadTips används sedan bara för presentation.
+ */
+export function validateRawTips(text: string, selectedEpics: string[]): { ok: true; rows: Array<Record<string, unknown>> } | { ok: false; reason: string } {
+  const rows = rawTipsRows(text);
+  if (rows === null) return { ok: false, reason: "TIPS_JSON saknas eller kan inte parsas" };
+  const wanted = [...new Set(selectedEpics)];
+  const seen = new Set<string>();
+  const out: Array<Record<string, unknown>> = [];
+  for (const r of rows) {
+    if (!r || typeof r !== "object" || Array.isArray(r)) return { ok: false, reason: "rad är inte ett objekt" };
+    const o = r as Record<string, unknown>;
+    const epic = typeof o.epic === "string" ? o.epic.trim() : "";
+    if (!epic) return { ok: false, reason: "rad utan epic" };
+    if (!wanted.includes(epic)) return { ok: false, reason: `okänt EPIC ${epic}` };
+    if (seen.has(epic)) return { ok: false, reason: `dubblett ${epic}` };
+    seen.add(epic);
+    const action = typeof o.action === "string" ? o.action.trim().toUpperCase() : "";
+    if (!RAW_ACTIONS.has(action)) return { ok: false, reason: `${epic}: action "${String(o.action)}" (krävs KÖP/SÄLJ/AVVAKTA)` };
+    for (const k of ["entry", "tp", "sl", "sizePct", "rank"]) if (!numOrNull(o[k])) return { ok: false, reason: `${epic}: ${k} är inte en siffra` };
+    if (!isNum(o.horizonMin) || !TIP_HORIZONS.includes(o.horizonMin)) return { ok: false, reason: `${epic}: horizonMin ${String(o.horizonMin)} (krävs 1/5/15/30)` };
+    const e = o.entry as number | null, tp = o.tp as number | null, sl = o.sl as number | null;
+    if (action === "KÖP" && !(isNum(e) && isNum(tp) && isNum(sl) && sl < e && e < tp)) return { ok: false, reason: `${epic}: KÖP kräver sl < entry < tp` };
+    if (action === "SÄLJ" && !(isNum(e) && isNum(tp) && isNum(sl) && tp < e && e < sl)) return { ok: false, reason: `${epic}: SÄLJ kräver tp < entry < sl` };
+    if (action !== "AVVAKTA" && !(isNum(o.sizePct) && o.sizePct > 0)) return { ok: false, reason: `${epic}: sizePct saknas för ${action}` };
+    out.push(o);
+  }
+  const missing = wanted.filter((e) => !seen.has(e));
+  if (missing.length) return { ok: false, reason: `saknar ${missing.length} av ${wanted.length} instrument (${missing.join(", ")})` };
+  return { ok: true, rows: out };
 }

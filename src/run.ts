@@ -15,6 +15,7 @@ import {
 import { loadState, saveState, appendDecision } from "./memory/store.js";
 import { Scheduler, createDefaultSchedule } from "./scheduler.js";
 import { runOrchestratedTurn } from "./orchestrator/orchestrator.js";
+import { hermesAnalysisBusy as hermesBusyNow } from "./orchestrator/hermesTurn.js";
 import { setNotesRunId } from "./server/igAgentNotes.js";
 import { igAgentData } from "./server/igAgentData.js";
 import { startServer, broadcastEvent, getActiveBrokerName, setApiKey, setRunAgentCallback, setIgSessions } from "./server/api.js";
@@ -457,7 +458,8 @@ async function main(): Promise<void> {
   const sessions = createIgSessions({
     binding: (env) => getIgStatus().environments[env].status === "connected" ? getIgStatus().environments[env].connectionGeneration ?? null : null,
     activeEnv: () => igMarketData.getActiveEnv(),
-    busy: () => getAnalysis()?.status === "running",
+    // Hermes-läget: en pågående Hermes-analys räknas också (kollas FÖRE analysisStart i runBatch)
+    busy: () => getAnalysis()?.status === "running" || (process.env.LLM_ROUTE?.trim() === "hermes" && hermesBusyNow()),
     guard: async () => {
       if ((await loadState()).killSwitchActive) return "Kill switch är på";
       const c = await canSpend({ dailyCapUsd: config.costCap.dailyUsd, weeklyCapUsd: config.costCap.weeklyUsd });

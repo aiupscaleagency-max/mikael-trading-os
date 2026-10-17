@@ -200,12 +200,16 @@ class AuthRejected extends Error {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 async function postWithRetry(
-  url: string, key: string, body: unknown, timeoutMs: number,
+  url: string, key: string, body: unknown, timeoutMs: number, signal?: AbortSignal,
 ): Promise<{ answers: Record<string, JevAnswer>; model?: string }> {
   let lastErr = "";
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // Tillägg: anroparens avbrott (Hermes-läget) stoppar anropet och alla omförsök
+    if (signal?.aborted) throw new Error("JEV: avbruten av anroparen");
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const onAbort = () => ctrl.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const res = await fetch(url, {
         method: "POST",
@@ -213,7 +217,7 @@ async function postWithRetry(
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
-      clearTimeout(timer);
+      clearTimeout(timer); signal?.removeEventListener("abort", onAbort);
 
       if (res.ok) return await res.json() as { answers: Record<string, JevAnswer>; model?: string };
 
@@ -231,9 +235,10 @@ async function postWithRetry(
       if (!RETRYABLE.has(res.status)) throw new Error(`JEV: HTTP ${res.status}`);
       lastErr = `HTTP ${res.status}`;
     } catch (err) {
-      clearTimeout(timer);
+      clearTimeout(timer); signal?.removeEventListener("abort", onAbort);
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.startsWith("JEV:")) throw err; // inte återförsöksbart
+      if (signal?.aborted) throw new Error("JEV: avbruten av anroparen");
       lastErr = msg;
     }
     if (attempt < MAX_RETRIES) await sleep(BACKOFF_BASE_MS * Math.pow(2, attempt));
@@ -268,6 +273,8 @@ export async function askJev(
   // Andra anropare (t.ex. src/llm/jev.ts) ställer egna frågor men delar rutter,
   // nyckelupplösning och circuit breaker.
   questions: Record<string, unknown> = buildQuestions(),
+  /** Valfritt (tillägg): anroparens avbrott. Ordningen på rutterna ändras inte. */
+  signal?: AbortSignal,
 ): Promise<JevVerdict> {
   const routes = resolveRoutes();
   if (routes.length === 0) {
@@ -285,13 +292,15 @@ export async function askJev(
   let lastMsg = "";
 
   for (const route of routes) {
+    // Avbruten av anroparen: inga fler rutter, räknas inte som JEV-fel (circuit breaker opåverkad)
+    if (signal?.aborted) return offlineVerdict("avbruten av anroparen");
     const rid = `${route.mode}:${route.key.slice(-6)}`;
     if ((routePausedUntil.get(rid) ?? 0) > Date.now()) continue;
     try {
       const data = await postWithRetry(
         route.url, route.key,
         { state, model: route.model, questions },
-        timeoutMs,
+        timeoutMs, signal,
       );
       failureCount = 0;
       return {
@@ -303,9 +312,12 @@ export async function askJev(
         note: rejected.length > 0 ? `avvisad på ${rejected.join(", ")} först` : "",
       };
     } catch (err) {
+      if (signal?.aborted) return offlineVerdict("avbruten av anroparen");
       // Bara 401 betyder "fel rutt, prova nästa". Allt annat är ett riktigt
       // fel och ska inte maskeras av ett försök mot en annan tjänst.
       if (err instanceof AuthRejected) {
+        // Tillägg (plan §9.4): 401 loggas, utan nyckelns slut. Ordningen är oförändrad.
+        log.warn(`[jev] ${route.mode}: HTTP 401 — nyckeln avvisades av den här rutten, provar nästa`);
         rejected.push(route.mode);
         lastMsg = err.message;
         routePausedUntil.set(rid, Date.now() + ROUTE_PAUSE_MS);

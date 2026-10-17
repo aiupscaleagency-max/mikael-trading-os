@@ -1779,6 +1779,23 @@ export function startServer(
         if (m && method === "DELETE") { json(res, { ok: cancelTimedExit(m[1] as string) }); return; }
       }
 
+      // ── Hermes-läget: status och "Avbryt analys" (finns bara när LLM_ROUTE=hermes) ──
+      if (url.pathname === "/api/hermes/status" && method === "GET") {
+        const enabled = process.env.LLM_ROUTE?.trim() === "hermes";
+        const busy = enabled ? (await import("../orchestrator/hermesTurn.js")).hermesAnalysisBusy() : false;
+        json(res, { enabled, busy });
+        return;
+      }
+      if (url.pathname === "/api/hermes/abort" && method === "POST") {
+        if (process.env.LLM_ROUTE?.trim() !== "hermes") { jsonStatus(res, 404, { ok: false, error: "Hermes-läget är inte på" }); return; }
+        const { abortHermesAnalysis, hermesAnalysisBusy } = await import("../orchestrator/hermesTurn.js");
+        const was = hermesAnalysisBusy();
+        abortHermesAnalysis("avbruten av Mike");
+        userAction("avbröt analysen (Avbryt analys)", { to: "orchestrator" });
+        json(res, { ok: true, aborted: was });
+        return;
+      }
+
       // ── Kill-switch ──
       if (url.pathname === "/api/kill-switch" && method === "POST") {
         const body = await readBody(req);
@@ -1788,6 +1805,11 @@ export function startServer(
         await saveState(state);
         broadcastEvent("kill-switch", { active });
         log.warn(`Kill-switch ${active ? "AKTIVERAD" : "avaktiverad"} via dashboard`);
+        // Hermes-läget: kill switch avbryter en pågående Hermes-analys (inga nya försök, ingen reserv)
+        if (active && process.env.LLM_ROUTE?.trim() === "hermes") {
+          const { abortHermesAnalysis } = await import("../orchestrator/hermesTurn.js");
+          abortHermesAnalysis("kill switch");
+        }
         userAction(`kill switch ${active ? "PÅ — inga köp" : "av"}`);
         json(res, { ok: true, active });
         return;
@@ -1867,6 +1889,11 @@ export function startServer(
       if (url.pathname === "/api/run-agent" && method === "POST") {
         if (!runAgentCallback) {
           jsonStatus(res, 500, { error: "Agent-callback ej konfigurerad" });
+          return;
+        }
+        // Hermes-läget: en ny analys under pågående får svaret "analys pågår" (§8.7). Utan LLM_ROUTE=hermes: som förut.
+        if (process.env.LLM_ROUTE?.trim() === "hermes" && (activeBrokerName === "ig" || activeBrokerName === "ig-demo") && (getAnalysis()?.status === "running" || (await import("../orchestrator/hermesTurn.js")).hermesAnalysisBusy())) {
+          jsonStatus(res, 409, { ok: false, error: "analys pågår" });
           return;
         }
         userAction("startade en analys (Kör analys)", { to: "orchestrator" });

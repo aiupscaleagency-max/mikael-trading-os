@@ -37,7 +37,23 @@ export interface CostEntry {
   outputTokens: number;
   costUsd: number;
   sessionId?: string;  // Knyter ihop multipla anrop till en session
+  /** Vägen anropet gick (plan §8.2). hermes = prenumeration, 0 USD, räknas inte mot taket. */
+  route?: CostRoute;
+  /** Svarstid i ms (Hermes-läget: tokens/tid per analys på kostnadssidan) */
+  durationMs?: number;
 }
+
+/** "gateway" = befintliga betalda kedjan (Anthropic → Vercel → OpenRouter) där exakt väg inte syns utifrån. */
+export type CostRoute = "vercel" | "openrouter" | "anthropic" | "hermes" | "gateway";
+export interface TrackOpts {
+  route?: CostRoute;
+  /** Uttrycklig kostnad (0 för prenumeration). Satt = används i stället för beräkningen från tokens. */
+  costUsd?: number;
+  durationMs?: number;
+}
+
+/** Rader som räknas mot API-kostnadstaket (Hermes-rader undantas uttryckligen, §8.2). */
+const countsTowardCap = (e: CostEntry) => e.route !== "hermes";
 
 const COST_DIR = dataPath("cost");
 
@@ -67,6 +83,7 @@ export async function trackClaudeCall(
   model: string,
   usage: { input_tokens: number; output_tokens: number },
   sessionId?: string,
+  opts?: TrackOpts,
 ): Promise<CostEntry> {
   const entry: CostEntry = {
     timestamp: Date.now(),
@@ -74,14 +91,17 @@ export async function trackClaudeCall(
     model,
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,
-    costUsd: calcCostUsd(model, usage.input_tokens, usage.output_tokens),
+    costUsd: opts?.costUsd !== undefined ? opts.costUsd : calcCostUsd(model, usage.input_tokens, usage.output_tokens),
     sessionId,
+    // Bara när de anges, så att befintliga anrop skriver exakt samma rad som förut
+    ...(opts?.route ? { route: opts.route } : {}),
+    ...(opts?.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
   };
 
   await ensureDir();
   await fs.appendFile(dayFile(), JSON.stringify(entry) + "\n", "utf8");
 
-  log.info(`[Cost] ${agent} (${model}): in=${entry.inputTokens} out=${entry.outputTokens} = $${entry.costUsd.toFixed(4)}`);
+  log.info(`[Cost] ${agent} (${model}${entry.route ? `, ${entry.route}` : ""}): in=${entry.inputTokens} out=${entry.outputTokens} = $${entry.costUsd.toFixed(4)}${entry.durationMs !== undefined ? ` · ${(entry.durationMs / 1000).toFixed(1)} s` : ""}`);
   return entry;
 }
 
@@ -108,7 +128,7 @@ async function readDay(d: Date): Promise<CostEntry[]> {
 
 export async function getDailySpend(d: Date = new Date()): Promise<number> {
   const entries = await readDay(d);
-  return entries.reduce((s, e) => s + e.costUsd, 0);
+  return entries.filter(countsTowardCap).reduce((s, e) => s + e.costUsd, 0);
 }
 
 export async function getWeeklySpend(): Promise<number> {
@@ -141,6 +161,41 @@ export interface CostSummary {
   dailyCap: number;
   weeklyCap: number;
   capStatus: "ok" | "warning" | "exceeded";
+  /** Hermes-läget (§12): tokens/tid per analys (prenumeration, inte kronor). Saknas när inga Hermes-rader finns. */
+  hermes?: HermesCostView;
+}
+
+export interface HermesCostView {
+  todayCalls: number;
+  todayInputTokens: number;
+  todayOutputTokens: number;
+  /** Senaste analyserna, nyast först: tokens och tid per roll */
+  runs: Array<{ runId: string; at: number; totalMs: number; inputTokens: number; outputTokens: number; roles: Array<{ agent: string; model: string; inputTokens: number; outputTokens: number; ms: number | null }> }>;
+}
+
+/** Hermes-rader grupperade per analys (sessionId = körnings-ID). */
+export function hermesCostView(entries: CostEntry[], today: CostEntry[], maxRuns = 10): HermesCostView | undefined {
+  const h = entries.filter((e) => e.route === "hermes");
+  if (!h.length) return undefined;
+  const ht = today.filter((e) => e.route === "hermes");
+  const byRun = new Map<string, CostEntry[]>();
+  for (const e of h) { const k = e.sessionId ?? `utan-id-${e.timestamp}`; byRun.set(k, [...(byRun.get(k) ?? []), e]); }
+  const runs = [...byRun.entries()].map(([runId, list]) => {
+    const sorted = list.sort((a, b) => a.timestamp - b.timestamp);
+    return {
+      runId, at: sorted[0]!.timestamp,
+      totalMs: sorted.reduce((s, e) => s + (e.durationMs ?? 0), 0),
+      inputTokens: sorted.reduce((s, e) => s + e.inputTokens, 0),
+      outputTokens: sorted.reduce((s, e) => s + e.outputTokens, 0),
+      roles: sorted.map((e) => ({ agent: e.agent, model: e.model, inputTokens: e.inputTokens, outputTokens: e.outputTokens, ms: e.durationMs ?? null })),
+    };
+  }).sort((a, b) => b.at - a.at).slice(0, maxRuns);
+  return {
+    todayCalls: ht.length,
+    todayInputTokens: ht.reduce((s, e) => s + e.inputTokens, 0),
+    todayOutputTokens: ht.reduce((s, e) => s + e.outputTokens, 0),
+    runs,
+  };
 }
 
 export async function getCostSummary(opts: {
@@ -148,7 +203,7 @@ export async function getCostSummary(opts: {
   weeklyCapUsd: number;
 }): Promise<CostSummary> {
   const today = await readDay(new Date());
-  const todayUsd = today.reduce((s, e) => s + e.costUsd, 0);
+  const todayUsd = today.filter(countsTowardCap).reduce((s, e) => s + e.costUsd, 0);
   const weekUsd = await getWeeklySpend();
   const monthUsd = await getMonthlySpend();
 
@@ -180,6 +235,7 @@ export async function getCostSummary(opts: {
   else if (todayUsd >= opts.dailyCapUsd * 0.8) capStatus = "warning";
   else if (weekUsd >= opts.weeklyCapUsd) capStatus = "exceeded";
 
+  const hermes = hermesCostView(recent, today);
   return {
     todayUsd,
     weekUsd,
@@ -190,6 +246,7 @@ export async function getCostSummary(opts: {
     dailyCap: opts.dailyCapUsd,
     weeklyCap: opts.weeklyCapUsd,
     capStatus,
+    ...(hermes ? { hermes } : {}),
   };
 }
 

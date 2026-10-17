@@ -1455,6 +1455,21 @@ body.app-state-onboard .fc-panel{display:none !important}
   <button class="kill" id="kill-btn">⏻ KILL SWITCH</button>
   <span class="pnl up" id="pnl" title="Dagens resultat på IG i kontovalutan (inte saldot)">—</span>
   <button class="run-btn" id="run-btn">▶ Kör analys</button>
+  <button class="run-btn" id="hermes-abort-btn" style="display:none;background:#3a1414;border-color:#f85149;color:#f85149" title="Avbryter pågående analys (Hermes-läget). Inga nya försök, inget publiceras.">⏹ Avbryt analys</button>
+  <script>
+  /* Hermes-läget (LLM_ROUTE=hermes): "Avbryt analys" bredvid Kör analys. Syns bara när läget är på. */
+  (function(){
+    const b = document.getElementById("hermes-abort-btn"); if(!b) return;
+    async function poll(){
+      try{ const d = await (await fetch("/api/hermes/status")).json(); b.style.display = d.enabled ? "" : "none"; b.disabled = !d.busy; }catch(_){}
+    }
+    b.addEventListener("click", async ()=>{
+      try{ await fetch("/api/hermes/abort", { method:"POST" }); }catch(_){}
+      poll();
+    });
+    poll(); setInterval(poll, 5000);
+  })();
+  </script>
   <button class="paper-balance" id="paper-balance" title="TEST-saldo (klicka för Trades-sidan)">📊 TEST <b id="pb-equity">—</b> <span id="pb-pnl">TEST</span></button>
   <button class="paper-balance" id="live-balance" style="background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(16,185,129,.08));border-color:rgba(34,197,94,.5)" title="Saldo på IG Live (riktiga pengar)">💚 LIVE <b id="lb-equity" style="color:var(--green)">—</b></button>
   <button class="cost-mini" id="cost-mini" title="AI-/API-kostnad idag (USD) — inte trading-resultat. Klicka för detaljer.">💰 <b id="cost-today">$0.00</b> idag</button>
@@ -7481,6 +7496,16 @@ async function openCostModal(){
     const t = new Date(e.timestamp).toLocaleTimeString();
     return `<div class="cost-line"><span class="calls">${t}</span> <span class="agent">${AGENT_DISPLAY_NAMES[e.agent]||e.agent}</span> <span class="calls">${e.inputTokens}+${e.outputTokens}tok</span> <span class="amt">$${e.costUsd.toFixed(4)}</span></div>`;
   }).join("") || "<div style='color:var(--dim)'>–</div>";
+
+  // Hermes-läget (prenumeration): tokens/tid per analys, inte kronor. Visas bara när Hermes-rader finns.
+  const recentBox = document.getElementById("c-recent");
+  let hb = document.getElementById("c-hermes");
+  if(c.hermes && c.hermes.runs && c.hermes.runs.length && recentBox){
+    if(!hb){ hb = document.createElement("div"); hb.id = "c-hermes"; hb.style.cssText = "font-size:10px;margin-top:8px"; recentBox.parentNode.insertBefore(hb, recentBox.nextSibling); }
+    const e2 = (v)=>String(v).replace(/[&<>"]/g, (ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
+    hb.innerHTML = `<div style="font-weight:700;margin-bottom:4px">Hermes (prenumeration) · tokens/tid per analys · idag ${c.hermes.todayCalls} anrop, ${c.hermes.todayInputTokens}+${c.hermes.todayOutputTokens} tok · 0 USD, räknas inte mot taket</div>`
+      + c.hermes.runs.map(r=>`<div class="cost-line"><span class="calls">${new Date(r.at).toLocaleTimeString()}</span> <span class="agent">${r.roles.map(x=>`${e2(AGENT_DISPLAY_NAMES[x.agent]||x.agent)} ${x.inputTokens}+${x.outputTokens}tok ${x.ms!=null?(x.ms/1000).toFixed(1)+" s":""}`).join(" · ")}</span> <span class="amt">${(r.totalMs/1000).toFixed(1)} s</span></div>`).join("");
+  } else if(hb) hb.innerHTML = "";
 }
 
 function closeCostModal(){ document.getElementById("cost-modal-bg").classList.remove("on"); }
@@ -10023,10 +10048,13 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
       const d = await (await fetch("/api/ig/agent-top")).json();
       if(d.env && d.env !== IG.st.env) return;
       const items = d.items || [];
-      if(!items.length){ box.style.display = "none"; box.innerHTML = ""; return; }
+      // Hermes-läget: senaste misslyckade/avbrutna försöket visas separat (tipsen nedan behåller sin egen etikett)
+      const failLine = d.failedAttempt ? `<div style="font-size:11px;color:#f0b90b;margin:-4px 0 6px">⚠ Senaste försök misslyckades: ${esc(d.failedAttempt.outcome || "")} (${esc(new Date(d.failedAttempt.at).toLocaleTimeString("sv-SE").slice(0,5))})</div>` : "";
+      if(!items.length){ if(failLine){ box.style.display = ""; box.innerHTML = `<h3>🏆 Agenternas topplista</h3>` + failLine; return; } box.style.display = "none"; box.innerHTML = ""; return; }
       const t = d.at ? new Date(d.at).toLocaleString("sv-SE", { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" }) : "";
       box.style.display = "";
       box.innerHTML = `<h3>🏆 Agenternas topplista <span style="font-size:11px;font-weight:600;color:var(--dim)">Bästa först · senaste analysen ${esc(t)} · ${esc(d.label || IG.envLabel())} · knappen fyller bara orderpanelen, inget skickas utan Godkänn</span></h3>`
+        + failLine + (d.brain ? `<div class="pp-brain" style="font-size:11px;color:var(--dim);margin:-4px 0 6px"><b style="color:#c9d1d9">${esc(d.brain.text)}</b>${d.brain.outcome && d.brain.outcome !== "full" ? ` · <b style="color:#f0b90b">${esc(d.brain.outcome)}</b>` : ""}${(d.brain.roles || []).length ? `<br>${esc(d.brain.roles.join(" · "))}` : ""}</div>` : "")
         + AGTIP.table(items.map(n=>({ ...n.tip, name: n.name || IG.label(n.epic) })));
     }catch(_){}
   }
@@ -10621,7 +10649,12 @@ window.AGTIP = (function(){
     const lv = [t.entry != null ? `entry ${px(t.entry)}` : "", t.takeProfit != null ? `TP ${px(t.takeProfit)}` : "", t.stopLoss != null ? `SL ${px(t.stopLoss)}` : ""].filter(Boolean).join(" · ");
     return `<b>#${esc(t.rank)}</b> <b style="color:${COL[t.action] || "#8b95a7"}">${esc(ACT[t.action] || t.action)}</b>`
       + (lv ? ` · ${t.unverifiedLevels ? '<b style="color:#f0b90b" title="Inget IG-livepris vid analysen">⚠ overifierade nivåer</b> ' : ""}${esc(lv)}` : "") + (t.sizeText ? ` · ${esc(t.sizeText)}` : "") + ` · ${esc(t.horizonMin)} min · säkerhet ${esc(CONF[t.confidence] || t.confidence)}`
-      + `<br><span style="color:var(--dim)">${esc(String(t.why || "").slice(0, 200))}${t.note ? ` (${esc(t.note)})` : ""}</span>`;
+      + `<br><span style="color:var(--dim)">${esc(String(t.why || "").slice(0, 200))}${t.note ? ` (${esc(t.note)})` : ""}</span>${brainLine(t)}`;
+  }
+  // Hermes-läget: hjärna/kropp för den omgång som gav just det här tipset
+  function brainLine(t){
+    if(!t || !t.brain) return "";
+    return `<br><span style="color:var(--dim);font-size:10px" title="Omgång ${esc(t.brain.roundId || "")}">${esc(t.brain.text)}${t.brain.outcome && t.brain.outcome !== "full" ? ` · <b style="color:#f0b90b">${esc(t.brain.outcome)}</b>` : ""}${(t.brain.roles || []).length ? " · " + esc(t.brain.roles.join(" · ")) : ""}</span>`;
   }
   function button(t){
     if(!t || (t.action !== "buy" && t.action !== "sell")) return "";
@@ -10632,7 +10665,7 @@ window.AGTIP = (function(){
     const rows = list.map(t=>{
       const lv = (v)=> v == null ? "–" : esc(px(v));
       return `<tr><td><b>${esc(t.rank)}</b></td><td title="${esc(t.epic)}">${esc(t.name || IG.label(t.epic))}</td><td style="font-weight:800;color:${COL[t.action] || "#8b95a7"}">${esc(ACT[t.action] || t.action)}</td>`
-        + `<td>${esc(String(t.why || "").slice(0, 160))}${t.note ? ` <span style="color:var(--dim)">(${esc(t.note)})</span>` : ""}</td><td>${t.unverifiedLevels ? '<b style="color:#f0b90b" title="Inget IG-livepris vid analysen: kontrollera nivåerna mot IG innan order">⚠</b> ' : ""}${lv(t.entry)}</td><td style="color:#3fb950">${lv(t.takeProfit)}</td><td style="color:#f85149">${lv(t.stopLoss)}</td>`
+        + `<td>${esc(String(t.why || "").slice(0, 160))}${t.note ? ` <span style="color:var(--dim)">(${esc(t.note)})</span>` : ""}${brainLine(t)}</td><td>${t.unverifiedLevels ? '<b style="color:#f0b90b" title="Inget IG-livepris vid analysen: kontrollera nivåerna mot IG innan order">⚠</b> ' : ""}${lv(t.entry)}</td><td style="color:#3fb950">${lv(t.takeProfit)}</td><td style="color:#f85149">${lv(t.stopLoss)}</td>`
         + `<td>${esc(t.sizeText || "–")}</td><td>${esc(t.horizonMin)} min</td><td>${esc(CONF[t.confidence] || t.confidence)}</td><td>${button(t)}</td></tr>`;
     }).join("");
     return `<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="font-size:10px;color:var(--dim);text-transform:uppercase"><th>#</th><th>Instrument</th><th>Råd</th><th>Varför</th><th>Entry</th><th>TP</th><th>SL</th><th>Storlek</th><th>Horisont</th><th>Säkerhet</th><th></th></tr>${rows}</table></div>`;

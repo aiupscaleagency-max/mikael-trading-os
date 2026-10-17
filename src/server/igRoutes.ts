@@ -442,7 +442,15 @@ export async function handleIgRoutes(
     // Agenternas topplista: senaste analysomgången, bästa först (bara läsning, aldrig en order)
     if (p === "/api/ig/agent-top" && method === "GET") {
       const t = agentNotes.top(env);
-      send(res, 200, { env, label: envLabel(env), runId: t.runId, at: t.at, items: t.items.map((n) => ({ ...n, name: igMarketData.nameOf(n.epic, env) })) });
+      // Hermes-läget: "Hjärna: JEV … · Kropp: …" + faktisk kropp per roll (bara när LLM_ROUTE=hermes)
+      // Etiketten hämtas för EXAKT den körning vars tips visas; ett senare misslyckat försök visas separat
+      const hl = process.env.LLM_ROUTE?.trim() === "hermes" ? await import("../orchestrator/hermesLabel.js") : null;
+      // Etiketten följer varje tips (tip.brain = den omgång som gav tipset); toppraden visar omgångarnas etiketter
+      const rounds = [...new Map(t.items.map((n) => n.tip?.brain).filter((b): b is NonNullable<typeof b> => !!b).map((b) => [b.roundId, b])).values()];
+      const brain = hl && rounds.length ? hl.combineRoundBrains(rounds) : null;
+      const fail = hl ? hl.getFailedAttempt(env) : null;
+      const failedAttempt = fail && (!t.at || fail.at > t.at) ? fail : null;
+      send(res, 200, { env, label: envLabel(env), runId: t.runId, at: t.at, items: t.items.map((n) => ({ ...n, name: igMarketData.nameOf(n.epic, env) })), ...(brain ? { brain } : {}), ...(failedAttempt ? { failedAttempt } : {}) });
       return true;
     }
     if (p === "/api/ig/agent-notes" && method === "GET") {

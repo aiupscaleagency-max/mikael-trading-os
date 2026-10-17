@@ -102,12 +102,15 @@ export function decideFromAnswers(answers: Record<string, JevAnswer>, mode: "pap
   };
 }
 
-export async function jevTurnPreflight(signals: TurnSignals): Promise<JevTurnDecision> {
+export async function jevTurnPreflight(signals: TurnSignals, opts: { signal?: AbortSignal } = {}): Promise<JevTurnDecision> {
   if (process.env.JEV_ENABLED === "false") {
     return { status: "skipped", runAdvisor: true, detail: "JEV avstängd (JEV_ENABLED=false)" };
   }
   const { state, questions } = buildTurnRequest(signals);
-  const verdict = await askJev(state, JEV_TIMEOUT_MS, questions);
+  // opts.signal (Hermes-läget): avbrott stoppar anropet; samma rutter och samma låsta ordning
+  const verdict = await askJev(state, JEV_TIMEOUT_MS, questions, opts.signal);
+  // Avbruten analys: inga loggar eller trädhändelser i efterhand
+  if (opts.signal?.aborted) return { status: "unavailable", runAdvisor: true, detail: "avbruten" };
   if (!verdict.available) {
     log.warn(`[JEV] Otillgänglig (${verdict.note}) — kör Advisorn som vanligt.`);
     treeEvent({ branch: "tur", jev: { available: false, route: verdict.mode }, outcome: "advisor körs", why: `JEV otillgänglig: ${verdict.note}` });

@@ -44,7 +44,8 @@ const headTraderModel = () => modelFor("head", "claude-sonnet-4-6");
 // i objektet som faktiskt skickas in.
 import type { AllReports } from "./orchestrator.js";
 import { currentStake, stakeStartPct } from "../risk/stakeLadder.js";
-import { tipsPromptBlock, parseHeadTips, markUnverified, type AgentTip } from "./headTips.js";
+import { tipsPromptBlock, parseHeadTips, markUnverified, validateRawTips, type AgentTip } from "./headTips.js";
+import { runRole, finalizeHermesTips, HERMES_TIMEOUTS, type ChainCtx, type FinalizeCtx, type RoleStatus } from "./hermesTeam.js";
 import { igAgentData, igEnvOf } from "../server/igAgentData.js";
 import { DIRECT_ANALYSIS_MAX } from "../server/igSessions.js";
 
@@ -70,6 +71,66 @@ export interface HeadTraderResult {
   killSwitchToggled: boolean;
   /** IG: Hannas tips per analyserat instrument, rangordnade (även vid HOLD). Saknas för andra mäklare. */
   tips?: AgentTip[];
+  /** Hermes-läget: Hannas rollstatus (lyckad/misslyckad/överhoppad/avbruten) */
+  hermesHead?: RoleStatus;
+}
+
+/** Underlag till Hannas verktygsfria Hermes-gren (byggs av src/orchestrator/hermesTurn.ts). */
+export interface HermesHannaInput {
+  ctx: ChainCtx;
+  /** Gemensam prefix: system → JEV → underlag */
+  prefix: string;
+  epics: string[];
+  /** Claudes rader (Teknisk + Risk) som JSON */
+  claudeJson: string;
+  /** Advisorns granskning som JSON, eller null när den saknas */
+  advisorJson: string | null;
+  advisorNote: string;
+  /** JEV-preflight uttryckligen till Hanna (§8.6) */
+  preflightLine: string;
+  stake: { maxStakePct: number; minStakePct: number; amount: number | null; currency: string | null; horizonMin: number };
+  finalize: Omit<FinalizeCtx, "rawRows">;
+}
+
+// Hannas egen systemprompt i Hermes-läget (§8.1): bara analys, inga order, inga verktyg.
+export const HANNA_HERMES_SYSTEM = `──── DIN ROLL: HANNA (HEAD TRADER, SLUTBESLUT) ────
+Du lägger inga order. Svara med analys och TIPS_JSON.
+Inga verktyg i denna körning; svara med text och TIPS_JSON. Positioner och konto finns i underlaget.
+Väg ihop Claudes analys, Advisorns granskning och JEV. Den granskade rekommendationen (Claude efter Advisorns skärpning) är bindande: byt aldrig riktning, höj aldrig insatsen och vidga aldrig SL. Du får bara vara försiktigare; skriv i så fall skälet i "advisorOverride" (en mening). JEV-veto ⇒ AVVAKTA, alltid.
+Format (undantag från "bara JSON"): högst tre korta rader "[1] Regim: … [2] Action: … [3] Bevaka: …", sedan raden ${"TIPS_JSON"}: följd av en JSON-array med EXAKT ett objekt per EPIC i underlaget, rangordnade bäst först:
+[{"epic":"…","rank":1,"action":"KÖP|SÄLJ|AVVAKTA","why":"en mening","entry":0,"tp":0,"sl":0,"sizePct":1,"horizonMin":5,"confidence":"låg|medel|hög","advisorOverride":null}]
+KÖP: sl < entry < tp. SÄLJ: tp < entry < sl. AVVAKTA: tp, sl och sizePct null. horizonMin 1, 5, 15 eller 30. Ett tips är aldrig en order.`;
+
+/**
+ * Hannas Hermes-gren (§8.1, §12 steg 3). Körs FÖRE verktygsloopen och skickar aldrig verktyg:
+ * ingen toolDefinitions(), ingen runTool, inga orderutkast. Tipsen tolkas med headTips.ts.
+ */
+export async function runHeadTraderHermes(h: HermesHannaInput, reports: AllReports): Promise<HeadTraderResult> {
+  const prompt = `${h.prefix}
+──── CLAUDES ANALYS (Teknisk + Risk) ────
+${h.claudeJson}
+
+──── ADVISORNS GRANSKNING ────
+${h.advisorJson ?? h.advisorNote}
+
+──── JEV-PREFLIGHT ────
+${h.preflightLine}
+
+${HANNA_HERMES_SYSTEM}`;
+  const run = await runRole<Array<Record<string, unknown>>>({
+    role: "head", agent: "head", order: ["claude", "chatgpt"], prompt, timeoutMs: HERMES_TIMEOUTS.head,
+    validate: (text) => { const v = validateRawTips(text, h.epics); return v.ok ? { ok: true, reason: null, value: v.rows } : { ok: false, reason: `ogiltig TIPS_JSON: ${v.reason}`, value: null }; },
+    // Rollinstruktionen finns redan sist i prompten; systemfältet upprepar den inte
+    paid: { modelRole: "head", directDefault: "claude-sonnet-4-6", system: "Följ rollinstruktionen sist i meddelandet.", user: prompt, maxTokens: 1500 },
+  }, h.ctx);
+  const empty: HeadTraderResult = {
+    decision: { role: "head_trader", regime: reports.macro.regime, actions: [], briefingSummary: "", rawText: run.text ?? "" },
+    toolCalls: [], placedOrders: [], killSwitchToggled: false, hermesHead: run.status,
+  };
+  if (run.status.status !== "lyckad" || !run.value || run.text === null) return empty;
+  const parsed = parseHeadTips(run.text, h.epics, { maxStakePct: h.stake.maxStakePct, minStakePct: h.stake.minStakePct, stakeAmount: h.stake.amount, currency: h.stake.currency, defaultHorizonMin: h.stake.horizonMin });
+  const tips = finalizeHermesTips(parsed.tips, { ...h.finalize, rawRows: run.value });
+  return { ...empty, decision: { ...empty.decision, briefingSummary: parsed.cleanedText || "(inget sammandrag)", rawText: run.text }, tips };
 }
 
 export async function runHeadTrader(params: {
@@ -84,7 +145,10 @@ export async function runHeadTrader(params: {
   userInstruction?: string;
   /** Paren JEV valt: deras indikatorer skickas med direkt (färre verktygsanrop). */
   symbols?: string[];
+  /** Hermes-läget (LLM_ROUTE=hermes): verktygsfri gren före verktygsloopen. Saknas = exakt som förut. */
+  hermes?: HermesHannaInput;
 }): Promise<HeadTraderResult> {
+  if (params.hermes) return runHeadTraderHermes(params.hermes, params.reports);
   const { apiKey, config, state, broker, brokers, risk, engines, reports } = params;
 
   // Tradingminnet: hur TEST-affärerna gått + tidigare beslut för de här paren

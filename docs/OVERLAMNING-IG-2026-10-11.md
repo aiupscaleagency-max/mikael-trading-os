@@ -136,3 +136,28 @@ Säg aldrig "klart" innan detta är gjort i en riktig webbläsare (Playwright/Ch
 | 5 | Byt TEST ↔ LIVE | Saldo, märkning, katalogantal (samma i båda), orderläge och resultat byts |
 | 6 | Alla par | Hela katalogen visas. Demo har sim-märkning på Live-instrument. Diagram (IG eller Tiingo, märkt). Agenternas topplista syns. |
 | 7 | Inga JS-fel | `pageerror` tom |
+
+---
+
+## 9. UPPDATERING 2026-10-17: läget nu (läs detta FÖRST, det ersätter §3–§5 där de krockar)
+
+**Huvudgren:** `main` (Codex PR #81 och tidigare IG-arbete). **Pågående PR:** #83 `claude/hermes-kroppar` → `main` (senaste commit `9fd1062`). Plan: `docs/PLAN-HERMES-KROPPAR-JEV-2026-10-16.md` (prioritet §13 > §12 > … > §8).
+
+| Del | Läge |
+|---|---|
+| Boten | `~/mto-ig` på :3940. Startas **bara** av Mike med `bash ~/mto-ig/scripts/restart-reviewed-ig.sh`. Agenter får inte starta om (säkerhetsspärr). Byte av version görs med `git fetch -q origin <gren> && git checkout -q --detach <commit>` före skriptet. |
+| AI-krediter | Vercel AI Gateway −0,21 USD och OpenRouter slut (16/10). JEV går ändå via OpenRouter `typesafe/jev-1.13`. |
+| **Agenternas AI** | `LLM_ROUTE=hermes` i `~/mto-ig/.env`. Hermes-profilerna `trading-claude` (claude-sonnet-5-5) och `trading-chatgpt` (gpt-6-sol) körs på Mikes **prenumerationer** och kostar 0 kr. Kedja: Claude Teknik+Risk → ChatGPT Advisor (får bara skärpa, bindande i Live) → Claude Hanna (TIPS_JSON). JEV är hjärnan, med låst ordning. Verifierad analys av 5 krypton: 32–35 s. |
+| Hermes-version | Låst till **0.22.2**. Uppdateras Hermes stängs agentläget av automatiskt tills R1 körts om (planen §9/§13) och `HERMES_PINNED_VERSION` eller `LLM_HERMES_VERSION` uppdaterats. |
+| Säkerhet | Kropparna har inga verktyg (`-t context_engine`, tom cwd utanför git, env bara HOME/PATH). Inloggningen kontrolleras före start, och en betald nyckel i profilen ger 0 processer. Ett tips är aldrig en order; Godkänn krävs alltid. Kill switch och knappen "Avbryt analys" stoppar hela kedjan. |
+| Stänga av agentläget | Ta bort raden `LLM_ROUTE=hermes` i `~/mto-ig/.env` och kör omstartsskriptet. Då gäller det gamla beteendet. |
+| Tailscale | Krånglade efter en uppdatering 16/10 ("network is down"). Lösning: Mike avslutar Tailscale och startar om appen. |
+
+**Arbetsträd som gäller:** Claude (huvud) → researcher → kodare → **kritiker (APPROVE krävs)** → Codex granskar PR:n → Mike slår ihop. Webbläsartestet i §8 görs efter varje driftsättning.
+
+**Kvar efter PR #83:**
+- Codex slutgranskar `9fd1062`.
+- Mike slår ihop PR:n och driftsätter `9fd1062`.
+- Riktig analys och en agentsession vid öppen marknad.
+- Mike testar en liten Demo-order själv.
+- Hectors uppdrag (vakthund, kostnadsrapport, backtest), se chatten 16/10.

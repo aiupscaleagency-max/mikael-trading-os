@@ -34,6 +34,7 @@ import type {
   AdvisorReport,
 } from "./types.js";
 import { log } from "../logger.js";
+import { hermesRouteEnabled } from "../llm/hermesRoute.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Orchestrator — dirigenten som koordinerar det ultimata trading-teamet.
@@ -114,17 +115,27 @@ async function runOrchestratedTurnInner(params: {
   const notesEnv: "demo" | "live" | null = broker.name === "ig" ? "live" : broker.name === "ig-demo" ? "demo" : null;
 
   const totalStart = Date.now();
+  // Hermes-läget: pågår redan en Hermes-analys i miljön startas ingen ny och analysposten rörs inte
+  if (hermesRouteEnabled() && notesEnv && (await import("./hermesTurn.js")).skipIfHermesBusy(notesEnv, "ny analystur")) throw new Error("analys pågår");
   // "Kör analys" har redan startat posten; annars är det schemat.
   if (getAnalysis()?.status !== "running") analysisStart("schema", userInstruction);
 
   // ── CIRCUIT BREAKER: Spend-cap-koll innan vi ens börjar ──
   // Stoppar session om dagen/veckan redan överskridit cap. Skyddar mot
   // oväntade kostnader. Mike kan höja cap i .env om hon vill.
-  const spendCheck = await canSpend({
-    dailyCapUsd: config.costCap.dailyUsd,
-    weeklyCapUsd: config.costCap.weeklyUsd,
-  });
-  if (!spendCheck.allowed) {
+  // Hermes-läget (LLM_ROUTE=hermes, bara IG): analysens avbrott och tidsgräns registreras FÖRST,
+  // så att även budgetkontrollen omfattas (Codex 1b). Utan LLM_ROUTE=hermes: exakt som förut.
+  const hermesMode = hermesRouteEnabled() && notesEnv !== null;
+  const hermesRun = hermesMode && notesEnv ? (await import("./hermesTurn.js")).openHermesRun(notesEnv, undefined, totalStart) : null;
+  const spendCheck = await (async () => {
+    const check = () => canSpend({ dailyCapUsd: config.costCap.dailyUsd, weeklyCapUsd: config.costCap.weeklyUsd });
+    if (!hermesRun) return check();
+    try { return await (await import("./hermesTurn.js")).hermesBudgetCheck(hermesRun, check); }
+    catch (e) { hermesRun.close(); throw e; }
+  })();
+  // Prenumerationskropparna räknas inte mot API-taket (§8.2/§10.3): taket spärrar då bara den betalda reserven.
+  if (!spendCheck.allowed && hermesMode) log.warn(`[Cost] ${spendCheck.reason} — Hermes-läget fortsätter, betald reserv spärrad`);
+  if (!spendCheck.allowed && !hermesMode) {
     log.warn(`╔══ SESSION SKIPPAD: ${spendCheck.reason} ══╗`);
     log.warn(`Dagens spend: $${spendCheck.spent?.today.toFixed(2)} / cap $${config.costCap.dailyUsd}`);
     log.warn(`Veckans spend: $${spendCheck.spent?.week.toFixed(2)} / cap $${config.costCap.weeklyUsd}`);
@@ -134,6 +145,33 @@ async function runOrchestratedTurnInner(params: {
   }
   log.info(`[Cost] Dagens spend: $${spendCheck.spent?.today.toFixed(2)} / cap $${config.costCap.dailyUsd} | Vecka: $${spendCheck.spent?.week.toFixed(2)} / $${config.costCap.weeklyUsd}`);
 
+  // ── Hermes-läget: kedjan Claude (Teknisk+Risk) → ChatGPT (Advisor) → Claude (Hanna, utan verktyg) ──
+  // Grenar av FÖRE första asynkrona förberedelsen, så att analysens avbrott och tidsgräns (300 s)
+  // gäller även positionsläsningen och JEV-preflighten (de körs inne i Hermes-turen).
+  if (hermesMode && notesEnv && hermesRun) {
+   // Allt efter openHermesRun ligger i try/finally: körningen stängs alltid (close är idempotent)
+   try {
+    const { runHermesTurn, hermesPreflight } = await import("./hermesTurn.js");
+    const { agentStart, agentDone } = await import("../server/agentActivity.js");
+    const symbols = params.symbols?.length ? params.symbols : [...config.crypto.symbols, ...config.stocks.symbols];
+    // await krävs: finally får inte stänga körningen förrän hela kedjan är klar (live-bugg 2026-10-17)
+    return await runHermesTurn({
+      config, state, broker, brokers, risk, engines, userInstruction, symbols,
+      env: notesEnv, spendAllowed: spendCheck.allowed, totalStart, run: hermesRun,
+      // Signalen följer med in i förberedelsen (positioner → JEV), och JEV-anropet avbryts med den
+      preflight: (stop) => hermesPreflight(stop, {
+        positions: () => broker.getPositions(),
+        jev: (openPositions, signal) => jevTurnPreflight({
+          mode: config.mode, executionMode: config.executionMode, openPositions,
+          maxOpenPositions: config.risk.maxOpenPositions, dailyPnlUsd: state.dailyRealizedPnlUsdt,
+          maxDailyLossUsd: config.risk.maxDailyLossUsd, hasUserInstruction: Boolean(userInstruction),
+        }, { signal }),
+        activity: { start: (n) => agentStart("jev", n, { from: "orchestrator" }), done: (n) => agentDone("jev", n), skip: (n) => agentSkip("advisor", n) },
+      }),
+    });
+   } finally { hermesRun.close(); }
+  }
+
   // ── Fas 1: Alla specialister + Advisor parallellt ──
   // ── Fas 0: Lars (Perplexity Research) ──
   // Hämtar färska nyheter/makro/geopolitik som specialisterna kan använda.
@@ -142,7 +180,7 @@ async function runOrchestratedTurnInner(params: {
   // Smalt team (Mike 2026-10-03): JEV väljer paren, sedan bara Teknisk + Risk + Hanna.
   // Lars, Makro, Sentiment, Kvant, Portfölj och Exekvering hoppas över (sparar ungefär hälften).
   // TEAM_LEAN=false i .env tar tillbaka hela teamet.
-  const lean = process.env.TEAM_LEAN !== "false";
+  const lean = process.env.TEAM_LEAN !== "false" || hermesMode;
   const leanNote = "smalt team: JEV → Teknisk + Risk → Hanna";
   const research = lean
     ? (agentSkip("research", leanNote), { role: "researcher", available: false, marketSummary: "Research avstängd (smalt team).", cryptoNews: [], macroEvents: [], geopolitical: [], riskAlerts: [], sources: [], rawText: "" } as ResearchReport)
@@ -169,6 +207,7 @@ async function runOrchestratedTurnInner(params: {
     hasUserInstruction: Boolean(userInstruction),
   }), { from: "research", done: (v) => v.runAdvisor ? `advisorn körs (${v.detail})` : `rutin, advisorn hoppas över (${v.detail})` });
   if (!jev.runAdvisor) agentSkip("advisor", `JEV: rutinturn (${jev.detail})`);
+
 
   const [macro, technical, sentiment, riskReport, quant, options, portfolio, advisor] =
     await Promise.all([
