@@ -36,8 +36,9 @@ assert.deepEqual(wl.markets.map(m=>igMarketCategory({name:m.name,type:m.type})),
 ok("listans instrument: IG:s kurs/förändring/status, Forex/Krypto klassas, index blir utanför (null), ogiltig EPIC tas bort");
 const before=urls.length;await mk.watchlist("demo","Popular Markets");await mk.watchlists("demo");assert.equal(urls.length,before,"cache: inga nya IG-läsningar");
 ok("cachas (lista 60 s, listor 10 min): inga extra IG-läsningar");
-await assert.rejects(()=>mk.watchlist("demo",""));await assert.rejects(()=>mk.watchlist("demo","x".repeat(101)));
+await assert.rejects(()=>mk.watchlist("demo",""));await assert.rejects(()=>mk.watchlist("demo",".."));await assert.rejects(()=>mk.watchlist("demo","."));await assert.rejects(()=>mk.watchlist("demo","a/b"));
+await assert.rejects(()=>conn.callAuthenticated("demo","watchlists/..","GET","1"),/tillåtna endpoints/);await assert.rejects(()=>conn.callAuthenticated("demo","watchlists/.","GET","1"),/tillåtna endpoints/);await assert.rejects(()=>mk.watchlist("demo","x".repeat(101)));
 await assert.rejects(()=>conn.callAuthenticated("demo","watchlists","POST","1",{name:"x"}),/tillåtna endpoints/);
 await assert.rejects(()=>conn.callAuthenticated("demo","watchlists/a/b","GET","1"),/tillåtna endpoints/);
-ok("bara läsning: POST till watchlists och andra vägar nekas");
+ok("bara läsning: POST, \".\"/\"..\" och andra vägar nekas (adressen kan inte lämna watchlists/)");
 console.log("test-ig-watchlists: ok");

@@ -10167,10 +10167,10 @@ function ppSparkSeries(bars, livePx, liveAt, lastBarAt) {
   $("pp-session").addEventListener("click", ()=>{ if(S().size && window.IGS) IGS.startSession([...S()]); });
   $("pp-more").addEventListener("click", ()=>{ shown += 48; render(); });
   function filterStatus(){
-    const dirty=draftFilter!==filter || $("pp-q").value!==query || $("pp-selected-only").checked!==selectedOnly;
-    $("pp-filter-state").textContent=(dirty?"Ändrade filter · tryck Sök. ":"Filter tillämpade. ")+"Visar "+({crypto:"Krypto",forex:"Forex",watch:"Bevakade",all:"alla"}[filter]||filter)+(query?" · sökning: "+query:"")+(selectedOnly?" · endast markerade":"")+" · "+filtered().length+" matchande · "+S().size+" markerade för analys/session (urvalet ändras inte av filter).";
+    // Filtren gäller direkt (sökrutan efter 250 ms), så texten visar alltid det som syns
+    $("pp-filter-state").textContent="Visar "+({crypto:"Krypto",forex:"Forex",watch:"Bevakade",all:"alla"}[filter]||filter)+(query?" · sökning: "+query:"")+(selectedOnly?" · endast markerade":"")+" · "+filtered().length+" matchande · "+S().size+" markerade för analys/session (urvalet ändras inte av filter).";
   }
-  function applyPairFilters(){filter=draftFilter;query=$("pp-q").value;selectedOnly=$("pp-selected-only").checked;shown=24;render();}
+  function applyPairFilters(){const changed=filter!==draftFilter||query!==$("pp-q").value||selectedOnly!==$("pp-selected-only").checked;filter=draftFilter;query=$("pp-q").value;selectedOnly=$("pp-selected-only").checked;if(changed)shown=24;render();}
   $("pp-filter").addEventListener("click", (ev)=>{
     const b=ev.target.closest("[data-pp-f]");if(!b)return;
     draftFilter=b.dataset.ppF;
@@ -10551,7 +10551,7 @@ window.MK = (function(){
         <div style="min-width:0"><div class="mk-name">${esc(m.name || "namn saknas")}</div><div class="mk-epic">${esc(m.epic)}${m.type ? " · " + esc(m.type) : ""}</div>${m.sim ? `<div class="ig-simlbl" title="Finns på IG Live men inte på ditt Demo-konto. Order fylls i simuleringen mot Live-pris med låtsaspengar; inget skickas till IG.">${esc(m.simLabel || "Demo-simulering · Live-pris · låtsaspengar")}</div>` : ""}</div></div>
       <div class="mk-row"><span class="mk-px">${mid != null ? IG.px(mid) : '<span class="mk-missing">kvot saknas</span>'}</span>
         <span class="${chg == null ? "mk-missing" : chg >= 0 ? "up" : "down"}">${chg == null ? "förändring saknas" : (chg >= 0 ? "▲ +" : "▼ ") + Number(chg).toFixed(2) + " %"}</span></div>
-      <div class="mk-row" style="font-size:10px;color:var(--dim)"><span>${m.marketStatus ? esc(m.marketStatus === "TRADEABLE" ? "öppen" : m.marketStatus) : "status saknas"}</span><span>${data[m.category] && data[m.category].updatedAt ? "katalog " + IG.age(Date.now() - data[m.category].updatedAt) + " sedan" : ""}</span></div>
+      <div class="mk-row" style="font-size:10px;color:var(--dim)"><span>${m.marketStatus ? esc(m.marketStatus === "TRADEABLE" ? "öppen" : m.marketStatus) : "status saknas"}</span><span>${m.listAt ? "IG-lista " + IG.age(Date.now() - m.listAt) + " sedan" : data[m.category] && data[m.category].updatedAt ? "katalog " + IG.age(Date.now() - data[m.category].updatedAt) + " sedan" : ""}</span></div>
       ${extra}
       <div class="mk-btns"><button type="button" data-act="chart">Diagram</button><button type="button" data-act="watch">+ Bevaka</button><button type="button" data-act="analyze">Analysera</button></div>
     </div>`;
@@ -10565,10 +10565,18 @@ window.MK = (function(){
   let filterFn = (m)=>true, sortFn = null, emptyHint = null;
   // Färska IG-kurser från en vald IG-lista (Populära marknader m.fl.) läggs ovanpå katalogradens saknade/gamla kurs.
   const overlay = {};
+  // Instrument i vald IG-lista som katalogen ännu inte har (t.ex. Forex Mini): visas med IG-listans egna uppgifter
+  const extra = { forex:[], crypto:[] };
   const withOverlay = (m)=> overlay[m.epic] ? Object.assign({}, m, overlay[m.epic]) : m;
+  function rows(cat){
+    const base = (data[cat] && data[cat].markets) || [];
+    if(!extra[cat].length) return base;
+    const have = new Set(base.map(m=>m.epic));
+    return base.concat(extra[cat].filter(m=>!have.has(m.epic)));
+  }
   function visible(cat){
     const d = data[cat]; if(!d) return [];
-    let list = (d.markets || []).map(withOverlay).filter(m=>filterFn(m));
+    let list = rows(cat).map(withOverlay).filter(m=>filterFn(m));
     if(sortFn) list = list.slice().sort(sortFn);
     return list;
   }
@@ -10636,7 +10644,7 @@ window.MK = (function(){
   document.addEventListener("page-shown", (e)=>{ if(e.detail === "markets") setTimeout(load, 0); });
   timer = setInterval(tick, 60000);
   setTimeout(()=>{ if(active()) load(); }, 300);
-  return { data, sel, hooks, render, load, visible, overlay, cardHtml, setFilter(f){ filterFn = f || (()=>true); render(); }, setSort(f){ sortFn = f; render(); }, setEmptyHint(f){ emptyHint = f; }, all(){ return CATS.flatMap(c=>(data[c] && data[c].markets) || []); } };
+  return { data, sel, hooks, render, load, visible, overlay, extra, cardHtml, setFilter(f){ filterFn = f || (()=>true); render(); }, setSort(f){ sortFn = f; render(); }, setEmptyHint(f){ emptyHint = f; }, all(){ return CATS.flatMap(c=>(data[c] && data[c].markets) || []); } };
 })();
 </script>
 
@@ -11013,18 +11021,30 @@ window.IGS = (function(){
   const F = ()=>({ list:$("mkf-list").value, cat:$("mkf-cat").value, selected:$("mkf-selected").checked, fav:$("mkf-fav").checked, q:$("mkf-q").value.trim().toLowerCase(), region:$("mkf-region").value, status:$("mkf-status").value, dir:$("mkf-dir").value, trend:$("mkf-trend").value, sort:$("mkf-sort").value });
   let appliedFilters = F();
   // IG-lista (Populära marknader, Större valutapar …): instrumenten och IG:s kurser för vald lista i aktiv miljö
-  const L = { lists:[], id:"", name:"", epics:null, other:[], error:null, loading:false, at:0, gen:0 };
+  const L = { lists:[], id:"", name:"", epics:null, other:[], error:null, refreshError:null, loading:false, at:0, gen:0 };
+  // Samma villkor som korten (status, upp/ned, sökning) för "Övriga i IG-listan"
+  function otherRows(){
+    const f=appliedFilters; if(!f.list||L.loading||L.error||f.cat||f.fav||f.selected||f.trend||f.region) return [];
+    return L.other.filter(m=>{
+      if(f.q && !(String(m.name||"").toLowerCase().includes(f.q)||m.epic.toLowerCase().includes(f.q))) return false;
+      if(f.status==="open" && m.marketStatus!=="TRADEABLE") return false;
+      if(f.status==="closed" && (m.marketStatus==="TRADEABLE"||!m.marketStatus)) return false;
+      if(f.dir==="up" && !(m.percentageChange>0)) return false;
+      if(f.dir==="down" && !(m.percentageChange<0)) return false;
+      return true;
+    });
+  }
   function filterStatus(){
     // Filtren gäller direkt vid varje val (Mike 2026-10-17: valen syntes inte förrän man tryckte Sök)
-    const count=["forex","crypto"].reduce((n,cat)=>n+MK.visible(cat).length,0);
-    const listTxt=appliedFilters.list?(L.loading?" · IG-lista "+L.name+": hämtar…":L.error?" · IG-lista "+L.name+": "+L.error:" · IG-lista "+L.name+" ("+(L.epics?L.epics.size:0)+" instrument, "+L.other.length+" utanför Forex/Krypto)"):"";
+    const count=["forex","crypto"].reduce((n,cat)=>n+MK.visible(cat).length,0)+otherRows().length;
+    const hm=(t)=>new Date(t).toLocaleTimeString("sv-SE").slice(0,5);
+    const listTxt=appliedFilters.list?(L.loading?" · IG-lista "+L.name+": hämtar…":L.error?" · IG-lista "+L.name+": "+L.error:" · IG-lista "+L.name+": "+((L.epics?L.epics.size:0)+L.other.length)+" instrument från IG ("+L.other.length+" utanför Forex/Krypto) · kurser från "+hm(L.at)+(L.refreshError?" · uppdateringen misslyckades: "+L.refreshError:"")):"";
     $("mkf-state").textContent="Visar "+(appliedFilters.cat==="forex"?"Forex":appliedFilters.cat==="crypto"?"Krypto":"Forex + Krypto")+listTxt+(appliedFilters.q?" · sökning: "+appliedFilters.q:"")+(appliedFilters.selected?" · endast markerade":"")+" · "+count+" matchande · "+MK.sel.size+" markerade för analys/session (separat urval).";
   }
   function renderOther(){
     const sec=$("mk-sec-other"), g=$("mk-grid-other"); if(!sec||!g) return;
-    const f=appliedFilters, rows=f.list&&!L.loading&&!L.error?L.other.filter(m=>!f.q||String(m.name||"").toLowerCase().includes(f.q)||m.epic.toLowerCase().includes(f.q)):[];
-    // Visas bara när ingen Forex/Krypto-avgränsning är vald och inga katalogbundna filter (favoriter/markerade/trend) gäller
-    const show=rows.length&&!f.cat&&!f.fav&&!f.selected&&!f.trend&&!f.region;
+    // Visas bara när ingen Forex/Krypto-avgränsning är vald och inga katalogbundna filter (favoriter/markerade/trend/region) gäller
+    const rows=otherRows(), show=rows.length>0;
     sec.style.display=show?"":"none";
     g.innerHTML=show?rows.map(m=>{ const mid=m.bid!=null&&m.offer!=null?(m.bid+m.offer)/2:null, chg=m.percentageChange;
       return `<div class="mk-card mk-ref" title="Finns i IG-listan men är inte Forex eller Krypto. Bara visning."><div class="mk-top"><span class="mk-ico">📋</span><div style="min-width:0"><div class="mk-name">${esc(m.name||"namn saknas")}</div><div class="mk-epic">${esc(m.epic)}${m.type?" · "+esc(m.type):""}</div></div></div>
@@ -11034,7 +11054,7 @@ window.IGS = (function(){
   async function loadLists(){
     try{
       const d=await (await fetch("/api/market/ig-lists",{cache:"no-store"})).json();
-      if(d.env&&d.env!==IG.st.env) return;
+      if(d.env&&IG.st.env&&d.env!==IG.st.env) return;
       L.lists=d.lists||[];
       const sel=$("mkf-list"), cur=sel.value;
       sel.innerHTML=`<option value="">IG-lista: alla instrument</option>`+(L.lists.length?L.lists.map(w=>`<option value="${esc(w.id)}">${esc(w.name)}</option>`).join(""):`<option value="" disabled>${esc(d.error?"IG-listorna kunde inte hämtas: "+d.error:"Inga IG-listor hittades")}</option>`);
@@ -11044,23 +11064,30 @@ window.IGS = (function(){
   }
   async function loadListItems(){
     const id=appliedFilters.list, gen=++L.gen, refresh=id&&id===L.id&&!L.error;
-    const clearOverlay=()=>Object.keys(MK.overlay).forEach(k=>delete MK.overlay[k]);
+    const clearOverlay=()=>{ Object.keys(MK.overlay).forEach(k=>delete MK.overlay[k]); MK.extra.forex=[]; MK.extra.crypto=[]; };
     if(!id){ clearOverlay(); L.id=""; L.epics=null; L.other=[]; L.error=null; L.loading=false; renderOther(); MK.render(); return; }
     // Ny lista: töm direkt så att den gamla listans instrument aldrig visas under den nya rubriken. Uppfriskning: behåll tills svaret kommit.
     if(!refresh){ clearOverlay(); L.id=id; L.name=(L.lists.find(w=>w.id===id)||{}).name||id; L.loading=true; L.error=null; L.epics=new Set(); L.other=[]; MK.render(); renderOther(); }
     try{
       const d=await (await fetch("/api/market/ig-lists/items?id="+encodeURIComponent(id),{cache:"no-store"})).json();
       if(gen!==L.gen) return;
+      if(d.env&&IG.st.env&&d.env!==IG.st.env) return;
       if(d.error) throw new Error(d.error);
-      const ms=d.markets||[];
+      const ms=d.markets||[], at=Date.now();
       clearOverlay();
-      L.error=null; L.epics=new Set(ms.filter(m=>m.category).map(m=>m.epic));
+      L.error=null; L.refreshError=null; L.at=at; L.epics=new Set(ms.filter(m=>m.category).map(m=>m.epic));
       L.other=ms.filter(m=>!m.category);
-      // IG-listans kurs är färskare än katalogens sparade rad: läggs ovanpå (bara fält som IG faktiskt skickade)
-      ms.forEach(m=>{ if(!m.category) return; const o={}; if(m.bid!=null&&m.offer!=null){ o.bid=m.bid; o.offer=m.offer; } if(m.percentageChange!=null){ o.changePercent=m.percentageChange; o.movementPercent=Math.abs(m.percentageChange); } if(m.marketStatus) o.marketStatus=m.marketStatus; MK.overlay[m.epic]=o; });
+      // IG-listans kurs (bara fält som IG faktiskt skickade) läggs ovanpå katalogradens sparade rad och märks "IG-lista … sedan"
+      ms.forEach(m=>{ if(!m.category) return; const o={listAt:at}; if(m.bid!=null&&m.offer!=null){ o.bid=m.bid; o.offer=m.offer; } if(m.percentageChange!=null){ o.changePercent=m.percentageChange; o.movementPercent=Math.abs(m.percentageChange); } if(m.marketStatus) o.marketStatus=m.marketStatus; MK.overlay[m.epic]=o; });
+      // Instrument som katalogen inte har ännu: visas ändå i rätt sektion, så att antalet alltid stämmer med IG-listan
+      ms.forEach(m=>{ if(m.category==="forex"||m.category==="crypto") MK.extra[m.category].push({ epic:m.epic, name:m.name, type:m.type, category:m.category, bid:null, offer:null, changePercent:null, marketStatus:null }); });
       IG.remember && IG.remember(ms.filter(m=>m.category));
-    }catch(e){ if(gen!==L.gen) return; L.error=e.message; L.epics=new Set(); }
-    L.loading=false; L.at=Date.now();
+    }catch(e){
+      if(gen!==L.gen) return;
+      // Uppfriskning som misslyckas (t.ex. IG:s läsgräns): behåll senaste kurser och säg det. Ny lista som misslyckas: visa felet.
+      if(refresh) L.refreshError=e.message; else { L.error=e.message; L.epics=new Set(); L.other=[]; }
+    }
+    L.loading=false;
     MK.render(); renderOther();
   }
   function apply(){
@@ -11091,7 +11118,7 @@ window.IGS = (function(){
   // Tom lista: säg varför (t.ex. trendfiltret kräver hämtad trend, IG-listan saknar instrument i kategorin)
   MK.setEmptyHint((cat)=>{
     const f=appliedFilters, why=[];
-    if(f.list){ if(L.loading) why.push("hämtar IG-listan…"); else if(L.error) why.push("IG-listan: "+L.error); else why.push(`IG-listan ${L.name} har inga ${cat==="forex"?"Forex":"Krypto"}-instrument`); }
+    if(f.list){ if(L.loading) why.push("hämtar IG-listan…"); else if(L.error) why.push("IG-listan: "+L.error); else if(!MK.extra[cat].length && ![...(L.epics||[])].some(e=>MK.all().some(m=>m.epic===e&&m.category===cat))) why.push(`IG-listan ${L.name} har inga ${cat==="forex"?"Forex":"Krypto"}-instrument`); else why.push(`IG-listan ${L.name} har ${cat==="forex"?"Forex":"Krypto"}-instrument, men övriga filter döljer dem`); }
     if(f.trend) why.push(`trendfiltret visar bara instrument där du hämtat trend (${Object.keys(enr).length} hämtade)`);
     if(f.fav) why.push(`★ Favoriter: ${fav.list.size} sparade`);
     if(f.selected) why.push(`endast markerade: ${MK.sel.size} markerade`);
@@ -11101,6 +11128,7 @@ window.IGS = (function(){
   ["mkf-list","mkf-cat","mkf-fav","mkf-selected","mkf-region","mkf-status","mkf-dir","mkf-trend","mkf-sort"].forEach(id=>$(id).addEventListener("change", apply));
   let qT=null;
   $("mkf-q").addEventListener("input", ()=>{ clearTimeout(qT); qT=setTimeout(apply, 250); });
+  $("mkf-q").addEventListener("keydown", (ev)=>{ if(ev.key==="Enter") clearTimeout(qT); });
   $("mkf-search").addEventListener("click",apply);
   $("mk-filters").addEventListener("keydown",ev=>{if(ev.key==="Enter"&&ev.target.id==="mkf-q"){ev.preventDefault();apply();}});
   $("mkf-reset").addEventListener("click",()=>{["mkf-list","mkf-cat","mkf-q","mkf-region","mkf-status","mkf-dir","mkf-trend","mkf-sort"].forEach(id=>$(id).value="");$("mkf-fav").checked=false;$("mkf-selected").checked=false;apply();});
@@ -11147,10 +11175,10 @@ window.IGS = (function(){
       MK.render();
     }catch(_){}
   }
-  IG.on("env", ()=>{ Object.keys(enr).forEach(k=>delete enr[k]); loadFav(); $("mkf-list").value=""; L.lists=[]; apply(); loadLists(); });
+  IG.on("env", ()=>{ Object.keys(enr).forEach(k=>delete enr[k]); loadFav(); $("mkf-list").innerHTML=`<option value="">IG-lista: alla instrument</option>`; L.lists=[]; apply(); loadLists(); });
   document.addEventListener("page-shown", (e)=>{ if(e.detail === "markets"){ loadFav(); loadSig(); if(!L.lists.length) loadLists(); if(appliedFilters.list && Date.now()-L.at>60000) loadListItems(); } });
   // Vald IG-lista: kurserna friskas upp en gång i minuten medan sidan är öppen (servern cachar 60 s)
-  setInterval(()=>{ if(appliedFilters.list && !L.loading && document.getElementById("page-markets").classList.contains("active")) loadListItems(); }, 60000);
+  setInterval(()=>{ if(appliedFilters.list && !L.loading && !document.hidden && document.getElementById("page-markets").classList.contains("active")) loadListItems(); }, 60000);
   setInterval(loadSig, 10000);
   loadFav(); apply(); loadLists();
 })();

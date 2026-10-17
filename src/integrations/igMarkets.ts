@@ -136,7 +136,7 @@ export function createIgMarkets(deps:{call?:typeof callIgAuthenticated;status?:t
     });
   }
   async function watchlist(mode:IgEnvironment,id:string){
-    connected(mode);if(typeof id!=="string"||!id.trim()||id.length>100)throw Error("Ogiltig IG-lista");
+    connected(mode);if(typeof id!=="string"||!/^[\p{L}\p{N} ._-]{1,100}$/u.test(id)||!id.trim()||/^[ .]+$/.test(id))throw Error("Ogiltig IG-lista"); // inga ".", ".." eller snedstreck: adressen får aldrig lämna watchlists/
     return cached(`watchlist:${mode}:${id}`,60000,async()=>{
       const data=await read(mode,`watchlists/${encodeURIComponent(id)}`,"GET","1");
       if(!Array.isArray(data.markets))throw Error("IG-listan kunde inte verifieras");
