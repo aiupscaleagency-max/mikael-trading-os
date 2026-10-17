@@ -15,7 +15,10 @@ export interface BrainLabel {
   /** "full" | "delvis (Risk saknas)" | "ofullständig" | "avbruten" */
   outcome: string;
   at: string;
+  /** Omgångens egna id (en agentsession har flera omgångar med samma sessionId) */
   runId: string;
+  /** Anteckningarnas gruppering (agentsessionens id eller analysens start) */
+  sessionId?: string;
 }
 
 // Etiketten sparas TILLSAMMANS med tipsens körning (anteckningarnas runId), så att topplistan aldrig

@@ -404,7 +404,7 @@ console.log("§12: hela kedjan (runHermesTurn) med låtsad hermes");
 const { runHermesTurn, abortHermesAnalysis } = await import("../src/orchestrator/hermesTurn.js");
 const AA = await import("../src/server/agentActivity.js");
 const { getBrainLabel, getFailedAttempt } = await import("../src/orchestrator/hermesLabel.js");
-const lblNow = () => getBrainLabel("demo", `analys-${AA.getAnalysis()!.startedAt}`);
+const lblNow = () => getBrainLabel("demo", AA.getAnalysis()!.hermes!.runId);
 const EPICS = [EA, EB];
 const trJson = (o: Record<string, unknown> = {}) => JSON.stringify({ instruments: [
   { epic: EA, action: "KÖP", entry: 100, tp: 102, sl: 99, score: 3, risk: "medel", sizePct: 1, why: "trend upp", ...o },
@@ -709,8 +709,9 @@ const start = () => AA.analysisStart("manuell");
   await runHermesTurn(params(), baseDeps({ signals: () => [] }));
   const { agentNotes } = await import("../src/server/igAgentNotes.js");
   const runA = agentNotes.top("demo").runId;
-  const lblA = getBrainLabel("demo", runA)!;
+  const lblA = lblNow()!;
   assert.match(lblA.text, /JEV delvis/);
+  assert.ok(agentNotes.top("demo").items.every((n) => n.tip?.brain?.text === lblA.text));
   await sleep(5);
   setFake({ scenarios: { "trading-claude": [{ text: trJson(), sleepMs: 3_000 }] } });
   start();
@@ -718,9 +719,35 @@ const start = () => AA.analysisStart("manuell");
   await sleep(300); abortHermesAnalysis("Mike stoppade");
   await assert.rejects(pb, /avbröts/);
   assert.equal(agentNotes.top("demo").runId, runA, "B sparar inga tips");
-  assert.equal(getBrainLabel("demo", runA)!.text, lblA.text, "A:s tips behåller A:s etikett");
+  assert.ok(agentNotes.top("demo").items.every((n) => n.tip?.brain?.text === lblA.text && n.tip?.brain?.roundId === lblA.runId), "A:s tips behåller A:s etikett");
   assert.equal(getFailedAttempt("demo")!.outcome.startsWith("avbruten"), true);
   ok("lyckad A + avbruten B: A:s tips behåller A:s etikett, B visas som senaste misslyckade försök");
+  {
+    // Agentsession: två omgångar med samma sessions-id men olika JEV-status och reservkropp
+    const { setNotesRunId } = await import("../src/server/igAgentNotes.js");
+    const one = (epic: string) => ({
+      tr: JSON.stringify({ instruments: [{ epic, action: "KÖP", entry: 100, tp: 102, sl: 99, score: 3, risk: "medel", sizePct: 1, why: "w" }] }),
+      adv: JSON.stringify({ reviews: [{ epic, verdict: "agree", action: null, sizePct: null, sl: null, why: "ok" }] }),
+      hanna: `[1] x\nTIPS_JSON:\n${JSON.stringify([{ epic, rank: 1, action: "KÖP", why: "w", entry: 100, tp: 102, sl: 99, sizePct: 1, horizonMin: 5, confidence: "medel", advisorOverride: null }])}`,
+    });
+    setNotesRunId("session-test-1");
+    const a1 = one(EA);
+    setFake({ scenarios: { "trading-claude": [{ text: a1.tr }, { text: a1.hanna }], "trading-chatgpt": [{ text: a1.adv }] } });
+    start();
+    await runHermesTurn(params({ symbols: [EA] }), baseDeps({ signals: () => [sig(EA)] }));
+    const b1 = one(EB);
+    setFake({ scenarios: { "trading-claude": [{ rc: 2, text: "x" }, { rc: 2, text: "x" }], "trading-chatgpt": [{ text: b1.tr }, { text: b1.adv }, { text: b1.hanna }] } });
+    start();
+    await runHermesTurn(params({ symbols: [EB], jev: preNo }), baseDeps({ signals: () => [] }));
+    setNotesRunId(null);
+    const top = agentNotes.top("demo");
+    assert.equal(top.runId, "session-test-1");
+    const ta2 = top.items.find((n) => n.epic === EA)!.tip!.brain!, tb2 = top.items.find((n) => n.epic === EB)!.tip!.brain!;
+    assert.notEqual(ta2.roundId, tb2.roundId);
+    assert.match(ta2.text, /JEV fullständig/); assert.ok(ta2.roles.some((r) => /Teknisk\+Risk: Claude Sonnet 5\.5 \(trading-claude\)/.test(r)));
+    assert.match(tb2.text, /utan JEV/); assert.ok(tb2.roles.some((r) => /trading-claude → reserv ChatGPT/.test(r)));
+    ok("agentsession: två omgångar, samma sessions-id; varje tips bär sin egen omgångs JEV-status och kropp/reserv");
+  }
 }
 
 console.log("LLM_ROUTE ej satt: oförändrat");

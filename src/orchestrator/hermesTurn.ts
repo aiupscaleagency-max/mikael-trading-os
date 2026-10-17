@@ -141,10 +141,13 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
   poll.unref?.();
   const roles: RoleStatus[] = [];
   let jev: JevStatus | null = null;
+  let lastLabel: import("./hermesLabel.js").BrainLabel | null = null;
   const finish = (outcome: HermesAnalysisMeta["outcome"], outcomeText: string): HermesAnalysisMeta => {
     const brain = `Hjärna: ${jev?.label ?? "utan JEV"} · Kropp: ${HERMES_BODIES.claude.label} + ${HERMES_BODIES.chatgpt.label}`;
     const meta: HermesAnalysisMeta = { outcome, outcomeText, jev, roles, brain, totalMs: Date.now() - t0, runId: costRunId };
-    const label = { text: brain, roles: roles.map(roleLine), jev: jev?.level ?? "utan", outcome: outcomeText, at: new Date().toISOString(), runId: notesRun };
+    // runId = omgångens eget id (costRunId); sessionId = anteckningarnas gruppering (agentsession)
+    const label = { text: brain, roles: roles.map(roleLine), jev: jev?.level ?? "utan", outcome: outcomeText, at: new Date().toISOString(), runId: costRunId, sessionId: notesRun };
+    lastLabel = label;
     // Bara en lyckad körning får etikett ihop med sina tips; misslyckade/avbrutna visas separat
     if (outcome === "full" || outcome === "delvis") setBrainLabel(p.env, label); else setFailedAttempt(p.env, label);
     log.info(`[Hermes] ${outcomeText} på ${((Date.now() - t0) / 1000).toFixed(1)} s · ${brain} · ${roles.map(roleLine).join(" · ")}`);
@@ -326,6 +329,11 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
     const missing = [riskStatus.status !== "lyckad" ? "Risk saknas" : null, advStatus.status !== "lyckad" && advStatus.status !== "överhoppad" ? "Advisor saknas" : null].filter(Boolean) as string[];
     const outcomeText = missing.length ? `delvis (${missing.join(", ")})` : "full";
     const meta = finish(missing.length ? "delvis" : "full", outcomeText);
+    // Varje tips bär metadata från SIN omgång, så att topplistan/korten aldrig visar en annan omgångs etikett
+    if (lastLabel) {
+      const l = lastLabel as import("./hermesLabel.js").BrainLabel;
+      for (const t of head.tips) t.brain = { text: l.text, roles: l.roles, jev: l.jev, outcome: l.outcome, roundId: l.runId, sessionId: notesRun, at: l.at };
+    }
     const reports = reportsFrom(rows, tr.text ?? "", riskStatus, reviews, advStatus);
     const summary = `${missing.length ? `⚠ ${outcomeText}. ` : ""}${meta.brain}\n${head.decision.briefingSummary}`;
     let notes;

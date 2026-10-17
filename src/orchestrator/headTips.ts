@@ -29,7 +29,10 @@ export interface AgentTip {
   note: string | null;
   /** true = inget IG-livepris fanns vid analysen: nivåerna är overifierade och måste kontrolleras mot IG innan order */
   unverifiedLevels?: boolean;
+  /** Hermes-läget: hjärna/kropp för just den analysomgång som gav tipset (inte sessionens senaste) */
+  brain?: TipBrain;
 }
+export interface TipBrain { text: string; roles: string[]; jev: string; outcome: string; roundId: string; sessionId: string; at: string }
 
 export const TIP_HORIZONS = [1, 5, 15, 30];
 export const TIPS_MARKER = "TIPS_JSON";

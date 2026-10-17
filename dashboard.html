@@ -10649,7 +10649,12 @@ window.AGTIP = (function(){
     const lv = [t.entry != null ? `entry ${px(t.entry)}` : "", t.takeProfit != null ? `TP ${px(t.takeProfit)}` : "", t.stopLoss != null ? `SL ${px(t.stopLoss)}` : ""].filter(Boolean).join(" · ");
     return `<b>#${esc(t.rank)}</b> <b style="color:${COL[t.action] || "#8b95a7"}">${esc(ACT[t.action] || t.action)}</b>`
       + (lv ? ` · ${t.unverifiedLevels ? '<b style="color:#f0b90b" title="Inget IG-livepris vid analysen">⚠ overifierade nivåer</b> ' : ""}${esc(lv)}` : "") + (t.sizeText ? ` · ${esc(t.sizeText)}` : "") + ` · ${esc(t.horizonMin)} min · säkerhet ${esc(CONF[t.confidence] || t.confidence)}`
-      + `<br><span style="color:var(--dim)">${esc(String(t.why || "").slice(0, 200))}${t.note ? ` (${esc(t.note)})` : ""}</span>`;
+      + `<br><span style="color:var(--dim)">${esc(String(t.why || "").slice(0, 200))}${t.note ? ` (${esc(t.note)})` : ""}</span>${brainLine(t)}`;
+  }
+  // Hermes-läget: hjärna/kropp för den omgång som gav just det här tipset
+  function brainLine(t){
+    if(!t || !t.brain) return "";
+    return `<br><span style="color:var(--dim);font-size:10px" title="Omgång ${esc(t.brain.roundId || "")}">${esc(t.brain.text)}${(t.brain.roles || []).length ? " · " + esc(t.brain.roles.join(" · ")) : ""}</span>`;
   }
   function button(t){
     if(!t || (t.action !== "buy" && t.action !== "sell")) return "";
@@ -10660,7 +10665,7 @@ window.AGTIP = (function(){
     const rows = list.map(t=>{
       const lv = (v)=> v == null ? "–" : esc(px(v));
       return `<tr><td><b>${esc(t.rank)}</b></td><td title="${esc(t.epic)}">${esc(t.name || IG.label(t.epic))}</td><td style="font-weight:800;color:${COL[t.action] || "#8b95a7"}">${esc(ACT[t.action] || t.action)}</td>`
-        + `<td>${esc(String(t.why || "").slice(0, 160))}${t.note ? ` <span style="color:var(--dim)">(${esc(t.note)})</span>` : ""}</td><td>${t.unverifiedLevels ? '<b style="color:#f0b90b" title="Inget IG-livepris vid analysen: kontrollera nivåerna mot IG innan order">⚠</b> ' : ""}${lv(t.entry)}</td><td style="color:#3fb950">${lv(t.takeProfit)}</td><td style="color:#f85149">${lv(t.stopLoss)}</td>`
+        + `<td>${esc(String(t.why || "").slice(0, 160))}${t.note ? ` <span style="color:var(--dim)">(${esc(t.note)})</span>` : ""}${brainLine(t)}</td><td>${t.unverifiedLevels ? '<b style="color:#f0b90b" title="Inget IG-livepris vid analysen: kontrollera nivåerna mot IG innan order">⚠</b> ' : ""}${lv(t.entry)}</td><td style="color:#3fb950">${lv(t.takeProfit)}</td><td style="color:#f85149">${lv(t.stopLoss)}</td>`
         + `<td>${esc(t.sizeText || "–")}</td><td>${esc(t.horizonMin)} min</td><td>${esc(CONF[t.confidence] || t.confidence)}</td><td>${button(t)}</td></tr>`;
     }).join("");
     return `<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="font-size:10px;color:var(--dim);text-transform:uppercase"><th>#</th><th>Instrument</th><th>Råd</th><th>Varför</th><th>Entry</th><th>TP</th><th>SL</th><th>Storlek</th><th>Horisont</th><th>Säkerhet</th><th></th></tr>${rows}</table></div>`;
