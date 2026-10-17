@@ -9,6 +9,7 @@ RUN npm ci --omit=dev
 COPY src ./src
 COPY tsconfig.json ./
 COPY dashboard.html ./
+COPY skills ./skills
 
 ENV NODE_ENV=production
 ENV DASHBOARD_PORT=3939

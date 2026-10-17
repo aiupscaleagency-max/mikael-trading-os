@@ -84,3 +84,6 @@ Lägg aldrig in nyckeln för hand och skriv aldrig ut dess värde.
 - **Bevisregeln** gäller när du gör en plan, analyserar eller bygger något stort:
   bara bevis, skilj på det du ser, tolkar och inte vet, och gå igenom din
   frågelista innan du säger klart. Se `docs/BEVISREGELN.md`.
+- **Skillen Omvänd tanke** (`skills/omvand-tanke/SKILL.md`) gäller alla
+  tradingagenter i varje analys, även diagramanalysen. Den läses in i Hermes-
+  prefixen; ändra skillfilen, inte koden, för att ändra regeln.
