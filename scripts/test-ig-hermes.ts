@@ -578,7 +578,9 @@ const start = () => AA.analysisStart("manuell");
     assert.equal(tl.action, "hold"); assert.equal(tl.sizePct, null); assert.match(tl.note!, /kom under analysen/);
     assert.equal(lv.headTrader.tips!.find((t) => t.epic === EB)!.action, "hold", "EB var redan AVVAKTA");
     assert.equal(AA.getAnalysis()!.hermes!.jev!.signal.perEpic[EA]!.veto, true);
-    ok("JEV-veto som kommer under Hannas anrop → slutligt tips AVVAKTA utan insats");
+    assert.match(lv.headTrader.tips!.find((t) => t.epic === EB)!.brain!.text, new RegExp(`JEV fullständig · veto under analysen: ${EA.replace(/\./g, "\\.")}`));
+    assert.match(AA.getAnalysis()!.hermes!.brain, /veto under analysen/);
+    ok("JEV-veto som kommer under Hannas anrop → slutligt tips AVVAKTA utan insats; etiketten visar 'veto under analysen'");
   }
   setFake({ authApiKey: true, scenarios: { "trading-chatgpt": [{ text: trJson() }, { text: advJson }, { text: hanna() }] } });
   start();
@@ -746,7 +748,12 @@ const start = () => AA.analysisStart("manuell");
     assert.notEqual(ta2.roundId, tb2.roundId);
     assert.match(ta2.text, /JEV fullständig/); assert.ok(ta2.roles.some((r) => /Teknisk\+Risk: Claude Sonnet 5\.5 \(trading-claude\)/.test(r)));
     assert.match(tb2.text, /utan JEV/); assert.ok(tb2.roles.some((r) => /trading-claude → reserv ChatGPT/.test(r)));
-    ok("agentsession: två omgångar, samma sessions-id; varje tips bär sin egen omgångs JEV-status och kropp/reserv");
+    const { combineRoundBrains } = await import("../src/orchestrator/hermesLabel.js");
+    const comb = combineRoundBrains([{ ...ta2 }, { ...tb2, outcome: "delvis (Risk saknas)" }]);
+    assert.equal(comb.outcome, "delvis (Risk saknas)"); assert.equal(comb.jev, "utan"); assert.equal(comb.rounds, 2);
+    assert.equal(combineRoundBrains([{ ...ta2 }]).outcome, "full");
+    assert.ok(fs.readFileSync("dashboard.html", "utf8").includes('t.brain.outcome && t.brain.outcome !== "full"'));
+    ok("agentsession: två omgångar, samma sessions-id; varje tips bär sin egen omgångs JEV-status och kropp/reserv; toppraden visar sämsta utfall och JEV-nivå");
   }
 }
 

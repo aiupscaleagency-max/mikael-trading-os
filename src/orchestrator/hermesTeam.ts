@@ -573,7 +573,11 @@ export function applyLateVetoes(tips: AgentTip[], jev: JevStatus, fresh: JevStat
     const j = jev.signal.perEpic[t.epic];
     if (j?.veto && added.includes(t.epic)) { forceHold(t, `JEV-veto${j.why ? `: ${j.why}` : ""}`); t.why = `JEV-veto. ${t.why}`.slice(0, 240); }
   }
-  if (added.length) log.warn(`[Hermes] JEV-veto under analysen: ${added.join(", ")} → AVVAKTA`);
+  if (added.length) {
+    // Etiketten ska visa vetot: "JEV fullständig · veto under analysen: X"
+    jev.label = `${jev.label.replace(/ · veto under analysen: .*$/, "")} · veto under analysen: ${Object.entries(jev.signal.perEpic).filter(([, v]) => v.why?.includes("kom under analysen")).map(([e]) => e).join(", ")}`;
+    log.warn(`[Hermes] JEV-veto under analysen: ${added.join(", ")} → AVVAKTA`);
+  }
   return added;
 }
 

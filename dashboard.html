@@ -10654,7 +10654,7 @@ window.AGTIP = (function(){
   // Hermes-läget: hjärna/kropp för den omgång som gav just det här tipset
   function brainLine(t){
     if(!t || !t.brain) return "";
-    return `<br><span style="color:var(--dim);font-size:10px" title="Omgång ${esc(t.brain.roundId || "")}">${esc(t.brain.text)}${(t.brain.roles || []).length ? " · " + esc(t.brain.roles.join(" · ")) : ""}</span>`;
+    return `<br><span style="color:var(--dim);font-size:10px" title="Omgång ${esc(t.brain.roundId || "")}">${esc(t.brain.text)}${t.brain.outcome && t.brain.outcome !== "full" ? ` · <b style="color:#f0b90b">${esc(t.brain.outcome)}</b>` : ""}${(t.brain.roles || []).length ? " · " + esc(t.brain.roles.join(" · ")) : ""}</span>`;
   }
   function button(t){
     if(!t || (t.action !== "buy" && t.action !== "sell")) return "";

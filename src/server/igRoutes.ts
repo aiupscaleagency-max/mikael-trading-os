@@ -447,7 +447,7 @@ export async function handleIgRoutes(
       const hl = process.env.LLM_ROUTE?.trim() === "hermes" ? await import("../orchestrator/hermesLabel.js") : null;
       // Etiketten följer varje tips (tip.brain = den omgång som gav tipset); toppraden visar omgångarnas etiketter
       const rounds = [...new Map(t.items.map((n) => n.tip?.brain).filter((b): b is NonNullable<typeof b> => !!b).map((b) => [b.roundId, b])).values()];
-      const brain = hl && rounds.length ? { text: [...new Set(rounds.map((r) => r.text))].join(" | "), roles: rounds.length === 1 ? rounds[0]!.roles : [], outcome: rounds.length === 1 ? rounds[0]!.outcome : "full", rounds: rounds.length } : null;
+      const brain = hl && rounds.length ? hl.combineRoundBrains(rounds) : null;
       const fail = hl ? hl.getFailedAttempt(env) : null;
       const failedAttempt = fail && (!t.at || fail.at > t.at) ? fail : null;
       send(res, 200, { env, label: envLabel(env), runId: t.runId, at: t.at, items: t.items.map((n) => ({ ...n, name: igMarketData.nameOf(n.epic, env) })), ...(brain ? { brain } : {}), ...(failedAttempt ? { failedAttempt } : {}) });
