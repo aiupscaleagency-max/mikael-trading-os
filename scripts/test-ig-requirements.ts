@@ -425,8 +425,38 @@ const mkBroker = (positions: any[], env: "demo" | "live" = "demo") => new IgBrok
   const cv = course.view();
   assert.equal(cv.canRun, false); assert.equal(cv.metrics, null, "inga påhittade mått"); assert.match(cv.note, /Python|Tiingo/);
   await assert.rejects(course.run(), /Python|Tiingo/);
-  for (const k of ["65", "43,1 %", "3,98", "12,8 %", "Historiskt kursresultat", "validerar <b>inte</b> 1–5 minuters", "Spread", "Slippage", "Avgifter", "Finansiering", "Sizing", "Expectancy", "Out-of-sample", 'data-page="library"', 'data-page="course"']) assert.ok(html.includes(k), k);
-  ok("F5 Backtest & kurs: Day 4-kursresultat märkt historiskt, körning spärrad utan Python/Tiingo, inga påhittade mått, rapportkrav listade");
+  assert.ok(!/<td>65<\/td>|43,1 %|12,8 %/.test(html), "inga handskrivna Day 4-siffror");
+  for (const k of ["Historiskt kursresultat", "course-day4", "Hämtade filer", "validerar <b>inte</b> 1–5 minuters", "Spread", "Slippage", "Avgifter", "Finansiering", "Sizing", "Expectancy", "Out-of-sample", 'data-page="library"', 'data-page="course"']) assert.ok(html.includes(k), k);
+  // F5b: lyckad körning ger riktiga mått + kort i Hämtade filer (äldre kort sparas med datum); misslyckad visar motorns orsak
+  {
+    const ws2 = path.join(tmp, "course2"), dl = path.join(tmp, "dl"), py = path.join(tmp, "py"); fs.mkdirSync(ws2); fs.mkdirSync(dl); fs.writeFileSync(py, "");
+    fs.writeFileSync(path.join(dl, "day-4-card.png"), "gammalt");
+    const spec = { name: "Luengos-12/21/50", instrument: { symbol: "BTCUSD", data_source: "tiingo" }, timeframe: { bar: "1d" }, unresolved: [] };
+    fs.writeFileSync(path.join(ws2, "strategy.json"), JSON.stringify(spec));
+    let fail = false;
+    const fake = async (_f: string, args: string[]) => {
+      const script = String(args[0] ?? "");
+      if (args[0] === "-c") return { stdout: "a".repeat(64) + "\n" };
+      if (script.endsWith("run_backtest.py")) {
+        if (fail) { fs.writeFileSync(path.join(ws2, "backtest-card.txt"), "NO RESULT\nFewer than 250 bars came back."); throw Object.assign(new Error("exit 2"), { stdout: "NO RESULT" }); }
+        fs.writeFileSync(path.join(ws2, "backtest-result.json"), JSON.stringify({ result_version: 1, specName: spec.name, inputIdentity: { specSha256: "a".repeat(64), barsSha256: "b".repeat(64) }, metrics: { trades: 12, netReturnPct: 6.9, maxDrawdownPct: 9.5 }, data: { source: "Tiingo 1d bars", startISO: "2014-12-01", endISO: "2026-10-16", bars: 4300, costBps: 6, adjustment: "unknown" }, context: { buyAndHoldPct: 500 }, warnings: [] }));
+      }
+      if (script.endsWith("make_card.py")) fs.writeFileSync(path.join(ws2, "day-4-card.png"), args.includes("--incomplete") ? "ofullständigt" : "nytt");
+      return { stdout: "" };
+    };
+    const c2 = createIgCourse({ workspace: ws2, python: py, bundle: path.resolve("reference/academy/ptqa-runtime-14758cc73bc9.zip"), runtime: path.join(tmp, "rt", "runtime"), downloads: dl, ready: () => true, run: fake });
+    assert.equal(c2.view().canRun, true);
+    await c2.run(); await c2.wait();
+    const v2: any = c2.view();
+    assert.equal(v2.status, "completed"); assert.equal(v2.metrics.trades, 12); assert.equal(v2.data.costBps, 6); assert.equal(v2.buyAndHoldPct, 500);
+    assert.equal(fs.readFileSync(path.join(dl, "day-4-card.png"), "utf8"), "nytt");
+    assert.ok(fs.readdirSync(dl).some((f) => /^day-4-card-.+\.png$/.test(f) && fs.readFileSync(path.join(dl, f), "utf8") === "gammalt"), "äldre kort sparat med datum");
+    fail = true; await c2.run(); await c2.wait();
+    const v3: any = c2.view();
+    assert.equal(v3.status, "failed"); assert.equal(v3.metrics, null, "inget gammalt resultat visas"); assert.match(v3.reason, /Fewer than 250 bars/);
+    assert.equal(fs.readFileSync(path.join(dl, "day-4-card.png"), "utf8"), "ofullständigt");
+  }
+  ok("F5 Backtest & kurs: Day 4-mått läses bara från verifierat resultat, kortet hamnar i Hämtade filer, orsak visas vid stopp, körning spärrad utan Python/Tiingo");
 }
 
 // ══ G. ProRealTime ══
