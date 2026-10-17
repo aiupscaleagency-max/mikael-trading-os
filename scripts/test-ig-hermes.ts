@@ -627,6 +627,18 @@ const start = () => AA.analysisStart("manuell");
   await assert.rejects(runHermesTurn(params(), baseDeps({ hermes: mk() })), /Hermes-läget vägrar/);
   assert.equal(calls().filter((c) => c.ev === "auth").length, 0); assert.equal(starts().length, 0);
   ok("fel version → ingen inloggningskontroll och ingen kropp startas");
+  {
+    const shared = mk();
+    setFake({ scenarios: { "trading-claude": [{ text: trJson() }, { text: hanna() }], "trading-chatgpt": [{ text: advJson }] } });
+    start();
+    await runHermesTurn(params(), baseDeps({ hermes: shared }));
+    assert.equal(AA.getAnalysis()!.status, "done");
+    setFake({ version: "0.23.0", defaults: { "trading-claude": { text: trJson() } } });
+    start();
+    await assert.rejects(runHermesTurn(params(), baseDeps({ hermes: shared })), /Hermes-versionen har ändrats \(0\.23\.0/);
+    assert.equal(starts().length, 0, "andra analysen stoppas före varje modellprocess");
+    ok("versionen kontrolleras om per analys: uppdatering mellan två analyser i samma process → andra stoppas före start");
+  }
   setFake({ authSleepMs: 5_000, defaults: { "trading-claude": { text: trJson() } } });
   start();
   const t2 = Date.now();

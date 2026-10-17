@@ -358,8 +358,13 @@ export function createHermesRoute(deps: HermesDeps = {}) {
     return p;
   }
 
-  /** Ny analys: inloggningskontrollen körs om (aldrig en ögonblicksbild över flera analyser). */
-  function beginAnalysis(): void { credsP = null; }
+  /** Ny analys: versions- och inloggningskontrollen körs om (aldrig en ögonblicksbild över flera analyser). */
+  function beginAnalysis(): void {
+    // Versionen kontrolleras om för VARJE analys (≈ 0,8 s): en Hermes-uppdatering under serverns livstid
+    // stoppar nästa analys innan någon kropp startas.
+    readyP = null;
+    credsP = null;
+  }
 
   function readUsage(file: string): Record<string, unknown> | null {
     try { return JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>; } catch { return null; }
