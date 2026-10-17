@@ -829,6 +829,64 @@ const start = () => AA.analysisStart("manuell");
   }
 }
 
+console.log("Hela vägen via runOrchestratedTurn: EN körning från start till slut");
+{
+  // Live-bugg 2026-10-17: orkestreraren stängde körningen direkt (saknad await) medan kedjan fortsatte.
+  const { runOrchestratedTurn } = await import("../src/orchestrator/orchestrator.js");
+  const { hermesAnalysisBusy, abortHermesAnalysis: abortAll } = await import("../src/orchestrator/hermesTurn.js");
+  const { useHermesRoute } = await import("../src/llm/hermesRoute.js");
+  const bars = Array.from({ length: 60 }, (_, i) => ({ openTime: Date.now() - (60 - i) * 60_000, closeTime: Date.now() - (59 - i) * 60_000 - 1, open: 100, high: 100.5, low: 99.5, close: 100 + Math.sin(i) * 0.1, volume: 1 }));
+  let positionsCalls = 0;
+  const fakeBroker = {
+    name: "ig-demo", mode: "paper",
+    getPositions: async () => { positionsCalls++; await sleep(150); return []; },
+    getAccount: async () => ({ balances: [], totalValueUsdt: 1000, updatedAt: Date.now(), balance: 1000, available: 900 }),
+    getKlines: async () => bars,
+    getTicker: async () => ({ symbol: EA, price: 100, changePct24h: 0, volume24h: 0 }),
+    lastKnownPositions: () => null,
+  };
+  const orchParams = () => ({
+    config: { mode: "paper", executionMode: "approve", anthropicApiKey: "", costCap: { dailyUsd: 1, weeklyUsd: 5 }, crypto: { symbols: [] }, stocks: { symbols: [] },
+      risk: { maxOpenPositions: 3, maxDailyLossUsd: 10, maxPositionUsd: 1, maxTotalExposureUsd: 1, defaultPositionUsd: 1, minPositionUsd: 1 }, engines: [], perplexity: { apiKey: "" } } as never,
+    state: { dailyRealizedPnlUsdt: 0, killSwitchActive: false } as never,
+    broker: fakeBroker as never, brokers: {}, risk: {} as never, engines: [], symbols: EPICS,
+  });
+  process.env.LLM_ROUTE = "hermes";
+  useHermesRoute(mk());
+  // Varje steg tar tid, så att vi hinner se att körningen är aktiv hela vägen
+  setFake({ scenarios: { "trading-claude": [{ text: trJson(), sleepMs: 400 }, { text: hanna(), sleepMs: 400 }], "trading-chatgpt": [{ text: advJson, sleepMs: 400 }] } });
+  start();
+  const samples: Array<{ busy: boolean; stage: string }> = [];
+  let finished = false;
+  const stage = () => { const s2 = starts(); const last = s2[s2.length - 1]; return !last ? (positionsCalls ? "förberedelse" : "budget") : `${last.profile}:${String(last.role ?? "").trim()}`; };
+  const sampler = setInterval(() => { if (!finished) samples.push({ busy: hermesAnalysisBusy("demo"), stage: stage() }); }, 25);
+  const res = await runOrchestratedTurn(orchParams());
+  finished = true; clearInterval(sampler);
+  assert.equal(AA.getAnalysis()!.status, "done");
+  assert.ok(res.headTrader.tips && res.headTrader.tips.length === 2);
+  const stages = new Set(samples.map((x) => x.stage));
+  for (const st of ["förberedelse", "trading-claude:TEKNISK ANALYTIKER", "trading-chatgpt:ADVISOR", "trading-claude:HANNA"]) assert.ok(stages.has(st), `steget ${st} provtogs`);
+  assert.ok(samples.length > 20 && samples.every((x) => x.busy), `busy=true i varje steg (${samples.filter((x) => !x.busy).map((x) => x.stage).join(", ")})`);
+  assert.equal(hermesAnalysisBusy("demo"), false, "ledig först efter att kedjan är klar");
+  ok(`runOrchestratedTurn: körningen aktiv i budget/förberedelse/Teknisk/Advisor/Hanna (${samples.length} prov), ledig först efteråt`);
+  // Avbrott under Advisor-steget stoppar kedjan (Hanna startas aldrig)
+  setFake({ scenarios: { "trading-claude": [{ text: trJson() }, { text: hanna() }], "trading-chatgpt": [{ text: advJson, sleepMs: 4_000, grandchild: true }] } });
+  start();
+  const pr = runOrchestratedTurn(orchParams());
+  for (let i = 0; i < 200 && !starts().some((c) => c.profile === "trading-chatgpt"); i++) await sleep(20);
+  assert.equal(hermesAnalysisBusy("demo"), true);
+  abortAll("Mike stoppade");
+  await assert.rejects(pr, /avbröts/);
+  await sleep(400);
+  assert.equal(AA.getAnalysis()!.status, "stopped");
+  assert.ok(!starts().some((c) => String(c.role ?? "").includes("HANNA")), "Hanna startas aldrig");
+  assert.equal(alive(Number(fs.readFileSync(path.join(fakeDir, "grandchild.pid"), "utf8"))), false);
+  assert.equal(hermesAnalysisBusy("demo"), false);
+  ok("abortHermesAnalysis() under Advisor-steget når kedjan via orkestreraren: stoppad, Hanna startas aldrig, inga processer kvar");
+  useHermesRoute(null);
+  delete process.env.LLM_ROUTE;
+}
+
 console.log("LLM_ROUTE ej satt: oförändrat");
 {
   delete process.env.LLM_ROUTE;

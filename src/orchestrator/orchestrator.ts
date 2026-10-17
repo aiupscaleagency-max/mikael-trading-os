@@ -154,7 +154,8 @@ async function runOrchestratedTurnInner(params: {
     const { runHermesTurn, hermesPreflight } = await import("./hermesTurn.js");
     const { agentStart, agentDone } = await import("../server/agentActivity.js");
     const symbols = params.symbols?.length ? params.symbols : [...config.crypto.symbols, ...config.stocks.symbols];
-    return runHermesTurn({
+    // await krävs: finally får inte stänga körningen förrän hela kedjan är klar (live-bugg 2026-10-17)
+    return await runHermesTurn({
       config, state, broker, brokers, risk, engines, userInstruction, symbols,
       env: notesEnv, spendAllowed: spendCheck.allowed, totalStart, run: hermesRun,
       // Signalen följer med in i förberedelsen (positioner → JEV), och JEV-anropet avbryts med den
