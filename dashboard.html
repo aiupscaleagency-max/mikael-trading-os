@@ -11060,8 +11060,15 @@ window.IGS = (function(){
       sel.innerHTML=`<option value="">IG-lista: alla instrument</option>`+(L.lists.length?L.lists.map(w=>`<option value="${esc(w.id)}">${esc(w.name)}</option>`).join(""):`<option value="" disabled>${esc(d.error?"IG-listorna kunde inte hämtas: "+d.error:"Inga IG-listor hittades")}</option>`);
       if(cur&&L.lists.some(w=>w.id===cur)) sel.value=cur;
       else if(cur){ sel.value=""; apply(); }
-    }catch(e){ $("mkf-list").title="IG-listorna kunde inte hämtas: "+e.message; }
+      if(!L.lists.length) retryLists();
+    }catch(e){ $("mkf-list").title="IG-listorna kunde inte hämtas: "+e.message; retryLists(); }
   }
+  // IG inte anslutet än eller tillfällig läsgräns: försök igen efter 30 s medan sidan är öppen (servern cachar lyckade svar 10 min)
+  let listRetryT=null;
+  // IG blir anslutet medan sidan är öppen: hämta listorna direkt (bara vid övergången ej ansluten → ansluten)
+  let wasConnected=!!IG.st.connected;
+  IG.on("account", (st)=>{ const now=!!(st&&st.connected); if(now&&!wasConnected&&!L.lists.length) loadLists(); wasConnected=now; });
+  function retryLists(){ clearTimeout(listRetryT); listRetryT=setTimeout(()=>{ if(!L.lists.length && !document.hidden && document.getElementById("page-markets").classList.contains("active")) loadLists(); else if(!L.lists.length) retryLists(); }, 30000); }
   async function loadListItems(){
     const id=appliedFilters.list, gen=++L.gen, refresh=id&&id===L.id&&!L.error;
     const clearOverlay=()=>{ Object.keys(MK.overlay).forEach(k=>delete MK.overlay[k]); MK.extra.forex=[]; MK.extra.crypto=[]; };
@@ -11077,8 +11084,10 @@ window.IGS = (function(){
       clearOverlay();
       L.error=null; L.refreshError=null; L.at=at; L.epics=new Set(ms.filter(m=>m.category).map(m=>m.epic));
       L.other=ms.filter(m=>!m.category);
-      // IG-listans kurs (bara fält som IG faktiskt skickade) läggs ovanpå katalogradens sparade rad och märks "IG-lista … sedan"
-      ms.forEach(m=>{ if(!m.category) return; const o={listAt:at}; if(m.bid!=null&&m.offer!=null){ o.bid=m.bid; o.offer=m.offer; } if(m.percentageChange!=null){ o.changePercent=m.percentageChange; o.movementPercent=Math.abs(m.percentageChange); } if(m.marketStatus) o.marketStatus=m.marketStatus; MK.overlay[m.epic]=o; });
+      // IG-listans svar ersätter katalogradens kurs helt och märks "IG-lista … sedan". Fält som IG inte skickade blir null
+      // (visas som "saknas"), så att en gammal katalogkurs aldrig ser färsk ut under listans tidsstämpel.
+      ms.forEach(m=>{ if(!m.category) return; const both=m.bid!=null&&m.offer!=null, chg=m.percentageChange!=null?m.percentageChange:null;
+        MK.overlay[m.epic]={ listAt:at, bid:both?m.bid:null, offer:both?m.offer:null, changePercent:chg, movementPercent:chg==null?null:Math.abs(chg), marketStatus:m.marketStatus||null }; });
       // Instrument som katalogen inte har ännu: visas ändå i rätt sektion, så att antalet alltid stämmer med IG-listan
       ms.forEach(m=>{ if(m.category==="forex"||m.category==="crypto") MK.extra[m.category].push({ epic:m.epic, name:m.name, type:m.type, category:m.category, bid:null, offer:null, changePercent:null, marketStatus:null }); });
       IG.remember && IG.remember(ms.filter(m=>m.category));
