@@ -81,3 +81,6 @@ Lägg aldrig in nyckeln för hand och skriv aldrig ut dess värde.
 - Kommentarer och commit-meddelanden på svenska, som resten av koden.
 - Kör `npm run verify` efter ändringar i stream-, signal- eller indikatorkod.
 - Påstå aldrig att något fungerar utan att ha kört det. Klistra in utdata.
+- **Bevisregeln** gäller när du gör en plan, analyserar eller bygger något stort:
+  bara bevis, skilj på det du ser, tolkar och inte vet, och gå igenom din
+  frågelista innan du säger klart. Se `docs/BEVISREGELN.md`.
