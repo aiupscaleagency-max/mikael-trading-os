@@ -4,7 +4,7 @@ import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
 import { getIgStatus, testIgConnection, getIgReadBudget, withIgPriority, isIgTemporaryRateError, igOrderExecutionEnabled, type IgEnvironment } from "../integrations/igConnection.js";
 import { localIgCredentialRequest, saveIgCredentials } from "../integrations/igCredentialStore.js";
 import { igChanged } from "../integrations/igEvents.js";
-import { getIgMarket, getIgHistory, searchIgMarkets } from "../integrations/igMarkets.js";
+import { getIgMarket, getIgHistory, searchIgMarkets, getIgWatchlists, getIgWatchlist, igMarketCategory } from "../integrations/igMarkets.js";
 import { getIgMarketDirectory, getIgDirectoryEnrichment, peekIgMarketDirectory, igLiveOnlyReferences } from "../integrations/igMarketDirectory.js";
 import { getIgOrderState, resolveIgUnknown, answerIgLateExit } from "../integrations/igOrders.js";
 import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
@@ -43,6 +43,8 @@ import { igDemoSimRouter } from "./igDemoSimLive.js";
 //   DELETE /api/market/watchlist/:epic  → ta bort
 //   GET  /api/market/directory?category=forex|crypto → IG-katalogen för aktiv miljö
 //   GET  /api/market/search?q=          → IG-sökning
+//   GET  /api/market/ig-lists           → IG:s egna listor (Populära marknader, Större valutapar …)
+//   GET  /api/market/ig-lists/items?id= → instrumenten i en IG-lista med IG:s kurs, förändring och status
 //   GET  /api/market/klines?symbol=EPIC&interval=1m&limit=300 → stängda IG-ljus + pågående + datatillstånd
 //   GET  /api/market/prices?symbols=a,b → kvoter med ålder/tillstånd
 //   GET  /api/market/sparkline?epic=    → minidiagram för Alla par (minne/cache först, skonsamt mot historikkvoten)
@@ -419,6 +421,23 @@ export async function handleIgRoutes(
     if (p === "/api/market/enrichment" && method === "GET") {
       const epic = String(url.searchParams.get("epic") ?? "");
       try { send(res, 200, await getIgDirectoryEnrichment(env, epic)); } catch (e) { send(res, 200, { epic, error: e instanceof Error ? e.message : String(e) }); }
+      return true;
+    }
+    // IG:s egna listor, samma som i IG-plattformen (Mike 2026-10-17). Bara läsning, aldrig order.
+    if (p === "/api/market/ig-lists" && method === "GET") {
+      try { const r = await getIgWatchlists(env); send(res, 200, { env, label: envLabel(env), lists: r.lists, updatedAt: r.updatedAt }); }
+      catch (e) { send(res, 200, { env, label: envLabel(env), lists: [], error: e instanceof Error ? e.message : String(e) }); }
+      return true;
+    }
+    if (p === "/api/market/ig-lists/items" && method === "GET") {
+      const id = String(url.searchParams.get("id") ?? "");
+      try {
+        const r = await getIgWatchlist(env, id);
+        // category: forex/crypto som i katalogen; null = utanför Forex/Krypto (index, aktier, råvaror) → bara visning
+        const markets = r.markets.map((m) => ({ ...m, category: igMarketCategory({ name: m.name, type: m.type }) }));
+        for (const m of markets) if (m.category) igMarketData.rememberName(env, m.epic, m.name, m.category);
+        send(res, 200, { env, label: envLabel(env), id, markets, updatedAt: r.updatedAt });
+      } catch (e) { send(res, 200, { env, label: envLabel(env), id, markets: [], error: e instanceof Error ? e.message : String(e) }); }
       return true;
     }
     if (p === "/api/market/search" && method === "GET") {
