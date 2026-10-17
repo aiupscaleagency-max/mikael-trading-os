@@ -567,6 +567,19 @@ const start = () => AA.analysisStart("manuell");
   const tn = vn.headTrader.tips!.find((t) => t.epic === EA)!;
   assert.equal(tn.action, "hold"); assert.equal(tn.sizePct, null); assert.match(tn.note!, /JEV-veto/);
   ok("JEV-veto i verklig form (NEUTRAL + jevDowngraded, valfri tidsram) → tipset ALLTID AVVAKTA");
+  {
+    // Vetot kommer medan Hanna svarar: signalerna läses om före publicering
+    let late = false;
+    setFake({ scenarios: { "trading-claude": [{ text: trJson() }, { text: hanna(), sleepMs: 400 }], "trading-chatgpt": [{ text: advJson }] } });
+    start();
+    setTimeout(() => { late = true; }, 200);
+    const lv = await runHermesTurn(params(), baseDeps({ signals: () => late ? [sig(EA), vetoSig, sig(EB)] : [sig(EA), sig(EB)] }));
+    const tl = lv.headTrader.tips!.find((t) => t.epic === EA)!;
+    assert.equal(tl.action, "hold"); assert.equal(tl.sizePct, null); assert.match(tl.note!, /kom under analysen/);
+    assert.equal(lv.headTrader.tips!.find((t) => t.epic === EB)!.action, "hold", "EB var redan AVVAKTA");
+    assert.equal(AA.getAnalysis()!.hermes!.jev!.signal.perEpic[EA]!.veto, true);
+    ok("JEV-veto som kommer under Hannas anrop → slutligt tips AVVAKTA utan insats");
+  }
   setFake({ authApiKey: true, scenarios: { "trading-chatgpt": [{ text: trJson() }, { text: advJson }, { text: hanna() }] } });
   start();
   await runHermesTurn(params(), baseDeps());

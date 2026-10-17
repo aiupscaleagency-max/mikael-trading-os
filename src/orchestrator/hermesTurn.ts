@@ -10,7 +10,7 @@ import { track, agentSkip, turnPhase, turnEnd, analysisEnd, getAnalysis } from "
 import { runHeadTrader } from "./headTrader.js";
 import {
   jevStatusFor, buildMarketBlock, sharedPrefix, technicalRiskTail, advisorTail, validateTechRisk, validateAdvisor,
-  applyAdvisorTightening, runRole, skippedStatus, roleLine, roleName, messageText, HERMES_TIMEOUTS,
+  applyAdvisorTightening, applyLateVetoes, runRole, skippedStatus, roleLine, roleName, messageText, HERMES_TIMEOUTS,
   type ChainCtx, type MarketBlockDeps, type PaidDeps, type RoleStatus, type TrRow, type AdvReview, type JevStatus, type MarketBlock,
 } from "./hermesTeam.js";
 import { setBrainLabel, setFailedAttempt } from "./hermesLabel.js";
@@ -315,6 +315,9 @@ export async function runHermesTurn(p: HermesTurnParams, deps: HermesTurnDeps = 
     const headStatus = head.hermesHead ?? skippedStatus("head", "ingen status", "misslyckad");
     roles.push(headStatus);
     if (headStatus.status !== "lyckad" || !head.tips) return incomplete(headStatus);
+
+    // Före publicering: signalerna läses om, nya JEV-veton gäller (tidigare behålls)
+    applyLateVetoes(head.tips, jevNow, jevStatusFor(pre.jev, pre.jevAt, p.symbols, signals()));
 
     // Före visning: konto/miljö/körning ändrad → kasta analysen (§10.5)
     const why = ac.signal.aborted ? String(ac.signal.reason ?? "avbruten") : staleWhy();

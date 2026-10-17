@@ -555,6 +555,28 @@ export function finalizeHermesTips(tips: AgentTip[], c: FinalizeCtx): AgentTip[]
   return tips;
 }
 
+/**
+ * JEV-veto som kommit UNDER analysen (Codex 4): signalerna läses om precis före publicering.
+ * Nya veton läggs till (tidigare behålls) och tipsen för de instrumenten blir AVVAKTA utan insats.
+ * Returnerar instrumenten som fick ett nytt veto.
+ */
+export function applyLateVetoes(tips: AgentTip[], jev: JevStatus, fresh: JevStatus): string[] {
+  const added: string[] = [];
+  for (const [epic, f] of Object.entries(fresh.signal.perEpic)) {
+    const was = jev.signal.perEpic[epic];
+    if (f.veto && !was?.veto) {
+      jev.signal.perEpic[epic] = { ...(was ?? f), veto: true, why: `${f.why ?? "JEV-veto"} (kom under analysen)` };
+      added.push(epic);
+    }
+  }
+  for (const t of tips) {
+    const j = jev.signal.perEpic[t.epic];
+    if (j?.veto && added.includes(t.epic)) { forceHold(t, `JEV-veto${j.why ? `: ${j.why}` : ""}`); t.why = `JEV-veto. ${t.why}`.slice(0, 240); }
+  }
+  if (added.length) log.warn(`[Hermes] JEV-veto under analysen: ${added.join(", ")} → AVVAKTA`);
+  return added;
+}
+
 /** Svar från Anthropic-formade meddelanden → text (för betald reserv). */
 export function messageText(m: Anthropic.Message): string {
   return m.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("\n").trim();
