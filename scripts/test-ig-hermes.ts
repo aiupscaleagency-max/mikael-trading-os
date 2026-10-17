@@ -294,6 +294,14 @@ const fin = (tips: ReturnType<typeof tip>[], o: Partial<import("../src/orchestra
   rawRows: tips.map((t) => ({ epic: t.epic })), riskRows: [trRow(EA), trRow(EB)], tightened: [trRow(EA), trRow(EB)], advisorReviews: [], riskOk: true, advisorStatus: "lyckad", mode: "paper",
   jev: T.jevStatusFor(preOk, now, [EA, EB], [sig(EA), sig(EB)]), block: block(), livePrice: () => 100, now: () => now, ...o,
 });
+{
+  // Bevisregeln ligger i den gemensamma prefixen: Teknisk+Risk, Advisor och Hanna får alla samma regel
+  const pre = T.sharedPrefix({ block: block(), jev: T.jevStatusFor(preNo, now, [EA], []), maxStakePct: 2, currency: "SEK", horizonMin: 15, mode: "paper" });
+  assert.ok(pre.includes(T.BEVISREGELN), "bevisregeln saknas i prefixen");
+  assert.ok(pre.indexOf(T.BEVISREGELN) < pre.indexOf("──── JEV"), "bevisregeln ska ligga före underlaget");
+  assert.ok(pre.includes("JEV-läge: utan JEV"), "JEV-läget ska synas så regel 3 kan gälla");
+  ok("bevisregeln finns i den gemensamma prefixen (alla tre roller)");
+}
 const actionable = (ts: Array<{ action: string; sizePct: number | null }>) => ts.filter((t) => t.action !== "hold" || t.sizePct !== null).length;
 {
   assert.equal(actionable(fin([tip(EA), tip(EB)])), 2);

@@ -166,13 +166,23 @@ export async function buildMarketBlock(runId: string, env: "demo" | "live", epic
 
 export interface PromptContext { block: MarketBlock; jev: JevStatus; maxStakePct: number; currency: string | null; horizonMin: number; mode: "paper" | "live"; userInstruction?: string }
 
+// Bevisregeln (docs/BEVISREGELN.md): arbetssättet från REA (github.com/morluto/rea, MIT),
+// omskrivet för trading. Gäller alla tre rollerna eftersom den ligger i den gemensamma prefixen.
+export const BEVISREGELN = `Bevisregeln (gäller varje svar):
+1. Bygg bara på underlaget och JEV ovan. Hitta aldrig på priser, nyheter eller nivåer.
+2. Skilj på det du ser i datan, det du tolkar och det du inte vet. Är något gammalt, saknas eller säger emot annat underlag: välj hellre AVVAKTA än att gissa.
+3. Är JEV-läget "utan JEV" eller "JEV delvis", eller står det "JEV saknas" för ett instrument: var extra sträng. Kräv att flera tidsramar pekar åt samma håll och välj hellre mindre sizePct.
+4. "why" nämner det som bär beslutet (till exempel "1h och 4h ned, RSI 28") eller det som saknas.`;
+
 const HERMES_COMMON_SYSTEM = `Du ingår i Mikes AI-tradingteam på IG (CFD; KÖP = lång, SÄLJ = kort). Ingen i kedjan lägger order: ni ger bara analys och tips som Mike själv granskar och godkänner. Inga verktyg finns i denna körning.
-Svara ENDAST med JSON enligt rollinstruktionen sist, utan resonemang i fritext. Siffror som JSON-siffror. "why" är högst en mening.`;
+Svara ENDAST med JSON enligt rollinstruktionen sist, utan resonemang i fritext. Siffror som JSON-siffror. "why" är högst en mening.
+${BEVISREGELN}`;
 
 export function sharedPrefix(c: PromptContext): string {
   const b = c.block;
   const t = (ms: number) => new Date(ms).toISOString().slice(11, 19);
   const jevLines = [
+    `JEV-läge: ${c.jev.label}`,
     `Preflight: ${c.jev.preflight.status === "ok" ? `djup ${c.jev.preflight.depth ?? "?"}, granskning ${c.jev.preflight.review ?? "?"}` : `saknas (${c.jev.preflight.detail})`} [${c.jev.preflight.at.slice(11, 19)}]`,
     ...Object.entries(c.jev.signal.perEpic).map(([e, j]) => `${e}: ${j.signal ? `signal ${j.signal}` : "ingen riktad signal"}${j.available ? ` · JEV regim ${j.regime ?? "?"}, riktning ${j.direction ?? "?"}${j.confidence !== null ? ` ${j.confidence.toFixed(2)}` : ""}` : j.signal ? " · JEV saknas" : ""}${j.veto ? ` · VETO (${j.why})` : ""}`),
   ];
