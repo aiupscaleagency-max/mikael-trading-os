@@ -13,6 +13,21 @@ trap 'rmdir data-ig/restart.lock' EXIT
 trading_root="$(pwd -P)"
 echo "2/4: Kontrollerar TypeScript. Vänta tills kontrollen är klar…"
 ./node_modules/.bin/tsc --noEmit -p .
+# Autostart (launchd, alltid Demo): låt launchd starta om, annars startar vi två botar.
+if launchctl print "gui/$(id -u)/com.aiupscale.mto-ig" >/dev/null 2>&1; then
+  echo "3/4: Boten körs av autostart, startar om via launchd (Demo-läge)…"
+  launchctl kickstart -k "gui/$(id -u)/com.aiupscale.mto-ig"
+  for attempt in {1..60}; do
+    new_trading_pid="$(lsof -tiTCP:3940 -sTCP:LISTEN || true)"
+    if [[ -n "$new_trading_pid" ]]; then
+      echo "4/4: Trading-OS startad på 3940: PID $new_trading_pid, kod $(git rev-parse --short HEAD)."
+      exit 0
+    fi
+    sleep 1
+  done
+  echo 'Botstarten kunde inte bekräftas. Kontrollera data-ig/bot.log.' >&2
+  exit 1
+fi
 echo "3/4: Kontrollerar och stoppar den befintliga boten…"
 trading_pid="$(lsof -tiTCP:3940 -sTCP:LISTEN || true)"
 if [[ "$trading_pid" == *$'\n'* ]]; then
