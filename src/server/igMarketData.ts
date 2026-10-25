@@ -50,6 +50,8 @@ export const REST_FALLBACK_EVERY_MS = 60_000;          // handelsbar marknad
 export const REST_FALLBACK_CLOSED_EVERY_MS = 300_000;  // stängd/EDIT-marknad (t.ex. vanlig forex på helgen)
 /** Ett diagram/serie som ingen frågat efter på så här länge slutar följas (ingen ström, ingen historikpollning). */
 export const SERIES_TTL_MS = 150_000;
+/** Stängd marknad: högst en REST-historikhämtning per serie så här ofta (sparar IG:s veckokvot). */
+export const CLOSED_REFRESH_MS = 30 * 60_000;
 
 interface Series { closed: Candle[]; forming: Candle | null; historyError: string | null; updatedAt: number; seeding?: Promise<void>; historyRetryAt?: number }
 
@@ -412,6 +414,10 @@ export function createIgMarketData(deps: {
       if (igAnalysisActive(env) || now() < (s.historyRetryAt ?? 0)) continue;
       if (s.historyError && s.closed.length < 50 && now() >= (s.historyRetryAt ?? 0) && !s.seeding) { s.seeding = refreshHistory(env, epic, iv).finally(() => { s.seeding = undefined; }); continue; }
       if (streamUp && streamedKeys.get(env)?.has(x)) continue;
+      // Stängd marknad (2026-10-25): inga nya ljus kan komma, men varje REST-hämtning kostar ~200 datapunkter av
+      // IG:s veckokvot för historik. Högst en hämtning per CLOSED_REFRESH_MS per serie medan IG säger att marknaden är stängd.
+      const ms = quotes.get(k(env, epic))?.marketStatus;
+      if (ms && ms !== "TRADEABLE" && s.closed.length && now() - (s.updatedAt ?? 0) < CLOSED_REFRESH_MS) continue;
       if (last && now() >= last.closeTime + IV_MS[iv]! + 5_000 && !s.seeding) { s.seeding = refreshHistory(env, epic, iv).finally(() => { s.seeding = undefined; }); }
     }
     // Sist i varvet, så att ett långsamt REST-svar inte fördröjer historikslingan ovan.
