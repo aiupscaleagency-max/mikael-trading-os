@@ -434,6 +434,7 @@ const tracked: Array<{ agent: string; route: string; costUsd?: number }> = [];
 let paidCalls = 0;
 const baseDeps = (o: Record<string, unknown> = {}) => ({
   hermes: mk(),
+  memory: async () => "",
   signals: () => [sig(EA), sig(EB)],
   market: {
     klines: async () => ({ klines: Array.from({ length: 60 }, (_, i) => ({ openTime: Date.now() - (60 - i) * 60_000, closeTime: Date.now() - (59 - i) * 60_000 - 1, open: 100, high: 100.5, low: 99.5, close: 100 + Math.sin(i) * 0.1, volume: 1 })), source: "IG", igLive: { price: 100, ageSec: 2, source: "IG-strömmen" } }),

@@ -4,3 +4,5 @@ for (const k of ["IG_READ_BUDGET_PER_ENV", "IG_READ_BUDGET_TOTAL", "IG_READ_RESE
 // Tiingo-reserven för minidiagram: ingen riktig nyckel i testerna (inga nätverksanrop). Tom sträng = saknas.
 process.env.TIINGO_API_KEY = "";
 process.env.TIINGO_NO_FILE_KEY = "1";
+// Agenternas journal (Supabase via trading-memory): aldrig från testerna (inga nätverksanrop, inga rader).
+process.env.TRADING_MEMORY_OFF = "true";

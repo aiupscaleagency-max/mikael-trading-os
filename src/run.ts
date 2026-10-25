@@ -192,6 +192,10 @@ async function runOnce(
       }
     }
   }
+  // Agenternas journal: varje JEV-stopp sparas som "avvisad" direkt (även när inget par blir kvar). Bara IG Demo.
+  if (jevStopped.length && primaryBroker instanceof IgBroker && primaryBroker.env === "demo" && config.mode !== "live") {
+    void import("./memory/journal.js").then((j) => j.recordJevRejections(jevStopped)).catch(() => {});
+  }
   const preflightStale = igTurnStale(igTurn);
   if (preflightStale) {
     log.warn(`[analys] ${preflightStale}`);

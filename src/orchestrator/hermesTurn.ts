@@ -63,6 +63,25 @@ export interface HermesTurnDeps {
   /** Endast tester: fel i ett förberedande steg före huvudsteget (körningen ska ändå stängas) */
   prepHook?: () => Promise<void>;
   stake?: { pct: number; amount: number | null; currency: string | null; minPct: number; horizonMin: number };
+  /** Tradingminnet till promptens MINNE-del (tester). I drift: tidigare analyser + agenternas journal. */
+  memory?: () => Promise<string>;
+}
+
+/** Längsta väntan på minnet efter att underlaget är klart (läsningen startar parallellt med underlaget). */
+const MEMORY_WAIT_MS = 2_000;
+
+/**
+ * Minnet till agenterna: tidigare analyser för paren + journalens lärdomar och avvisade förslag.
+ * Bara verkliga rader följer med (inga fasta rubriker eller uppmaningar), så tomt minne = ingen MINNE-del.
+ */
+export async function agentMemory(symbols: string[]): Promise<string> {
+  const { memorySummary } = await import("../memory/tradeMemory.js");
+  const { journalSummary } = await import("../memory/journal.js");
+  const [summary, journal] = await Promise.all([memorySummary(symbols).catch(() => ""), journalSummary()]);
+  // Bottens facit räknas i USD-format ($); kontot är i SEK, så valutatecknet tas bort här
+  const facts = summary.split("\n").filter((l) => l.startsWith("- ") && !l.startsWith("- Inga stängda")).map((l) => l.replace(/\$/g, ""));
+  const past = facts.length ? `TIDIGARE ANALYSER (IG Demo):\n${facts.join("\n")}`.slice(0, 1300) : "";
+  return [past, journal].filter(Boolean).join("\n");
 }
 
 export interface HermesAnalysisMeta {
@@ -287,13 +306,21 @@ async function runHermesTurnInner(p: HermesTurnParams, deps: HermesTurnDeps, run
       nameOf: (e) => igMarketData.nameOf(e, p.env),
       intervals: shortIntervals(),
     };
+    // Tradingminnet läses parallellt med underlaget (bara IG Demo). Felar eller dröjer det blir minnet tomt.
+    const memoryP = p.env === "demo" && p.config.mode !== "live"
+      ? (deps.memory ?? (() => agentMemory(p.symbols)))().catch(() => "")
+      : Promise.resolve("");
     const block: MarketBlock = await guard("underlaget", buildMarketBlock(costRunId, p.env, p.symbols, market));
     const s = currentStake();
     const stake = deps.stake ?? { pct: s?.pct ?? 1, amount: s?.amount ?? null, currency: s?.currency ?? null, minPct: stakeStartPct(), horizonMin: getHorizonMin() };
     // Live = IG Live-kontot ELLER MODE=live (aldrig bara config.mode: Demo får inte märkas live, och IG Live får aldrig behandlas som papper)
     const live = p.env === "live" || p.config.mode === "live";
     const mode: "paper" | "live" = live ? "live" : "paper";
-    const pctx = { block, jev: jevNow, maxStakePct: stake.pct, currency: stake.currency, horizonMin: stake.horizonMin, mode, userInstruction: p.userInstruction };
+    const memory = await Promise.race([memoryP, new Promise<string>((r) => setTimeout(() => {
+      log.info(`[minne] minnet hann inte fram på ${MEMORY_WAIT_MS} ms, analysen körs utan`);
+      r("");
+    }, MEMORY_WAIT_MS).unref())]);
+    const pctx = { block, jev: jevNow, maxStakePct: stake.pct, currency: stake.currency, horizonMin: stake.horizonMin, mode, userInstruction: p.userInstruction, memory };
     const prefix = sharedPrefix(pctx);
 
     // Kostnad: Hermes 0 USD (räknas inte mot taket); betald reserv registreras med sin väg
