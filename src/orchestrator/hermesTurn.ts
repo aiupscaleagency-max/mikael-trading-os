@@ -449,6 +449,19 @@ async function runHermesTurnInner(p: HermesTurnParams, deps: HermesTurnDeps, run
       });
       agentNotes.record(notes);
     } catch { /* anteckningarna är bara en spegel */ }
+    // Hannas KÖP/SÄLJ-tips blir förslag i Väntande ordrar (Mike 2026-11-02). Manuell: väntar på Godkänn.
+    // Automatisk (bara IG Demo): agenterna godkänner via samma väg som knappen. Ett fel stoppar aldrig analysen.
+    try {
+      const { IgBroker } = await import("../brokers/ig.js");
+      if (p.broker instanceof IgBroker && !staleWhy()) {
+        const igb = p.broker;
+        const { createIgPendingOrder, broadcastEvent } = await import("../server/api.js");
+        const { queueTipsAsOrders } = await import("../server/agentOrders.js");
+        const q = await queueTipsAsOrders(head.tips, `broker:${igb.name}`, (b) => createIgPendingOrder(b, igb));
+        if (q.queued) broadcastEvent("pending-orders", { from: "hanna", queued: q.queued, auto: q.auto });
+        if (q.queued || q.skipped.length) log.info(`[agentordrar] ${q.queued} i kön (${q.auto} auto-godkända)${q.skipped.length ? `, hoppade över: ${q.skipped.join("; ")}` : ""}`);
+      }
+    } catch (e) { log.warn(`[agentordrar] tipsen kunde inte läggas i kön: ${(e as Error).message}`); }
     turnEnd(`Hermes-turen klar på ${((Date.now() - t0) / 1000).toFixed(1)} s`);
     analysisEnd({ status: "done", regime: "uncertain", summary: summary.slice(0, 1500), picks: [], orders: [], ...(notes ? { notes } : {}), hermes: meta });
     const totalMs = Date.now() - p.totalStart;

@@ -11,6 +11,7 @@ import type { BrokerAdapter } from "../brokers/adapter.js";
 import { computeIndicators } from "../indicators/ta.js";
 import { log } from "../logger.js";
 import { autoAllowed, saveExecutionMode, setExecutionMode } from "./executionModeStore.js";
+import { getAgentOrdersMode, setAgentOrdersMode, restoreAgentOrdersMode, setAgentOrderApprover, isAgentSource, maybeAutoApprove } from "./agentOrders.js";
 import { config } from "../config.js";
 import { getCostSummary } from "../cost/tracker.js";
 import { IgBroker, IG_EXECUTION_OFF } from "../brokers/ig.js";
@@ -1058,6 +1059,50 @@ export function directAnalysisSymbols(v: unknown): { ok: true; symbols: string[]
   return { ok: true, symbols: list.length ? list : null };
 }
 
+/** Godkänn eller avvisa ett förslag i Väntande ordrar. Samma väg för Mikes knapp och agenternas Automatisk. */
+async function decidePendingOrder(id: string, action: "approve" | "reject", brokers: Record<string, BrokerAdapter>, byAgents = false): Promise<{ status: number; body: Record<string, unknown> }> {
+  const reply = (status: number, body: Record<string, unknown>) => ({ status, body });
+  if (approvingIds.has(id)) { return reply(200, { ok: false, error: "Ordern håller redan på att läggas" }); }
+  // Lås direkt (före första await) så att ett dubbelklick aldrig skickar två ordrar
+  if (action === "approve") approvingIds.add(id);
+  const p = await getPendingOrder(id);
+  if (!p) { approvingIds.delete(id); return reply(404, { ok: false, error: "Ordern finns inte" }); }
+  if (p.status !== "pending") { approvingIds.delete(id); return reply(200, { ok: false, error: `Ordern är redan ${p.status}` }); }
+  if (action === "approve" && isExpired(p)) {
+    approvingIds.delete(id);
+    await updatePendingOrder(id, { status: "expired" });
+    broadcastEvent("pending-orders", { id });
+    return reply(200, { ok: false, error: "Förslaget är för gammalt (tiden har gått ut). Kör en ny analys." });
+  }
+  if (action === "reject") {
+    const upd = await updatePendingOrder(id, { status: "rejected" });
+    log.info(`Väntande order avvisad: ${p.side} ${p.symbol}`);
+    userAction(`avvisade ${p.side} ${p.symbol}`, { to: "orders", coin: p.symbol });
+    broadcastEvent("pending-orders", { id });
+    return reply(200, { ok: true, order: upd });
+  }
+  userAction(`${byAgents ? "agenterna (Automatisk) godkände" : "godkände"} ${p.side} ${p.symbol}`, { to: "broker", coin: p.symbol });
+  let result: Awaited<ReturnType<typeof executeApprovedOrder>>;
+  // Låset släpps först när statusen är sparad (annars kan ett nytt
+  // godkännande hinna se "pending" och skicka ordern en gång till)
+  try { result = await executeApprovedOrder(p, brokers); } catch (err) { approvingIds.delete(id); throw err; }
+  if (!result.ok && result.keepPending) {
+    approvingIds.delete(id);
+    return reply(200, { ok: false, order: p, error: `${result.error} Ordern ligger kvar och väntar.` });
+  }
+  let upd: Awaited<ReturnType<typeof updatePendingOrder>>;
+  try {
+    upd = await updatePendingOrder(id, result.ok
+      ? { status: "done", result: result.result }
+      : { status: "failed", error: result.error });
+  } finally { approvingIds.delete(id); }
+  broadcastEvent("pending-orders", { id });
+  // Utfallet syns i trädet: lagd eller fel, med orsaken
+  if (result.ok) agentDone("broker", `${p.side} ${p.symbol} lagd`);
+  else agentFail("broker", `${p.side} ${p.symbol}: ${String(result.error).slice(0, 100)}`);
+  return reply(200, { ok: result.ok, order: upd, error: result.ok ? undefined : result.error });
+}
+
 export function startServer(
   port: number,
   brokers: Record<string, BrokerAdapter>,
@@ -1067,6 +1112,9 @@ export function startServer(
   initLiveLayer(brokers, broadcastEvent);
   // Medan IG Live visas kräver varje order Godkänn (AUTO gäller bara Demo). Sparat val ändras inte.
   setActiveLiveCheck(activeBrokerIsLive);
+  // Agenternas ordrar: Automatisk godkänner via exakt samma väg som Mikes Godkänn-knapp (bara IG Demo)
+  setAgentOrderApprover(async (id) => { const r = await decidePendingOrder(id, "approve", brokers, true); return { ok: r.body.ok === true, error: typeof r.body.error === "string" ? r.body.error : undefined }; });
+  void restoreAgentOrdersMode();
   // Startad i LIVE (MODE=live + LIVE_TRADING_CONFIRMED) → Bybit LIVE är aktiv
   // mäklare direkt, så att en LIVE-order aldrig tyst blir TEST efter omstart.
   if (liveAllowedByServer() && brokers.ig && !activeBrokerName) {
@@ -1549,9 +1597,27 @@ export function startServer(
         }
       }
 
+      // ── Agenternas ordrar: Manuell (Mike godkänner) / Automatisk (agenterna godkänner, bara IG Demo) ──
+      if (url.pathname === "/api/agent-orders-mode" && method === "GET") {
+        const env = igMarketData.getActiveEnv();
+        json(res, { mode: getAgentOrdersMode(), env, autoAllowed: env === "demo", effective: env === "demo" ? getAgentOrdersMode() : "manual" });
+        return;
+      }
+      if (url.pathname === "/api/agent-orders-mode" && method === "POST") {
+        const { mode } = JSON.parse((await readBody(req)) || "{}") as { mode?: string };
+        if (mode !== "manual" && mode !== "auto") { jsonStatus(res, 400, { ok: false, error: "Välj manual eller auto." }); return; }
+        const env = igMarketData.getActiveEnv();
+        const r = await setAgentOrdersMode(mode, env);
+        if (!r.ok) { jsonStatus(res, 409, r); return; }
+        userAction(`agenternas ordrar: ${mode === "auto" ? "Automatisk (IG Demo)" : "Manuell"}`, { to: "orders" });
+        broadcastEvent("agent-orders-mode", { mode });
+        json(res, { ok: true, mode: getAgentOrdersMode(), env, autoAllowed: env === "demo" });
+        return;
+      }
+
       // ── Väntande ordrar (EXECUTION_MODE=approve) ──
       if (url.pathname === "/api/pending-orders" && method === "GET") {
-        json(res, { orders: await listPendingOrders(), executionMode: effectiveExecutionMode() });
+        json(res, { orders: await listPendingOrders(), executionMode: effectiveExecutionMode(), agentOrdersMode: getAgentOrdersMode(), env: igMarketData.getActiveEnv() });
         return;
       }
 
@@ -1567,7 +1633,9 @@ export function startServer(
             if (r.ok) {
               broadcastEvent("pending-orders", { id: r.pendingOrder.id });
               userAction(`la ${r.pendingOrder.side} ${r.pendingOrder.name ?? r.pendingOrder.symbol} i kön (${igb.env === "live" ? "IG Live" : "IG Demo"})`, { to: "orders", coin: r.pendingOrder.symbol });
-              json(res, r);
+              // Agentförslag (t.ex. Öppningsvakten): i Automatisk + IG Demo godkänner agenterna direkt
+              const agentDecision = isAgentSource(r.pendingOrder.source) ? await maybeAutoApprove(r.pendingOrder) : "väntar";
+              json(res, { ...r, agentDecision });
             } else jsonStatus(res, r.status ?? 400, r);
             return;
           }
@@ -1653,48 +1721,8 @@ export function startServer(
         if (m && method === "POST") {
           const id = m[1] as string;
           const action = m[2] as string;
-          if (approvingIds.has(id)) { json(res, { ok: false, error: "Ordern håller redan på att läggas" }); return; }
-          // Lås direkt (före första await) så att ett dubbelklick aldrig skickar två ordrar
-          if (action === "approve") approvingIds.add(id);
-          const p = await getPendingOrder(id);
-          if (!p) { approvingIds.delete(id); jsonStatus(res, 404, { ok: false, error: "Ordern finns inte" }); return; }
-          if (p.status !== "pending") { approvingIds.delete(id); json(res, { ok: false, error: `Ordern är redan ${p.status}` }); return; }
-          if (action === "approve" && isExpired(p)) {
-            approvingIds.delete(id);
-            await updatePendingOrder(id, { status: "expired" });
-            broadcastEvent("pending-orders", { id });
-            json(res, { ok: false, error: "Förslaget är för gammalt (tiden har gått ut). Kör en ny analys." });
-            return;
-          }
-          if (action === "reject") {
-            const upd = await updatePendingOrder(id, { status: "rejected" });
-            log.info(`Väntande order avvisad: ${p.side} ${p.symbol}`);
-            userAction(`avvisade ${p.side} ${p.symbol}`, { to: "orders", coin: p.symbol });
-            broadcastEvent("pending-orders", { id });
-            json(res, { ok: true, order: upd });
-            return;
-          }
-          userAction(`godkände ${p.side} ${p.symbol}`, { to: "broker", coin: p.symbol });
-          let result: Awaited<ReturnType<typeof executeApprovedOrder>>;
-          // Låset släpps först när statusen är sparad (annars kan ett nytt
-          // godkännande hinna se "pending" och skicka ordern en gång till)
-          try { result = await executeApprovedOrder(p, brokers); } catch (err) { approvingIds.delete(id); throw err; }
-          if (!result.ok && result.keepPending) {
-            approvingIds.delete(id);
-            json(res, { ok: false, order: p, error: `${result.error} Ordern ligger kvar och väntar.` });
-            return;
-          }
-          let upd: Awaited<ReturnType<typeof updatePendingOrder>>;
-          try {
-            upd = await updatePendingOrder(id, result.ok
-              ? { status: "done", result: result.result }
-              : { status: "failed", error: result.error });
-          } finally { approvingIds.delete(id); }
-          broadcastEvent("pending-orders", { id });
-          // Utfallet syns i trädet: lagd eller fel, med orsaken
-          if (result.ok) agentDone("broker", `${p.side} ${p.symbol} lagd`);
-          else agentFail("broker", `${p.side} ${p.symbol}: ${String(result.error).slice(0, 100)}`);
-          json(res, { ok: result.ok, order: upd, error: result.ok ? undefined : result.error });
+          const r = await decidePendingOrder(m[1] as string, m[2] as "approve" | "reject", brokers);
+          if (r.status === 200) json(res, r.body); else jsonStatus(res, r.status, r.body);
           return;
         }
       }
