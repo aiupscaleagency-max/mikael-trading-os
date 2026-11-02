@@ -62,6 +62,8 @@ interface TicketRecord {
   side: "BUY" | "SELL";
   status: "queued" | "rejected";
   pendingOrderId?: string;
+  /** Alla köposter biljetten skapade (en stängning kan bli flera, en per position) */
+  pendingOrderIds?: string[];
   error?: string;
 }
 
@@ -283,16 +285,20 @@ export function createBridgeHandler(deps: BridgeDeps) {
     if (!ticketRate()) { send(res, 429, { ok: false, error: `Högst ${TICKETS_PER_HOUR} biljetter per timme` }); return; }
     const broker = igFor(deps, env);
     if (!broker) { send(res, 404, { ok: false, error: `IG ${env} finns inte i den här instansen` }); return; }
+    // Samma som läsningarna: en biljett får aldrig få Trading-OS att logga in mot IG
+    if (!connected(broker)) { send(res, 503, { ok: false, connected: false, error: `IG ${env === "live" ? "Live" : "Demo"} är inte anslutet i Trading-OS just nu. Ingen biljett skapad.` }); return; }
 
     ticketBusy.add(ticketId);
     try {
       // Vitlista: bara de här fälten går vidare. Källan sätts här, aldrig av avsändaren.
-      const body: Record<string, unknown> = { source: `grok:${agent}`.slice(0, 60) };
+      const source = `grok:${agent}`.slice(0, 60);
+      const tag = `[Biljett ${ticketId} från ${agent}]`;
+      const body: Record<string, unknown> = { source };
       for (const k of ["symbol", "side", "orderType", "limitPrice", "takeProfit", "stopLoss", "stakePct", "horizonSec"] as const) {
         if (b[k] !== undefined && b[k] !== null) body[k] = b[k];
       }
       const reason = oneLine(b.reason, 160);
-      body.reason = `[Biljett ${ticketId} från ${agent}]${reason ? ` ${reason}` : ""}`;
+      body.reason = `${tag}${reason ? ` ${reason}` : ""}`;
       const r = await deps.createPending(body, broker);
       const rec: TicketRecord = {
         ticketId, env, agent, createdAt: new Date(now()).toISOString(), symbol: String(body.symbol ?? ""), side: body.side === "SELL" ? "SELL" : "BUY",
@@ -300,11 +306,16 @@ export function createBridgeHandler(deps: BridgeDeps) {
         ...(r.ok ? { pendingOrderId: r.pendingOrder.id } : { error: r.error }),
       };
       if (r.ok) {
-        // Varje biljett har ett bäst-före: ett gammalt förslag ska aldrig kunna godkännas timmar senare
-        if (!r.pendingOrder.expiresAt) {
-          const ttl = Math.max(1, Number(process.env.BRIDGE_TICKET_TTL_MIN) || DEFAULT_TICKET_TTL_MIN);
-          await updatePendingOrder(r.pendingOrder.id, { expiresAt: new Date(now() + ttl * 60_000).toISOString() });
+        // Varje köpost från biljetten får ett bäst-före (det tidigaste av eget och TTL): ett gammalt förslag
+        // ska aldrig kunna godkännas timmar senare. En stängning (M3) kan skapa flera poster; alla tas med.
+        const ttl = Math.max(1, Number(process.env.BRIDGE_TICKET_TTL_MIN) || DEFAULT_TICKET_TTL_MIN);
+        const limit = now() + ttl * 60_000;
+        const mine = (await listPendingOrders()).filter((o) => o.id === r.pendingOrder.id || (o.status === "pending" && o.source === source && (o.reason ?? "").includes(tag)));
+        for (const o of mine) {
+          const cur = o.expiresAt ? Date.parse(o.expiresAt) : Infinity;
+          if (!(cur <= limit)) await updatePendingOrder(o.id, { expiresAt: new Date(limit).toISOString() });
         }
+        rec.pendingOrderIds = mine.map((o) => o.id);
         deps.broadcast("pending-orders", { id: r.pendingOrder.id });
         log.info(`[bron] biljett ${ticketId} från ${agent} → Godkänn-kön (${env === "live" ? "IG Live" : "IG Demo"}) ${rec.side} ${rec.symbol}`);
       } else {

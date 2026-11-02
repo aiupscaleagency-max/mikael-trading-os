@@ -43,7 +43,14 @@ const seen: Record<string, unknown>[] = [];
 const createPending = async (b: Record<string, unknown>, broker: InstanceType<typeof IgBroker>) => {
   seen.push(b);
   if (b.symbol === "NEKAS.X") return { ok: false as const, error: "Ordergrinden stoppade", status: 409 };
-  const p = await addPendingOrder({ source: String(b.source), venue: `broker:${broker.name}`, live: broker.mode === "live", symbol: String(b.symbol), side: b.side === "SELL" ? "SELL" : "BUY", reason: String(b.reason ?? "") });
+  const common = { source: String(b.source), venue: `broker:${broker.name}`, live: broker.mode === "live", symbol: String(b.symbol), side: (b.side === "SELL" ? "SELL" : "BUY") as "BUY" | "SELL" };
+  // Som M3 i createIgPendingOrder: motsatt riktning stänger, en köpost per position, orsaken efter "·"
+  if (b.symbol === "STANG.X") {
+    const first = await addPendingOrder({ ...common, closeDealId: "D7", reason: `Stänger lång position 1 (D7) · ${String(b.reason).slice(0, 120)}` });
+    await addPendingOrder({ ...common, closeDealId: "D8", reason: `Stänger lång position 2 (D8) · ${String(b.reason).slice(0, 120)}` });
+    return { ok: true as const, pendingOrder: first, quote: null };
+  }
+  const p = await addPendingOrder({ ...common, reason: String(b.reason ?? ""), ...(b.horizonSec ? { horizonSec: Number(b.horizonSec) } : {}) });
   return { ok: true as const, pendingOrder: p, quote: null };
 };
 const journalRows: Record<string, unknown>[] = [];
@@ -184,6 +191,32 @@ try {
   assert.equal(pend.json.pending.length, 1);
   assert.equal(pend.json.pending[0].source, "grok:alessio");
   ok("väntande godkännanden kan läsas");
+
+  // 16. Lång tidshorisont får inte förlänga bäst-före (addPendingOrder sätter annars upp till 30 dagar)
+  const hz = await call("POST", "/bridge/v1/tickets", WRITE, { ...t, ticketId: "alessio-0020", horizonSec: 30 * 86400 });
+  assert.equal(hz.status, 201);
+  const hzOrder = (await listPendingOrders()).find((o) => o.id === hz.json.pendingOrder.id)!;
+  assert.ok(Date.parse(hzOrder.expiresAt!) - Date.now() <= 15 * 60_000, "bäst-före längre än 15 min");
+  ok("lång tidshorisont: biljetten går ändå ut efter 15 min");
+
+  // 17. Stängning av flera positioner: alla köposter får bäst-före och sparas på biljetten
+  const cl = await call("POST", "/bridge/v1/tickets", WRITE, { ...t, ticketId: "alessio-0021", symbol: "STANG.X", side: "SELL" });
+  assert.equal(cl.status, 201);
+  const clIds: string[] = cl.json.ticket.pendingOrderIds;
+  assert.equal(clIds.length, 2);
+  for (const o of (await listPendingOrders()).filter((x) => clIds.includes(x.id))) {
+    assert.ok(o.expiresAt && Date.parse(o.expiresAt) - Date.now() <= 15 * 60_000, `${o.id} saknar bäst-före`);
+  }
+  ok("stängning som blir flera köposter: alla går ut efter 15 min");
+
+  // 18. Biljett mot Live som inte är anslutet: ingen inloggning, ingen köpost
+  const before = (await listPendingOrders()).length, seenBefore = seen.length;
+  const lt = await call("POST", "/bridge/v1/tickets", WRITE, { ...t, ticketId: "alessio-0022", env: "live" });
+  assert.equal(lt.status, 503);
+  assert.equal(calls.connectTries, 0);
+  assert.equal(seen.length, seenBefore);
+  assert.equal((await listPendingOrders()).length, before);
+  ok("biljett mot ej anslutet Live: nekas utan att Trading-OS loggar in");
 
   console.log("Bron: alla tester gick igenom");
 } finally {

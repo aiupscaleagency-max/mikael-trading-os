@@ -60,7 +60,8 @@ curl -s -X POST -H "Authorization: Bearer $TOS_WRITE_TOKEN" -H "Content-Type: ap
 - `ticketId` måste vara unik (6–64 tecken). Skickas samma id igen kommer samma svar tillbaka, utan ny order.
 - Biljetten går genom samma ordergrind och budget som allt annat i Trading-OS. Nekar grinden får boxen
   felet tillbaka (`ok: false`, `error`).
-- Godkänns den inte inom 15 minuter går den ut (status `expired`).
+- Godkänns den inte inom 15 minuter går den ut (status `expired`), även med lång `horizonSec`.
+- `503` = den miljön är inte inloggad i Trading-OS just nu. Ingen biljett skapas.
 - **Obs:** en biljett i motsatt riktning mot en öppen position på samma EPIC blir en **stängning** av den
   positionen (samma regel som i dashboarden), inte en ny position.
 - Högst 20 biljetter per timme.
