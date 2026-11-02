@@ -2,7 +2,8 @@ import type { Account, Kline, Position, Ticker } from "../types.js";
 import { getIgReadBudget, getIgHistoryBlockedUntil, withIgPriority, withoutIgPriority, IG_HISTORY_RATE_ERROR, IG_HISTORY_BLOCK_MS, IG_ORDER_READ_NEED, type IgEnvironment } from "../integrations/igConnection.js";
 import { withIgReadConsumer } from "../integrations/igReadStats.js";
 import { igMarketData, type IgQuote } from "./igMarketData.js";
-import { createTiingoBars, tiingoBarsShared, TIINGO_AGENT_LABEL, type TiingoFreq, type TiingoBarsResult } from "./tiingoIntraday.js";
+import { createTiingoBars, tiingoBarsShared, tiingoTickerFor, TIINGO_AGENT_LABEL, type TiingoFreq, type TiingoBarsResult } from "./tiingoIntraday.js";
+import { igForexMultiplier } from "./igForexMultiplier.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Agenternas marknadsdata för IG-instrument (Mike 2026-10-11).
@@ -103,6 +104,8 @@ export function createIgAgentData(deps: {
   tiingo?: { bars: (epic: string, name: string | null | undefined, f: TiingoFreq) => Promise<TiingoBarsResult>; hint: (list: Array<{ epic: string; name?: string | null }>) => void } | null;
   streamAccount?: (env: IgEnvironment) => { balance: number | null; available: number | null; profitLoss: number | null; at: number } | null;
   now?: () => number;
+  /** Forex: IG:s verifierade prisrepresentation (kurs → IG-punkter) för Tiingo-ljusen, null = okänd */
+  fxMultiplier?: (env: IgEnvironment, epic: string) => Promise<number | null>;
 } = {}) {
   const memory = deps.memory ?? ((epic, iv, env) => igMarketData.closed(epic, iv, env));
   const dataEnv = deps.dataEnv ?? ((env, epic) => igMarketData.dataEnv(env, epic));
@@ -134,6 +137,7 @@ export function createIgAgentData(deps: {
   }
   const historyBlockedUntil = deps.historyBlockedUntil ?? getIgHistoryBlockedUntil;
   const tiingo = deps.tiingo === undefined ? createTiingoBars() : deps.tiingo;
+  const fxMultiplier = deps.fxMultiplier ?? (async (env: IgEnvironment, epic: string) => (await igForexMultiplier.get(env, epic))?.multiplier ?? null);
   const streamAccount = deps.streamAccount ?? ((env) => igMarketData.streamAccount(env));
   const now = deps.now ?? Date.now;
   const ownHistoryBlock = new Map<IgEnvironment, number>();
@@ -197,7 +201,14 @@ export function createIgAgentData(deps: {
     let t: TiingoBarsResult;
     try { t = await tiingo.bars(epic, nameOf(env, epic) ?? nameOf(dataEnv(env, epic), epic), f); }
     catch { return { klines: [], source: "ingen", sourceKey: "none", note: [...notes, "Tiingo-reserven misslyckades"].join("; "), igLive: live }; }
-    const k = t.bars.length ? aggregateBars(t.bars, IV_MS[f === "1min" ? "1m" : f === "1hour" ? "1h" : "1d"]!, IV_MS[iv]!, now()).slice(-lim) : [];
+    let k = t.bars.length ? aggregateBars(t.bars, IV_MS[f === "1min" ? "1m" : f === "1hour" ? "1h" : "1d"]!, IV_MS[iv]!, now()).slice(-lim) : [];
+    // Forex: Tiingo anger kurs, IG ofta punkter. Räkna om med IG:s verifierade representation; saknas den
+    // jämförs Tiingo som förut (och avvisas av ±3 %-kontrollen om enheterna skiljer sig).
+    if (k.length && tiingoTickerFor(epic, nameOf(env, epic))?.kind === "fx") {
+      let m: number | null = null;
+      try { m = await fxMultiplier(dataEnv(env, epic), epic); } catch { m = null; }
+      if (m !== null && m !== 1) k = k.map((b) => ({ ...b, open: b.open * m!, high: b.high * m!, low: b.low * m!, close: b.close * m! }));
+    }
     if (k.length < 20) return { klines: [], source: "ingen", sourceKey: "none", note: [...notes, `Tiingo: ${t.note ?? "för få ljus"}`].join("; "), igLive: live };
     // Priskontroll mot IG: Tiingo måste ligga nära IG-livepriset, annars är det fel par/kontrakt eller gammal data
     let deviationPct: number | null = null;

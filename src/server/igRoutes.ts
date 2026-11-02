@@ -11,6 +11,7 @@ import { igMarketData, type IgQuote, type Candle } from "./igMarketData.js";
 import { igSparklines } from "./igSparklines.js";
 import { chartClosedSeries } from "./igChartSeries.js";
 import { igChartBackdrop } from "./igChartBackdrop.js";
+import { igForexMultiplier } from "./igForexMultiplier.js";
 import { agentNotes } from "./igAgentNotes.js";
 import { currentStake } from "../risk/stakeLadder.js";
 import { igOrderMoneyView } from "../integrations/igRiskLimits.js";
@@ -466,7 +467,8 @@ export async function handleIgRoutes(
       // Demo-simulering: Live-instrument som saknas på IG Demo läses från Live (src), visas i Demo-vyn märkta
       const src = dataEnvFor(env, epic), sim = src !== env;
       let meta: Record<string, unknown> = {};
-      try { const m = await getIgMarket(src, epic); if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(src, epic, m.name, m.category); igMarketData.setRestQuote(src, epic, m.quote, m.instrument?.streamingPricesAvailable); // Samma redan hämtade IG-svar ger ett uttryckligt ekonomiskt underlag, aldrig anslutningsuppgifter.
+      let ownMarket: Awaited<ReturnType<typeof getIgMarket>> | null = null; // för forexbeviset till Tiingo-bakgrunden
+      try { const m = await getIgMarket(src, epic); ownMarket = m; if (m.epic !== epic) throw new Error("IG svarade för fel instrument"); igMarketData.rememberName(src, epic, m.name, m.category); igMarketData.setRestQuote(src, epic, m.quote, m.instrument?.streamingPricesAvailable); // Samma redan hämtade IG-svar ger ett uttryckligt ekonomiskt underlag, aldrig anslutningsuppgifter.
         const instrument = m.instrument as Record<string, unknown>;
         const rules = m.calculationRules as Record<string, unknown>;
         const pick = (value: Record<string, unknown>, keys: string[]) => Object.fromEntries(keys.map((key) => [key, value[key] ?? null]));
@@ -492,7 +494,9 @@ export async function handleIgRoutes(
         const q = igMarketData.quote(epic, src);
         const mid = q && Number.isFinite(q.bid) && Number.isFinite(q.offer) ? (Number(q.bid) + Number(q.offer)) / 2 : null;
         backdrop = await igChartBackdrop.get({ env: src, epic, name: (meta.name as string) ?? igMarketData.nameOf(epic, src), interval: iv, limit,
-          forex: meta.type === 'CURRENCIES', nativePriceMultiplier: (meta.calculationRules as {nativePriceMultiplier?:number}|undefined)?.nativePriceMultiplier,
+          forex: meta.type === 'CURRENCIES', nativePriceMultiplier: (meta.calculationRules as {nativePriceMultiplier?:number}|undefined)?.nativePriceMultiplier
+            // Demo saknar ibland forexbeviset: Live:s verifierade värde lånas (bara visning, se igForexMultiplier)
+            ?? (meta.type === 'CURRENCIES' && ownMarket ? (await igForexMultiplier.get(src, epic, ownMarket as never))?.multiplier ?? null : null),
           igBars: closed.length, historyError, igFirstOpenMs: closed[0]?.openTime ?? forming?.openTime ?? null, livePrice: mid });
       } catch { backdrop = null; }
       send(res, 200, {
