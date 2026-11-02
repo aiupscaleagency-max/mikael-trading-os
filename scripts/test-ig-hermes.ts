@@ -91,6 +91,7 @@ console.log("K2: hermesRoute (låtsad binär)");
   assert.deepEqual(c.envKeys.filter((k: string) => k !== "__CF_USER_TEXT_ENCODING"), ["HOME", "PATH"]); // macOS lägger själv till __CF_USER_TEXT_ENCODING
   assert.deepEqual(c.args.slice(0, 2), ["-p", "trading-chatgpt"]);
   assert.equal(c.args[c.args.indexOf("-t") + 1], "context_engine");
+  assert.ok(c.args[c.args.indexOf("-s") + 1]?.split(",").includes("mikes-tradingregler"), "Mikes tradingregler förladdas i varje analys");
   assert.equal(c.args[c.args.indexOf("-m") + 1], "gpt-6-sol");
   assert.equal(c.args[c.args.indexOf("--provider") + 1], "openai-codex");
   assert.ok(c.args.includes("--usage-file"));

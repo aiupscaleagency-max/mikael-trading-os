@@ -46,6 +46,12 @@ export const HERMES_BODIES: Record<HermesBodyId, HermesBody> = {
 export const HERMES_PINNED_VERSION = "0.22.2"; // R1 omkört 2026-10-16: -t context_engine verktygsfritt, AGENTS.md läses inte, api_calls 1 (se plan §13)
 /** Det enda verktygsläget som är verifierat verktygsfritt (§9.1) */
 export const HERMES_TOOLSET = "context_engine";
+/**
+ * Skills som förladdas i VARJE analysanrop (Mike 2026-11-02): Mikes tradingregler, REA (arbetssättet bakom
+ * Bevisregeln) och strategierna från kursen, samma som i Gemini-chatten. Förladdning kräver inget verktyg,
+ * så körningen är fortfarande verktygsfri. Omvänd tanke ligger redan i prompten (skills/omvand-tanke).
+ */
+export const HERMES_SKILLS = "mikes-tradingregler,reverse-engineer-anything,scarface-breakout-retest,riley-nano-reversal,velez-scalp,orr-opening-range-reversal,morgon-scalping-orb";
 /** Väntetid mellan SIGTERM och SIGKILL (§10.4) */
 export const HERMES_KILL_GRACE_MS = 5_000;
 
@@ -405,7 +411,7 @@ export function createHermesRoute(deps: HermesDeps = {}) {
       if (opts.signal?.aborted) throw new HermesError("aborted", "avbruten");
       cwd = freshCwd();
       const usageFile = path.join(cwd, "usage.json");
-      const args = ["-p", opts.body.profile, "-z", opts.prompt, "-t", HERMES_TOOLSET, "-m", opts.body.model, "--provider", opts.body.provider, "--usage-file", usageFile];
+      const args = ["-p", opts.body.profile, "-z", opts.prompt, "-t", HERMES_TOOLSET, "-s", HERMES_SKILLS, "-m", opts.body.model, "--provider", opts.body.provider, "--usage-file", usageFile];
       const out = await run(args, { cwd, timeoutMs: opts.timeoutMs, signal: opts.signal, deadlineAt: opts.deadlineAt });
       const ms = Date.now() - t0;
       // Stoppat av oss: orsaken avgör (aldrig rc 143/137 som providerfel)
