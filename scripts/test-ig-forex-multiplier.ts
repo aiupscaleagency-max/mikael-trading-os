@@ -36,8 +36,11 @@ const inst = (scalingFactor: number) => ({ epic: EPIC, scalingFactor, onePipMean
   assert.equal(await none.get("demo", EPIC), null); assert.equal(reads, r0, "saknat bevis cachas");
   clock += FX_MULTIPLIER_MISS_TTL_MS + 1; await none.get("demo", EPIC); assert.ok(reads > r0, "försöker igen efter väntetiden");
   // IG-fel: null, aldrig undantag
-  const err = createIgForexMultiplier({ market: async () => { throw new Error("IG begränsade antal läsanrop"); } });
-  assert.equal(await err.get("demo", EPIC), null);
+  let fail = true;
+  const err = createIgForexMultiplier({ market: async (env) => { if (fail) throw new Error("IG begränsade antal läsanrop"); return env === "live" ? live : demo; } });
+  assert.equal(await err.get("demo", EPIC), null); assert.equal(err.peek("demo", EPIC), null);
+  fail = false; assert.equal((await err.get("demo", EPIC))?.multiplier, 10000, "IG-fel cachas inte");
+  fail = true; assert.equal(err.peek("demo", EPIC)?.multiplier, 10000, "peek: senast verifierade värde utan IG-läsning");
   console.log("PASS: Demo lånar Live:s verifierade forexrepresentation (samma scalingFactor/onePipMeans), cachas, inget lån vid olikheter eller fel");
 }
 

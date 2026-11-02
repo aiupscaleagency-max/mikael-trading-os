@@ -42,6 +42,7 @@ export function createIgForexMultiplier(deps: {
     const k = `${env}|${epic}`, hit = cache.get(k);
     if (hit && now() - hit.at < (hit.value ? FX_MULTIPLIER_TTL_MS : FX_MULTIPLIER_MISS_TTL_MS)) return hit.value;
     let value: FxMultiplier | null = null;
+    // IG-fel (t.ex. läsgränsen) cachas inte: nästa anrop försöker igen
     try {
       const mine = own ?? await market(env, epic);
       const v = verified(mine);
@@ -53,11 +54,16 @@ export function createIgForexMultiplier(deps: {
         const same = (key: string) => String(mine?.instrument?.[key] ?? "") === String(live?.instrument?.[key] ?? "");
         if (lv !== null && live?.epic === epic && mine?.instrument && same("scalingFactor") && same("onePipMeans")) value = { multiplier: lv, borrowedFromLive: true };
       }
-    } catch { value = null; }
+    } catch { return null; }
     cache.set(k, { at: now(), value });
     return value;
   }
-  return { get };
+  /** Bara cachen (ingen IG-läsning), t.ex. när marknadsläsningen nyss nekades */
+  function peek(env: IgEnvironment, epic: string): FxMultiplier | null {
+    const hit = cache.get(`${env}|${epic}`);
+    return hit?.value && now() - hit.at < FX_MULTIPLIER_TTL_MS ? hit.value : null;
+  }
+  return { get, peek };
 }
 
 export const igForexMultiplier = createIgForexMultiplier();

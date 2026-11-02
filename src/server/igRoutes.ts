@@ -496,7 +496,8 @@ export async function handleIgRoutes(
         backdrop = await igChartBackdrop.get({ env: src, epic, name: (meta.name as string) ?? igMarketData.nameOf(epic, src), interval: iv, limit,
           forex: meta.type === 'CURRENCIES', nativePriceMultiplier: (meta.calculationRules as {nativePriceMultiplier?:number}|undefined)?.nativePriceMultiplier
             // Demo saknar ibland forexbeviset: Live:s verifierade värde lånas (bara visning, se igForexMultiplier)
-            ?? (meta.type === 'CURRENCIES' && ownMarket ? (await igForexMultiplier.get(src, epic, ownMarket as never))?.multiplier ?? null : null),
+            ?? (ownMarket ? (meta.type === 'CURRENCIES' ? (await igForexMultiplier.get(src, epic, ownMarket as never))?.multiplier ?? null : null)
+              : igForexMultiplier.peek(src, epic)?.multiplier ?? null), // IG nekade läsningen: senast verifierade värde
           igBars: closed.length, historyError, igFirstOpenMs: closed[0]?.openTime ?? forming?.openTime ?? null, livePrice: mid });
       } catch { backdrop = null; }
       send(res, 200, {
