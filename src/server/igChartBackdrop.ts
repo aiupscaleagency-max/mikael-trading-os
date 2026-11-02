@@ -32,6 +32,8 @@ export interface ChartBackdrop {
   /** Diagramljus (tid i sekunder, som /api/market/klines). Bara ljus FÖRE första IG-ljuset. */
   bars: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>;
   note: string | null; deviationPct: number | null; cached: boolean;
+  /** Prisrepresentationen ljusen räknats om med (IG-punkter per kursenhet; 1 = ingen omräkning). Saknas när ljusen inte visas. */
+  priceMultiplier?: number;
 }
 
 export function createIgChartBackdrop(deps: {
@@ -91,7 +93,7 @@ export function createIgChartBackdrop(deps: {
       }
     }
     return {
-      source: "tiingo", label: CHART_BACKDROP_LABEL, ticker: t.ticker, deviationPct, cached: !!t.cached,
+      source: "tiingo", label: CHART_BACKDROP_LABEL, ticker: t.ticker, deviationPct, cached: !!t.cached, priceMultiplier: multiplier,
       note: args.livePrice === null ? "IG-livepris saknas, Tiingo kunde inte jämföras med IG" : (t.stale ? "Tiingo cachad" : null),
       bars: k.map((b) => ({ time: Math.floor(b.openTime / 1000), open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume ?? 0 })),
     };
