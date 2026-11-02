@@ -44,6 +44,7 @@ import { addLiveTpSl, listLiveTpSl, removeLiveTpSl, removeLiveTpSlForSymbol, sta
 import { addTimedExit, cancelTimedExit, cancelTimedExitForDeal, getHorizonMin, HORIZON_CHOICES, listTimedExits, listConfirmedExits, rollOverTimedExit, MAX_AUTO_EXIT_SEC, setHorizonMin, startTradeHorizon } from "./tradeHorizon.js";
 import { setActiveLiveCheck, reportSessionAttempt, adjustLiveSpend, addOrderGateBlock, checkOrderGate, needsApproval, recordLiveSpend, liveAllowedByServer, addPendingOrder, listPendingOrders, getPendingOrder, updatePendingOrder, isExpired, getLiveSpentTodayUsd, MAX_LIVE_STAKE_USD, testStakeCapUsd, MAX_LIVE_DAILY_SPEND_USD, type PendingOrder } from "./orderGate.js";
 import { isLibraryStrategy } from "./igStrategyLibrary.js";
+import { startBridgeServer } from "./bridgeRoutes.js";
 import { rememberUnknownStrategyOrder, tagStrategyDeal, takeUnknownStrategyOrder } from "./igStrategyTrades.js";
 
 // In-memory keys (per server-instans). DUAL-MODE: separat live + testnet samtidigt.
@@ -2702,6 +2703,8 @@ Regler:
 
   server.listen(port, () => {
     log.ok(`Dashboard: http://localhost:${port}`);
+    // Bron till Grok-boxen: egen port, egna nycklar, bara läsning + biljetter till Godkänn-kön (src/server/bridgeRoutes.ts)
+    startBridgeServer({ brokers, createPending: (b, broker) => createIgPendingOrder(b, broker), broadcast: broadcastEvent });
     if (process.env.DASHBOARD_NO_LOGIN === "true") {
       log.warn("DASHBOARD_NO_LOGIN=true — dashboarden öppen utan inloggning, bara från den här datorn.");
     }

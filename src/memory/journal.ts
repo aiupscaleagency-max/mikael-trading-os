@@ -116,3 +116,20 @@ export async function recordJevRejections(stopped: { symbol: string; why: string
   if (saved) await runCli(["sammanfatta"], WRITE_TIMEOUT_MS).catch((err) => log.warn(`[minne] Journal.md: ${err instanceof Error ? err.message : String(err)}`));
   return saved;
 }
+
+/** Senaste raderna ur journalen (för bron). Kastar om minnet inte nås. */
+export async function readJournalRows(kind?: string, n = 20): Promise<JournalRow[]> {
+  const args = ["las", "--json", "--antal", String(Math.min(50, Math.max(1, n)))];
+  if (kind) args.push("--typ", kind);
+  const rows = JSON.parse(await runCli(args, READ_TIMEOUT_MS)) as JournalRow[];
+  return Array.isArray(rows) ? rows : [];
+}
+
+/** En ny rad i journalen (för bron). Journal.md skrivs om efteråt. Kastar vid fel. */
+export async function writeJournalRow(r: { typ: "test" | "strategi" | "lardom"; agent: string; titel: string; text?: string; symbol?: string; strategi?: string; konto: "ig-demo" | "ig-live" }): Promise<void> {
+  const args = ["skriv", "--typ", r.typ, "--agent", r.agent.slice(0, 40), "--titel", r.titel.slice(0, 200), "--konto", r.konto, "--taggar", "grok,bron"];
+  if (r.text) args.push("--text", r.text);
+  if (r.symbol) args.push("--symbol", r.symbol);
+  if (r.strategi) args.push("--strategi", r.strategi);
+  await runCli(args, WRITE_TIMEOUT_MS);
+}
