@@ -51,9 +51,12 @@ export function isAgentSource(source: string | undefined): boolean {
   return source === "agent" || String(source ?? "").startsWith("agent:");
 }
 
-/** Ska agenterna godkänna förslaget själva? Bara agentförslag, bara IG Demo, bara i Automatisk. */
-export function shouldAutoApprove(p: Pick<PendingOrder, "source" | "live" | "venue" | "status">): boolean {
-  return mode === "auto" && p.status === "pending" && !p.live && p.venue === "broker:ig-demo" && isAgentSource(p.source);
+/**
+ * Ska agenterna godkänna förslaget själva? Bara agentförslag, bara IG Demo, bara i Automatisk.
+ * En stängning av en befintlig position (closeDealId) väntar alltid på Mike: den kan vara hans egen affär.
+ */
+export function shouldAutoApprove(p: Pick<PendingOrder, "source" | "live" | "venue" | "status" | "closeDealId">): boolean {
+  return mode === "auto" && p.status === "pending" && !p.live && p.venue === "broker:ig-demo" && isAgentSource(p.source) && !p.closeDealId;
 }
 
 // Godkännandet sätts av api.ts (samma funktion som knappen Godkänn använder)

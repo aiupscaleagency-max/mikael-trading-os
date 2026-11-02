@@ -40,7 +40,8 @@ assert.equal(ao.shouldAutoApprove({ ...base, source: "double-up" }), false);
 assert.equal(ao.shouldAutoApprove({ ...base, source: "strategi:ORB" }), false);
 assert.equal(ao.shouldAutoApprove({ ...base, source: "agent:hanna", live: true, venue: "broker:ig" }), false);
 assert.equal(ao.shouldAutoApprove({ ...base, source: "agent:hanna", venue: "broker:ig" }), false);
-ok("bara agentförslag i IG Demo; dina egna knappar, chatten, strategier och Live kräver Godkänn");
+assert.equal(ao.shouldAutoApprove({ ...base, source: "agent:hanna", closeDealId: "DIAAAA123" }), false);
+ok("bara agentförslag i IG Demo; dina egna knappar, chatten, strategier, stängningar och Live kräver Godkänn");
 
 // Tips → kö: bara KÖP/SÄLJ med verifierade nivåer, bäst rankade först, dubbletter hoppas över
 const approved: string[] = [];
