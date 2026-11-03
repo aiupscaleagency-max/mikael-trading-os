@@ -1149,7 +1149,7 @@ export function startServer(
       // Bara själva sidan; /api/* är orört eftersom Gemini, Grok-bron och Öppningsvakten läser därifrån.
       // Av: ENDA_INGANG_GEMINI=0 i miljön och starta om boten. Ingen kod eller data tas bort.
       if (process.env.ENDA_INGANG_GEMINI !== "0" && method === "GET" && (url.pathname === "/" || url.pathname === "/dashboard.html" || url.pathname === "/index.html")) {
-        const host = String(req.headers["x-forwarded-host"] ?? req.headers.host ?? "").split(",")[0]?.trim() ?? "".replace(/:\d+$/, "");
+        const host = String(req.headers["x-forwarded-host"] ?? req.headers.host ?? "").split(",")[0]?.trim().replace(/:\d+$/, "") ?? "";
         const gemini = /\.ts\.net$/i.test(host) ? `https://${host}:9446/` : "http://127.0.0.1:4747/";
         res.writeHead(302, { Location: gemini, "Cache-Control": "no-store" });
         res.end();
